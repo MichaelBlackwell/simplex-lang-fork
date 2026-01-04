@@ -1,0 +1,507 @@
+// LLVM IR Merge Tool - merges multiple .ll files into one
+// Replaces merge_ll.py with pure Simplex implementation
+
+// Data structures for merge state
+// declarations: vec of unique declaration strings
+// functions: vec of (name, body) pairs - first definition wins
+// strings: vec of (old_label, new_label, content) triples
+// string_counter: next string index
+
+fn merge_state_new() -> i64 {
+    // Allocate: declarations(0), functions(1), strings(2), string_counter(3)
+    let state: i64 = malloc(32);
+    store_ptr(state, 0, vec_new());  // declarations
+    store_ptr(state, 1, vec_new());  // functions
+    store_ptr(state, 2, vec_new());  // strings
+    store_i64(state, 3, 0);          // string_counter
+    state
+}
+
+fn merge_declarations(state: i64) -> i64 {
+    load_ptr(state, 0)
+}
+
+fn merge_functions(state: i64) -> i64 {
+    load_ptr(state, 1)
+}
+
+fn merge_strings(state: i64) -> i64 {
+    load_ptr(state, 2)
+}
+
+fn merge_next_string_id(state: i64) -> i64 {
+    let id: i64 = load_i64(state, 3);
+    store_i64(state, 3, id + 1);
+    id
+}
+
+// Check if declaration already exists
+fn has_declaration(state: i64, decl: i64) -> bool {
+    let decls: i64 = merge_declarations(state);
+    let n: i64 = vec_len(decls);
+    let i: i64 = 0;
+    while i < n {
+        let existing: i64 = vec_get(decls, i);
+        if string_eq(existing, decl) {
+            return true;
+        }
+        i = i + 1;
+    }
+    false
+}
+
+// Add declaration if unique
+fn add_declaration(state: i64, decl: i64) -> i64 {
+    if has_declaration(state, decl) == false {
+        let decls: i64 = merge_declarations(state);
+        vec_push(decls, decl);
+    }
+    0
+}
+
+// Check if function already exists
+fn has_function(state: i64, name: i64) -> bool {
+    let funcs: i64 = merge_functions(state);
+    let n: i64 = vec_len(funcs);
+    let i: i64 = 0;
+    while i < n {
+        let pair: i64 = vec_get(funcs, i);
+        let existing_name: i64 = load_ptr(pair, 0);
+        if string_eq(existing_name, name) {
+            return true;
+        }
+        i = i + 1;
+    }
+    false
+}
+
+// Add function if not already present
+fn add_function(state: i64, name: i64, body: i64) -> i64 {
+    if has_function(state, name) == false {
+        let funcs: i64 = merge_functions(state);
+        let pair: i64 = malloc(16);
+        store_ptr(pair, 0, name);
+        store_ptr(pair, 1, body);
+        vec_push(funcs, pair);
+    }
+    0
+}
+
+// Add string constant with new label
+fn add_string_constant(state: i64, old_label: i64, content: i64) -> i64 {
+    let id: i64 = merge_next_string_id(state);
+    let new_label: i64 = string_concat("@.str.", int_to_string(id));
+    let strings: i64 = merge_strings(state);
+    let triple: i64 = malloc(24);
+    store_ptr(triple, 0, old_label);
+    store_ptr(triple, 1, new_label);
+    store_ptr(triple, 2, content);
+    vec_push(strings, triple);
+    0
+}
+
+// Check if string starts with prefix
+fn starts_with(s: i64, prefix: i64) -> bool {
+    let slen: i64 = string_len(s);
+    let plen: i64 = string_len(prefix);
+    if slen < plen {
+        return false;
+    }
+    let sub: i64 = string_slice(s, 0, plen);
+    string_eq(sub, prefix)
+}
+
+// Find index of character in string, returns -1 if not found
+fn find_char(s: i64, c: i64) -> i64 {
+    let len: i64 = string_len(s);
+    let i: i64 = 0;
+    while i < len {
+        if string_char_at(s, i) == c {
+            return i;
+        }
+        i = i + 1;
+    }
+    0 - 1
+}
+
+// Find substring, returns -1 if not found
+fn find_string(haystack: i64, needle: i64) -> i64 {
+    let hlen: i64 = string_len(haystack);
+    let nlen: i64 = string_len(needle);
+    if nlen > hlen {
+        return 0 - 1;
+    }
+    let limit: i64 = hlen - nlen + 1;
+    let i: i64 = 0;
+    while i < limit {
+        let sub: i64 = string_slice(haystack, i, i + nlen);
+        if string_eq(sub, needle) {
+            return i;
+        }
+        i = i + 1;
+    }
+    0 - 1
+}
+
+// Replace all occurrences of old with new in s
+fn string_replace_all(s: i64, old: i64, new: i64) -> i64 {
+    let result: i64 = s;
+    let old_len: i64 = string_len(old);
+    let pos: i64 = find_string(result, old);
+    while pos >= 0 {
+        let before: i64 = string_slice(result, 0, pos);
+        let after: i64 = string_slice(result, pos + old_len, string_len(result));
+        result = string_concat(before, string_concat(new, after));
+        pos = find_string(result, old);
+    }
+    result
+}
+
+// Trim whitespace from end of string
+fn trim_end(s: i64) -> i64 {
+    let len: i64 = string_len(s);
+    let end: i64 = len;
+    while end > 0 {
+        let c: i64 = string_char_at(s, end - 1);
+        if c == 32 {
+            end = end - 1;
+        } else {
+            if c == 10 {
+                end = end - 1;
+            } else {
+                if c == 13 {
+                    end = end - 1;
+                } else {
+                    if c == 9 {
+                        end = end - 1;
+                    } else {
+                        return string_slice(s, 0, end);
+                    }
+                }
+            }
+        }
+    }
+    string_from("")
+}
+
+// Split string by newlines, returns vec of lines
+fn split_lines(content: i64) -> i64 {
+    let lines: i64 = vec_new();
+    let len: i64 = string_len(content);
+    let start: i64 = 0;
+    let i: i64 = 0;
+    while i < len {
+        let c: i64 = string_char_at(content, i);
+        if c == 10 {
+            let line: i64 = string_slice(content, start, i);
+            vec_push(lines, line);
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    // Add last line if any
+    if start < len {
+        let line: i64 = string_slice(content, start, len);
+        vec_push(lines, line);
+    }
+    lines
+}
+
+// Extract function name from define line
+// Format: define TYPE @"NAME"(...) or define TYPE @NAME(...)
+fn extract_function_name(line: i64) -> i64 {
+    // Find @
+    let at_pos: i64 = find_char(line, 64);  // '@'
+    if at_pos < 0 {
+        return string_from("");
+    }
+
+    // Check if quoted
+    let after_at: i64 = string_slice(line, at_pos + 1, string_len(line));
+    if string_char_at(after_at, 0) == 34 {
+        // Quoted: find closing quote
+        let end: i64 = find_char(string_slice(after_at, 1, string_len(after_at)), 34);
+        if end >= 0 {
+            return string_slice(after_at, 1, end + 1);
+        }
+    } else {
+        // Unquoted: find (
+        let end: i64 = find_char(after_at, 40);  // '('
+        if end >= 0 {
+            return string_slice(after_at, 0, end);
+        }
+    }
+    string_from("")
+}
+
+// Parse a single line and update state
+fn parse_line(state: i64, line: i64, in_function: i64, current_func: i64, current_name: i64) -> i64 {
+    // Returns: (in_function, current_func, current_name) packed in i64s
+    // Using a simple approach - return values via pointers passed in
+
+    // Check for string constant: @.str.
+    if starts_with(line, "@.str.") {
+        // Parse: @.str.xxx = content
+        let eq_pos: i64 = find_char(line, 61);  // '='
+        if eq_pos > 0 {
+            let old_label: i64 = trim_end(string_slice(line, 0, eq_pos - 1));
+            let content: i64 = trim_end(string_slice(line, eq_pos + 2, string_len(line)));
+            add_string_constant(state, old_label, content);
+        }
+        return 0;  // Not in function
+    }
+
+    // Check for function definition
+    if starts_with(line, "define ") {
+        let name: i64 = extract_function_name(line);
+        store_ptr(current_name, 0, name);
+        store_ptr(current_func, 0, line);
+        store_ptr(current_func, 1, string_from("\n"));
+        return 1;  // In function
+    }
+
+    // If in function, accumulate lines
+    if in_function != 0 {
+        let body: i64 = load_ptr(current_func, 0);
+        let body2: i64 = string_concat(body, line);
+        let body3: i64 = string_concat(body2, "\n");
+        store_ptr(current_func, 0, body3);
+
+        // Check for end of function
+        let trimmed: i64 = trim_end(line);
+        if string_eq(trimmed, "}") {
+            let name: i64 = load_ptr(current_name, 0);
+            let full_body: i64 = load_ptr(current_func, 0);
+            add_function(state, name, full_body);
+            return 0;  // No longer in function
+        }
+        return 1;  // Still in function
+    }
+
+    // Check for declaration
+    if starts_with(line, "declare ") {
+        let decl: i64 = trim_end(line);
+        add_declaration(state, decl);
+    }
+
+    0  // Not in function
+}
+
+// Process a single file
+fn process_file(state: i64, filename: i64) -> i64 {
+    let content: i64 = read_file(filename);
+    if content == 0 {
+        println("Error: Could not read file");
+        return 1;
+    }
+
+    let lines: i64 = split_lines(content);
+    let n: i64 = vec_len(lines);
+    let i: i64 = 0;
+    let in_function: i64 = 0;
+
+    // Allocate storage for current function state
+    let current_func: i64 = malloc(16);  // body at 0
+    let current_name: i64 = malloc(8);   // name at 0
+    store_ptr(current_func, 0, string_from(""));
+    store_ptr(current_name, 0, string_from(""));
+
+    while i < n {
+        let line: i64 = vec_get(lines, i);
+        in_function = parse_line(state, line, in_function, current_func, current_name);
+        i = i + 1;
+    }
+
+    0
+}
+
+// Create sorted index array by label length (longest first) using bubble sort
+fn sort_indices_by_label_length(strings: i64) -> i64 {
+    let n: i64 = vec_len(strings);
+    let indices: i64 = vec_new();
+
+    // Initialize indices 0..n-1
+    let i: i64 = 0;
+    while i < n {
+        // Store index as pointer (will be cast back to i64)
+        vec_push(indices, i);
+        i = i + 1;
+    }
+
+    // Bubble sort by label length (descending)
+    i = 0;
+    while i < n {
+        let j: i64 = 0;
+        while j < n - 1 - i {
+            let idx_j: i64 = vec_get(indices, j);
+            let idx_j1: i64 = vec_get(indices, j + 1);
+            let triple_j: i64 = vec_get(strings, idx_j);
+            let triple_j1: i64 = vec_get(strings, idx_j1);
+            let label_j: i64 = load_ptr(triple_j, 0);
+            let label_j1: i64 = load_ptr(triple_j1, 0);
+            let len_j: i64 = string_len(label_j);
+            let len_j1: i64 = string_len(label_j1);
+
+            // Swap if len_j < len_j1 (we want longest first)
+            if len_j < len_j1 {
+                // Swap using temp storage - rebuild indices vec
+                // Since we can't set vec elements, build new vec
+                let new_indices: i64 = vec_new();
+                let k: i64 = 0;
+                while k < n {
+                    if k == j {
+                        vec_push(new_indices, idx_j1);
+                    } else {
+                        if k == j + 1 {
+                            vec_push(new_indices, idx_j);
+                        } else {
+                            vec_push(new_indices, vec_get(indices, k));
+                        }
+                    }
+                    k = k + 1;
+                }
+                indices = new_indices;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    indices
+}
+
+// Replace string labels in all functions using sorted length order
+fn replace_string_labels(state: i64) -> i64 {
+    let funcs: i64 = merge_functions(state);
+    let strings: i64 = merge_strings(state);
+    let num_funcs: i64 = vec_len(funcs);
+    let num_strings: i64 = vec_len(strings);
+
+    if num_strings == 0 {
+        return 0;
+    }
+
+    // Sort indices by label length (longest first) to avoid partial matches
+    let sorted_indices: i64 = sort_indices_by_label_length(strings);
+
+    // Create placeholder labels
+    let placeholders: i64 = vec_new();
+    let k: i64 = 0;
+    while k < num_strings {
+        let placeholder: i64 = string_concat("@__MERGE_PH_", string_concat(int_to_string(k), "__"));
+        vec_push(placeholders, placeholder);
+        k = k + 1;
+    }
+
+    let i: i64 = 0;
+    while i < num_funcs {
+        let pair: i64 = vec_get(funcs, i);
+        let body: i64 = load_ptr(pair, 1);
+
+        // First pass: replace old labels with placeholders (longest labels first)
+        let j: i64 = 0;
+        while j < num_strings {
+            let idx: i64 = vec_get(sorted_indices, j);
+            let triple: i64 = vec_get(strings, idx);
+            let old_label: i64 = load_ptr(triple, 0);
+            let placeholder: i64 = vec_get(placeholders, idx);
+            body = string_replace_all(body, old_label, placeholder);
+            j = j + 1;
+        }
+
+        // Second pass: replace placeholders with new labels
+        j = 0;
+        while j < num_strings {
+            let idx: i64 = vec_get(sorted_indices, j);
+            let triple: i64 = vec_get(strings, idx);
+            let new_label: i64 = load_ptr(triple, 1);
+            let placeholder: i64 = vec_get(placeholders, idx);
+            body = string_replace_all(body, placeholder, new_label);
+            j = j + 1;
+        }
+
+        store_ptr(pair, 1, body);
+        i = i + 1;
+    }
+    0
+}
+
+// Write output file
+fn write_output(state: i64, output_path: i64) -> i64 {
+    let result: i64 = string_from("; ModuleID = \"simplex_program\"\n");
+    result = string_concat(result, "target triple = \"x86_64-apple-macosx14.0.0\"\n\n");
+
+    // Write declarations (sorted would be nice but not critical)
+    let decls: i64 = merge_declarations(state);
+    let num_decls: i64 = vec_len(decls);
+    let i: i64 = 0;
+    while i < num_decls {
+        let decl: i64 = vec_get(decls, i);
+        result = string_concat(result, decl);
+        result = string_concat(result, "\n");
+        i = i + 1;
+    }
+    result = string_concat(result, "\n");
+
+    // Write functions
+    let funcs: i64 = merge_functions(state);
+    let num_funcs: i64 = vec_len(funcs);
+    i = 0;
+    while i < num_funcs {
+        let pair: i64 = vec_get(funcs, i);
+        let body: i64 = load_ptr(pair, 1);
+        result = string_concat(result, body);
+        result = string_concat(result, "\n");
+        i = i + 1;
+    }
+
+    // Write string constants
+    let strings: i64 = merge_strings(state);
+    let num_strings: i64 = vec_len(strings);
+    if num_strings > 0 {
+        result = string_concat(result, "\n; String constants\n");
+        i = 0;
+        while i < num_strings {
+            let triple: i64 = vec_get(strings, i);
+            let new_label: i64 = load_ptr(triple, 1);
+            let content: i64 = load_ptr(triple, 2);
+            result = string_concat(result, new_label);
+            result = string_concat(result, " = ");
+            result = string_concat(result, content);
+            result = string_concat(result, "\n");
+            i = i + 1;
+        }
+    }
+
+    write_file(output_path, result);
+    0
+}
+
+fn main() {
+    let args: i64 = get_args();
+    let argc: i64 = vec_len(args);
+
+    if argc < 3 {
+        println("Usage: merge output.ll input1.ll input2.ll ...");
+        return;
+    }
+
+    let output_path: i64 = vec_get(args, 1);
+    let state: i64 = merge_state_new();
+
+    // Process each input file
+    let i: i64 = 2;
+    while i < argc {
+        let input_path: i64 = vec_get(args, i);
+        process_file(state, input_path);
+        i = i + 1;
+    }
+
+    // Replace string labels in functions
+    replace_string_labels(state);
+
+    // Write output
+    write_output(state, output_path);
+
+    let num_files: i64 = argc - 2;
+    println(string_concat("Merged ", string_concat(int_to_string(num_files), " files")));
+}
