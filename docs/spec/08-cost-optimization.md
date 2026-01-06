@@ -1,6 +1,6 @@
 # Simplex Cost-Optimized Enterprise Deployment
 
-**Version 0.2.0**
+**Version 0.1.0**
 
 Simplex is designed to run enterprise workloads on the cheapest available cloud compute.
 

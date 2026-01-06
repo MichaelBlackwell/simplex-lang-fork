@@ -1,45 +1,33 @@
 # Getting Started with Simplex
 
-**Version 0.2.0**
+**Version 0.1.0**
 
 A quick introduction to writing and running Simplex programs.
 
 ---
 
-## Current Status
-
-Simplex is currently in **bootstrap phase**. The compiler is self-hosted and compiles to LLVM IR, which is then compiled to native code using Clang/LLVM.
-
----
-
 ## Installation
 
-### Prerequisites
+```bash
+# macOS
+brew install simplex
 
-- LLVM/Clang toolchain (for compiling LLVM IR to native code)
-- A C compiler (for the runtime)
+# Linux
+curl -fsSL https://simplex-lang.org/install.sh | sh
 
-### Building from Source
+# Windows
+winget install simplex
+
+# From source
+git clone https://github.com/simplex-lang/simplex
+cd simplex && cargo install --path .
+```
+
+Verify installation:
 
 ```bash
-# Clone the repository
-git clone https://github.com/senuamedia/simplex-lang
-cd simplex-lang
-
-# Build the runtime
-cd runtime
-clang -c -O2 standalone_runtime.c -o standalone_runtime.o
-
-# The compiler components are in compiler/bootstrap/
-# lexer.sx, parser.sx, codegen.sx, main.sx, merge.sx
-```
-
-### Compilation Process
-
-The self-hosted compiler follows this pipeline:
-
-```
-Source (.sx) → Lexer → Parser → Codegen → LLVM IR (.ll) → Native Binary
+simplex --version
+# simplex 0.1.0
 ```
 
 ---
@@ -405,4 +393,4 @@ simplex help swarm
 simplex docs  # Opens browser to docs
 ```
 
-Report issues: https://github.com/senuamedia/simplex-lang/issues
+Report issues: https://github.com/simplex-lang/simplex/issues

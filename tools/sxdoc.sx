@@ -1,0 +1,746 @@
+// sxdoc - Simplex Documentation Generator
+// Extracts /// doc comments and generates HTML or Markdown documentation
+
+fn VERSION() -> i64 { string_from("0.1.0") }
+
+fn show_help() -> i64 {
+    println("sxdoc - Simplex Documentation Generator");
+    println("");
+    println("USAGE:");
+    println("    sxdoc [OPTIONS] <FILES...>");
+    println("");
+    println("OPTIONS:");
+    println("    --html          Generate HTML output (default)");
+    println("    --markdown      Generate Markdown output");
+    println("    -o <dir>        Output directory (default: ./docs)");
+    println("    -h, --help      Show this help");
+    println("    --version       Show version");
+    0
+}
+
+fn show_version() -> i64 {
+    println(string_concat(string_from("sxdoc "), VERSION()));
+    0
+}
+
+// ========================================
+// Documentation Item Types
+// ========================================
+
+// DocItem kinds
+fn DOC_FN() -> i64 { 0 }
+fn DOC_STRUCT() -> i64 { 1 }
+fn DOC_ENUM() -> i64 { 2 }
+fn DOC_TRAIT() -> i64 { 3 }
+fn DOC_IMPL() -> i64 { 4 }
+
+// DocItem structure
+// Layout: kind(0), name(1), doc_comment(2), signature(3), params(4), ret_ty(5), fields(6)
+fn doc_item_new(kind: i64, name: i64) -> i64 {
+    let item: i64 = malloc(56);
+    store_i64(item, 0, kind);
+    store_ptr(item, 1, name);
+    store_ptr(item, 2, string_from(""));  // doc comment
+    store_ptr(item, 3, string_from(""));  // signature
+    store_ptr(item, 4, vec_new());        // params
+    store_ptr(item, 5, 0);                // return type
+    store_ptr(item, 6, vec_new());        // fields/variants/methods
+    item
+}
+
+fn doc_item_kind(item: i64) -> i64 { load_i64(item, 0) }
+fn doc_item_name(item: i64) -> i64 { load_ptr(item, 1) }
+fn doc_item_doc(item: i64) -> i64 { load_ptr(item, 2) }
+fn doc_item_set_doc(item: i64, doc: i64) -> i64 { store_ptr(item, 2, doc); 0 }
+fn doc_item_sig(item: i64) -> i64 { load_ptr(item, 3) }
+fn doc_item_set_sig(item: i64, sig: i64) -> i64 { store_ptr(item, 3, sig); 0 }
+fn doc_item_params(item: i64) -> i64 { load_ptr(item, 4) }
+fn doc_item_ret_ty(item: i64) -> i64 { load_ptr(item, 5) }
+fn doc_item_set_ret_ty(item: i64, ty: i64) -> i64 { store_ptr(item, 5, ty); 0 }
+fn doc_item_fields(item: i64) -> i64 { load_ptr(item, 6) }
+
+// ========================================
+// Source Parsing for Documentation
+// ========================================
+
+// Extract documentation from source file
+fn extract_docs(source: i64) -> i64 {
+    let docs: i64 = vec_new();
+    let lines: i64 = string_split(source, string_from("\n"));
+    let n: i64 = vec_len(lines);
+    let i: i64 = 0;
+
+    // Current accumulated doc comment
+    let current_doc: i64 = string_from("");
+
+    while i < n {
+        let line: i64 = vec_get(lines, i);
+        let trimmed: i64 = string_trim(line);
+
+        // Check for doc comment: ///
+        if string_starts_with(trimmed, string_from("///")) {
+            // Extract doc content (skip "/// ")
+            let doc_content: i64 = string_from("");
+            if string_len(trimmed) > 4 {
+                doc_content = string_slice(trimmed, 4, string_len(trimmed));
+            } else {
+                if string_len(trimmed) > 3 {
+                    doc_content = string_slice(trimmed, 3, string_len(trimmed));
+                }
+            }
+            if string_len(current_doc) > 0 {
+                current_doc = string_concat(current_doc, string_from("\n"));
+            }
+            current_doc = string_concat(current_doc, doc_content);
+            i = i + 1;
+        } else {
+        // Check for function definition
+        if string_starts_with(trimmed, string_from("fn ")) {
+            let fn_doc: i64 = extract_fn_doc(trimmed, current_doc);
+            if fn_doc != 0 {
+                vec_push(docs, fn_doc);
+            }
+            current_doc = string_from("");
+            i = i + 1;
+        } else {
+        // Check for pub fn
+        if string_starts_with(trimmed, string_from("pub fn ")) {
+            let rest: i64 = string_slice(trimmed, 4, string_len(trimmed));
+            let fn_doc: i64 = extract_fn_doc(rest, current_doc);
+            if fn_doc != 0 {
+                vec_push(docs, fn_doc);
+            }
+            current_doc = string_from("");
+            i = i + 1;
+        } else {
+        // Check for struct definition
+        if string_starts_with(trimmed, string_from("struct ")) {
+            let struct_doc: i64 = extract_struct_doc(trimmed, current_doc, lines, i);
+            if struct_doc != 0 {
+                vec_push(docs, struct_doc);
+            }
+            current_doc = string_from("");
+            // Skip to end of struct
+            while i < n {
+                let check_line: i64 = string_trim(vec_get(lines, i));
+                if string_eq(check_line, string_from("}")) {
+                    i = i + 1;
+                    i = n;  // break
+                }
+                i = i + 1;
+            }
+        } else {
+        // Check for enum definition
+        if string_starts_with(trimmed, string_from("enum ")) {
+            let enum_doc: i64 = extract_enum_doc(trimmed, current_doc, lines, i);
+            if enum_doc != 0 {
+                vec_push(docs, enum_doc);
+            }
+            current_doc = string_from("");
+            // Skip to end of enum
+            while i < n {
+                let check_line: i64 = string_trim(vec_get(lines, i));
+                if string_eq(check_line, string_from("}")) {
+                    i = i + 1;
+                    i = n;  // break
+                }
+                i = i + 1;
+            }
+        } else {
+        // Check for trait definition
+        if string_starts_with(trimmed, string_from("trait ")) {
+            let trait_doc: i64 = extract_trait_doc(trimmed, current_doc, lines, i);
+            if trait_doc != 0 {
+                vec_push(docs, trait_doc);
+            }
+            current_doc = string_from("");
+            // Skip to end of trait
+            while i < n {
+                let check_line: i64 = string_trim(vec_get(lines, i));
+                if string_eq(check_line, string_from("}")) {
+                    i = i + 1;
+                    i = n;  // break
+                }
+                i = i + 1;
+            }
+        } else {
+            // Not a doc comment or definition, reset doc
+            if string_len(trimmed) > 0 {
+                if string_starts_with(trimmed, string_from("//")) == false {
+                    current_doc = string_from("");
+                }
+            }
+            i = i + 1;
+        }
+        }
+        }
+        }
+        }
+        }
+    }
+
+    docs
+}
+
+// Extract function documentation
+fn extract_fn_doc(line: i64, doc_comment: i64) -> i64 {
+    // Parse: fn name(params) -> RetType
+    let rest: i64 = string_slice(line, 3, string_len(line));  // Skip "fn "
+
+    // Find function name (up to '(' or '<')
+    let name: i64 = string_from("");
+    let i: i64 = 0;
+    while i < string_len(rest) {
+        let c: i64 = string_char_at(rest, i);
+        if c == 40 {
+            // (
+            i = string_len(rest);  // break
+        } else {
+        if c == 60 {
+            // <
+            i = string_len(rest);  // break
+        } else {
+            name = string_concat(name, string_from_char(c));
+            i = i + 1;
+        }
+        }
+    }
+
+    let item: i64 = doc_item_new(DOC_FN(), string_trim(name));
+    doc_item_set_doc(item, doc_comment);
+    doc_item_set_sig(item, line);
+
+    // Extract return type (after "->")
+    let arrow_pos: i64 = string_find(line, string_from("->"), 0);
+    if arrow_pos > 0 {
+        let ret_part: i64 = string_slice(line, arrow_pos + 2, string_len(line));
+        // Find end (before '{' or end of line)
+        let brace_pos: i64 = string_find(ret_part, string_from("{"), 0);
+        if brace_pos > 0 {
+            ret_part = string_slice(ret_part, 0, brace_pos);
+        }
+        doc_item_set_ret_ty(item, string_trim(ret_part));
+    }
+
+    item
+}
+
+// Extract struct documentation
+fn extract_struct_doc(line: i64, doc_comment: i64, lines: i64, start_line: i64) -> i64 {
+    // Parse: struct Name { ... } or struct Name<T> { ... }
+    let rest: i64 = string_slice(line, 7, string_len(line));  // Skip "struct "
+
+    // Find name (up to '<', '{', or space)
+    let name: i64 = string_from("");
+    let i: i64 = 0;
+    while i < string_len(rest) {
+        let c: i64 = string_char_at(rest, i);
+        if c == 60 {
+            i = string_len(rest);
+        } else {
+        if c == 123 {
+            i = string_len(rest);
+        } else {
+        if c == 32 {
+            i = string_len(rest);
+        } else {
+            name = string_concat(name, string_from_char(c));
+            i = i + 1;
+        }
+        }
+        }
+    }
+
+    let item: i64 = doc_item_new(DOC_STRUCT(), string_trim(name));
+    doc_item_set_doc(item, doc_comment);
+
+    // Extract fields
+    let fields: i64 = doc_item_fields(item);
+    let n: i64 = vec_len(lines);
+    i = start_line + 1;
+    while i < n {
+        let field_line: i64 = string_trim(vec_get(lines, i));
+        if string_eq(field_line, string_from("}")) {
+            i = n;  // break
+        } else {
+            // Check for field: name: Type
+            let colon_pos: i64 = string_find(field_line, string_from(":"), 0);
+            if colon_pos > 0 {
+                let field_name: i64 = string_trim(string_slice(field_line, 0, colon_pos));
+                vec_push(fields, field_name);
+            }
+            i = i + 1;
+        }
+    }
+
+    item
+}
+
+// Extract enum documentation
+fn extract_enum_doc(line: i64, doc_comment: i64, lines: i64, start_line: i64) -> i64 {
+    // Parse: enum Name { ... }
+    let rest: i64 = string_slice(line, 5, string_len(line));  // Skip "enum "
+
+    // Find name
+    let name: i64 = string_from("");
+    let i: i64 = 0;
+    while i < string_len(rest) {
+        let c: i64 = string_char_at(rest, i);
+        if c == 123 {
+            i = string_len(rest);
+        } else {
+        if c == 32 {
+            i = string_len(rest);
+        } else {
+            name = string_concat(name, string_from_char(c));
+            i = i + 1;
+        }
+        }
+    }
+
+    let item: i64 = doc_item_new(DOC_ENUM(), string_trim(name));
+    doc_item_set_doc(item, doc_comment);
+
+    // Extract variants
+    let variants: i64 = doc_item_fields(item);
+    let n: i64 = vec_len(lines);
+    i = start_line + 1;
+    while i < n {
+        let var_line: i64 = string_trim(vec_get(lines, i));
+        if string_eq(var_line, string_from("}")) {
+            i = n;  // break
+        } else {
+            if string_len(var_line) > 0 {
+                // Remove trailing comma
+                if string_char_at(var_line, string_len(var_line) - 1) == 44 {
+                    var_line = string_slice(var_line, 0, string_len(var_line) - 1);
+                }
+                if string_len(var_line) > 0 {
+                    vec_push(variants, var_line);
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    item
+}
+
+// Extract trait documentation
+fn extract_trait_doc(line: i64, doc_comment: i64, lines: i64, start_line: i64) -> i64 {
+    // Parse: trait Name { ... }
+    let rest: i64 = string_slice(line, 6, string_len(line));  // Skip "trait "
+
+    // Find name
+    let name: i64 = string_from("");
+    let i: i64 = 0;
+    while i < string_len(rest) {
+        let c: i64 = string_char_at(rest, i);
+        if c == 123 {
+            i = string_len(rest);
+        } else {
+        if c == 32 {
+            i = string_len(rest);
+        } else {
+            name = string_concat(name, string_from_char(c));
+            i = i + 1;
+        }
+        }
+    }
+
+    let item: i64 = doc_item_new(DOC_TRAIT(), string_trim(name));
+    doc_item_set_doc(item, doc_comment);
+
+    // Extract method signatures
+    let methods: i64 = doc_item_fields(item);
+    let n: i64 = vec_len(lines);
+    i = start_line + 1;
+    while i < n {
+        let method_line: i64 = string_trim(vec_get(lines, i));
+        if string_eq(method_line, string_from("}")) {
+            i = n;  // break
+        } else {
+            if string_starts_with(method_line, string_from("fn ")) {
+                vec_push(methods, method_line);
+            }
+            i = i + 1;
+        }
+    }
+
+    item
+}
+
+// ========================================
+// Output Generation
+// ========================================
+
+// Generate HTML documentation
+fn generate_html(docs: i64, module_name: i64) -> i64 {
+    let sb: i64 = sb_new();
+
+    // HTML header
+    sb_append(sb, string_from("<!DOCTYPE html>\n"));
+    sb_append(sb, string_from("<html>\n<head>\n"));
+    sb_append(sb, string_from("  <meta charset=\"utf-8\">\n"));
+    sb_append(sb, string_from("  <title>"));
+    sb_append(sb, module_name);
+    sb_append(sb, string_from(" - Simplex Documentation</title>\n"));
+    sb_append(sb, string_from("  <style>\n"));
+    sb_append(sb, string_from("    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; }\n"));
+    sb_append(sb, string_from("    h1 { color: #333; border-bottom: 2px solid #5c6bc0; padding-bottom: 10px; }\n"));
+    sb_append(sb, string_from("    h2 { color: #5c6bc0; margin-top: 30px; }\n"));
+    sb_append(sb, string_from("    h3 { color: #666; }\n"));
+    sb_append(sb, string_from("    .signature { background: #f5f5f5; padding: 10px; border-radius: 4px; font-family: 'Consolas', monospace; overflow-x: auto; }\n"));
+    sb_append(sb, string_from("    .doc { color: #444; margin: 10px 0; }\n"));
+    sb_append(sb, string_from("    .field { margin-left: 20px; color: #666; }\n"));
+    sb_append(sb, string_from("    .toc { background: #f9f9f9; padding: 15px; border-radius: 4px; margin-bottom: 30px; }\n"));
+    sb_append(sb, string_from("    .toc a { color: #5c6bc0; text-decoration: none; }\n"));
+    sb_append(sb, string_from("    .toc a:hover { text-decoration: underline; }\n"));
+    sb_append(sb, string_from("  </style>\n"));
+    sb_append(sb, string_from("</head>\n<body>\n"));
+
+    // Title
+    sb_append(sb, string_from("<h1>Module: "));
+    sb_append(sb, module_name);
+    sb_append(sb, string_from("</h1>\n"));
+
+    // Table of contents
+    sb_append(sb, string_from("<div class=\"toc\">\n"));
+    sb_append(sb, string_from("<strong>Contents</strong>\n<ul>\n"));
+
+    let n: i64 = vec_len(docs);
+    let i: i64 = 0;
+    while i < n {
+        let item: i64 = vec_get(docs, i);
+        let kind: i64 = doc_item_kind(item);
+        let name: i64 = doc_item_name(item);
+        let kind_str: i64 = get_kind_str(kind);
+        sb_append(sb, string_from("<li><a href=\"#"));
+        sb_append(sb, name);
+        sb_append(sb, string_from("\">"));
+        sb_append(sb, kind_str);
+        sb_append(sb, string_from(" "));
+        sb_append(sb, name);
+        sb_append(sb, string_from("</a></li>\n"));
+        i = i + 1;
+    }
+    sb_append(sb, string_from("</ul>\n</div>\n"));
+
+    // Documentation sections
+    i = 0;
+    while i < n {
+        let item: i64 = vec_get(docs, i);
+        sb_append(sb, generate_html_item(item));
+        i = i + 1;
+    }
+
+    // Footer
+    sb_append(sb, string_from("\n<hr>\n<p><em>Generated by sxdoc</em></p>\n"));
+    sb_append(sb, string_from("</body>\n</html>\n"));
+
+    sb_to_string(sb)
+}
+
+fn get_kind_str(kind: i64) -> i64 {
+    if kind == DOC_FN() { return string_from("fn"); }
+    if kind == DOC_STRUCT() { return string_from("struct"); }
+    if kind == DOC_ENUM() { return string_from("enum"); }
+    if kind == DOC_TRAIT() { return string_from("trait"); }
+    if kind == DOC_IMPL() { return string_from("impl"); }
+    string_from("")
+}
+
+fn generate_html_item(item: i64) -> i64 {
+    let sb: i64 = sb_new();
+    let kind: i64 = doc_item_kind(item);
+    let name: i64 = doc_item_name(item);
+    let doc: i64 = doc_item_doc(item);
+    let sig: i64 = doc_item_sig(item);
+    let fields: i64 = doc_item_fields(item);
+
+    sb_append(sb, string_from("<h2 id=\""));
+    sb_append(sb, name);
+    sb_append(sb, string_from("\">"));
+    sb_append(sb, get_kind_str(kind));
+    sb_append(sb, string_from(" "));
+    sb_append(sb, name);
+    sb_append(sb, string_from("</h2>\n"));
+
+    // Signature
+    if string_len(sig) > 0 {
+        sb_append(sb, string_from("<pre class=\"signature\">"));
+        sb_append(sb, html_escape(sig));
+        sb_append(sb, string_from("</pre>\n"));
+    }
+
+    // Documentation
+    if string_len(doc) > 0 {
+        sb_append(sb, string_from("<p class=\"doc\">"));
+        sb_append(sb, html_escape(doc));
+        sb_append(sb, string_from("</p>\n"));
+    }
+
+    // Fields/variants/methods
+    if vec_len(fields) > 0 {
+        if kind == DOC_STRUCT() {
+            sb_append(sb, string_from("<h3>Fields</h3>\n<ul>\n"));
+        } else {
+        if kind == DOC_ENUM() {
+            sb_append(sb, string_from("<h3>Variants</h3>\n<ul>\n"));
+        } else {
+        if kind == DOC_TRAIT() {
+            sb_append(sb, string_from("<h3>Methods</h3>\n<ul>\n"));
+        }
+        }
+        }
+        let j: i64 = 0;
+        while j < vec_len(fields) {
+            let field: i64 = vec_get(fields, j);
+            sb_append(sb, string_from("<li class=\"field\"><code>"));
+            sb_append(sb, html_escape(field));
+            sb_append(sb, string_from("</code></li>\n"));
+            j = j + 1;
+        }
+        sb_append(sb, string_from("</ul>\n"));
+    }
+
+    sb_to_string(sb)
+}
+
+fn html_escape(s: i64) -> i64 {
+    let result: i64 = s;
+    result = string_replace(result, string_from("&"), string_from("&amp;"));
+    result = string_replace(result, string_from("<"), string_from("&lt;"));
+    result = string_replace(result, string_from(">"), string_from("&gt;"));
+    result
+}
+
+// Generate Markdown documentation
+fn generate_markdown(docs: i64, module_name: i64) -> i64 {
+    let sb: i64 = sb_new();
+
+    // Title
+    sb_append(sb, string_from("# Module: "));
+    sb_append(sb, module_name);
+    sb_append(sb, string_from("\n\n"));
+
+    // Table of contents
+    sb_append(sb, string_from("## Contents\n\n"));
+    let n: i64 = vec_len(docs);
+    let i: i64 = 0;
+    while i < n {
+        let item: i64 = vec_get(docs, i);
+        let kind: i64 = doc_item_kind(item);
+        let name: i64 = doc_item_name(item);
+        sb_append(sb, string_from("- ["));
+        sb_append(sb, get_kind_str(kind));
+        sb_append(sb, string_from(" "));
+        sb_append(sb, name);
+        sb_append(sb, string_from("](#"));
+        sb_append(sb, name);
+        sb_append(sb, string_from(")\n"));
+        i = i + 1;
+    }
+    sb_append(sb, string_from("\n---\n\n"));
+
+    // Documentation sections
+    i = 0;
+    while i < n {
+        let item: i64 = vec_get(docs, i);
+        sb_append(sb, generate_md_item(item));
+        i = i + 1;
+    }
+
+    // Footer
+    sb_append(sb, string_from("\n---\n*Generated by sxdoc*\n"));
+
+    sb_to_string(sb)
+}
+
+fn generate_md_item(item: i64) -> i64 {
+    let sb: i64 = sb_new();
+    let kind: i64 = doc_item_kind(item);
+    let name: i64 = doc_item_name(item);
+    let doc: i64 = doc_item_doc(item);
+    let sig: i64 = doc_item_sig(item);
+    let fields: i64 = doc_item_fields(item);
+
+    sb_append(sb, string_from("## "));
+    sb_append(sb, get_kind_str(kind));
+    sb_append(sb, string_from(" "));
+    sb_append(sb, name);
+    sb_append(sb, string_from("\n\n"));
+
+    // Signature
+    if string_len(sig) > 0 {
+        sb_append(sb, string_from("```simplex\n"));
+        sb_append(sb, sig);
+        sb_append(sb, string_from("\n```\n\n"));
+    }
+
+    // Documentation
+    if string_len(doc) > 0 {
+        sb_append(sb, doc);
+        sb_append(sb, string_from("\n\n"));
+    }
+
+    // Fields/variants/methods
+    if vec_len(fields) > 0 {
+        if kind == DOC_STRUCT() {
+            sb_append(sb, string_from("### Fields\n\n"));
+        } else {
+        if kind == DOC_ENUM() {
+            sb_append(sb, string_from("### Variants\n\n"));
+        } else {
+        if kind == DOC_TRAIT() {
+            sb_append(sb, string_from("### Methods\n\n"));
+        }
+        }
+        }
+        let j: i64 = 0;
+        while j < vec_len(fields) {
+            let field: i64 = vec_get(fields, j);
+            sb_append(sb, string_from("- `"));
+            sb_append(sb, field);
+            sb_append(sb, string_from("`\n"));
+            j = j + 1;
+        }
+        sb_append(sb, string_from("\n"));
+    }
+
+    sb_to_string(sb)
+}
+
+// ========================================
+// Main Entry Point
+// ========================================
+
+fn main() -> i64 {
+    let args: i64 = get_args();
+    let argc: i64 = vec_len(args);
+
+    if argc < 2 {
+        show_help();
+        return 1;
+    }
+
+    // Parse arguments
+    let output_dir: i64 = string_from("./docs");
+    let use_markdown: i64 = 0;
+    let files: i64 = vec_new();
+    let i: i64 = 1;
+
+    while i < argc {
+        let arg: i64 = vec_get(args, i);
+        if string_eq(arg, string_from("-h")) {
+            show_help();
+            return 0;
+        }
+        if string_eq(arg, string_from("--help")) {
+            show_help();
+            return 0;
+        }
+        if string_eq(arg, string_from("--version")) {
+            show_version();
+            return 0;
+        }
+        if string_eq(arg, string_from("--html")) {
+            use_markdown = 0;
+            i = i + 1;
+        } else {
+        if string_eq(arg, string_from("--markdown")) {
+            use_markdown = 1;
+            i = i + 1;
+        } else {
+        if string_eq(arg, string_from("-o")) {
+            if i + 1 < argc {
+                i = i + 1;
+                output_dir = vec_get(args, i);
+            }
+            i = i + 1;
+        } else {
+            vec_push(files, arg);
+            i = i + 1;
+        }
+        }
+        }
+    }
+
+    if vec_len(files) == 0 {
+        println("Error: No input files specified");
+        return 1;
+    }
+
+    // Ensure output directory exists
+    mkdir(output_dir);
+
+    // Process each file
+    i = 0;
+    while i < vec_len(files) {
+        let path: i64 = vec_get(files, i);
+        let source: i64 = read_file(path);
+        if source == 0 {
+            println(string_concat(string_from("Error: Could not read file: "), path));
+            i = i + 1;
+        } else {
+
+        // Extract module name from path
+        let module_name: i64 = get_module_name_from_path(path);
+
+        // Extract documentation
+        let docs: i64 = extract_docs(source);
+        println(string_concat(string_from("Extracted "), int_to_string(vec_len(docs))));
+        println(string_concat(string_from(" items from "), path));
+
+        // Generate output
+        let output: i64 = string_from("");
+        let ext: i64 = string_from(".html");
+        if use_markdown == 1 {
+            output = generate_markdown(docs, module_name);
+            ext = string_from(".md");
+        } else {
+            output = generate_html(docs, module_name);
+        }
+
+        // Write output file
+        let output_file: i64 = path_join(output_dir, string_concat(module_name, ext));
+        write_file(output_file, output);
+        println(string_concat(string_from("  -> "), output_file));
+
+        i = i + 1;
+        }
+    }
+
+    println("Documentation generated successfully.");
+    0
+}
+
+// Extract module name from file path
+fn get_module_name_from_path(path: i64) -> i64 {
+    let len: i64 = string_len(path);
+
+    // Find last slash
+    let start: i64 = 0;
+    let i: i64 = 0;
+    while i < len {
+        let c: i64 = string_char_at(path, i);
+        if c == 47 {
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+
+    // Find last dot
+    let end: i64 = len;
+    i = len - 1;
+    while i >= start {
+        let c: i64 = string_char_at(path, i);
+        if c == 46 {
+            end = i;
+            i = 0;  // break
+        }
+        i = i - 1;
+    }
+
+    string_slice(path, start, end)
+}

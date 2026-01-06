@@ -1,6 +1,6 @@
 # Simplex AI Integration
 
-**Version 0.2.0**
+**Version 0.1.0**
 
 AI capabilities are first-class primitives in Simplex, not bolted-on libraries.
 

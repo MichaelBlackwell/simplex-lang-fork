@@ -1,14 +1,18 @@
-// Minimal Simplex Parser
-// CONSTRAINT: Only uses features stage1 supports
-// No: impl, self, for, match, traits, generics
-// Uses early returns instead of else-if chains
+// Simplex Parser
+// Self-hosted parser supporting full language features:
+// - impl blocks, self keyword, for loops, match expressions
+// - traits and impl Trait for Type
+// - generic functions with type parameters
+// - struct literals with lookahead disambiguation
 
 // Token types enum - duplicated from lexer.sx for standalone compilation
 enum TokenKind {
     Eof,
     Ident,
     Int,
+    Float,
     String,
+    FString,   // f"..." interpolated string
     LParen,
     RParen,
     LBrace,
@@ -61,7 +65,29 @@ enum TokenKind {
     LtLt,
     GtGt,
     KwBreak,
-    KwContinue
+    KwContinue,
+    Question,
+    KwTrait,
+    KwType,
+    KwUse,
+    KwMod,
+    KwConst,
+    KwAsync,
+    KwAwait,
+    KwYield,
+    KwDyn,
+    // Actor model keywords
+    KwActor,
+    KwReceive,
+    KwInit,
+    // AI/Cognitive keywords
+    KwSpecialist,
+    KwInfer,
+    KwHive,
+    // Mutable binding
+    KwVar,
+    // Spawn expression
+    KwSpawn
 }
 
 // AST node tags - using i64 since stage1 doesn't have proper enums for everything
@@ -70,6 +96,13 @@ fn TAG_FN() -> i64 { 0 }
 fn TAG_ENUM() -> i64 { 1 }
 fn TAG_STRUCT() -> i64 { 2 }
 fn TAG_IMPL() -> i64 { 3 }
+fn TAG_TRAIT() -> i64 { 4 }
+fn TAG_IMPL_TRAIT() -> i64 { 5 }  // impl Trait for Type
+fn TAG_MOD() -> i64 { 6 }         // mod name;
+fn TAG_USE() -> i64 { 7 }         // use name::item;
+fn TAG_ACTOR() -> i64 { 8 }       // actor definition
+fn TAG_SPECIALIST() -> i64 { 9 }  // AI specialist
+fn TAG_HIVE() -> i64 { 10 }       // cognitive hive
 
 // Stmt tags
 fn STMT_LET() -> i64 { 0 }
@@ -96,16 +129,35 @@ fn EXPR_FIELD() -> i64 { 12 }
 fn EXPR_FOR() -> i64 { 13 }
 fn EXPR_MATCH() -> i64 { 14 }
 fn EXPR_METHOD_CALL() -> i64 { 15 }
+fn EXPR_TRY() -> i64 { 16 }  // expr? - early return on error
+fn EXPR_AWAIT() -> i64 { 17 }  // expr.await - await future
+fn EXPR_FSTRING() -> i64 { 18 }  // f"..." - interpolated string
+fn EXPR_YIELD() -> i64 { 19 }    // yield expr - generator yield
+fn EXPR_SPAWN() -> i64 { 20 }    // spawn Type - spawn actor/specialist
+fn EXPR_ARRAY() -> i64 { 21 }    // [a, b, c] - array literal
+fn EXPR_FLOAT() -> i64 { 22 }    // floating point literal
 
 // Parser state - we pass this to all functions
 fn parser_new(tokens: i64) -> i64 {
-    // Allocate parser: tokens(0), pos(1), len(2)
-    let parser: i64 = malloc(24);
+    // Allocate parser: tokens(0), pos(1), len(2), errors(3)
+    let parser: i64 = malloc(32);
     store_ptr(parser, 0, tokens);
     store_i64(parser, 1, 0);
     let len: i64 = vec_len(tokens);
     store_i64(parser, 2, len);
+    store_i64(parser, 3, 0);
     parser
+}
+
+fn parser_error_count(parser: i64) -> i64 {
+    load_i64(parser, 3)
+}
+
+fn parser_add_error(parser: i64, msg: i64) -> i64 {
+    let count: i64 = load_i64(parser, 3);
+    store_i64(parser, 3, count + 1);
+    println(string_concat(string_from("Parse error: "), msg));
+    0
 }
 
 fn parser_tokens(parser: i64) -> i64 {
@@ -130,6 +182,25 @@ fn parser_current(parser: i64) -> i64 {
     let tokens: i64 = parser_tokens(parser);
     let pos: i64 = parser_pos(parser);
     vec_get(tokens, pos)
+}
+
+// Peek ahead n tokens (0 = current, 1 = next, etc.)
+fn parser_peek(parser: i64, n: i64) -> i64 {
+    let tokens: i64 = parser_tokens(parser);
+    let pos: i64 = parser_pos(parser);
+    let len: i64 = parser_len(parser);
+    if pos + n >= len {
+        return 0;  // Return null for out of bounds
+    }
+    vec_get(tokens, pos + n)
+}
+
+// Check if token at offset n has the given kind
+fn parser_peek_check(parser: i64, n: i64, kind: i64) -> bool {
+    let tok: i64 = parser_peek(parser, n);
+    if tok == 0 { return false; }
+    let tok_kind: i64 = token_kind(tok);
+    tok_kind == kind
 }
 
 fn parser_advance(parser: i64) -> i64 {
@@ -158,22 +229,29 @@ fn parser_expect(parser: i64, kind: i64) -> i64 {
     if parser_check(parser, kind) {
         return parser_advance(parser);
     }
-    // Error - return null for now
+    // Error - report and continue
+    parser_add_error(parser, string_from("unexpected token"));
     0
 }
 
 // AST node constructors
 
 // Item: FnDef
-// Layout: tag(0), name(1), params(2), ret_ty(3), body(4)
-fn ast_fn_def(name: i64, params: i64, ret_ty: i64, body: i64) -> i64 {
-    let node: i64 = malloc(40);
+// Layout: tag(0), name(1), type_params(2), params(3), ret_ty(4), body(5)
+fn ast_fn_def(name: i64, type_params: i64, params: i64, ret_ty: i64, body: i64, is_async: i64) -> i64 {
+    let node: i64 = malloc(56);
     store_i64(node, 0, TAG_FN());
     store_ptr(node, 1, name);
-    store_ptr(node, 2, params);
-    store_ptr(node, 3, ret_ty);
-    store_ptr(node, 4, body);
+    store_ptr(node, 2, type_params);  // vec of type param names, or 0 for non-generic
+    store_ptr(node, 3, params);
+    store_ptr(node, 4, ret_ty);
+    store_ptr(node, 5, body);
+    store_i64(node, 6, is_async);     // 1 if async fn, 0 otherwise
     node
+}
+
+fn ast_fn_is_async(node: i64) -> i64 {
+    load_i64(node, 6)
 }
 
 // Item: EnumDef
@@ -264,6 +342,17 @@ fn ast_string(value: i64) -> i64 {
     node
 }
 
+// Expr: FString (interpolated string)
+// Layout: tag(0), parts(1), exprs(2)
+// parts is a vec of string segments, exprs is a vec of expressions
+fn ast_fstring(parts: i64, exprs: i64) -> i64 {
+    let node: i64 = malloc(24);
+    store_i64(node, 0, EXPR_FSTRING());
+    store_ptr(node, 1, parts);
+    store_ptr(node, 2, exprs);
+    node
+}
+
 // Expr: Identifier
 // Layout: tag(0), name(1)
 fn ast_ident(name: i64) -> i64 {
@@ -283,12 +372,17 @@ fn ast_path(segments: i64) -> i64 {
 }
 
 // Expr: Call
-// Layout: tag(0), callee(1), args(2)
+// Layout: tag(0), callee(1), args(2), type_args(3)
 fn ast_call(callee: i64, args: i64) -> i64 {
-    let node: i64 = malloc(24);
+    ast_call_generic(callee, args, 0)
+}
+
+fn ast_call_generic(callee: i64, args: i64, type_args: i64) -> i64 {
+    let node: i64 = malloc(32);
     store_i64(node, 0, EXPR_CALL());
     store_ptr(node, 1, callee);
     store_ptr(node, 2, args);
+    store_ptr(node, 3, type_args);  // vec of type names, or 0 for non-generic
     node
 }
 
@@ -376,13 +470,15 @@ fn ast_block(stmts: i64, result: i64) -> i64 {
 }
 
 // Item: StructDef
-// Layout: tag(0), name(1), fields(2)
+// Layout: tag(0), name(1), type_params(2), fields(3)
+// type_params is vec of type param names, or 0 for non-generic
 // fields is vec of (name, type) pairs
-fn ast_struct_def(name: i64, fields: i64) -> i64 {
-    let node: i64 = malloc(24);
+fn ast_struct_def(name: i64, type_params: i64, fields: i64) -> i64 {
+    let node: i64 = malloc(32);
     store_i64(node, 0, TAG_STRUCT());
     store_ptr(node, 1, name);
-    store_ptr(node, 2, fields);
+    store_ptr(node, 2, type_params);
+    store_ptr(node, 3, fields);
     node
 }
 
@@ -396,14 +492,120 @@ fn ast_impl(type_name: i64, methods: i64) -> i64 {
     node
 }
 
-// Expr: StructLit
-// Layout: tag(0), name(1), field_inits(2)
-// field_inits is vec of (name, expr) pairs
-fn ast_struct_lit(name: i64, field_inits: i64) -> i64 {
+// Item: Trait definition
+// Layout: tag(0), name(1), method_sigs(2)
+fn ast_trait(name: i64, method_sigs: i64) -> i64 {
     let node: i64 = malloc(24);
+    store_i64(node, 0, TAG_TRAIT());
+    store_ptr(node, 1, name);
+    store_ptr(node, 2, method_sigs);  // vec of fn signatures (name, params, ret_ty)
+    node
+}
+
+// Item: Impl Trait for Type
+// Layout: tag(0), trait_name(1), type_name(2), methods(3), assoc_types(4)
+fn ast_impl_trait(trait_name: i64, type_name: i64, methods: i64, assoc_types: i64) -> i64 {
+    let node: i64 = malloc(40);
+    store_i64(node, 0, TAG_IMPL_TRAIT());
+    store_ptr(node, 1, trait_name);
+    store_ptr(node, 2, type_name);
+    store_ptr(node, 3, methods);
+    store_ptr(node, 4, assoc_types);  // vec of (name, type) pairs
+    node
+}
+
+// Associated type mapping
+// Layout: name(0), type(1)
+fn ast_assoc_type(name: i64, ty: i64) -> i64 {
+    let node: i64 = malloc(16);
+    store_ptr(node, 0, name);
+    store_ptr(node, 1, ty);
+    node
+}
+
+// Method signature (for traits)
+// Layout: name(0), params(1), ret_ty(2)
+fn ast_method_sig(name: i64, params: i64, ret_ty: i64) -> i64 {
+    let node: i64 = malloc(24);
+    store_ptr(node, 0, name);
+    store_ptr(node, 1, params);
+    store_ptr(node, 2, ret_ty);
+    node
+}
+
+// Default method (trait method with body)
+// Layout: name(0), params(1), ret_ty(2), fn_def(3)
+fn ast_default_method(name: i64, params: i64, ret_ty: i64, fn_def: i64) -> i64 {
+    let node: i64 = malloc(32);
+    store_ptr(node, 0, name);
+    store_ptr(node, 1, params);
+    store_ptr(node, 2, ret_ty);
+    store_ptr(node, 3, fn_def);
+    node
+}
+
+// Item: Module declaration (mod name;)
+// Layout: tag(0), name(1)
+fn ast_mod(name: i64) -> i64 {
+    let node: i64 = malloc(16);
+    store_i64(node, 0, TAG_MOD());
+    store_ptr(node, 1, name);
+    node
+}
+
+// Item: Use statement (use path::item;)
+// Layout: tag(0), path(1)  -- path is vec of strings
+fn ast_use(path: i64) -> i64 {
+    let node: i64 = malloc(16);
+    store_i64(node, 0, TAG_USE());
+    store_ptr(node, 1, path);
+    node
+}
+
+// Item: Actor definition
+// Layout: tag(0), name(1), state_fields(2), receive_handlers(3), init_fn(4)
+fn ast_actor(name: i64, state_fields: i64, handlers: i64, init_fn: i64) -> i64 {
+    let node: i64 = malloc(40);
+    store_i64(node, 0, TAG_ACTOR());
+    store_ptr(node, 1, name);
+    store_ptr(node, 2, state_fields);
+    store_ptr(node, 3, handlers);
+    store_ptr(node, 4, init_fn);
+    node
+}
+
+// Item: AI Specialist definition
+// Layout: tag(0), name(1), capabilities(2), knowledge(3), methods(4)
+fn ast_specialist(name: i64, config: i64, state_fields: i64, handlers: i64) -> i64 {
+    let node: i64 = malloc(40);
+    store_i64(node, 0, TAG_SPECIALIST());
+    store_ptr(node, 1, name);
+    store_ptr(node, 2, config);
+    store_ptr(node, 3, state_fields);
+    store_ptr(node, 4, handlers);
+    node
+}
+
+// Item: Cognitive Hive definition
+// Layout: tag(0), name(1), specialists(2), routing(3)
+fn ast_hive(name: i64, specialists: i64, routing: i64) -> i64 {
+    let node: i64 = malloc(32);
+    store_i64(node, 0, TAG_HIVE());
+    store_ptr(node, 1, name);
+    store_ptr(node, 2, specialists);
+    store_ptr(node, 3, routing);
+    node
+}
+
+// Expr: StructLit
+// Layout: tag(0), name(1), field_inits(2), type_args(3)
+// field_inits is vec of (name, expr) pairs
+fn ast_struct_lit(name: i64, field_inits: i64, type_args: i64) -> i64 {
+    let node: i64 = malloc(32);
     store_i64(node, 0, EXPR_STRUCT_LIT());
     store_ptr(node, 1, name);
     store_ptr(node, 2, field_inits);
+    store_ptr(node, 3, type_args);
     node
 }
 
@@ -425,6 +627,60 @@ fn ast_method_call(object: i64, method_name: i64, args: i64) -> i64 {
     store_ptr(node, 1, object);
     store_ptr(node, 2, method_name);
     store_ptr(node, 3, args);
+    node
+}
+
+// Expr: Try (? operator)
+// Layout: tag(0), inner(1)
+fn ast_try(inner: i64) -> i64 {
+    let node: i64 = malloc(16);
+    store_i64(node, 0, EXPR_TRY());
+    store_ptr(node, 1, inner);
+    node
+}
+
+// Expr: Await (.await)
+// Layout: tag(0), inner(1)
+fn ast_await(inner: i64) -> i64 {
+    let node: i64 = malloc(16);
+    store_i64(node, 0, EXPR_AWAIT());
+    store_ptr(node, 1, inner);
+    node
+}
+
+// Expr: Yield (yield expr)
+// Layout: tag(0), inner(1)
+fn ast_yield(inner: i64) -> i64 {
+    let node: i64 = malloc(16);
+    store_i64(node, 0, EXPR_YIELD());
+    store_ptr(node, 1, inner);
+    node
+}
+
+// Expr: Spawn (spawn TypeName)
+// Layout: tag(0), type_name(1)
+fn ast_spawn(type_name: i64) -> i64 {
+    let node: i64 = malloc(16);
+    store_i64(node, 0, EXPR_SPAWN());
+    store_ptr(node, 1, type_name);
+    node
+}
+
+// Expr: Array literal [a, b, c]
+// Layout: tag(0), elements(1)
+fn ast_array(elements: i64) -> i64 {
+    let node: i64 = malloc(16);
+    store_i64(node, 0, EXPR_ARRAY());
+    store_ptr(node, 1, elements);
+    node
+}
+
+// Expr: Float literal
+// Layout: tag(0), text(1) - store as string for precision
+fn ast_float(text: i64) -> i64 {
+    let node: i64 = malloc(16);
+    store_i64(node, 0, EXPR_FLOAT());
+    store_ptr(node, 1, text);
     node
 }
 
@@ -461,8 +717,73 @@ fn OP_SHR() -> i64 { 17 }
 fn OP_NEG() -> i64 { 0 }
 fn OP_NOT() -> i64 { 1 }
 
+// Parse f-string content into parts and expressions
+// Content like "Hello {name}, you are {age} years old" becomes:
+// parts = ["Hello ", ", you are ", " years old"]
+// exprs = [ident(name), ident(age)]
+fn parse_fstring(parser: i64, content: i64) -> i64 {
+    let parts: i64 = vec_new();
+    let exprs: i64 = vec_new();
+    let current: i64 = string_from("");
+    let len: i64 = string_len(content);
+    let i: i64 = 0;
+
+    while i < len {
+        let c: i64 = string_char_at(content, i);
+        if c == 123 {  // '{'
+            // Found expression start
+            vec_push(parts, current);
+            current = string_from("");
+            i = i + 1;
+
+            // Extract expression text until '}'
+            let expr_text: i64 = string_from("");
+            let depth: i64 = 1;
+            while i < len {
+                let ec: i64 = string_char_at(content, i);
+                if ec == 123 {
+                    depth = depth + 1;
+                    expr_text = string_concat(expr_text, string_from_char(ec));
+                } else {
+                    if ec == 125 {  // '}'
+                        depth = depth - 1;
+                        if depth == 0 {
+                            i = i + 1;
+                            break;
+                        }
+                        expr_text = string_concat(expr_text, string_from_char(ec));
+                    } else {
+                        expr_text = string_concat(expr_text, string_from_char(ec));
+                    }
+                }
+                i = i + 1;
+            }
+
+            // Parse the expression text
+            // For now, just treat it as an identifier for simple cases
+            // TODO: Full expression parsing inside f-strings
+            vec_push(exprs, ast_ident(expr_text));
+        } else {
+            current = string_concat(current, string_from_char(c));
+            i = i + 1;
+        }
+    }
+
+    // Add remaining part
+    vec_push(parts, current);
+
+    return ast_fstring(parts, exprs);
+}
+
 // Parse primary expression
 fn parse_primary(parser: i64) -> i64 {
+    // Float literal (check before Int to handle properly)
+    if parser_check(parser, TokenKind::Float) {
+        let tok: i64 = parser_advance(parser);
+        let text: i64 = token_text(tok);
+        return ast_float(text);
+    }
+
     // Integer literal
     if parser_check(parser, TokenKind::Int) {
         let tok: i64 = parser_advance(parser);
@@ -488,6 +809,44 @@ fn parse_primary(parser: i64) -> i64 {
         return ast_string(text);
     }
 
+    // FString literal (interpolated string)
+    if parser_check(parser, TokenKind::FString) {
+        let tok: i64 = parser_advance(parser);
+        let text: i64 = token_text(tok);
+        return parse_fstring(parser, text);
+    }
+
+    // Yield expression (for generators)
+    if parser_check(parser, TokenKind::KwYield) {
+        parser_advance(parser);
+        let inner: i64 = parse_expr(parser);
+        return ast_yield(inner);
+    }
+
+    // Spawn expression (spawn TypeName)
+    if parser_check(parser, TokenKind::KwSpawn) {
+        parser_advance(parser);
+        let type_tok: i64 = parser_expect(parser, TokenKind::Ident);
+        let type_name: i64 = token_text(type_tok);
+        return ast_spawn(type_name);
+    }
+
+    // Array literal [a, b, c]
+    if parser_check(parser, TokenKind::LBracket) {
+        parser_advance(parser);
+        let elements: i64 = vec_new();
+        if parser_check(parser, TokenKind::RBracket) == false {
+            let first: i64 = parse_expr(parser);
+            vec_push(elements, first);
+            while parser_match(parser, TokenKind::Comma) {
+                let elem: i64 = parse_expr(parser);
+                vec_push(elements, elem);
+            }
+        }
+        parser_expect(parser, TokenKind::RBracket);
+        return ast_array(elements);
+    }
+
     // 'self' keyword as identifier
     if parser_check(parser, TokenKind::KwSelf) {
         parser_advance(parser);
@@ -499,19 +858,78 @@ fn parse_primary(parser: i64) -> i64 {
         let tok: i64 = parser_advance(parser);
         let name: i64 = token_text(tok);
 
-        // Check for path (::)
+        // Check for turbofish syntax: foo::<T1, T2>(args)
+        // Must check before path handling because :: followed by < is turbofish, not path
+        let call_type_args: i64 = 0;
         if parser_check(parser, TokenKind::DoubleColon) {
-            let segments: i64 = vec_new();
-            vec_push(segments, name);
-
-            while parser_match(parser, TokenKind::DoubleColon) {
+            // Peek ahead: if next is < then it's turbofish, otherwise it's a path
+            // We need to consume :: and check
+            parser_advance(parser);
+            if parser_check(parser, TokenKind::Lt) {
+                // Turbofish!
+                parser_advance(parser);
+                call_type_args = vec_new();
+                // Parse type arguments (can be Ident or Int for const generics)
+                if parser_check(parser, TokenKind::Ident) {
+                    let type_tok: i64 = parser_advance(parser);
+                    vec_push(call_type_args, token_text(type_tok));
+                } else if parser_check(parser, TokenKind::Int) {
+                    let type_tok: i64 = parser_advance(parser);
+                    vec_push(call_type_args, token_text(type_tok));
+                } else {
+                    parser_add_error(parser, "Expected type or const value");
+                }
+                while parser_match(parser, TokenKind::Comma) {
+                    if parser_check(parser, TokenKind::Ident) {
+                        let next_type: i64 = parser_advance(parser);
+                        vec_push(call_type_args, token_text(next_type));
+                    } else if parser_check(parser, TokenKind::Int) {
+                        let next_type: i64 = parser_advance(parser);
+                        vec_push(call_type_args, token_text(next_type));
+                    } else {
+                        parser_add_error(parser, "Expected type or const value");
+                    }
+                }
+                parser_expect(parser, TokenKind::Gt);
+            } else {
+                // Path - could be Type::Variant or Type::function()
                 if parser_check(parser, TokenKind::Ident) {
                     let seg_tok: i64 = parser_advance(parser);
                     let seg_name: i64 = token_text(seg_tok);
+
+                    // Check if followed by ( for associated function call
+                    if parser_check(parser, TokenKind::LParen) {
+                        // Type::function(args) - mangle to Type_function
+                        let mangled_name: i64 = string_concat(name, "_");
+                        mangled_name = string_concat(mangled_name, seg_name);
+                        parser_advance(parser);  // consume (
+                        let args: i64 = vec_new();
+                        if parser_check(parser, TokenKind::RParen) == false {
+                            let first_arg: i64 = parse_expr(parser);
+                            vec_push(args, first_arg);
+                            while parser_match(parser, TokenKind::Comma) {
+                                let arg: i64 = parse_expr(parser);
+                                vec_push(args, arg);
+                            }
+                        }
+                        parser_expect(parser, TokenKind::RParen);
+                        return ast_call(ast_ident(mangled_name), args);
+                    }
+
+                    // Path: Name::Variant (possibly with more segments)
+                    let segments: i64 = vec_new();
+                    vec_push(segments, name);
                     vec_push(segments, seg_name);
+
+                    while parser_match(parser, TokenKind::DoubleColon) {
+                        if parser_check(parser, TokenKind::Ident) {
+                            let next_seg: i64 = parser_advance(parser);
+                            vec_push(segments, token_text(next_seg));
+                        }
+                    }
+                    return ast_path(segments);
                 }
             }
-            return ast_path(segments);
         }
 
         // Check for function call
@@ -532,13 +950,55 @@ fn parse_primary(parser: i64) -> i64 {
             }
 
             parser_expect(parser, TokenKind::RParen);
-            return ast_call(ast_ident(name), args);
+            return ast_call_generic(ast_ident(name), args, call_type_args);
         }
 
-        // Struct literal syntax disabled for now - conflicts with if/while blocks
-        // The ambiguity is: `x { field: val }` vs `if x { ... }`
-        // Both start with `Ident {` but have different meanings.
-        // TODO: Re-enable with better disambiguation (look ahead for Ident:)
+        // Struct literal syntax: Name { field: value, ... }
+        // Disambiguate from `if cond { ... }` by checking if { is followed by:
+        // - `}` (empty struct literal)
+        // - `Ident :` (field initialization)
+        if parser_check(parser, TokenKind::LBrace) {
+            // Look ahead to see if this is a struct literal
+            let is_struct_lit: bool = false;
+
+            // Check for empty struct: Name { }
+            if parser_peek_check(parser, 1, TokenKind::RBrace) {
+                is_struct_lit = true;
+            }
+            // Check for field init: Name { field: value }
+            if parser_peek_check(parser, 1, TokenKind::Ident) {
+                if parser_peek_check(parser, 2, TokenKind::Colon) {
+                    is_struct_lit = true;
+                }
+            }
+
+            if is_struct_lit {
+                parser_advance(parser);  // consume {
+                let field_inits: i64 = vec_new();
+
+                while parser_check(parser, TokenKind::RBrace) == false {
+                    // Parse field: name: value
+                    let field_name_tok: i64 = parser_expect(parser, TokenKind::Ident);
+                    let field_name: i64 = token_text(field_name_tok);
+                    parser_expect(parser, TokenKind::Colon);
+                    let field_value: i64 = parse_expr(parser);
+
+                    // Create field init pair (name, value)
+                    let field_init: i64 = malloc(16);
+                    store_ptr(field_init, 0, field_name);
+                    store_ptr(field_init, 1, field_value);
+                    vec_push(field_inits, field_init);
+
+                    // Optional comma
+                    if parser_check(parser, TokenKind::RBrace) == false {
+                        parser_match(parser, TokenKind::Comma);
+                    }
+                }
+
+                parser_expect(parser, TokenKind::RBrace);
+                return ast_struct_lit(name, field_inits, call_type_args);
+            }
+        }
 
         return ast_ident(name);
     }
@@ -582,40 +1042,51 @@ fn parse_primary(parser: i64) -> i64 {
     0
 }
 
-// Parse postfix expression (field access: expr.field, method call: expr.method(args))
+// Parse postfix expression (field access: expr.field, method call: expr.method(args), try: expr?, await: expr.await)
 fn parse_postfix(parser: i64) -> i64 {
     let expr: i64 = parse_primary(parser);
 
     while true {
         if parser_match(parser, TokenKind::Dot) {
-            let name_tok: i64 = parser_expect(parser, TokenKind::Ident);
-            let name: i64 = token_text(name_tok);
-
-            // Check if this is a method call (followed by '(')
-            if parser_check(parser, TokenKind::LParen) {
+            // Check for .await keyword
+            if parser_check(parser, TokenKind::KwAwait) {
                 parser_advance(parser);
-                let args: i64 = vec_new();
-
-                if parser_check(parser, TokenKind::RParen) {
-                    // Empty args
-                } else {
-                    let first_arg: i64 = parse_expr(parser);
-                    vec_push(args, first_arg);
-
-                    while parser_match(parser, TokenKind::Comma) {
-                        let arg: i64 = parse_expr(parser);
-                        vec_push(args, arg);
-                    }
-                }
-
-                parser_expect(parser, TokenKind::RParen);
-                expr = ast_method_call(expr, name, args);
+                expr = ast_await(expr);
             } else {
-                // Field access
-                expr = ast_field_access(expr, name);
+                let name_tok: i64 = parser_expect(parser, TokenKind::Ident);
+                let name: i64 = token_text(name_tok);
+
+                // Check if this is a method call (followed by '(')
+                if parser_check(parser, TokenKind::LParen) {
+                    parser_advance(parser);
+                    let args: i64 = vec_new();
+
+                    if parser_check(parser, TokenKind::RParen) {
+                        // Empty args
+                    } else {
+                        let first_arg: i64 = parse_expr(parser);
+                        vec_push(args, first_arg);
+
+                        while parser_match(parser, TokenKind::Comma) {
+                            let arg: i64 = parse_expr(parser);
+                            vec_push(args, arg);
+                        }
+                    }
+
+                    parser_expect(parser, TokenKind::RParen);
+                    expr = ast_method_call(expr, name, args);
+                } else {
+                    // Field access
+                    expr = ast_field_access(expr, name);
+                }
             }
         } else {
-            return expr;
+            // Try operator: expr?
+            if parser_match(parser, TokenKind::Question) {
+                expr = ast_try(expr);
+            } else {
+                return expr;
+            }
         }
     }
 
@@ -813,63 +1284,89 @@ fn parse_block(parser: i64) -> i64 {
             let stmt: i64 = parse_let(parser);
             vec_push(stmts, stmt);
         } else {
-            if parser_check(parser, TokenKind::KwReturn) {
-                let stmt: i64 = parse_return(parser);
-                vec_push(stmts, stmt);
-            } else {
-                if parser_check(parser, TokenKind::KwBreak) {
-                    parser_advance(parser);
-                    parser_expect(parser, TokenKind::Semi);
-                    let stmt: i64 = ast_break();
-                    vec_push(stmts, stmt);
-                } else {
-                    if parser_check(parser, TokenKind::KwContinue) {
-                        parser_advance(parser);
-                        parser_expect(parser, TokenKind::Semi);
-                        let stmt: i64 = ast_continue();
-                        vec_push(stmts, stmt);
-                    } else {
-                // Expression - could be statement, assignment, or result
-                let expr: i64 = parse_expr(parser);
+        if parser_check(parser, TokenKind::KwVar) {
+            // var is like let but for mutable bindings
+            let stmt: i64 = parse_var(parser);
+            vec_push(stmts, stmt);
+        } else {
+        if parser_check(parser, TokenKind::KwReturn) {
+            let stmt: i64 = parse_return(parser);
+            vec_push(stmts, stmt);
+        } else {
+        if parser_check(parser, TokenKind::KwBreak) {
+            parser_advance(parser);
+            parser_expect(parser, TokenKind::Semi);
+            let stmt: i64 = ast_break();
+            vec_push(stmts, stmt);
+        } else {
+        if parser_check(parser, TokenKind::KwContinue) {
+            parser_advance(parser);
+            parser_expect(parser, TokenKind::Semi);
+            let stmt: i64 = ast_continue();
+            vec_push(stmts, stmt);
+        } else {
+            // Expression - could be statement, assignment, or result
+            let expr: i64 = parse_expr(parser);
 
-                // Check for assignment: ident = expr;
-                if parser_match(parser, TokenKind::Eq) {
-                    // This is an assignment statement
-                    // expr should be an identifier
-                    let expr_tag: i64 = load_i64(expr, 0);
-                    if expr_tag == EXPR_IDENT() {
-                        let name: i64 = load_ptr(expr, 1);
-                        let value: i64 = parse_expr(parser);
-                        parser_match(parser, TokenKind::Semi);
-                        vec_push(stmts, ast_assign(name, value));
-                    } else {
-                        // Invalid assignment target, treat as expression
-                        parser_match(parser, TokenKind::Semi);
-                        vec_push(stmts, ast_expr_stmt(expr));
-                    }
+            // Check for assignment: ident = expr;
+            if parser_match(parser, TokenKind::Eq) {
+                // This is an assignment statement
+                // expr should be an identifier
+                let expr_tag: i64 = load_i64(expr, 0);
+                if expr_tag == EXPR_IDENT() {
+                    let name: i64 = load_ptr(expr, 1);
+                    let value: i64 = parse_expr(parser);
+                    parser_match(parser, TokenKind::Semi);
+                    vec_push(stmts, ast_assign(name, value));
                 } else {
-                    if parser_match(parser, TokenKind::Semi) {
-                        // Expression statement with explicit semicolon
-                        vec_push(stmts, ast_expr_stmt(expr));
-                    } else {
-                        // No semicolon - check if more statements follow
-                        if parser_check(parser, TokenKind::RBrace) {
-                            // Next is }, so this is the result expression
-                            result = expr;
-                        } else {
-                            // More statements follow, so this is an implicit statement
-                            // (if/while don't need semicolons when followed by more code)
-                            vec_push(stmts, ast_expr_stmt(expr));
-                        }
-                    }
+                    // Invalid assignment target, treat as expression
+                    parser_match(parser, TokenKind::Semi);
+                    vec_push(stmts, ast_expr_stmt(expr));
                 }
+            } else {
+                if parser_match(parser, TokenKind::Semi) {
+                    // Expression statement with explicit semicolon
+                    vec_push(stmts, ast_expr_stmt(expr));
+                } else {
+                    // No semicolon - check if more statements follow
+                    if parser_check(parser, TokenKind::RBrace) {
+                        // Next is }, so this is the result expression
+                        result = expr;
+                    } else {
+                        // More statements follow, so this is an implicit statement
+                        // (if/while don't need semicolons when followed by more code)
+                        vec_push(stmts, ast_expr_stmt(expr));
                     }
                 }
             }
         }
+        }
+        }
+        }
+        }
     }
 
     ast_block(stmts, result)
+}
+
+// Parse var statement (mutable binding)
+fn parse_var(parser: i64) -> i64 {
+    parser_expect(parser, TokenKind::KwVar);
+    let name_tok: i64 = parser_expect(parser, TokenKind::Ident);
+    let name: i64 = token_text(name_tok);
+
+    let ty: i64 = 0;
+    if parser_match(parser, TokenKind::Colon) {
+        ty = parse_type(parser);
+    }
+
+    let init_expr: i64 = 0;
+    if parser_match(parser, TokenKind::Eq) {
+        init_expr = parse_expr(parser);
+    }
+
+    parser_expect(parser, TokenKind::Semi);
+    ast_let(name, ty, init_expr)
 }
 
 // Parse if expression
@@ -993,10 +1490,67 @@ fn parse_return(parser: i64) -> i64 {
     ast_return(expr)
 }
 
-// Parse type (simple: just identifier for now)
+// Parse type: handles simple idents, Self, Self::AssocType, and dyn Trait
 fn parse_type(parser: i64) -> i64 {
+    // Check for dyn keyword (dynamic trait object)
+    if parser_check(parser, TokenKind::KwDyn) {
+        parser_advance(parser);  // consume 'dyn'
+        let trait_tok: i64 = parser_expect(parser, TokenKind::Ident);
+        let trait_name: i64 = token_text(trait_tok);
+        // Return "dyn:TraitName" as the type string - will be resolved in codegen
+        return string_concat(string_from("dyn:"), trait_name);
+    }
+    // Check for Self keyword
+    if parser_check(parser, TokenKind::KwSelf) {
+        parser_advance(parser);
+        // Check for Self::AssocType syntax
+        if parser_check(parser, TokenKind::DoubleColon) {
+            parser_advance(parser);  // consume ::
+            let assoc_tok: i64 = parser_expect(parser, TokenKind::Ident);
+            let assoc_name: i64 = token_text(assoc_tok);
+            // Return "Self::TypeName" as the type string - will be resolved in codegen
+            return string_concat(string_from("Self::"), assoc_name);
+        }
+        // Just Self - refers to the implementing type
+        return string_from("Self");
+    }
+    // Regular identifier type
     let tok: i64 = parser_expect(parser, TokenKind::Ident);
-    token_text(tok)
+    let type_name: i64 = token_text(tok);
+
+    // Phase 36: Handle generic type arguments like Option<i64>, Result<T, E>, Vec<T>
+    if parser_check(parser, TokenKind::Lt) {
+        parser_advance(parser);  // consume <
+        let type_args: i64 = vec_new();
+
+        // First type argument
+        let first_arg: i64 = parse_type(parser);
+        vec_push(type_args, first_arg);
+
+        // Additional type arguments
+        while parser_match(parser, TokenKind::Comma) {
+            let arg: i64 = parse_type(parser);
+            vec_push(type_args, arg);
+        }
+
+        parser_expect(parser, TokenKind::Gt);
+
+        // Build type string: Name<Arg1, Arg2, ...>
+        let result: i64 = string_concat(type_name, string_from("<"));
+        let n: i64 = vec_len(type_args);
+        let i: i64 = 0;
+        while i < n {
+            if i > 0 {
+                result = string_concat(result, string_from(", "));
+            }
+            result = string_concat(result, vec_get(type_args, i));
+            i = i + 1;
+        }
+        result = string_concat(result, string_from(">"));
+        return result;
+    }
+
+    type_name
 }
 
 // Parse function parameters
@@ -1011,29 +1565,45 @@ fn parse_params(parser: i64) -> i64 {
 
     // First param - accept either Ident or 'self' keyword
     let name: i64 = 0;
+    let ty: i64 = 0;
     if parser_check(parser, TokenKind::KwSelf) {
         parser_advance(parser);
         name = string_from("self");
+        // Check if self has explicit type (self: Type) or implicit (bare self)
+        if parser_check(parser, TokenKind::Colon) {
+            parser_advance(parser);
+            ty = parse_type(parser);
+        } else {
+            // Bare self - type is implicit (Self)
+            ty = string_from("Self");
+        }
     } else {
         let name_tok: i64 = parser_expect(parser, TokenKind::Ident);
         name = token_text(name_tok);
+        parser_expect(parser, TokenKind::Colon);
+        ty = parse_type(parser);
     }
-    parser_expect(parser, TokenKind::Colon);
-    let ty: i64 = parse_type(parser);
     vec_push(params, ast_param(name, ty));
 
     // More params
     while parser_match(parser, TokenKind::Comma) {
         let pname: i64 = 0;
+        let pty: i64 = 0;
         if parser_check(parser, TokenKind::KwSelf) {
             parser_advance(parser);
             pname = string_from("self");
+            if parser_check(parser, TokenKind::Colon) {
+                parser_advance(parser);
+                pty = parse_type(parser);
+            } else {
+                pty = string_from("Self");
+            }
         } else {
             let pname_tok: i64 = parser_expect(parser, TokenKind::Ident);
             pname = token_text(pname_tok);
+            parser_expect(parser, TokenKind::Colon);
+            pty = parse_type(parser);
         }
-        parser_expect(parser, TokenKind::Colon);
-        let pty: i64 = parse_type(parser);
         vec_push(params, ast_param(pname, pty));
     }
 
@@ -1041,11 +1611,96 @@ fn parse_params(parser: i64) -> i64 {
     params
 }
 
-// Parse function definition
-fn parse_fn(parser: i64) -> i64 {
+// Parse type parameters: <T, U, V> or <T: Trait, U: Bound>
+// Returns a vec of type param strings. For bounded params, stores as "name:bound"
+// For const params, stores as "const:name"
+fn parse_type_params(parser: i64) -> i64 {
+    if parser_check(parser, TokenKind::Lt) == false {
+        return 0;  // No type params
+    }
+    parser_advance(parser);  // consume <
+
+    let type_params: i64 = vec_new();
+
+    // First type param (may be const or type with optional bound)
+    if parser_check(parser, TokenKind::KwConst) {
+        // const N: Type
+        parser_advance(parser);
+        let tok: i64 = parser_expect(parser, TokenKind::Ident);
+        parser_expect(parser, TokenKind::Colon);
+        parse_type(parser);  // Skip the type for now
+        // Store with "const:" prefix to distinguish
+        vec_push(type_params, string_concat(string_from("const:"), token_text(tok)));
+    } else {
+        if parser_check(parser, TokenKind::Ident) {
+            let tok: i64 = parser_advance(parser);
+            let param_name: i64 = token_text(tok);
+            // Check for trait bound: T: Trait
+            if parser_match(parser, TokenKind::Colon) {
+                if parser_check(parser, TokenKind::Ident) {
+                    let bound_tok: i64 = parser_advance(parser);
+                    // Store as "T:Trait" - type param with bound
+                    param_name = string_concat(param_name, ":");
+                    param_name = string_concat(param_name, token_text(bound_tok));
+                    // Handle additional bounds with + (e.g., T: A + B)
+                    while parser_match(parser, TokenKind::Plus) {
+                        if parser_check(parser, TokenKind::Ident) {
+                            let extra_bound: i64 = parser_advance(parser);
+                            param_name = string_concat(param_name, "+");
+                            param_name = string_concat(param_name, token_text(extra_bound));
+                        }
+                    }
+                }
+            }
+            vec_push(type_params, param_name);
+        }
+    }
+
+    // Additional type params
+    while parser_match(parser, TokenKind::Comma) {
+        if parser_check(parser, TokenKind::KwConst) {
+            parser_advance(parser);
+            let tok: i64 = parser_expect(parser, TokenKind::Ident);
+            parser_expect(parser, TokenKind::Colon);
+            parse_type(parser);
+            vec_push(type_params, string_concat(string_from("const:"), token_text(tok)));
+        } else {
+            if parser_check(parser, TokenKind::Ident) {
+                let tok: i64 = parser_advance(parser);
+                let param_name: i64 = token_text(tok);
+                // Check for trait bound
+                if parser_match(parser, TokenKind::Colon) {
+                    if parser_check(parser, TokenKind::Ident) {
+                        let bound_tok: i64 = parser_advance(parser);
+                        param_name = string_concat(param_name, ":");
+                        param_name = string_concat(param_name, token_text(bound_tok));
+                        while parser_match(parser, TokenKind::Plus) {
+                            if parser_check(parser, TokenKind::Ident) {
+                                let extra_bound: i64 = parser_advance(parser);
+                                param_name = string_concat(param_name, "+");
+                                param_name = string_concat(param_name, token_text(extra_bound));
+                            }
+                        }
+                    }
+                }
+                vec_push(type_params, param_name);
+            }
+        }
+    }
+
+    parser_expect(parser, TokenKind::Gt);
+    type_params
+}
+
+// Parse function definition (is_async: 1 if preceded by async keyword)
+fn parse_fn(parser: i64, is_async: i64) -> i64 {
     parser_expect(parser, TokenKind::KwFn);
     let name_tok: i64 = parser_expect(parser, TokenKind::Ident);
     let name: i64 = token_text(name_tok);
+
+    // Parse optional type parameters
+    let type_params: i64 = parse_type_params(parser);
+
     let params: i64 = parse_params(parser);
 
     let ret_ty: i64 = 0;
@@ -1054,7 +1709,7 @@ fn parse_fn(parser: i64) -> i64 {
     }
 
     let body: i64 = parse_block(parser);
-    ast_fn_def(name, params, ret_ty, body)
+    ast_fn_def(name, type_params, params, ret_ty, body, is_async)
 }
 
 // Parse enum definition
@@ -1083,11 +1738,15 @@ fn parse_enum(parser: i64) -> i64 {
     ast_enum_def(name, variants)
 }
 
-// Parse struct definition
+// Parse struct definition with optional type parameters
+// struct Name<T, U> { field: T, ... }
 fn parse_struct(parser: i64) -> i64 {
     parser_expect(parser, TokenKind::KwStruct);
     let name_tok: i64 = parser_expect(parser, TokenKind::Ident);
     let name: i64 = token_text(name_tok);
+
+    // Parse optional type parameters
+    let type_params: i64 = parse_type_params(parser);
 
     let fields: i64 = vec_new();
     parser_expect(parser, TokenKind::LBrace);
@@ -1095,7 +1754,7 @@ fn parse_struct(parser: i64) -> i64 {
     while true {
         if parser_check(parser, TokenKind::RBrace) {
             parser_advance(parser);
-            return ast_struct_def(name, fields);
+            return ast_struct_def(name, type_params, fields);
         }
 
         // Parse field: name: Type
@@ -1114,35 +1773,378 @@ fn parse_struct(parser: i64) -> i64 {
         parser_match(parser, TokenKind::Comma);
     }
 
-    ast_struct_def(name, fields)
+    ast_struct_def(name, type_params, fields)
 }
 
-// Parse impl block: impl TypeName { fn ... fn ... }
+// Parse trait definition: trait Name { type AssocType; fn method(...) -> Type; }
+fn parse_trait(parser: i64) -> i64 {
+    parser_expect(parser, TokenKind::KwTrait);
+    let name_tok: i64 = parser_expect(parser, TokenKind::Ident);
+    let name: i64 = token_text(name_tok);
+
+    let method_sigs: i64 = vec_new();
+    parser_expect(parser, TokenKind::LBrace);
+
+    while true {
+        if parser_check(parser, TokenKind::RBrace) {
+            parser_advance(parser);
+            return ast_trait(name, method_sigs);
+        }
+
+        // Check for associated type: type Name;
+        if parser_check(parser, TokenKind::KwType) {
+            parser_advance(parser);
+            let type_name_tok: i64 = parser_expect(parser, TokenKind::Ident);
+            parser_expect(parser, TokenKind::Semi);
+            // Store associated type as a method sig with null params (to distinguish)
+            vec_push(method_sigs, ast_method_sig(token_text(type_name_tok), 0, 0));
+        } else {
+            // Parse method signature: fn name(params) -> Type;
+            // OR default method: fn name(params) -> Type { body }
+            let is_async: i64 = 0;
+            if parser_check(parser, TokenKind::KwAsync) {
+                parser_advance(parser);
+                is_async = 1;
+            }
+            parser_expect(parser, TokenKind::KwFn);
+            let method_name_tok: i64 = parser_expect(parser, TokenKind::Ident);
+            let method_name: i64 = token_text(method_name_tok);
+            let params: i64 = parse_params(parser);
+
+            let ret_ty: i64 = 0;
+            if parser_match(parser, TokenKind::Arrow) {
+                ret_ty = parse_type(parser);
+            }
+
+            // Check for semicolon (signature only) or brace (default impl)
+            if parser_check(parser, TokenKind::Semi) {
+                parser_advance(parser);
+                vec_push(method_sigs, ast_method_sig(method_name, params, ret_ty));
+            } else if parser_check(parser, TokenKind::LBrace) {
+                // Default method implementation - parse full function
+                let body: i64 = parse_block(parser);
+                let default_fn: i64 = ast_fn_def(method_name, 0, params, ret_ty, body, is_async);
+                // Store default method (with body field set)
+                vec_push(method_sigs, ast_default_method(method_name, params, ret_ty, default_fn));
+            }
+        }
+    }
+
+    ast_trait(name, method_sigs)
+}
+
+// Parse impl block: impl TypeName { ... } or impl TraitName for TypeName { ... }
 fn parse_impl(parser: i64) -> i64 {
     parser_expect(parser, TokenKind::KwImpl);
-    let type_name_tok: i64 = parser_expect(parser, TokenKind::Ident);
-    let type_name: i64 = token_text(type_name_tok);
+    let first_name_tok: i64 = parser_expect(parser, TokenKind::Ident);
+    let first_name: i64 = token_text(first_name_tok);
 
+    // Check if this is "impl Trait for Type" syntax
+    if parser_check(parser, TokenKind::KwFor) {
+        parser_advance(parser);  // consume 'for'
+        let type_name_tok: i64 = parser_expect(parser, TokenKind::Ident);
+        let type_name: i64 = token_text(type_name_tok);
+
+        let methods: i64 = vec_new();
+        let assoc_types: i64 = vec_new();
+        parser_expect(parser, TokenKind::LBrace);
+
+        while parser_check(parser, TokenKind::RBrace) == false {
+            parser_match(parser, TokenKind::KwPub);
+            // Check for associated type definition: type Name = Type;
+            if parser_check(parser, TokenKind::KwType) {
+                parser_advance(parser);
+                let assoc_name_tok: i64 = parser_expect(parser, TokenKind::Ident);
+                let assoc_name: i64 = token_text(assoc_name_tok);
+                parser_expect(parser, TokenKind::Eq);     // =
+                let assoc_ty: i64 = parse_type(parser);   // Type
+                parser_expect(parser, TokenKind::Semi);   // ;
+                // Store the associated type mapping
+                vec_push(assoc_types, ast_assoc_type(assoc_name, assoc_ty));
+            } else {
+                // Check for async fn
+                let is_async: i64 = 0;
+                if parser_check(parser, TokenKind::KwAsync) {
+                    parser_advance(parser);
+                    is_async = 1;
+                }
+                let method: i64 = parse_fn(parser, is_async);
+                vec_push(methods, method);
+            }
+        }
+        parser_advance(parser);  // consume }
+
+        return ast_impl_trait(first_name, type_name, methods, assoc_types);
+    }
+
+    // Regular impl block: impl TypeName { ... }
     let methods: i64 = vec_new();
     parser_expect(parser, TokenKind::LBrace);
 
     while true {
         if parser_check(parser, TokenKind::RBrace) {
             parser_advance(parser);
-            return ast_impl(type_name, methods);
+            return ast_impl(first_name, methods);
         }
 
         // Skip pub keyword if present
         parser_match(parser, TokenKind::KwPub);
 
+        // Check for async fn
+        let is_async: i64 = 0;
+        if parser_check(parser, TokenKind::KwAsync) {
+            parser_advance(parser);
+            is_async = 1;
+        }
+
         // Parse method (must be fn)
         if parser_check(parser, TokenKind::KwFn) {
-            let method: i64 = parse_fn(parser);
+            let method: i64 = parse_fn(parser, is_async);
             vec_push(methods, method);
         }
     }
 
-    ast_impl(type_name, methods)
+    ast_impl(first_name, methods)
+}
+
+// Parse mod declaration: mod name;
+fn parse_mod(parser: i64) -> i64 {
+    parser_expect(parser, TokenKind::KwMod);
+    let name_tok: i64 = parser_expect(parser, TokenKind::Ident);
+    let name: i64 = token_text(name_tok);
+    parser_expect(parser, TokenKind::Semi);
+    ast_mod(name)
+}
+
+// Parse use statement: use name::item;
+fn parse_use(parser: i64) -> i64 {
+    parser_expect(parser, TokenKind::KwUse);
+    let path: i64 = vec_new();
+
+    // Parse first segment
+    let name_tok: i64 = parser_expect(parser, TokenKind::Ident);
+    vec_push(path, token_text(name_tok));
+
+    // Parse remaining segments (::name)
+    while parser_match(parser, TokenKind::DoubleColon) {
+        let seg_tok: i64 = parser_expect(parser, TokenKind::Ident);
+        vec_push(path, token_text(seg_tok));
+    }
+
+    parser_expect(parser, TokenKind::Semi);
+    ast_use(path)
+}
+
+// Parse actor definition
+// actor Name { var field: Type = init, init(params) { }, receive MsgName(params) -> RetType { } }
+fn parse_actor(parser: i64) -> i64 {
+    parser_expect(parser, TokenKind::KwActor);
+    let name_tok: i64 = parser_expect(parser, TokenKind::Ident);
+    let name: i64 = token_text(name_tok);
+    parser_expect(parser, TokenKind::LBrace);
+
+    let state_fields: i64 = vec_new();
+    let handlers: i64 = vec_new();
+    let init_fn: i64 = 0;
+
+    while parser_check(parser, TokenKind::RBrace) == false {
+        if parser_at_end(parser) {
+            parser_add_error(parser, string_from("Unexpected end of file in actor"));
+            return 0;
+        }
+
+        // Check for var (state variable)
+        if parser_check(parser, TokenKind::KwVar) {
+            parser_advance(parser);
+            let field_tok: i64 = parser_expect(parser, TokenKind::Ident);
+            let field_name: i64 = token_text(field_tok);
+            parser_expect(parser, TokenKind::Colon);
+            let field_type: i64 = parse_type(parser);
+            let init_val: i64 = 0;
+            if parser_check(parser, TokenKind::Eq) {
+                parser_advance(parser);
+                init_val = parse_expr(parser);
+            }
+            let field: i64 = malloc(24);
+            store_ptr(field, 0, field_name);
+            store_ptr(field, 1, field_type);
+            store_ptr(field, 2, init_val);
+            vec_push(state_fields, field);
+            parser_match(parser, TokenKind::Semi);
+        } else {
+        // Check for init block
+        if parser_check(parser, TokenKind::KwInit) {
+            parser_advance(parser);
+            // parse_params handles LParen and RParen internally
+            let init_params: i64 = parse_params(parser);
+            let body: i64 = parse_block(parser);
+            let init_node: i64 = malloc(16);
+            store_ptr(init_node, 0, init_params);
+            store_ptr(init_node, 1, body);
+            init_fn = init_node;
+        } else {
+        // Check for receive handler
+        if parser_check(parser, TokenKind::KwReceive) {
+            parser_advance(parser);
+            let msg_tok: i64 = parser_expect(parser, TokenKind::Ident);
+            let msg_name: i64 = token_text(msg_tok);
+            let params: i64 = vec_new();
+            if parser_check(parser, TokenKind::LParen) {
+                // parse_params handles LParen and RParen internally
+                params = parse_params(parser);
+            }
+            let ret_type: i64 = string_from("void");
+            if parser_check(parser, TokenKind::Arrow) {
+                parser_advance(parser);
+                ret_type = parse_type(parser);
+            }
+            let body: i64 = parse_block(parser);
+            let handler: i64 = malloc(32);
+            store_ptr(handler, 0, msg_name);
+            store_ptr(handler, 1, params);
+            store_ptr(handler, 2, ret_type);
+            store_ptr(handler, 3, body);
+            vec_push(handlers, handler);
+        } else {
+            parser_add_error(parser, string_from("Unexpected token in actor"));
+            parser_advance(parser);
+        }
+        }
+        }
+    }
+
+    parser_expect(parser, TokenKind::RBrace);
+    ast_actor(name, state_fields, handlers, init_fn)
+}
+
+// Parse specialist definition (like actor but with model config)
+// specialist Name { model: "str", var field: Type = init, receive MsgName(params) -> RetType { } }
+fn parse_specialist(parser: i64) -> i64 {
+    parser_expect(parser, TokenKind::KwSpecialist);
+    let name_tok: i64 = parser_expect(parser, TokenKind::Ident);
+    let name: i64 = token_text(name_tok);
+    parser_expect(parser, TokenKind::LBrace);
+
+    let config: i64 = vec_new();  // model config key-value pairs
+    let state_fields: i64 = vec_new();
+    let handlers: i64 = vec_new();
+
+    while parser_check(parser, TokenKind::RBrace) == false {
+        if parser_at_end(parser) {
+            parser_add_error(parser, string_from("Unexpected end of file in specialist"));
+            return 0;
+        }
+
+        // Check for var (state variable)
+        if parser_check(parser, TokenKind::KwVar) {
+            parser_advance(parser);
+            let field_tok: i64 = parser_expect(parser, TokenKind::Ident);
+            let field_name: i64 = token_text(field_tok);
+            parser_expect(parser, TokenKind::Colon);
+            let field_type: i64 = parse_type(parser);
+            let init_val: i64 = 0;
+            if parser_check(parser, TokenKind::Eq) {
+                parser_advance(parser);
+                init_val = parse_expr(parser);
+            }
+            let field: i64 = malloc(24);
+            store_ptr(field, 0, field_name);
+            store_ptr(field, 1, field_type);
+            store_ptr(field, 2, init_val);
+            vec_push(state_fields, field);
+            parser_match(parser, TokenKind::Semi);
+        } else {
+        // Check for receive handler
+        if parser_check(parser, TokenKind::KwReceive) {
+            parser_advance(parser);
+            let msg_tok: i64 = parser_expect(parser, TokenKind::Ident);
+            let msg_name: i64 = token_text(msg_tok);
+            let params: i64 = vec_new();
+            if parser_check(parser, TokenKind::LParen) {
+                // parse_params handles LParen and RParen internally
+                params = parse_params(parser);
+            }
+            let ret_type: i64 = string_from("void");
+            if parser_check(parser, TokenKind::Arrow) {
+                parser_advance(parser);
+                ret_type = parse_type(parser);
+            }
+            let body: i64 = parse_block(parser);
+            let handler: i64 = malloc(32);
+            store_ptr(handler, 0, msg_name);
+            store_ptr(handler, 1, params);
+            store_ptr(handler, 2, ret_type);
+            store_ptr(handler, 3, body);
+            vec_push(handlers, handler);
+        } else {
+            // Config property: name: value (string or number)
+            let prop_tok: i64 = parser_expect(parser, TokenKind::Ident);
+            let prop_name: i64 = token_text(prop_tok);
+            parser_expect(parser, TokenKind::Colon);
+            let prop_val: i64 = parse_expr(parser);
+            let prop: i64 = malloc(16);
+            store_ptr(prop, 0, prop_name);
+            store_ptr(prop, 1, prop_val);
+            vec_push(config, prop);
+            parser_match(parser, TokenKind::Comma);
+        }
+        }
+    }
+
+    parser_expect(parser, TokenKind::RBrace);
+    ast_specialist(name, config, state_fields, handlers)
+}
+
+// Parse hive definition
+// hive Name { specialists: [...], routing: { ... } }
+fn parse_hive(parser: i64) -> i64 {
+    parser_expect(parser, TokenKind::KwHive);
+    let name_tok: i64 = parser_expect(parser, TokenKind::Ident);
+    let name: i64 = token_text(name_tok);
+    parser_expect(parser, TokenKind::LBrace);
+
+    let specialists: i64 = vec_new();
+    let routing: i64 = vec_new();
+
+    while parser_check(parser, TokenKind::RBrace) == false {
+        if parser_at_end(parser) {
+            parser_add_error(parser, string_from("Unexpected end of file in hive"));
+            return 0;
+        }
+
+        let prop_tok: i64 = parser_expect(parser, TokenKind::Ident);
+        let prop_name: i64 = token_text(prop_tok);
+        parser_expect(parser, TokenKind::Colon);
+
+        // Parse array of specialist names or identifier value
+        if parser_check(parser, TokenKind::LBracket) {
+            parser_advance(parser);
+            let items: i64 = vec_new();
+            while parser_check(parser, TokenKind::RBracket) == false {
+                let item_tok: i64 = parser_expect(parser, TokenKind::Ident);
+                vec_push(items, token_text(item_tok));
+                parser_match(parser, TokenKind::Comma);
+            }
+            parser_expect(parser, TokenKind::RBracket);
+
+            if string_eq(prop_name, string_from("specialists")) {
+                specialists = items;
+            }
+        } else {
+            // Simple identifier value (router, strategy, etc.)
+            if parser_check(parser, TokenKind::Ident) {
+                let val_tok: i64 = parser_advance(parser);
+                let val: i64 = token_text(val_tok);
+                // Store in routing for now (we can extend later)
+                vec_push(routing, prop_name);
+                vec_push(routing, val);
+            }
+        }
+        parser_match(parser, TokenKind::Comma);
+    }
+
+    parser_expect(parser, TokenKind::RBrace);
+    ast_hive(name, specialists, routing)
 }
 
 // Parse a single item (fn, enum, or struct)
@@ -1150,8 +2152,19 @@ fn parse_item(parser: i64) -> i64 {
     // Skip pub keyword if present
     parser_match(parser, TokenKind::KwPub);
 
+    // Check for async fn
+    if parser_check(parser, TokenKind::KwAsync) {
+        parser_advance(parser);
+        if parser_check(parser, TokenKind::KwFn) {
+            return parse_fn(parser, 1);  // async fn
+        }
+        // async without fn - error
+        parser_add_error(parser, string_from("expected 'fn' after 'async'"));
+        return 0;
+    }
+
     if parser_check(parser, TokenKind::KwFn) {
-        return parse_fn(parser);
+        return parse_fn(parser, 0);  // regular fn
     }
     if parser_check(parser, TokenKind::KwEnum) {
         return parse_enum(parser);
@@ -1162,9 +2175,43 @@ fn parse_item(parser: i64) -> i64 {
     if parser_check(parser, TokenKind::KwImpl) {
         return parse_impl(parser);
     }
+    if parser_check(parser, TokenKind::KwTrait) {
+        return parse_trait(parser);
+    }
+    if parser_check(parser, TokenKind::KwMod) {
+        return parse_mod(parser);
+    }
+    if parser_check(parser, TokenKind::KwUse) {
+        return parse_use(parser);
+    }
+    if parser_check(parser, TokenKind::KwActor) {
+        return parse_actor(parser);
+    }
+    if parser_check(parser, TokenKind::KwSpecialist) {
+        return parse_specialist(parser);
+    }
+    if parser_check(parser, TokenKind::KwHive) {
+        return parse_hive(parser);
+    }
 
     // Unknown item
     0
+}
+
+// Parse result: items(0), error_count(1)
+fn parse_result_new(items: i64, error_count: i64) -> i64 {
+    let result: i64 = malloc(16);
+    store_ptr(result, 0, items);
+    store_i64(result, 1, error_count);
+    result
+}
+
+fn parse_result_items(result: i64) -> i64 {
+    load_ptr(result, 0)
+}
+
+fn parse_result_errors(result: i64) -> i64 {
+    load_i64(result, 1)
 }
 
 // Parse entire program
@@ -1174,19 +2221,26 @@ fn parse_program(tokens: i64) -> i64 {
 
     while true {
         if parser_at_end(parser) {
-            return items;
+            let errors: i64 = parser_error_count(parser);
+            return parse_result_new(items, errors);
         }
 
         // Skip EOF tokens
         if parser_check(parser, TokenKind::Eof) {
-            return items;
+            let errors: i64 = parser_error_count(parser);
+            return parse_result_new(items, errors);
         }
 
         let item: i64 = parse_item(parser);
         if item != 0 {
             vec_push(items, item);
+        } else {
+            // Unknown item - skip token and report error
+            parser_add_error(parser, string_from("unexpected token at top level"));
+            parser_advance(parser);
         }
     }
 
-    items
+    let errors: i64 = parser_error_count(parser);
+    parse_result_new(items, errors)
 }

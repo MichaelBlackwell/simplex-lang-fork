@@ -1,45 +1,23 @@
 # Simplex Compiler Toolchain
 
-**Version 0.2.0**
+**Version 0.3.1**
 
-This document describes the complete Simplex compiler toolchain, which is written entirely in pure Simplex.
-
----
-
-## Current Implementation Status
-
-The Simplex compiler is currently in **bootstrap phase**, with the following status:
-
-| Component | Status | Backend |
-|-----------|--------|---------|
-| Compiler (sxc) | Self-hosted | LLVM IR |
-| Merge Tool | Complete | LLVM IR |
-| Package Manager (spx) | Planned | - |
-| Bytecode Runtime (cursus) | Planned | - |
-
-### Current Architecture
-
-The current implementation compiles to **LLVM IR** rather than bytecode:
-
-```
-Source (.sx) → Lexer → Parser → Codegen → LLVM IR (.ll) → Native Binary
-```
-
-The bytecode format (SXB) described below is the **target architecture** for future versions.
+This document describes the Simplex compiler toolchain, which is **self-hosted** and compiles to native binaries via LLVM.
 
 ---
 
 ## Overview
 
-The Simplex toolchain consists of three main components:
+The Simplex toolchain consists of four main components:
 
-| Component | Binary | Description |
-|-----------|--------|-------------|
-| **sxc** | `sxc` | Simplex Compiler - compiles `.sx` source to `.sxb` bytecode |
-| **spx** | `spx` | Simplex Package Manager - project and dependency management |
-| **cursus** | `cursus` | Simplex Runtime - executes bytecode with actor system |
+| Component | Binary | Version | Description |
+|-----------|--------|---------|-------------|
+| **sxc** | `sxc` | v0.3.1 | Simplex Compiler - compiles `.sx` source to native executables |
+| **cursus** | `cursus` | v0.1.0 | Bytecode VM and build tool |
+| **sxdoc** | `sxdoc` | v0.1.0 | Documentation generator |
+| **sxlsp** | `sxlsp` | v0.1.0 | Language Server Protocol implementation |
 
-All three components are written in **100% pure Simplex** with zero external dependencies.
+All components are written in **Simplex** and compile to native binaries.
 
 ---
 
@@ -47,176 +25,32 @@ All three components are written in **100% pure Simplex** with zero external dep
 
 ### Bootstrap Process
 
-Like GCC, Go, and Rust, Simplex uses a multi-stage bootstrap:
+Simplex uses a multi-stage bootstrap similar to GCC, Go, and Rust:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                          BOOTSTRAP PROCESS                                   │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│  Bootstrap (minimal)     Stage 1 (full)         Stage 2 (verification)      │
+│  Stage 0 (Python)        Stage 1 (Native)        Stage 2 (Self-Hosted)      │
 │  ┌──────────────┐       ┌──────────────┐       ┌──────────────┐             │
-│  │     sxc      │ ────► │ stage1.sxb   │ ────► │ stage2.sxb   │             │
-│  │  (minimal)   │       │ (full syntax)│       │ (identical)  │             │
+│  │   stage0.py  │ ────► │ sxc-compile  │ ────► │ sxc-compile  │             │
+│  │  (bootstrap) │       │   (native)   │       │  (verified)  │             │
 │  └──────────────┘       └──────────────┘       └──────────────┘             │
 │         │                      │                      │                      │
 │         │ compiles             │ compiles             │                      │
 │         ▼                      ▼                      ▼                      │
-│  stage1/src/            src/sxc.sx              src/sxc.sx                  │
-│  compiler.sx                                                                │
+│  codegen.sx              codegen.sx              codegen.sx                 │
+│  lexer.sx                lexer.sx                (identical output)         │
+│  parser.sx               parser.sx                                          │
 │                                                                              │
 │  ┌───────────────────────────────────────────────────────────────────────┐  │
-│  │ Bootstrap: Minimal compiler written in bootstrap-compatible syntax     │  │
-│  │ Stage 1: Full Simplex compiler with complete syntax support            │  │
-│  │ Stage 2: Self-hosted compiler (Stage 1 bytecode == Stage 2 bytecode)   │  │
+│  │ Stage 0: Python bootstrap compiler (generates LLVM IR)                │  │
+│  │ Stage 1: Native compiler built by Stage 0                             │  │
+│  │ Stage 2: Native compiler built by Stage 1 (verifies self-hosting)     │  │
 │  └───────────────────────────────────────────────────────────────────────┘  │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Stage 1 Compiler
-
-The Stage 1 compiler is written in bootstrap-compatible Simplex (using only syntax
-supported by the bootstrap compiler) but compiles to support the full Simplex language:
-
-| Feature | Bootstrap | Stage 1 |
-|---------|-----------|---------|
-| `while` loops | No (use recursion) | Yes |
-| Variable reassignment (`x = val`) | No | Yes |
-| `trait` definitions | No | Yes |
-| Complex pattern matching | No | Yes |
-| `super::` module paths | No | Yes |
-| Full module system | Partial | Yes |
-
-The Stage 1 compiler source is located at `stage1/src/compiler.sx` and includes:
-- Complete lexer with all Simplex tokens
-- Full expression parser with precedence
-- Bytecode code generator
-- Support for all Simplex syntax features
-
-### Zero Rust Dependencies After Bootstrap
-
-Once bootstrapped:
-- The Stage 0 Rust binary is **no longer needed**
-- The compiler runs entirely on the Simplex runtime
-- All compilation uses pure Simplex code
-- Cross-compilation to Windows/Linux requires only the target runtime
-
-### File Structure
-
-```
-bootstrap/
-├── src/                          # Pure Simplex source (100%)
-│   ├── sxc.sx                   # Compiler CLI
-│   ├── spx.sx                   # Package manager CLI
-│   ├── cursus.sx                # Runtime CLI
-│   ├── lib.sx                   # Library exports
-│   │
-│   ├── lex/                     # Lexer
-│   │   ├── mod.sx
-│   │   ├── lexer.sx
-│   │   ├── token.sx
-│   │   └── span.sx
-│   │
-│   ├── parse/                   # Parser
-│   │   ├── mod.sx
-│   │   ├── parser.sx
-│   │   ├── parser_expr.sx
-│   │   ├── parser_helpers.sx
-│   │   ├── ast.sx
-│   │   └── prec.sx
-│   │
-│   ├── types/                   # Type System
-│   │   ├── mod.sx
-│   │   ├── types.sx
-│   │   ├── checker.sx
-│   │   ├── inference.sx
-│   │   └── environment.sx
-│   │
-│   ├── codegen/                 # Code Generation
-│   │   ├── mod.sx
-│   │   ├── ir.sx
-│   │   ├── lower.sx
-│   │   ├── optimize.sx
-│   │   └── emit.sx
-│   │
-│   ├── runtime/                 # Runtime System
-│   │   ├── mod.sx
-│   │   ├── vm.sx
-│   │   ├── value.sx
-│   │   ├── gc.sx
-│   │   ├── actor.sx
-│   │   └── channel.sx
-│   │
-│   └── std/                     # Standard Library
-│       ├── mod.sx
-│       ├── io.sx
-│       ├── fs.sx
-│       ├── collections.sx
-│       ├── string.sx
-│       ├── time.sx
-│       ├── math.sx
-│       ├── net.sx
-│       ├── env.sx
-│       ├── process.sx
-│       └── fmt.sx
-│
-├── bootstrap/                   # Bootstrap binaries
-│   └── bin/
-│       └── sxc                  # Bootstrap compiler (minimal syntax support)
-│
-├── stage1/                      # Stage 1 compiler source
-│   └── src/
-│       ├── compiler.sx          # Self-contained stage1 compiler
-│       ├── lexer.sx             # Lexer module
-│       ├── ast.sx               # AST definitions
-│       └── parser.sx            # Parser module
-│
-└── stage2/                      # Stage 2 output
-    └── simplex.sxb              # Compiled by Stage 1 (verification)
-```
-
----
-
-## sxc - Simplex Compiler
-
-### Usage
-
-```bash
-sxc <command> [options] [file]
-
-Commands:
-  build <file.sx>     Compile source to bytecode
-  run <file.sx>       Compile and execute
-  check <file.sx>     Type-check without compiling
-  repl                Interactive REPL
-  version             Show version
-  help                Show help
-
-Options:
-  -o <output>         Output file path
-  -O0                 No optimization
-  -O1                 Basic optimization
-  -O2                 Standard optimization (default)
-  -O3                 Aggressive optimization
-  -Os                 Optimize for size
-  --emit-ir           Emit IR for debugging
-```
-
-### Examples
-
-```bash
-# Compile a file
-sxc build hello.sx -o hello.sxb
-
-# Compile and run
-sxc run hello.sx
-
-# Type-check only
-sxc check mylib.sx
-
-# Interactive REPL
-sxc repl
 ```
 
 ### Compilation Pipeline
@@ -226,214 +60,257 @@ Source (.sx)
      │
      ▼
 ┌─────────┐
-│  Lexer  │  Tokenization
+│  Lexer  │  Tokenization (lexer.sx)
 └────┬────┘
      │
      ▼
 ┌─────────┐
-│ Parser  │  AST construction (Pratt parsing)
+│ Parser  │  AST construction (parser.sx)
 └────┬────┘
      │
      ▼
 ┌─────────┐
-│  Types  │  Hindley-Milner type inference
+│ Codegen │  LLVM IR generation (codegen.sx)
 └────┬────┘
      │
      ▼
 ┌─────────┐
-│  Lower  │  Convert to SSA IR
+│  Clang  │  Native code generation + linking
 └────┬────┘
      │
      ▼
-┌─────────┐
-│Optimize │  DCE, constant folding, inlining
-└────┬────┘
-     │
-     ▼
-┌─────────┐
-│  Emit   │  Bytecode generation
-└────┬────┘
-     │
-     ▼
-Bytecode (.sxb)
+Native Binary
+```
+
+### File Structure
+
+```
+simplex-lang/
+├── sxc                     # Compiler wrapper script (bash)
+├── sxc-compile             # Native self-hosted compiler (387KB)
+├── cursus                  # Bytecode VM (227KB)
+├── sxdoc                   # Documentation generator (225KB)
+├── sxlsp                   # Language server (220KB)
+├── standalone_runtime.c    # C runtime with intrinsics
+├── stage0.py               # Python bootstrap (for rebuilding)
+│
+├── compiler/bootstrap/     # Compiler source
+│   ├── lexer.sx           # Lexer
+│   ├── parser.sx          # Parser
+│   └── codegen.sx         # Code generator
+│
+└── tools/                  # Tool source
+    ├── cursus.sx          # Bytecode VM source
+    ├── sxdoc.sx           # Doc generator source
+    └── sxlsp.sx           # LSP source
 ```
 
 ---
 
-## spx - Simplex Package Manager
+## sxc - Simplex Compiler
 
 ### Usage
 
 ```bash
-spx <command> [options]
+sxc <command> [options] <file>
 
 Commands:
-  new <name>          Create new project
-  init                Initialize in current directory
-  build               Build project
-  run                 Build and run
-  test                Run tests
-  check               Type-check project
-  add <package>       Add dependency
-  remove <package>    Remove dependency
-  update              Update dependencies
-  publish             Publish to registry
-  search <query>      Search packages
-  install             Install dependencies
-  clean               Clean build artifacts
-  fmt                 Format source files
-  doc                 Generate documentation
-```
-
-### Project Manifest (Modulus.toml)
-
-```toml
-[package]
-name = "myproject"
-version = "0.1.0"
-authors = ["Your Name <you@example.com>"]
-description = "A Simplex project"
-license = "MIT"
-repository = "https://github.com/user/myproject"
-
-[dependencies]
-simplex-json = "1.0"
-simplex-http = "0.5"
-
-[dev-dependencies]
-simplex-test = "1.0"
-
-[build]
-entry = "src/main.sx"
-target = "bytecode"
-
-[features]
-default = ["std"]
-std = []
-async = []
-```
-
----
-
-## cursus - Simplex Runtime
-
-### Usage
-
-```bash
-cursus <command> [options]
-
-Commands:
-  run <file.sxb>      Execute bytecode
-  daemon              Run as background service
-  cluster <config>    Start cluster node
-  repl                Interactive runtime REPL
+  build <file.sx> [-o output]    Compile to native executable
+  compile <file.sx>              Compile to LLVM IR only
+  run <file.sx>                  Compile and run immediately
+  version                        Show version
+  help                           Show help
 
 Options:
-  --gc-threshold <n>  GC threshold in bytes (default: 1MB)
-  --heap-size <n>     Max heap size
-  --actors <n>        Max concurrent actors
-  --port <port>       Cluster port
-  --bind <addr>       Bind address
-  --join <addr>       Join existing cluster
+  -o <output>         Output file path
+  -O                  Enable optimizations
+  -v, --verbose       Verbose output
+  -g, --debug         Include debug information
 ```
 
-### Runtime Features
-
-- **Bytecode Interpreter**: Executes SXB format
-- **Garbage Collector**: Mark-and-sweep with configurable threshold
-- **Actor System**: Supervision trees, mailboxes, fault tolerance
-- **Checkpointing**: Save and restore actor state
-- **Clustering**: Distributed execution across nodes
-
----
-
-## Bytecode Format (SXB)
-
-### Header
-
-```
-Offset  Size  Description
-──────  ────  ───────────
-0x00    3     Magic: "SXB" (0x53 0x58 0x42)
-0x03    1     Null byte (0x00)
-0x04    4     Version (little-endian u32)
-0x08    4     String table count
-0x0C    ...   String table entries
-...     4     Global count
-...     ...   Globals
-...     4     Function count
-...     ...   Functions
-...     ...   Code section
-```
-
-### Opcode Categories
-
-| Range | Category |
-|-------|----------|
-| 0x00-0x0F | Stack operations |
-| 0x10-0x1F | Constants |
-| 0x20-0x2F | Integer arithmetic |
-| 0x28-0x2F | Float arithmetic |
-| 0x30-0x3F | Bitwise operations |
-| 0x40-0x4F | Comparisons |
-| 0x48-0x4F | Logical operations |
-| 0x50-0x5F | Control flow |
-| 0x60-0x6F | Variables |
-| 0x80-0x8F | Structs/Arrays |
-| 0x90-0x9F | Actor operations |
-| 0xA0-0xAF | Async operations |
-| 0xF0-0xFF | Debug/Halt |
-
----
-
-## Cross-Platform Support
-
-### Building for Different Platforms
-
-The pure Simplex toolchain can generate bytecode that runs on any platform with the cursus runtime:
+### Examples
 
 ```bash
-# Build bytecode (platform-independent)
-sxc build myapp.sx -o myapp.sxb
+# Compile to native executable
+sxc build hello.sx -o hello
+./hello
 
-# Run on any platform with cursus
-cursus run myapp.sxb
+# Compile and run immediately
+sxc run hello.sx
+
+# Compile to LLVM IR only
+sxc compile hello.sx
+# Produces: hello.ll
 ```
 
-### Platform-Specific Runtimes
+### Compilation Process
 
-To run on different platforms, only the cursus runtime needs to be built for that platform:
+The `sxc` wrapper script:
+1. Invokes `sxc-compile` to generate LLVM IR (`.ll` file)
+2. Links with `standalone_runtime.c` using clang
+3. Produces a native executable
 
-| Platform | Runtime Binary |
-|----------|---------------|
-| macOS (ARM64) | `cursus-darwin-arm64` |
-| macOS (x86_64) | `cursus-darwin-amd64` |
-| Linux (x86_64) | `cursus-linux-amd64` |
-| Linux (ARM64) | `cursus-linux-arm64` |
-| Windows (x86_64) | `cursus-windows-amd64.exe` |
-
-The bytecode is platform-independent; only the runtime differs.
+```bash
+# What happens internally:
+./sxc-compile hello.sx          # Generates hello.ll
+clang -O2 hello.ll standalone_runtime.c -o hello -lm
+```
 
 ---
 
-## Line Counts
+## cursus - Bytecode VM
 
-The pure Simplex implementation:
+### Usage
 
-| Component | Files | Lines |
-|-----------|-------|-------|
-| Compiler (sxc) | 1 | ~350 |
-| Package Manager (spx) | 1 | ~650 |
-| Runtime (cursus) | 1 | ~600 |
-| Lexer | 4 | ~500 |
-| Parser | 6 | ~2,500 |
-| Type System | 5 | ~2,500 |
-| Code Generation | 5 | ~2,200 |
-| Runtime System | 6 | ~1,800 |
-| Standard Library | 11 | ~5,500 |
-| **Total** | **40** | **~16,600** |
+```bash
+cursus [OPTIONS] <FILE.sxb>
+cursus compile <FILE.sx> -o <FILE.sxb>
 
-All written in pure Simplex with zero external dependencies.
+Options:
+  --trace         Enable instruction tracing
+  --stats         Show VM statistics
+  --version       Show version
+  -h, --help      Show help
+```
+
+### Features
+
+- Stack-based bytecode interpreter
+- Garbage collection
+- String table management
+- Call frame tracking
+- Debug tracing mode
+
+---
+
+## sxdoc - Documentation Generator
+
+### Usage
+
+```bash
+sxdoc [OPTIONS] <FILES...>
+
+Options:
+  --html          Generate HTML output (default)
+  --markdown      Generate Markdown output
+  -o <dir>        Output directory (default: ./docs)
+  --version       Show version
+  -h, --help      Show help
+```
+
+### Features
+
+- Extracts `///` doc comments from source
+- Generates HTML or Markdown documentation
+- Supports functions, structs, enums, traits
+
+---
+
+## sxlsp - Language Server
+
+### Usage
+
+```bash
+sxlsp [OPTIONS]
+
+Options:
+  --stdio         Use stdio for communication (default)
+  --version       Show version
+  -h, --help      Show help
+```
+
+### Features
+
+- JSON-RPC over stdio
+- Diagnostics (syntax errors)
+- Hover information
+- Go to definition (planned)
+- Completion (planned)
+
+---
+
+## Runtime System
+
+### standalone_runtime.c
+
+The C runtime provides:
+
+| Category | Functions |
+|----------|-----------|
+| **Memory** | `malloc`, `free`, `load_i64`, `store_i64`, `load_ptr`, `store_ptr` |
+| **Strings** | `string_from`, `string_concat`, `string_slice`, `string_eq`, `string_len` |
+| **Vectors** | `vec_new`, `vec_push`, `vec_get`, `vec_len`, `vec_set` |
+| **I/O** | `print`, `println`, `read_file`, `write_file`, `read_line` |
+| **Files** | `file_exists`, `file_size`, `mkdir`, `list_dir`, `remove_file` |
+| **Process** | `get_args`, `get_env`, `exit_program`, `system_call` |
+| **Time** | `time_now`, `time_sleep` |
+| **Network** | `http_get`, `http_post`, `tcp_connect`, `tcp_listen` |
+
+### Intrinsic Mapping
+
+Simplex functions are mapped to C intrinsics:
+
+```simplex
+// Simplex code:
+let s = string_from("hello");
+println(s);
+
+// Maps to C:
+// intrinsic_string_new("hello")
+// intrinsic_println(s)
+```
+
+---
+
+## Building from Source
+
+### Prerequisites
+
+- macOS or Linux
+- clang (LLVM)
+- Python 3 (for bootstrap only)
+
+### Full Bootstrap
+
+```bash
+# Clone repository
+git clone https://github.com/user/simplex-lang.git
+cd simplex-lang
+
+# Bootstrap from Python (only needed once)
+python3 stage0.py compiler/bootstrap/codegen.sx -o sxc-compile
+
+# Self-host verification
+./sxc build compiler/bootstrap/codegen.sx -o sxc-compile-stage2
+
+# Build tools
+./sxc build tools/cursus.sx -o cursus
+./sxc build tools/sxdoc.sx -o sxdoc
+./sxc build tools/sxlsp.sx -o sxlsp
+```
+
+### Quick Build (already bootstrapped)
+
+```bash
+# Just build tools
+./sxc build tools/cursus.sx -o cursus
+./sxc build tools/sxdoc.sx -o sxdoc
+./sxc build tools/sxlsp.sx -o sxlsp
+```
+
+---
+
+## Binary Sizes
+
+| Binary | Size | Description |
+|--------|------|-------------|
+| `sxc` | 6.5KB | Wrapper script |
+| `sxc-compile` | 387KB | Native compiler |
+| `cursus` | 227KB | Bytecode VM |
+| `sxdoc` | 225KB | Doc generator |
+| `sxlsp` | 220KB | Language server |
+
+Total toolchain: ~1MB of native binaries.
 
 ---
 
@@ -441,8 +318,11 @@ All written in pure Simplex with zero external dependencies.
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 0.1.0 | 2024-12-29 | Initial pure Simplex implementation |
+| 0.1.0 | 2024-12 | Initial Python bootstrap |
+| 0.2.0 | 2024-12 | Self-hosted compiler (Stage 1) |
+| 0.3.0 | 2025-01 | Native binary compilation |
+| 0.3.1 | 2025-01 | Fixed lookup_variant bug, all tools compiled |
 
 ---
 
-*The Simplex toolchain is self-hosting and requires no external compilers or runtimes after initial bootstrap.*
+*The Simplex toolchain is self-hosted. After initial bootstrap, the Python compiler is no longer needed.*

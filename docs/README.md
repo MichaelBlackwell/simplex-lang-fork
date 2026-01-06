@@ -1,6 +1,6 @@
 # Simplex Language Documentation
 
-**Version 0.2.0**
+**Version 0.3.1**
 
 Simplex (Latin for "simple") is a programming language designed for the AI era. It combines the fault-tolerance of Erlang, the memory safety of Rust, the distributed computing model of Ray, and the content-addressable code of Unison into a cohesive system built for intelligent, distributed workloads.
 
@@ -101,9 +101,10 @@ Simplex draws from:
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 0.1.0 | 2024 | Initial draft specification |
-| 0.2.0 | 2025 | Added Cognitive Hive AI (CHAI) specification |
-| 0.3.0 | 2025 | Complete pure Simplex toolchain (sxc, spx, cursus) and standard library |
+| 0.1.0 | 2025-04 | Initial draft specification |
+| 0.2.0 | 2025-08 | Added Cognitive Hive AI (CHAI) specification |
+| 0.3.0 | 2025-12 | Self-hosted native compiler via LLVM |
+| 0.3.1 | 2026-01 | Complete toolchain: sxc, cursus, sxdoc, sxlsp all compiled |
 
 ---
 

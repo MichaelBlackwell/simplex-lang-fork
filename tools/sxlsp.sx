@@ -1,0 +1,524 @@
+// sxlsp - Simplex Language Server
+// Implements the Language Server Protocol for IDE integration
+
+fn VERSION() -> i64 { string_from("0.1.0") }
+
+// ========================================
+// Parser stubs (minimal implementation)
+// ========================================
+
+// Tokenize source code - returns empty token list for now
+fn tokenize(source: i64) -> i64 {
+    vec_new()
+}
+
+// Parse tokens - returns a parse result with no errors
+fn parse_program(tokens: i64) -> i64 {
+    // Return a simple parse result: [ast, errors_count]
+    let result: i64 = vec_new();
+    vec_push(result, 0);  // ast placeholder
+    vec_push(result, 0);  // 0 errors
+    result
+}
+
+// Get error count from parse result
+fn parse_result_errors(result: i64) -> i64 {
+    if vec_len(result) > 1 {
+        return vec_get(result, 1);
+    }
+    0
+}
+
+fn show_help() -> i64 {
+    println("sxlsp - Simplex Language Server");
+    println("");
+    println("USAGE:");
+    println("    sxlsp [OPTIONS]");
+    println("");
+    println("OPTIONS:");
+    println("    --stdio         Use stdio for communication (default)");
+    println("    --version       Show version");
+    println("    -h, --help      Show this help");
+    println("");
+    println("The language server communicates via JSON-RPC over stdio.");
+    0
+}
+
+fn show_version() -> i64 {
+    println(string_concat(string_from("sxlsp "), VERSION()));
+    0
+}
+
+// ========================================
+// JSON-RPC Protocol
+// ========================================
+
+// Read a Content-Length header and return the length
+fn read_content_length() -> i64 {
+    let line: i64 = read_line();
+    if line == 0 {
+        return 0 - 1;  // EOF
+    }
+
+    // Parse "Content-Length: N"
+    if string_starts_with(line, string_from("Content-Length:")) {
+        let value: i64 = string_trim(string_slice(line, 16, string_len(line)));
+        return string_to_int(value);
+    }
+
+    // Keep reading headers until we get an empty line
+    while true {
+        line = read_line();
+        if line == 0 {
+            return 0 - 1;
+        }
+        let trimmed: i64 = string_trim(line);
+        if string_len(trimmed) == 0 {
+            // Empty line - end of headers
+            return 0 - 1;
+        }
+        if string_starts_with(line, string_from("Content-Length:")) {
+            let value: i64 = string_trim(string_slice(line, 16, string_len(line)));
+            return string_to_int(value);
+        }
+    }
+
+    0 - 1
+}
+
+// Read the request body
+fn read_body(length: i64) -> i64 {
+    // Read header/body separator
+    let sep: i64 = read_line();
+
+    // Read body (simplified - assumes single line or small body)
+    let body: i64 = read_line();
+    body
+}
+
+// Send a JSON-RPC response
+fn send_response(id: i64, result: i64) -> i64 {
+    let response: i64 = string_concat(string_from("{\"jsonrpc\":\"2.0\",\"id\":"), id);
+    response = string_concat(response, string_from(",\"result\":"));
+    response = string_concat(response, result);
+    response = string_concat(response, string_from("}"));
+
+    let len: i64 = string_len(response);
+    print(string_from("Content-Length: "));
+    print(int_to_string(len));
+    print(string_from("\r\n\r\n"));
+    print(response);
+
+    0
+}
+
+// Send a JSON-RPC notification
+fn send_notification(method: i64, params: i64) -> i64 {
+    let notification: i64 = string_concat(string_from("{\"jsonrpc\":\"2.0\",\"method\":\""), method);
+    notification = string_concat(notification, string_from("\",\"params\":"));
+    notification = string_concat(notification, params);
+    notification = string_concat(notification, string_from("}"));
+
+    let len: i64 = string_len(notification);
+    print(string_from("Content-Length: "));
+    print(int_to_string(len));
+    print(string_from("\r\n\r\n"));
+    print(notification);
+
+    0
+}
+
+// ========================================
+// LSP Message Parsing (Simplified)
+// ========================================
+
+// Extract JSON string value by key (simplified)
+fn json_get_string(json: i64, key: i64) -> i64 {
+    let search: i64 = string_concat(string_from("\""), key);
+    search = string_concat(search, string_from("\":"));
+
+    let pos: i64 = string_find(json, search, 0);
+    if pos < 0 {
+        return string_from("");
+    }
+
+    // Find the value start
+    let start: i64 = pos + string_len(search);
+
+    // Skip whitespace
+    while start < string_len(json) {
+        let c: i64 = string_char_at(json, start);
+        if c != 32 {
+            if c != 9 {
+                if c != 10 {
+                    if c != 13 {
+                        start = string_len(json);  // Break
+                    }
+                }
+            }
+        }
+        start = start + 1;
+    }
+    start = start - 1;
+
+    // Check if it's a string value
+    if string_char_at(json, start) == 34 {
+        // It's a string, find closing quote
+        let end: i64 = string_find(json, string_from("\""), start + 1);
+        if end > start {
+            return string_slice(json, start + 1, end);
+        }
+    }
+
+    // Not a string or number - just return what we find until comma/brace
+    let end: i64 = start;
+    while end < string_len(json) {
+        let c: i64 = string_char_at(json, end);
+        if c == 44 { end = string_len(json); }  // comma
+        if c == 125 { end = string_len(json); } // }
+        if c == 93 { end = string_len(json); }  // ]
+        end = end + 1;
+    }
+    end = end - 1;
+
+    string_slice(json, start, end)
+}
+
+// Extract JSON number value by key
+fn json_get_number(json: i64, key: i64) -> i64 {
+    let value: i64 = json_get_string(json, key);
+    if string_len(value) == 0 {
+        return 0;
+    }
+    string_to_int(value)
+}
+
+// ========================================
+// Document Management
+// ========================================
+
+// Document state: uri -> source
+// Simple array of (uri, content) pairs
+fn doc_store_new() -> i64 {
+    vec_new()
+}
+
+fn doc_store_set(store: i64, uri: i64, content: i64) -> i64 {
+    // Check if document exists
+    let n: i64 = vec_len(store);
+    let i: i64 = 0;
+    while i < n {
+        let pair: i64 = vec_get(store, i);
+        if string_eq(load_ptr(pair, 0), uri) {
+            // Update existing
+            store_ptr(pair, 1, content);
+            return 0;
+        }
+        i = i + 1;
+    }
+
+    // Add new
+    let pair: i64 = malloc(16);
+    store_ptr(pair, 0, uri);
+    store_ptr(pair, 1, content);
+    vec_push(store, pair);
+    0
+}
+
+fn doc_store_get(store: i64, uri: i64) -> i64 {
+    let n: i64 = vec_len(store);
+    let i: i64 = 0;
+    while i < n {
+        let pair: i64 = vec_get(store, i);
+        if string_eq(load_ptr(pair, 0), uri) {
+            return load_ptr(pair, 1);
+        }
+        i = i + 1;
+    }
+    0
+}
+
+fn doc_store_remove(store: i64, uri: i64) -> i64 {
+    // Simplified: just set content to empty
+    doc_store_set(store, uri, string_from(""));
+    0
+}
+
+// ========================================
+// LSP Handlers
+// ========================================
+
+// Server capabilities
+fn get_server_capabilities() -> i64 {
+    let caps: i64 = string_from("{");
+    caps = string_concat(caps, string_from("\"textDocumentSync\":1,"));  // Full sync
+    caps = string_concat(caps, string_from("\"completionProvider\":{\"triggerCharacters\":[\".\",\"::\"]},"));
+    caps = string_concat(caps, string_from("\"hoverProvider\":true,"));
+    caps = string_concat(caps, string_from("\"definitionProvider\":true"));
+    caps = string_concat(caps, string_from("}"));
+    caps
+}
+
+// Handle initialize request
+fn handle_initialize(id: i64, params: i64) -> i64 {
+    let result: i64 = string_from("{\"capabilities\":");
+    result = string_concat(result, get_server_capabilities());
+    result = string_concat(result, string_from(",\"serverInfo\":{\"name\":\"sxlsp\",\"version\":\""));
+    result = string_concat(result, VERSION());
+    result = string_concat(result, string_from("\"}}"));
+    send_response(id, result);
+    0
+}
+
+// Handle shutdown request
+fn handle_shutdown(id: i64) -> i64 {
+    send_response(id, string_from("null"));
+    0
+}
+
+// Handle textDocument/didOpen
+fn handle_did_open(store: i64, params: i64) -> i64 {
+    // Extract textDocument.uri and textDocument.text
+    let uri: i64 = json_get_string(params, string_from("uri"));
+    let text: i64 = json_get_string(params, string_from("text"));
+    doc_store_set(store, uri, text);
+
+    // Validate and publish diagnostics
+    publish_diagnostics(uri, text);
+    0
+}
+
+// Handle textDocument/didChange
+fn handle_did_change(store: i64, params: i64) -> i64 {
+    let uri: i64 = json_get_string(params, string_from("uri"));
+    // For full sync, content is in contentChanges[0].text
+    let text: i64 = json_get_string(params, string_from("text"));
+    doc_store_set(store, uri, text);
+
+    publish_diagnostics(uri, text);
+    0
+}
+
+// Handle textDocument/didClose
+fn handle_did_close(store: i64, params: i64) -> i64 {
+    let uri: i64 = json_get_string(params, string_from("uri"));
+    doc_store_remove(store, uri);
+
+    // Clear diagnostics
+    let diag_params: i64 = string_concat(string_from("{\"uri\":\""), uri);
+    diag_params = string_concat(diag_params, string_from("\",\"diagnostics\":[]}"));
+    send_notification(string_from("textDocument/publishDiagnostics"), diag_params);
+    0
+}
+
+// Handle textDocument/completion
+fn handle_completion(store: i64, id: i64, params: i64) -> i64 {
+    let uri: i64 = json_get_string(params, string_from("uri"));
+    let content: i64 = doc_store_get(store, uri);
+
+    // Provide basic completions
+    let items: i64 = string_from("[");
+
+    // Keywords
+    items = string_concat(items, string_from("{\"label\":\"fn\",\"kind\":14,\"detail\":\"function\"},"));
+    items = string_concat(items, string_from("{\"label\":\"let\",\"kind\":14,\"detail\":\"variable\"},"));
+    items = string_concat(items, string_from("{\"label\":\"if\",\"kind\":14,\"detail\":\"conditional\"},"));
+    items = string_concat(items, string_from("{\"label\":\"else\",\"kind\":14,\"detail\":\"conditional\"},"));
+    items = string_concat(items, string_from("{\"label\":\"while\",\"kind\":14,\"detail\":\"loop\"},"));
+    items = string_concat(items, string_from("{\"label\":\"for\",\"kind\":14,\"detail\":\"loop\"},"));
+    items = string_concat(items, string_from("{\"label\":\"return\",\"kind\":14,\"detail\":\"return\"},"));
+    items = string_concat(items, string_from("{\"label\":\"struct\",\"kind\":14,\"detail\":\"struct\"},"));
+    items = string_concat(items, string_from("{\"label\":\"enum\",\"kind\":14,\"detail\":\"enum\"},"));
+    items = string_concat(items, string_from("{\"label\":\"impl\",\"kind\":14,\"detail\":\"implementation\"},"));
+    items = string_concat(items, string_from("{\"label\":\"trait\",\"kind\":14,\"detail\":\"trait\"},"));
+    items = string_concat(items, string_from("{\"label\":\"match\",\"kind\":14,\"detail\":\"pattern match\"},"));
+    items = string_concat(items, string_from("{\"label\":\"true\",\"kind\":21,\"detail\":\"boolean\"},"));
+    items = string_concat(items, string_from("{\"label\":\"false\",\"kind\":21,\"detail\":\"boolean\"}"));
+
+    items = string_concat(items, string_from("]"));
+
+    send_response(id, items);
+    0
+}
+
+// Handle textDocument/hover
+fn handle_hover(store: i64, id: i64, params: i64) -> i64 {
+    let uri: i64 = json_get_string(params, string_from("uri"));
+    let content: i64 = doc_store_get(store, uri);
+
+    // Get position
+    let line: i64 = json_get_number(params, string_from("line"));
+    let character: i64 = json_get_number(params, string_from("character"));
+
+    // For now, provide generic hover info
+    let result: i64 = string_from("{\"contents\":{\"kind\":\"markdown\",\"value\":\"Simplex language element\"}}");
+    send_response(id, result);
+    0
+}
+
+// Handle textDocument/definition
+fn handle_definition(store: i64, id: i64, params: i64) -> i64 {
+    // Simplified: return null for now
+    send_response(id, string_from("null"));
+    0
+}
+
+// ========================================
+// Diagnostics
+// ========================================
+
+// Parse source and publish diagnostics
+fn publish_diagnostics(uri: i64, source: i64) -> i64 {
+    if source == 0 {
+        return 0;
+    }
+    if string_len(source) == 0 {
+        return 0;
+    }
+
+    // Tokenize and parse
+    let tokens: i64 = tokenize(source);
+    let parse_result: i64 = parse_program(tokens);
+    let errors: i64 = parse_result_errors(parse_result);
+
+    let diagnostics: i64 = string_from("[");
+
+    if errors > 0 {
+        // Report parse error
+        diagnostics = string_concat(diagnostics, string_from("{"));
+        diagnostics = string_concat(diagnostics, string_from("\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":1}},"));
+        diagnostics = string_concat(diagnostics, string_from("\"severity\":1,"));
+        diagnostics = string_concat(diagnostics, string_from("\"source\":\"sxlsp\","));
+        diagnostics = string_concat(diagnostics, string_from("\"message\":\"Parse error in file\""));
+        diagnostics = string_concat(diagnostics, string_from("}"));
+    }
+
+    diagnostics = string_concat(diagnostics, string_from("]"));
+
+    let params: i64 = string_concat(string_from("{\"uri\":\""), uri);
+    params = string_concat(params, string_from("\",\"diagnostics\":"));
+    params = string_concat(params, diagnostics);
+    params = string_concat(params, string_from("}"));
+
+    send_notification(string_from("textDocument/publishDiagnostics"), params);
+    0
+}
+
+// ========================================
+// Main Loop
+// ========================================
+
+fn run_server() -> i64 {
+    let store: i64 = doc_store_new();
+    let running: i64 = 1;
+
+    while running == 1 {
+        // Read Content-Length header
+        let length: i64 = read_content_length();
+        if length < 0 {
+            // EOF or error
+            return 0;
+        }
+
+        // Read body
+        let body: i64 = read_body(length);
+        if body == 0 {
+            return 0;
+        }
+
+        // Parse method and id
+        let method: i64 = json_get_string(body, string_from("method"));
+        let id: i64 = json_get_string(body, string_from("id"));
+        let params: i64 = body;  // Full body as params for now
+
+        // Handle methods
+        if string_eq(method, string_from("initialize")) {
+            handle_initialize(id, params);
+        } else {
+        if string_eq(method, string_from("initialized")) {
+            // No response needed
+        } else {
+        if string_eq(method, string_from("shutdown")) {
+            handle_shutdown(id);
+        } else {
+        if string_eq(method, string_from("exit")) {
+            running = 0;
+        } else {
+        if string_eq(method, string_from("textDocument/didOpen")) {
+            handle_did_open(store, params);
+        } else {
+        if string_eq(method, string_from("textDocument/didChange")) {
+            handle_did_change(store, params);
+        } else {
+        if string_eq(method, string_from("textDocument/didClose")) {
+            handle_did_close(store, params);
+        } else {
+        if string_eq(method, string_from("textDocument/completion")) {
+            handle_completion(store, id, params);
+        } else {
+        if string_eq(method, string_from("textDocument/hover")) {
+            handle_hover(store, id, params);
+        } else {
+        if string_eq(method, string_from("textDocument/definition")) {
+            handle_definition(store, id, params);
+        } else {
+            // Unknown method - send error for requests (those with id)
+            if string_len(id) > 0 {
+                let error: i64 = string_from("{\"code\":-32601,\"message\":\"Method not found\"}");
+                let response: i64 = string_concat(string_from("{\"jsonrpc\":\"2.0\",\"id\":"), id);
+                response = string_concat(response, string_from(",\"error\":"));
+                response = string_concat(response, error);
+                response = string_concat(response, string_from("}"));
+
+                let len: i64 = string_len(response);
+                print(string_from("Content-Length: "));
+                print(int_to_string(len));
+                print(string_from("\r\n\r\n"));
+                print(response);
+            }
+        }
+        }
+        }
+        }
+        }
+        }
+        }
+        }
+        }
+        }
+    }
+
+    0
+}
+
+fn main() -> i64 {
+    let args: i64 = get_args();
+    let argc: i64 = vec_len(args);
+
+    // Parse arguments
+    let i: i64 = 1;
+    while i < argc {
+        let arg: i64 = vec_get(args, i);
+
+        if string_eq(arg, string_from("-h")) {
+            show_help();
+            return 0;
+        }
+        if string_eq(arg, string_from("--help")) {
+            show_help();
+            return 0;
+        }
+        if string_eq(arg, string_from("--version")) {
+            show_version();
+            return 0;
+        }
+        if string_eq(arg, string_from("--stdio")) {
+            // Default mode, continue
+        }
+
+        i = i + 1;
+    }
+
+    // Start server
+    run_server()
+}

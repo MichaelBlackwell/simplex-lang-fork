@@ -1,0 +1,981 @@
+// sxc - Simplex Compiler CLI
+// Self-hosted compiler driver for Simplex
+
+fn VERSION() -> i64 { string_from("0.3.0") }
+
+// ========================================
+// simplex.toml Project Configuration (Phase 33)
+// ========================================
+
+// Project config struct
+// Layout: name(0), version(1), edition(2), entry(3), output(4), optimize(5),
+//         dependencies(6), features(7), target(8)
+fn config_new() -> i64 {
+    let cfg: i64 = malloc(72);
+    store_ptr(cfg, 0, string_from("unnamed"));  // name
+    store_ptr(cfg, 1, string_from("0.1.0"));    // version
+    store_ptr(cfg, 2, string_from("2025"));     // edition
+    store_ptr(cfg, 3, string_from("main.sx"));  // entry point
+    store_ptr(cfg, 4, 0);                       // output (derived from name)
+    store_i64(cfg, 5, 0);                       // optimize
+    store_ptr(cfg, 6, vec_new());               // dependencies
+    store_ptr(cfg, 7, vec_new());               // features
+    store_ptr(cfg, 8, 0);                       // target triple
+    cfg
+}
+
+fn config_name(cfg: i64) -> i64 { load_ptr(cfg, 0) }
+fn config_version(cfg: i64) -> i64 { load_ptr(cfg, 1) }
+fn config_edition(cfg: i64) -> i64 { load_ptr(cfg, 2) }
+fn config_entry(cfg: i64) -> i64 { load_ptr(cfg, 3) }
+fn config_output(cfg: i64) -> i64 { load_ptr(cfg, 4) }
+fn config_optimize(cfg: i64) -> i64 { load_i64(cfg, 5) }
+fn config_deps(cfg: i64) -> i64 { load_ptr(cfg, 6) }
+fn config_features(cfg: i64) -> i64 { load_ptr(cfg, 7) }
+fn config_target(cfg: i64) -> i64 { load_ptr(cfg, 8) }
+
+fn config_set_name(cfg: i64, v: i64) -> i64 { store_ptr(cfg, 0, v); 0 }
+fn config_set_version(cfg: i64, v: i64) -> i64 { store_ptr(cfg, 1, v); 0 }
+fn config_set_edition(cfg: i64, v: i64) -> i64 { store_ptr(cfg, 2, v); 0 }
+fn config_set_entry(cfg: i64, v: i64) -> i64 { store_ptr(cfg, 3, v); 0 }
+fn config_set_output(cfg: i64, v: i64) -> i64 { store_ptr(cfg, 4, v); 0 }
+fn config_set_optimize(cfg: i64, v: i64) -> i64 { store_i64(cfg, 5, v); 0 }
+fn config_set_target(cfg: i64, v: i64) -> i64 { store_ptr(cfg, 8, v); 0 }
+
+// Parse simplex.toml and return config
+fn parse_simplex_toml(content: i64) -> i64 {
+    let cfg: i64 = config_new();
+    let lines: i64 = string_split(content, string_from("\n"));
+    let n: i64 = vec_len(lines);
+    let i: i64 = 0;
+    let section: i64 = string_from("");  // Current section
+
+    while i < n {
+        let line: i64 = string_trim(vec_get(lines, i));
+        let len: i64 = string_len(line);
+
+        // Skip empty lines and comments
+        if len > 0 {
+            let first_char: i64 = string_char_at(line, 0);
+            if first_char != 35 {  // Not a comment (#)
+                // Check for section header [section]
+                if first_char == 91 {  // [
+                    if string_char_at(line, len - 1) == 93 {  // ]
+                        section = string_slice(line, 1, len - 1);
+                    }
+                } else {
+                    // Key = value line
+                    let eq_pos: i64 = string_find(line, string_from("="), 0);
+                    if eq_pos > 0 {
+                        let key: i64 = string_trim(string_slice(line, 0, eq_pos));
+                        let value: i64 = string_trim(string_slice(line, eq_pos + 1, len));
+                        // Remove quotes from value
+                        value = strip_toml_quotes(value);
+
+                        // Handle [package] section
+                        if string_eq(section, string_from("package")) {
+                            if string_eq(key, string_from("name")) {
+                                config_set_name(cfg, value);
+                            }
+                            if string_eq(key, string_from("version")) {
+                                config_set_version(cfg, value);
+                            }
+                            if string_eq(key, string_from("edition")) {
+                                config_set_edition(cfg, value);
+                            }
+                            if string_eq(key, string_from("entry")) {
+                                config_set_entry(cfg, value);
+                            }
+                        }
+
+                        // Handle [build] section
+                        if string_eq(section, string_from("build")) {
+                            if string_eq(key, string_from("output")) {
+                                config_set_output(cfg, value);
+                            }
+                            if string_eq(key, string_from("optimize")) {
+                                if string_eq(value, string_from("true")) {
+                                    config_set_optimize(cfg, 1);
+                                }
+                            }
+                            if string_eq(key, string_from("target")) {
+                                config_set_target(cfg, value);
+                            }
+                        }
+
+                        // Handle [dependencies] section
+                        if string_eq(section, string_from("dependencies")) {
+                            let deps: i64 = config_deps(cfg);
+                            let dep: i64 = malloc(16);
+                            store_ptr(dep, 0, key);
+                            store_ptr(dep, 1, value);
+                            vec_push(deps, dep);
+                        }
+
+                        // Handle [features] section
+                        if string_eq(section, string_from("features")) {
+                            let features: i64 = config_features(cfg);
+                            vec_push(features, key);
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1;
+    }
+
+    cfg
+}
+
+// Strip quotes from TOML value
+fn strip_toml_quotes(s: i64) -> i64 {
+    let len: i64 = string_len(s);
+    if len < 2 {
+        return s;
+    }
+    let first: i64 = string_char_at(s, 0);
+    let last: i64 = string_char_at(s, len - 1);
+    // Double quotes
+    if first == 34 {
+        if last == 34 {
+            return string_slice(s, 1, len - 1);
+        }
+    }
+    // Single quotes
+    if first == 39 {
+        if last == 39 {
+            return string_slice(s, 1, len - 1);
+        }
+    }
+    s
+}
+
+// Try to load simplex.toml from current directory
+fn load_project_config() -> i64 {
+    let toml_content: i64 = read_file(string_from("simplex.toml"));
+    if toml_content == 0 {
+        return 0;  // No config file
+    }
+    parse_simplex_toml(toml_content)
+}
+
+// Create a default simplex.toml file
+fn create_simplex_toml(name: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, string_from("# Simplex project configuration\n\n"));
+    sb_append(sb, string_from("[package]\n"));
+    sb_append(sb, string_from("name = \""));
+    sb_append(sb, name);
+    sb_append(sb, string_from("\"\n"));
+    sb_append(sb, string_from("version = \"0.1.0\"\n"));
+    sb_append(sb, string_from("edition = \"2025\"\n"));
+    sb_append(sb, string_from("entry = \"main.sx\"\n"));
+    sb_append(sb, string_from("\n"));
+    sb_append(sb, string_from("[build]\n"));
+    sb_append(sb, string_from("# output = \"my_binary\"\n"));
+    sb_append(sb, string_from("# optimize = true\n"));
+    sb_append(sb, string_from("# target = \"x86_64-apple-darwin\"\n"));
+    sb_append(sb, string_from("\n"));
+    sb_append(sb, string_from("[dependencies]\n"));
+    sb_append(sb, string_from("# example = \"1.0.0\"\n"));
+    sb_append(sb, string_from("# local_dep = { path = \"../other_project\" }\n"));
+    sb_append(sb, string_from("\n"));
+    sb_append(sb, string_from("[features]\n"));
+    sb_append(sb, string_from("# default = [\"std\"]\n"));
+    sb_to_string(sb)
+}
+
+// Create a starter main.sx file
+fn create_main_sx() -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, string_from("// Main entry point\n\n"));
+    sb_append(sb, string_from("fn main() -> i64 {\n"));
+    sb_append(sb, string_from("    println(\"Hello from Simplex!\");\n"));
+    sb_append(sb, string_from("    0\n"));
+    sb_append(sb, string_from("}\n"));
+    sb_to_string(sb)
+}
+
+// Command: init (create new project)
+fn cmd_init(args: i64) -> i64 {
+    let argc: i64 = vec_len(args);
+
+    // Get project name from args or use "my_project"
+    let name: i64 = string_from("my_project");
+    if argc > 2 {
+        let arg2: i64 = vec_get(args, 2);
+        // Make sure it's not a flag
+        if string_char_at(arg2, 0) != 45 {
+            name = arg2;
+        }
+    }
+
+    // Check if simplex.toml already exists
+    let existing: i64 = read_file(string_from("simplex.toml"));
+    if existing != 0 {
+        println("Error: simplex.toml already exists in this directory");
+        return 1;
+    }
+
+    // Create simplex.toml
+    let toml_content: i64 = create_simplex_toml(name);
+    write_file(string_from("simplex.toml"), toml_content);
+    println("Created simplex.toml");
+
+    // Create main.sx if it doesn't exist
+    let main_existing: i64 = read_file(string_from("main.sx"));
+    if main_existing == 0 {
+        let main_content: i64 = create_main_sx();
+        write_file(string_from("main.sx"), main_content);
+        println("Created main.sx");
+    } else {
+        println("main.sx already exists, skipping");
+    }
+
+    println("");
+    println(string_concat(string_from("Initialized project: "), name));
+    println("");
+    println("Next steps:");
+    println("  sxc build      Build the project");
+    println("  sxc run        Build and run");
+    0
+}
+
+fn show_help() -> i64 {
+    println("sxc - Simplex Compiler");
+    println("");
+    println("USAGE:");
+    println("    sxc <COMMAND> [OPTIONS] [source.sx]");
+    println("");
+    println("COMMANDS:");
+    println("    init [name] Create new project with simplex.toml");
+    println("    build       Compile to executable (uses simplex.toml)");
+    println("    compile     Compile to LLVM IR only");
+    println("    run         Compile and run immediately");
+    println("    check       Parse and type-check only");
+    println("    emit        Emit LLVM IR to stdout");
+    println("");
+    println("OPTIONS:");
+    println("    -o <file>   Output file name");
+    println("    -O          Enable optimizations");
+    println("    --emit-llvm Output LLVM IR file");
+    println("    --verbose   Show compilation details");
+    println("    -h, --help  Show this help");
+    println("    --version   Show version");
+    println("");
+    println("PROJECT FILES:");
+    println("    simplex.toml  Project configuration (package, build, deps)");
+    0
+}
+
+fn show_version() -> i64 {
+    println(string_concat(string_from("sxc "), VERSION()));
+    0
+}
+
+// Compiler options struct
+// Layout: input(0), output(1), optimize(2), emit_llvm(3), verbose(4), command(5)
+fn opts_new() -> i64 {
+    let opts: i64 = malloc(48);
+    store_ptr(opts, 0, 0);       // input file
+    store_ptr(opts, 1, 0);       // output file
+    store_i64(opts, 2, 0);       // optimize
+    store_i64(opts, 3, 0);       // emit_llvm
+    store_i64(opts, 4, 0);       // verbose
+    store_ptr(opts, 5, string_from("build"));  // command
+    opts
+}
+
+fn opts_input(opts: i64) -> i64 { load_ptr(opts, 0) }
+fn opts_output(opts: i64) -> i64 { load_ptr(opts, 1) }
+fn opts_optimize(opts: i64) -> i64 { load_i64(opts, 2) }
+fn opts_emit_llvm(opts: i64) -> i64 { load_i64(opts, 3) }
+fn opts_verbose(opts: i64) -> i64 { load_i64(opts, 4) }
+fn opts_command(opts: i64) -> i64 { load_ptr(opts, 5) }
+
+fn opts_set_input(opts: i64, v: i64) -> i64 { store_ptr(opts, 0, v); 0 }
+fn opts_set_output(opts: i64, v: i64) -> i64 { store_ptr(opts, 1, v); 0 }
+fn opts_set_optimize(opts: i64, v: i64) -> i64 { store_i64(opts, 2, v); 0 }
+fn opts_set_emit_llvm(opts: i64, v: i64) -> i64 { store_i64(opts, 3, v); 0 }
+fn opts_set_verbose(opts: i64, v: i64) -> i64 { store_i64(opts, 4, v); 0 }
+fn opts_set_command(opts: i64, v: i64) -> i64 { store_ptr(opts, 5, v); 0 }
+
+// Parse command line arguments
+fn parse_args(args: i64) -> i64 {
+    let opts: i64 = opts_new();
+    let argc: i64 = vec_len(args);
+    let i: i64 = 1;
+
+    // Get command if present
+    if argc > 1 {
+        let first: i64 = vec_get(args, 1);
+        if string_char_at(first, 0) != 45 {
+            // Not a flag, treat as command
+            if string_eq(first, string_from("build")) {
+                opts_set_command(opts, first);
+                i = 2;
+            } else {
+            if string_eq(first, string_from("compile")) {
+                opts_set_command(opts, first);
+                i = 2;
+            } else {
+            if string_eq(first, string_from("run")) {
+                opts_set_command(opts, first);
+                i = 2;
+            } else {
+            if string_eq(first, string_from("check")) {
+                opts_set_command(opts, first);
+                i = 2;
+            } else {
+            if string_eq(first, string_from("emit")) {
+                opts_set_command(opts, first);
+                i = 2;
+            } else {
+            if string_eq(first, string_from("init")) {
+                opts_set_command(opts, first);
+                i = 2;
+            } else {
+                // Could be direct source file
+                if string_ends_with(first, string_from(".sx")) {
+                    opts_set_input(opts, first);
+                    i = 2;
+                }
+            }
+            }
+            }
+            }
+            }
+            }
+        }
+    }
+
+    // Parse remaining arguments
+    while i < argc {
+        let arg: i64 = vec_get(args, i);
+
+        if string_eq(arg, string_from("-o")) {
+            i = i + 1;
+            if i < argc {
+                opts_set_output(opts, vec_get(args, i));
+            }
+        } else {
+        if string_eq(arg, string_from("-O")) {
+            opts_set_optimize(opts, 1);
+        } else {
+        if string_eq(arg, string_from("--emit-llvm")) {
+            opts_set_emit_llvm(opts, 1);
+        } else {
+        if string_eq(arg, string_from("--verbose")) {
+            opts_set_verbose(opts, 1);
+        } else {
+        if string_eq(arg, string_from("-v")) {
+            opts_set_verbose(opts, 1);
+        } else {
+        if string_ends_with(arg, string_from(".sx")) {
+            opts_set_input(opts, arg);
+        }
+        }
+        }
+        }
+        }
+        }
+
+        i = i + 1;
+    }
+
+    opts
+}
+
+// Get output filename from input
+fn get_output_name(input: i64, ext: i64) -> i64 {
+    // Remove .sx extension and add new extension
+    let len: i64 = string_len(input);
+    let base: i64 = string_slice(input, 0, len - 3);  // Remove ".sx"
+    string_concat(base, ext)
+}
+
+// ========================================
+// Multi-file Module System (Phase 33)
+// ========================================
+
+// Module info struct
+// Layout: name(0), path(1), items(2), deps(3)
+fn mod_info_new(name: i64, path: i64) -> i64 {
+    let m: i64 = malloc(32);
+    store_ptr(m, 0, name);    // module name
+    store_ptr(m, 1, path);    // file path
+    store_ptr(m, 2, 0);       // parsed items (vec)
+    store_ptr(m, 3, vec_new());  // dependencies (mod names)
+    m
+}
+
+fn mod_info_name(m: i64) -> i64 { load_ptr(m, 0) }
+fn mod_info_path(m: i64) -> i64 { load_ptr(m, 1) }
+fn mod_info_items(m: i64) -> i64 { load_ptr(m, 2) }
+fn mod_info_deps(m: i64) -> i64 { load_ptr(m, 3) }
+fn mod_info_set_items(m: i64, v: i64) -> i64 { store_ptr(m, 2, v); 0 }
+
+// Find module file from mod declaration
+// Checks: name.sx, name/mod.sx
+fn resolve_mod_path(base_dir: i64, mod_name: i64) -> i64 {
+    // Try name.sx in same directory
+    let path1: i64 = path_join(base_dir, string_concat(mod_name, string_from(".sx")));
+    if file_exists(path1) != 0 {
+        return path1;
+    }
+
+    // Try name/mod.sx (subdirectory module)
+    let subdir: i64 = path_join(base_dir, mod_name);
+    let path2: i64 = path_join(subdir, string_from("mod.sx"));
+    if file_exists(path2) != 0 {
+        return path2;
+    }
+
+    // Not found
+    0
+}
+
+// Extract mod declarations from parsed items
+// Returns vec of module names
+fn extract_mod_decls(items: i64) -> i64 {
+    let mods: i64 = vec_new();
+    let n: i64 = vec_len(items);
+    let i: i64 = 0;
+
+    while i < n {
+        let item: i64 = vec_get(items, i);
+        let tag: i64 = load_i64(item, 0);
+        // TAG_MOD = 6 (mod name;)
+        if tag == 6 {
+            let mod_name: i64 = load_ptr(item, 1);
+            vec_push(mods, mod_name);
+        }
+        i = i + 1;
+    }
+
+    mods
+}
+
+// Extract use statements from parsed items
+// Returns vec of paths (e.g., "module::item")
+fn extract_use_decls(items: i64) -> i64 {
+    let uses: i64 = vec_new();
+    let n: i64 = vec_len(items);
+    let i: i64 = 0;
+
+    while i < n {
+        let item: i64 = vec_get(items, i);
+        let tag: i64 = load_i64(item, 0);
+        // TAG_USE = 7 (use path::to::item;)
+        if tag == 7 {
+            let use_path: i64 = load_ptr(item, 1);
+            vec_push(uses, use_path);
+        }
+        i = i + 1;
+    }
+
+    uses
+}
+
+// Find all modules in project starting from entry file
+// Returns vec of mod_info structs in dependency order
+fn discover_modules(entry_path: i64, verbose: i64) -> i64 {
+    let modules: i64 = vec_new();
+    let to_process: i64 = vec_new();
+    let processed: i64 = vec_new();  // Track processed module names
+
+    // Get directory of entry file
+    let base_dir: i64 = path_dirname(entry_path);
+
+    // Start with entry module
+    let entry_name: i64 = string_from("main");
+    let entry_mod: i64 = mod_info_new(entry_name, entry_path);
+    vec_push(to_process, entry_mod);
+
+    while vec_len(to_process) > 0 {
+        // Pop first module to process
+        let current: i64 = vec_get(to_process, 0);
+        let current_name: i64 = mod_info_name(current);
+        let current_path: i64 = mod_info_path(current);
+
+        // Remove from to_process (shift remaining elements)
+        let new_to_process: i64 = vec_new();
+        let j: i64 = 1;
+        while j < vec_len(to_process) {
+            vec_push(new_to_process, vec_get(to_process, j));
+            j = j + 1;
+        }
+        to_process = new_to_process;
+
+        // Check if already processed
+        let already: i64 = 0;
+        let k: i64 = 0;
+        while k < vec_len(processed) {
+            if string_eq(vec_get(processed, k), current_name) {
+                already = 1;
+            }
+            k = k + 1;
+        }
+
+        if already == 0 {
+            vec_push(processed, current_name);
+
+            if verbose != 0 {
+                println(string_concat(string_from("  Processing module: "), current_name));
+            }
+
+            // Read and parse the module
+            let source: i64 = read_file(current_path);
+            if source != 0 {
+                let tokens: i64 = tokenize(source);
+                let parse_result: i64 = parse_program(tokens);
+                let items: i64 = parse_result_items(parse_result);
+                let errors: i64 = parse_result_errors(parse_result);
+
+                if errors == 0 {
+                    mod_info_set_items(current, items);
+
+                    // Find mod declarations and add them to process list
+                    let mod_decls: i64 = extract_mod_decls(items);
+                    let deps: i64 = mod_info_deps(current);
+                    let m: i64 = 0;
+
+                    // Get directory for this module's submodules
+                    let mod_dir: i64 = path_dirname(current_path);
+
+                    while m < vec_len(mod_decls) {
+                        let dep_name: i64 = vec_get(mod_decls, m);
+                        vec_push(deps, dep_name);
+
+                        // Resolve the dependency path
+                        let dep_path: i64 = resolve_mod_path(mod_dir, dep_name);
+                        if dep_path != 0 {
+                            let dep_mod: i64 = mod_info_new(dep_name, dep_path);
+                            vec_push(to_process, dep_mod);
+                        } else {
+                            if verbose != 0 {
+                                println(string_concat(string_from("  Warning: Cannot find module: "), dep_name));
+                            }
+                        }
+                        m = m + 1;
+                    }
+                } else {
+                    println(string_concat(string_from("Parse errors in: "), current_path));
+                }
+
+                // Add to modules list
+                vec_push(modules, current);
+            } else {
+                println(string_concat(string_from("Cannot read: "), current_path));
+            }
+        }
+    }
+
+    modules
+}
+
+// Combine items from all modules with module name prefixing
+fn combine_module_items(modules: i64) -> i64 {
+    let all_items: i64 = vec_new();
+    let n: i64 = vec_len(modules);
+    let i: i64 = 0;
+
+    while i < n {
+        let m: i64 = vec_get(modules, i);
+        let mod_name: i64 = mod_info_name(m);
+        let items: i64 = mod_info_items(m);
+
+        if items != 0 {
+            let j: i64 = 0;
+            let item_count: i64 = vec_len(items);
+            while j < item_count {
+                let item: i64 = vec_get(items, j);
+                // Add item to combined list
+                // In the future, we would prefix names with module path
+                vec_push(all_items, item);
+                j = j + 1;
+            }
+        }
+        i = i + 1;
+    }
+
+    all_items
+}
+
+// Compile multi-file project
+fn compile_project(entry_path: i64, verbose: i64) -> i64 {
+    if verbose != 0 {
+        println("Discovering modules...");
+    }
+
+    // Discover all modules
+    let modules: i64 = discover_modules(entry_path, verbose);
+
+    if verbose != 0 {
+        let mod_count: i64 = vec_len(modules);
+        println(string_concat(string_from("  Found "), string_concat(int_to_string(mod_count), string_from(" module(s)"))));
+    }
+
+    // If only one module (main), use simple compilation
+    if vec_len(modules) == 1 {
+        return compile_file(entry_path, verbose);
+    }
+
+    // Multiple modules: combine and generate
+    if verbose != 0 {
+        println("Combining modules...");
+    }
+
+    let all_items: i64 = combine_module_items(modules);
+
+    if verbose != 0 {
+        let item_count: i64 = vec_len(all_items);
+        println(string_concat(string_from("  Total items: "), int_to_string(item_count)));
+        println("Generating code...");
+    }
+
+    let llvm_ir: i64 = gen_program(all_items);
+
+    if verbose != 0 {
+        println("Code generation complete");
+    }
+
+    llvm_ir
+}
+
+// Compile source file to LLVM IR
+fn compile_file(source_path: i64, verbose: i64) -> i64 {
+    if verbose != 0 {
+        println(string_concat(string_from("Reading: "), source_path));
+    }
+
+    let source: i64 = read_file(source_path);
+    if source == 0 {
+        println(string_concat(string_from("Error: Cannot read file: "), source_path));
+        return 0;
+    }
+
+    if verbose != 0 {
+        println("Tokenizing...");
+    }
+
+    let tokens: i64 = tokenize(source);
+
+    if verbose != 0 {
+        let token_count: i64 = vec_len(tokens);
+        println(string_concat(string_from("  Tokens: "), int_to_string(token_count)));
+        println("Parsing...");
+    }
+
+    let parse_result: i64 = parse_program(tokens);
+    let items: i64 = parse_result_items(parse_result);
+    let errors: i64 = parse_result_errors(parse_result);
+
+    if errors > 0 {
+        println(string_concat(string_from("Parse errors: "), int_to_string(errors)));
+        return 0;
+    }
+
+    if verbose != 0 {
+        let item_count: i64 = vec_len(items);
+        println(string_concat(string_from("  Items: "), int_to_string(item_count)));
+        println("Generating code...");
+    }
+
+    let llvm_ir: i64 = gen_program(items);
+
+    if verbose != 0 {
+        println("Code generation complete");
+    }
+
+    llvm_ir
+}
+
+// Command: check (parse and type-check only)
+fn cmd_check(opts: i64) -> i64 {
+    let input: i64 = opts_input(opts);
+    if input == 0 {
+        println("Error: No input file specified");
+        return 1;
+    }
+
+    let source: i64 = read_file(input);
+    if source == 0 {
+        println(string_concat(string_from("Error: Cannot read file: "), input));
+        return 1;
+    }
+
+    let tokens: i64 = tokenize(source);
+    let parse_result: i64 = parse_program(tokens);
+    let errors: i64 = parse_result_errors(parse_result);
+
+    if errors > 0 {
+        println(string_concat(string_from("Found "), int_to_string(errors)));
+        println(" parse errors");
+        return 1;
+    }
+
+    println(string_concat(input, string_from(": OK")));
+    0
+}
+
+// Command: compile (to LLVM IR only)
+fn cmd_compile(opts: i64) -> i64 {
+    let input: i64 = opts_input(opts);
+    if input == 0 {
+        println("Error: No input file specified");
+        return 1;
+    }
+
+    let verbose: i64 = opts_verbose(opts);
+    let llvm_ir: i64 = compile_file(input, verbose);
+
+    if llvm_ir == 0 {
+        return 1;
+    }
+
+    // Determine output file
+    let output: i64 = opts_output(opts);
+    if output == 0 {
+        output = get_output_name(input, string_from(".ll"));
+    }
+
+    write_file(output, llvm_ir);
+    println(string_concat(string_from("Wrote: "), output));
+
+    0
+}
+
+// Command: emit (output LLVM IR to stdout)
+fn cmd_emit(opts: i64) -> i64 {
+    let input: i64 = opts_input(opts);
+    if input == 0 {
+        println("Error: No input file specified");
+        return 1;
+    }
+
+    let llvm_ir: i64 = compile_file(input, 0);
+    if llvm_ir == 0 {
+        return 1;
+    }
+
+    print(llvm_ir);
+    0
+}
+
+// Command: build (compile and link to executable)
+fn cmd_build(opts: i64) -> i64 {
+    let verbose: i64 = opts_verbose(opts);
+
+    // Try to load project config from simplex.toml
+    let cfg: i64 = load_project_config();
+    let using_toml: i64 = 0;
+
+    // Determine input file
+    let input: i64 = opts_input(opts);
+    if input == 0 {
+        if cfg != 0 {
+            // Use entry from simplex.toml
+            input = config_entry(cfg);
+            using_toml = 1;
+        } else {
+            println("Error: No input file specified");
+            println("Either provide a .sx file or create simplex.toml with 'sxc init'");
+            return 1;
+        }
+    }
+
+    if verbose != 0 {
+        if using_toml != 0 {
+            println(string_concat(string_from("Using project: "), config_name(cfg)));
+            println(string_concat(string_from("  Version: "), config_version(cfg)));
+            println(string_concat(string_from("  Entry: "), input));
+        }
+    }
+
+    // Compile to LLVM IR (with multi-file module support)
+    let llvm_ir: i64 = compile_project(input, verbose);
+    if llvm_ir == 0 {
+        return 1;
+    }
+
+    // Write LLVM IR file
+    let ll_file: i64 = get_output_name(input, string_from(".ll"));
+    write_file(ll_file, llvm_ir);
+
+    if verbose != 0 {
+        println(string_concat(string_from("Wrote: "), ll_file));
+    }
+
+    // Determine output executable name
+    let output: i64 = opts_output(opts);
+    if output == 0 {
+        // Check simplex.toml for output name
+        if cfg != 0 {
+            output = config_output(cfg);
+        }
+        if output == 0 {
+            // Derive from project name or input file
+            if cfg != 0 {
+                output = config_name(cfg);
+            } else {
+                output = get_output_name(input, string_from(""));
+            }
+        }
+    }
+
+    // Determine optimization level
+    let optimize: i64 = opts_optimize(opts);
+    if optimize == 0 {
+        if cfg != 0 {
+            optimize = config_optimize(cfg);
+        }
+    }
+
+    // Build clang command
+    let cmd: i64 = string_from("clang ");
+    if optimize != 0 {
+        cmd = string_concat(cmd, string_from("-O2 "));
+    } else {
+        cmd = string_concat(cmd, string_from("-O0 "));
+    }
+    cmd = string_concat(cmd, ll_file);
+    cmd = string_concat(cmd, string_from(" standalone_runtime.c -lssl -lcrypto -lsqlite3 -o "));
+    cmd = string_concat(cmd, output);
+
+    if verbose != 0 {
+        println(string_concat(string_from("Running: "), cmd));
+    }
+
+    let result: i64 = process_run(cmd);
+    if result != 0 {
+        println("Error: Linking failed");
+        return 1;
+    }
+
+    println(string_concat(string_from("Built: "), output));
+
+    // Clean up .ll file unless --emit-llvm was specified
+    if opts_emit_llvm(opts) == 0 {
+        // Would delete ll_file here if we had unlink
+    }
+
+    0
+}
+
+// Command: run (compile, link, and execute)
+fn cmd_run(opts: i64) -> i64 {
+    let input: i64 = opts_input(opts);
+    if input == 0 {
+        println("Error: No input file specified");
+        return 1;
+    }
+
+    let verbose: i64 = opts_verbose(opts);
+
+    // Compile to LLVM IR
+    let llvm_ir: i64 = compile_file(input, verbose);
+    if llvm_ir == 0 {
+        return 1;
+    }
+
+    // Write LLVM IR file
+    let ll_file: i64 = get_output_name(input, string_from(".ll"));
+    write_file(ll_file, llvm_ir);
+
+    // Create temporary output name
+    let output: i64 = string_from("/tmp/sxc_run_temp");
+
+    // Build clang command
+    let cmd: i64 = string_from("clang -O0 ");
+    cmd = string_concat(cmd, ll_file);
+    cmd = string_concat(cmd, string_from(" standalone_runtime.c -lssl -lcrypto -lsqlite3 -o "));
+    cmd = string_concat(cmd, output);
+
+    if verbose != 0 {
+        println(string_concat(string_from("Compiling: "), cmd));
+    }
+
+    let result: i64 = process_run(cmd);
+    if result != 0 {
+        println("Error: Compilation failed");
+        return 1;
+    }
+
+    if verbose != 0 {
+        println("Running...");
+        println("---");
+    }
+
+    // Execute the program
+    result = process_run(output);
+
+    if verbose != 0 {
+        println("---");
+        println(string_concat(string_from("Exit code: "), int_to_string(result)));
+    }
+
+    result
+}
+
+fn main() -> i64 {
+    let args: i64 = get_args();
+    let argc: i64 = vec_len(args);
+
+    if argc < 2 {
+        show_help();
+        return 1;
+    }
+
+    // Check for help/version flags first
+    let first: i64 = vec_get(args, 1);
+    if string_eq(first, string_from("-h")) {
+        show_help();
+        return 0;
+    }
+    if string_eq(first, string_from("--help")) {
+        show_help();
+        return 0;
+    }
+    if string_eq(first, string_from("--version")) {
+        show_version();
+        return 0;
+    }
+    if string_eq(first, string_from("version")) {
+        show_version();
+        return 0;
+    }
+
+    // Parse arguments
+    let opts: i64 = parse_args(args);
+    let command: i64 = opts_command(opts);
+
+    // Dispatch to command
+    if string_eq(command, string_from("init")) {
+        return cmd_init(args);
+    }
+    if string_eq(command, string_from("check")) {
+        return cmd_check(opts);
+    }
+    if string_eq(command, string_from("compile")) {
+        return cmd_compile(opts);
+    }
+    if string_eq(command, string_from("emit")) {
+        return cmd_emit(opts);
+    }
+    if string_eq(command, string_from("run")) {
+        return cmd_run(opts);
+    }
+    if string_eq(command, string_from("build")) {
+        return cmd_build(opts);
+    }
+
+    // Default: try to build if we have an input file
+    if opts_input(opts) != 0 {
+        return cmd_build(opts);
+    }
+
+    println(string_concat(string_from("Unknown command: "), command));
+    show_help();
+    1
+}

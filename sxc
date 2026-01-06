@@ -1,0 +1,273 @@
+#!/bin/bash
+#
+# sxc - Simplex Compiler
+#
+# Usage:
+#   sxc build <source.sx> [-o output]    Compile to native executable
+#   sxc compile <source.sx>              Compile to LLVM IR only
+#   sxc run <source.sx>                  Compile and run immediately
+#   sxc version                          Show version
+#   sxc help                             Show this help
+#
+
+set -e
+
+VERSION="0.3.1"
+
+# Find the directory where sxc is installed
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COMPILER="$SCRIPT_DIR/sxc-compile"
+RUNTIME="$SCRIPT_DIR/standalone_runtime.c"
+
+# Check for runtime in alternate locations
+if [ ! -f "$RUNTIME" ]; then
+    RUNTIME="$SCRIPT_DIR/../runtime/standalone_runtime.c"
+fi
+if [ ! -f "$RUNTIME" ]; then
+    RUNTIME="$SCRIPT_DIR/runtime/standalone_runtime.c"
+fi
+
+# Detect platform and set library flags
+detect_platform() {
+    case "$(uname -s)" in
+        Darwin*)
+            PLATFORM="macos"
+            # Try to find OpenSSL from Homebrew
+            if command -v brew >/dev/null 2>&1; then
+                OPENSSL_PREFIX=$(brew --prefix openssl@3 2>/dev/null || brew --prefix openssl 2>/dev/null || echo "")
+                if [ -n "$OPENSSL_PREFIX" ]; then
+                    LIBS="-lm -L$OPENSSL_PREFIX/lib -lssl -lcrypto -lsqlite3"
+                    INCLUDES="-I$OPENSSL_PREFIX/include"
+                else
+                    LIBS="-lm -lssl -lcrypto -lsqlite3"
+                    INCLUDES=""
+                fi
+            else
+                LIBS="-lm -lssl -lcrypto -lsqlite3"
+                INCLUDES=""
+            fi
+            ;;
+        Linux*)
+            PLATFORM="linux"
+            LIBS="-lm -lssl -lcrypto -lsqlite3 -lpthread"
+            INCLUDES=""
+            ;;
+        MINGW*|MSYS*|CYGWIN*)
+            PLATFORM="windows"
+            LIBS="-lm -lssl -lcrypto -lsqlite3"
+            INCLUDES=""
+            ;;
+        *)
+            PLATFORM="unknown"
+            LIBS="-lm"
+            INCLUDES=""
+            ;;
+    esac
+}
+
+show_help() {
+    echo "sxc - Simplex Compiler v$VERSION"
+    echo ""
+    echo "Usage:"
+    echo "  sxc build <source.sx> [-o output]    Compile to native executable"
+    echo "  sxc compile <source.sx>              Compile to LLVM IR (.ll)"
+    echo "  sxc run <source.sx>                  Compile and run immediately"
+    echo "  sxc version                          Show version"
+    echo "  sxc help                             Show this help"
+    echo ""
+    echo "Examples:"
+    echo "  sxc build hello.sx                   Creates ./hello executable"
+    echo "  sxc build hello.sx -o myapp          Creates ./myapp executable"
+    echo "  sxc run hello.sx                     Compiles and runs hello.sx"
+    echo ""
+}
+
+show_version() {
+    echo "sxc $VERSION"
+    echo "Simplex Compiler (self-hosted)"
+    echo "Platform: $PLATFORM"
+}
+
+cmd_compile() {
+    local SOURCE="$1"
+
+    if [ -z "$SOURCE" ]; then
+        echo "Error: No source file specified"
+        echo "Usage: sxc compile <source.sx>"
+        exit 1
+    fi
+
+    if [ ! -f "$SOURCE" ]; then
+        echo "Error: Source file not found: $SOURCE"
+        exit 1
+    fi
+
+    "$COMPILER" "$SOURCE"
+}
+
+cmd_build() {
+    local SOURCE=""
+    local OUTPUT=""
+
+    # Parse arguments
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -o)
+                shift
+                OUTPUT="$1"
+                ;;
+            -*)
+                echo "Error: Unknown option $1"
+                exit 1
+                ;;
+            *)
+                if [ -z "$SOURCE" ]; then
+                    SOURCE="$1"
+                else
+                    echo "Error: Multiple source files not supported"
+                    exit 1
+                fi
+                ;;
+        esac
+        shift
+    done
+
+    if [ -z "$SOURCE" ]; then
+        echo "Error: No source file specified"
+        echo "Usage: sxc build <source.sx> [-o output]"
+        exit 1
+    fi
+
+    if [ ! -f "$SOURCE" ]; then
+        echo "Error: Source file not found: $SOURCE"
+        exit 1
+    fi
+
+    # Determine output name
+    if [ -z "$OUTPUT" ]; then
+        OUTPUT="${SOURCE%.sx}"
+    fi
+
+    # Check for runtime
+    if [ ! -f "$RUNTIME" ]; then
+        echo "Error: Runtime not found at $RUNTIME"
+        echo "Please ensure standalone_runtime.c is in the same directory as sxc"
+        exit 1
+    fi
+
+    # Check for clang
+    if ! command -v clang >/dev/null 2>&1; then
+        echo "Error: clang not found"
+        echo "Please install LLVM/Clang to compile Simplex programs"
+        exit 1
+    fi
+
+    # Compile to LLVM IR
+    LL_FILE="${SOURCE%.sx}.ll"
+    "$COMPILER" "$SOURCE"
+
+    if [ ! -f "$LL_FILE" ]; then
+        echo "Error: Compilation failed - no .ll file generated"
+        exit 1
+    fi
+
+    # Link with clang
+    detect_platform
+    clang -O2 $INCLUDES "$LL_FILE" "$RUNTIME" -o "$OUTPUT" $LIBS 2>&1
+
+    if [ $? -eq 0 ]; then
+        # Clean up .ll file
+        rm -f "$LL_FILE"
+        echo "Built: $OUTPUT"
+    else
+        echo "Error: Linking failed"
+        exit 1
+    fi
+}
+
+cmd_run() {
+    local SOURCE="$1"
+
+    if [ -z "$SOURCE" ]; then
+        echo "Error: No source file specified"
+        echo "Usage: sxc run <source.sx>"
+        exit 1
+    fi
+
+    if [ ! -f "$SOURCE" ]; then
+        echo "Error: Source file not found: $SOURCE"
+        exit 1
+    fi
+
+    # Create temp directory for build
+    TMPDIR=$(mktemp -d)
+    trap "rm -rf $TMPDIR" EXIT
+
+    # Build to temp location
+    OUTPUT="$TMPDIR/program"
+
+    # Compile to LLVM IR
+    LL_FILE="${SOURCE%.sx}.ll"
+    "$COMPILER" "$SOURCE"
+
+    if [ ! -f "$LL_FILE" ]; then
+        echo "Error: Compilation failed"
+        exit 1
+    fi
+
+    # Link
+    detect_platform
+    clang -O2 $INCLUDES "$LL_FILE" "$RUNTIME" -o "$OUTPUT" $LIBS 2>&1
+
+    if [ $? -ne 0 ]; then
+        echo "Error: Linking failed"
+        exit 1
+    fi
+
+    # Clean up .ll file
+    rm -f "$LL_FILE"
+
+    # Run the program
+    "$OUTPUT"
+}
+
+# Main entry point
+if [ $# -lt 1 ]; then
+    show_help
+    exit 0
+fi
+
+COMMAND="$1"
+shift
+
+case "$COMMAND" in
+    build)
+        detect_platform
+        cmd_build "$@"
+        ;;
+    compile)
+        cmd_compile "$@"
+        ;;
+    run)
+        detect_platform
+        cmd_run "$@"
+        ;;
+    version|--version|-v)
+        detect_platform
+        show_version
+        ;;
+    help|--help|-h)
+        show_help
+        ;;
+    *)
+        # If it's a .sx file, assume 'build' command
+        if [[ "$COMMAND" == *.sx ]]; then
+            detect_platform
+            cmd_build "$COMMAND" "$@"
+        else
+            echo "Error: Unknown command '$COMMAND'"
+            echo "Run 'sxc help' for usage"
+            exit 1
+        fi
+        ;;
+esac

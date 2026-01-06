@@ -1,6 +1,6 @@
 # Simplex Swarm Computing
 
-**Version 0.2.0**
+**Version 0.1.0**
 
 A Simplex swarm is a collection of SVM nodes that cooperate to execute distributed programs.
 

@@ -1,13 +1,14 @@
-// Minimal Simplex Lexer
-// CONSTRAINT: Only uses features stage1 supports
-// No: impl, self, for, match, traits, generics
+// Simplex Lexer
+// Self-hosted lexer with full token support for all language features
 
 // Token types as enum
 enum TokenKind {
     Eof,
     Ident,
     Int,
+    Float,
     String,
+    FString,   // f"..." interpolated string
     LParen,
     RParen,
     LBrace,
@@ -60,7 +61,29 @@ enum TokenKind {
     LtLt,
     GtGt,
     KwBreak,
-    KwContinue
+    KwContinue,
+    Question,
+    KwTrait,
+    KwType,
+    KwUse,
+    KwMod,
+    KwConst,
+    KwAsync,
+    KwAwait,
+    KwYield,
+    KwDyn,
+    // Actor model keywords
+    KwActor,
+    KwReceive,
+    KwInit,
+    // AI/Cognitive keywords
+    KwSpecialist,
+    KwInfer,
+    KwHive,
+    // Mutable binding
+    KwVar,
+    // Spawn expression
+    KwSpawn
 }
 
 // Lexer state - we pass this to all functions instead of using self
@@ -204,6 +227,27 @@ fn check_keyword(text: i64) -> i64 {
     if string_eq(text, "match") { return TokenKind::KwMatch; }
     if string_eq(text, "break") { return TokenKind::KwBreak; }
     if string_eq(text, "continue") { return TokenKind::KwContinue; }
+    if string_eq(text, "trait") { return TokenKind::KwTrait; }
+    if string_eq(text, "type") { return TokenKind::KwType; }
+    if string_eq(text, "use") { return TokenKind::KwUse; }
+    if string_eq(text, "mod") { return TokenKind::KwMod; }
+    if string_eq(text, "const") { return TokenKind::KwConst; }
+    if string_eq(text, "async") { return TokenKind::KwAsync; }
+    if string_eq(text, "await") { return TokenKind::KwAwait; }
+    if string_eq(text, "yield") { return TokenKind::KwYield; }
+    if string_eq(text, "dyn") { return TokenKind::KwDyn; }
+    // Actor model keywords
+    if string_eq(text, "actor") { return TokenKind::KwActor; }
+    if string_eq(text, "receive") { return TokenKind::KwReceive; }
+    if string_eq(text, "init") { return TokenKind::KwInit; }
+    // AI/Cognitive keywords
+    if string_eq(text, "specialist") { return TokenKind::KwSpecialist; }
+    if string_eq(text, "infer") { return TokenKind::KwInfer; }
+    if string_eq(text, "hive") { return TokenKind::KwHive; }
+    // Mutable binding
+    if string_eq(text, "var") { return TokenKind::KwVar; }
+    // Spawn expression
+    if string_eq(text, "spawn") { return TokenKind::KwSpawn; }
     if string_eq(text, "_") { return TokenKind::Underscore; }
     return TokenKind::Ident;
 }
@@ -293,6 +337,11 @@ fn lexer_next_token(lexer: i64) -> i64 {
         return token_new(TokenKind::Bang, string_from("!"), start);
     }
 
+    // ? for try/error propagation
+    if c == 63 {
+        return token_new(TokenKind::Question, string_from("?"), start);
+    }
+
     if c == 60 {
         if lexer_peek(lexer) == 61 {
             lexer_advance(lexer);
@@ -325,6 +374,58 @@ fn lexer_next_token(lexer: i64) -> i64 {
         return token_new(TokenKind::Slash, string_from("/"), start);
     }
 
+    // f-string literals: f"..." with {expr} interpolation
+    // Check for 'f' followed by '"'
+    if c == 102 {
+        if lexer_peek(lexer) == 34 {
+            lexer_advance(lexer);  // consume the opening "
+            let text: i64 = string_from("");
+            while lexer_peek(lexer) != 34 {
+                if lexer_at_end(lexer) {
+                    return token_new(TokenKind::Eof, string_from(""), start);
+                }
+                let sc: i64 = lexer_advance(lexer);
+                // Handle escape sequences
+                if sc == 92 {
+                    if lexer_at_end(lexer) == false {
+                        let esc: i64 = lexer_advance(lexer);
+                        if esc == 110 {
+                            text = string_concat(text, string_from_char(10));
+                        } else {
+                            if esc == 116 {
+                                text = string_concat(text, string_from_char(9));
+                            } else {
+                                if esc == 34 {
+                                    text = string_concat(text, string_from_char(34));
+                                } else {
+                                    if esc == 92 {
+                                        text = string_concat(text, string_from_char(92));
+                                    } else {
+                                        if esc == 123 {
+                                            // \{ -> literal brace
+                                            text = string_concat(text, string_from_char(123));
+                                        } else {
+                                            if esc == 125 {
+                                                // \} -> literal brace
+                                                text = string_concat(text, string_from_char(125));
+                                            } else {
+                                                text = string_concat(text, string_from_char(esc));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    text = string_concat(text, string_from_char(sc));
+                }
+            }
+            lexer_advance(lexer);  // consume closing "
+            return token_new(TokenKind::FString, text, start);
+        }
+    }
+
     // Identifiers and keywords
     if is_ident_start(c) {
         while is_ident_continue(lexer_peek(lexer)) {
@@ -336,10 +437,34 @@ fn lexer_next_token(lexer: i64) -> i64 {
         return token_new(kind, text, start);
     }
 
-    // Numbers
+    // Numbers (int or float)
     if is_digit(c) {
         while is_digit(lexer_peek(lexer)) {
             lexer_advance(lexer);
+        }
+        // Check for decimal point followed by digits (float)
+        if lexer_peek(lexer) == 46 {
+            // Look ahead to see if there's a digit after the dot
+            let saved_pos: i64 = lexer_pos(lexer);
+            lexer_advance(lexer);  // consume .
+            if is_digit(lexer_peek(lexer)) {
+                // It's a float
+                while is_digit(lexer_peek(lexer)) {
+                    lexer_advance(lexer);
+                }
+                let end: i64 = lexer_pos(lexer);
+                let text: i64 = string_slice(lexer_source(lexer), start, end);
+                return token_new(TokenKind::Float, text, start);
+            } else {
+                // Not a float, backtrack (it's an int followed by a dot)
+                // We need to restore position - but our simple lexer doesn't support this well
+                // So just return the int up to the dot
+                let end: i64 = saved_pos;
+                let text: i64 = string_slice(lexer_source(lexer), start, end);
+                // Reset position to before the dot (lexer_pos is now at saved_pos+1, we need saved_pos)
+                store_i64(lexer, 1, saved_pos);
+                return token_new(TokenKind::Int, text, start);
+            }
         }
         let end: i64 = lexer_pos(lexer);
         let text: i64 = string_slice(lexer_source(lexer), start, end);

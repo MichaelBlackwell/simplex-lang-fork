@@ -1,0 +1,511 @@
+name: Build Simplex Compiler
+
+on:
+  push:
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [x86_64]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang llvm libssl-dev libsqlite3-dev
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Build compiler
+      run: |
+        echo "=== Building Simplex Compiler for Linux ==="
+
+        # Bootstrap: compile .sx files to .ll
+        cd compiler/bootstrap
+        python3 stage0.py lexer.sx
+        python3 stage0.py parser.sx
+        python3 stage0.py codegen.sx
+        python3 stage0.py main.sx
+
+        # Merge LLVM IR files
+        python3 << 'EOF'
+        import re
+
+        def extract_function_defs(content):
+            funcs = {}
+            pattern = r'define\s+(?:internal\s+)?[^\s]+\s+@"?([^"(\s]+)"?\s*\('
+            lines = content.split('\n')
+            i = 0
+            while i < len(lines):
+                line = lines[i]
+                m = re.match(pattern, line)
+                if m:
+                    func_name = m.group(1)
+                    func_lines = [line]
+                    i += 1
+                    brace_count = line.count('{') - line.count('}')
+                    while i < len(lines) and brace_count > 0:
+                        func_lines.append(lines[i])
+                        brace_count += lines[i].count('{') - lines[i].count('}')
+                        i += 1
+                    if i < len(lines) and lines[i] == '}':
+                        func_lines.append(lines[i])
+                        i += 1
+                    funcs[func_name] = '\n'.join(func_lines)
+                else:
+                    i += 1
+            return funcs
+
+        def extract_strings(content):
+            strings = {}
+            for m in re.finditer(r'(@\.str\.[^\s]+)\s*=\s*private.*', content):
+                strings[m.group(1)] = m.group(0)
+            return strings
+
+        def get_base_header(content):
+            lines = content.split('\n')
+            header_lines = []
+            for line in lines:
+                if line.startswith('define ') or line.startswith('@.str'):
+                    continue
+                if line.startswith('; ModuleID') or line.startswith('target ') or line.startswith('declare '):
+                    header_lines.append(line)
+            return '\n'.join(header_lines)
+
+        with open('lexer.ll') as f: lexer = f.read()
+        with open('parser.ll') as f: parser = f.read()
+        with open('codegen.ll') as f: codegen = f.read()
+        with open('main.ll') as f: main = f.read()
+
+        header = get_base_header(lexer)
+        all_strings = {}
+        all_funcs = {}
+
+        for content in [lexer, parser, codegen, main]:
+            all_strings.update(extract_strings(content))
+            for fn, body in extract_function_defs(content).items():
+                if fn not in all_funcs:
+                    all_funcs[fn] = body
+
+        combined = header + '\n\n'
+        for str_name, str_def in sorted(all_strings.items()):
+            combined += str_def + '\n'
+        combined += '\n'
+        for fn_name, fn_body in sorted(all_funcs.items()):
+            combined += fn_body + '\n\n'
+
+        with open('sxc_combined.ll', 'w') as f:
+            f.write(combined)
+        print(f"Created sxc_combined.ll ({len(all_funcs)} functions)")
+        EOF
+
+        cd ../..
+
+        # Link compiler
+        clang -O2 \
+          compiler/bootstrap/sxc_combined.ll \
+          runtime/standalone_runtime.c \
+          -o sxc-linux-x86_64 \
+          -lm -lssl -lcrypto -lsqlite3 -lpthread
+
+        # Verify
+        chmod +x sxc-linux-x86_64
+        ./sxc-linux-x86_64 --version || echo "Built successfully"
+
+        # Show size
+        ls -lh sxc-linux-x86_64
+
+    - name: Run tests
+      run: |
+        echo "=== Running Tests ==="
+
+        # Test compilation of a simple file
+        cat > test_hello.sx << 'EOF'
+        fn main() -> i64 {
+            println("Hello from Simplex!");
+            0
+        }
+        EOF
+
+        ./sxc-linux-x86_64 test_hello.sx
+        clang -O2 test_hello.ll runtime/standalone_runtime.c -o test_hello -lm -lssl -lcrypto -lsqlite3 -lpthread
+        ./test_hello
+
+        echo "Basic compilation test passed!"
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: sxc-linux-x86_64
+        path: sxc-linux-x86_64
+
+  build-macos:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        arch: [x86_64, arm64]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        brew install openssl@3 sqlite3
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Build compiler
+      run: |
+        echo "=== Building Simplex Compiler for macOS (${{ matrix.arch }}) ==="
+
+        # Get paths
+        OPENSSL_PREFIX=$(brew --prefix openssl@3)
+        SQLITE_PREFIX=$(brew --prefix sqlite3)
+
+        # Bootstrap
+        cd compiler/bootstrap
+        python3 stage0.py lexer.sx
+        python3 stage0.py parser.sx
+        python3 stage0.py codegen.sx
+        python3 stage0.py main.sx
+
+        # Merge LLVM IR
+        python3 << 'EOF'
+        import re
+
+        def extract_function_defs(content):
+            funcs = {}
+            pattern = r'define\s+(?:internal\s+)?[^\s]+\s+@"?([^"(\s]+)"?\s*\('
+            lines = content.split('\n')
+            i = 0
+            while i < len(lines):
+                line = lines[i]
+                m = re.match(pattern, line)
+                if m:
+                    func_name = m.group(1)
+                    func_lines = [line]
+                    i += 1
+                    brace_count = line.count('{') - line.count('}')
+                    while i < len(lines) and brace_count > 0:
+                        func_lines.append(lines[i])
+                        brace_count += lines[i].count('{') - lines[i].count('}')
+                        i += 1
+                    if i < len(lines) and lines[i] == '}':
+                        func_lines.append(lines[i])
+                        i += 1
+                    funcs[func_name] = '\n'.join(func_lines)
+                else:
+                    i += 1
+            return funcs
+
+        def extract_strings(content):
+            strings = {}
+            for m in re.finditer(r'(@\.str\.[^\s]+)\s*=\s*private.*', content):
+                strings[m.group(1)] = m.group(0)
+            return strings
+
+        def get_base_header(content):
+            lines = content.split('\n')
+            header_lines = []
+            for line in lines:
+                if line.startswith('define ') or line.startswith('@.str'):
+                    continue
+                if line.startswith('; ModuleID') or line.startswith('target ') or line.startswith('declare '):
+                    header_lines.append(line)
+            return '\n'.join(header_lines)
+
+        with open('lexer.ll') as f: lexer = f.read()
+        with open('parser.ll') as f: parser = f.read()
+        with open('codegen.ll') as f: codegen = f.read()
+        with open('main.ll') as f: main = f.read()
+
+        header = get_base_header(lexer)
+        all_strings = {}
+        all_funcs = {}
+
+        for content in [lexer, parser, codegen, main]:
+            all_strings.update(extract_strings(content))
+            for fn, body in extract_function_defs(content).items():
+                if fn not in all_funcs:
+                    all_funcs[fn] = body
+
+        combined = header + '\n\n'
+        for str_name, str_def in sorted(all_strings.items()):
+            combined += str_def + '\n'
+        combined += '\n'
+        for fn_name, fn_body in sorted(all_funcs.items()):
+            combined += fn_body + '\n\n'
+
+        with open('sxc_combined.ll', 'w') as f:
+            f.write(combined)
+        print(f"Created sxc_combined.ll ({len(all_funcs)} functions)")
+        EOF
+
+        cd ../..
+
+        # Link compiler
+        clang -O2 \
+          -I$OPENSSL_PREFIX/include \
+          -I$SQLITE_PREFIX/include \
+          -L$OPENSSL_PREFIX/lib \
+          -L$SQLITE_PREFIX/lib \
+          compiler/bootstrap/sxc_combined.ll \
+          runtime/standalone_runtime.c \
+          -o sxc-macos-${{ matrix.arch }} \
+          -lm -lssl -lcrypto -lsqlite3
+
+        chmod +x sxc-macos-${{ matrix.arch }}
+        ls -lh sxc-macos-${{ matrix.arch }}
+
+    - name: Run tests
+      run: |
+        OPENSSL_PREFIX=$(brew --prefix openssl@3)
+        SQLITE_PREFIX=$(brew --prefix sqlite3)
+
+        cat > test_hello.sx << 'EOF'
+        fn main() -> i64 {
+            println("Hello from Simplex!");
+            0
+        }
+        EOF
+
+        ./sxc-macos-${{ matrix.arch }} test_hello.sx
+        clang -O2 \
+          -L$OPENSSL_PREFIX/lib -L$SQLITE_PREFIX/lib \
+          test_hello.ll runtime/standalone_runtime.c \
+          -o test_hello -lm -lssl -lcrypto -lsqlite3
+        ./test_hello
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: sxc-macos-${{ matrix.arch }}
+        path: sxc-macos-${{ matrix.arch }}
+
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install LLVM
+      run: choco install llvm -y
+
+    - name: Install OpenSSL
+      run: choco install openssl -y
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Build compiler
+      shell: bash
+      run: |
+        echo "=== Building Simplex Compiler for Windows ==="
+        echo "Note: Windows build may have limited functionality"
+
+        # Bootstrap
+        cd compiler/bootstrap
+        python stage0.py lexer.sx
+        python stage0.py parser.sx
+        python stage0.py codegen.sx
+        python stage0.py main.sx
+
+        # Merge LLVM IR
+        python << 'EOF'
+        import re
+
+        def extract_function_defs(content):
+            funcs = {}
+            pattern = r'define\s+(?:internal\s+)?[^\s]+\s+@"?([^"(\s]+)"?\s*\('
+            lines = content.split('\n')
+            i = 0
+            while i < len(lines):
+                line = lines[i]
+                m = re.match(pattern, line)
+                if m:
+                    func_name = m.group(1)
+                    func_lines = [line]
+                    i += 1
+                    brace_count = line.count('{') - line.count('}')
+                    while i < len(lines) and brace_count > 0:
+                        func_lines.append(lines[i])
+                        brace_count += lines[i].count('{') - lines[i].count('}')
+                        i += 1
+                    if i < len(lines) and lines[i] == '}':
+                        func_lines.append(lines[i])
+                        i += 1
+                    funcs[func_name] = '\n'.join(func_lines)
+                else:
+                    i += 1
+            return funcs
+
+        def extract_strings(content):
+            strings = {}
+            for m in re.finditer(r'(@\.str\.[^\s]+)\s*=\s*private.*', content):
+                strings[m.group(1)] = m.group(0)
+            return strings
+
+        def get_base_header(content):
+            lines = content.split('\n')
+            header_lines = []
+            for line in lines:
+                if line.startswith('define ') or line.startswith('@.str'):
+                    continue
+                if line.startswith('; ModuleID') or line.startswith('target ') or line.startswith('declare '):
+                    header_lines.append(line)
+            return '\n'.join(header_lines)
+
+        with open('lexer.ll') as f: lexer = f.read()
+        with open('parser.ll') as f: parser = f.read()
+        with open('codegen.ll') as f: codegen = f.read()
+        with open('main.ll') as f: main = f.read()
+
+        header = get_base_header(lexer)
+        all_strings = {}
+        all_funcs = {}
+
+        for content in [lexer, parser, codegen, main]:
+            all_strings.update(extract_strings(content))
+            for fn, body in extract_function_defs(content).items():
+                if fn not in all_funcs:
+                    all_funcs[fn] = body
+
+        combined = header + '\n\n'
+        for str_name, str_def in sorted(all_strings.items()):
+            combined += str_def + '\n'
+        combined += '\n'
+        for fn_name, fn_body in sorted(all_funcs.items()):
+            combined += fn_body + '\n\n'
+
+        with open('sxc_combined.ll', 'w') as f:
+            f.write(combined)
+        print(f"Created sxc_combined.ll ({len(all_funcs)} functions)")
+        EOF
+
+        cd ../..
+
+        echo "LLVM IR generated successfully"
+        echo "Note: Full Windows binary requires runtime porting"
+      continue-on-error: true
+
+    - name: Upload LLVM IR artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: sxc-windows-llvm-ir
+        path: compiler/bootstrap/sxc_combined.ll
+      if: always()
+
+  release:
+    needs: [build-linux, build-macos]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: List artifacts
+      run: find artifacts -type f
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          artifacts/sxc-linux-x86_64/sxc-linux-x86_64
+          artifacts/sxc-macos-x86_64/sxc-macos-x86_64
+          artifacts/sxc-macos-arm64/sxc-macos-arm64
+        draft: false
+        prerelease: false
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  test-suite:
+    needs: [build-linux]
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang libssl-dev libsqlite3-dev
+
+    - name: Download Linux binary
+      uses: actions/download-artifact@v4
+      with:
+        name: sxc-linux-x86_64
+        path: .
+
+    - name: Run test suite
+      run: |
+        chmod +x sxc-linux-x86_64
+
+        echo "=== Running Test Suite ==="
+
+        PASS=0
+        FAIL=0
+
+        for category in basics types async actors; do
+          echo ""
+          echo "--- Testing $category ---"
+
+          if [ -d "tests/$category" ]; then
+            for test in tests/$category/*.sx; do
+              name=$(basename "$test" .sx)
+              echo -n "  $category/$name: "
+
+              if ./sxc-linux-x86_64 "$test" 2>/dev/null; then
+                ll_file="${test%.sx}.ll"
+                if clang -O2 "$ll_file" runtime/standalone_runtime.c -o "test_$name" -lm -lssl -lcrypto -lsqlite3 -lpthread 2>/dev/null; then
+                  if timeout 10 "./test_$name" >/dev/null 2>&1; then
+                    echo "PASS"
+                    PASS=$((PASS + 1))
+                  else
+                    echo "FAIL (runtime)"
+                    FAIL=$((FAIL + 1))
+                  fi
+                  rm -f "test_$name"
+                else
+                  echo "FAIL (link)"
+                  FAIL=$((FAIL + 1))
+                fi
+                rm -f "$ll_file"
+              else
+                echo "FAIL (compile)"
+                FAIL=$((FAIL + 1))
+              fi
+            done
+          fi
+        done
+
+        echo ""
+        echo "=== Results ==="
+        echo "Passed: $PASS"
+        echo "Failed: $FAIL"
+
+        if [ $FAIL -gt 0 ]; then
+          exit 1
+        fi

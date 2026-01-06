@@ -1,6 +1,6 @@
 # Simplex Virtual Machine
 
-**Version 0.2.0**
+**Version 0.1.0**
 
 The Simplex Virtual Machine (SVM) executes Simplex bytecode and manages distributed actor systems.
 
