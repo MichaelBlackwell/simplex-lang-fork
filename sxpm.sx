@@ -709,6 +709,128 @@ fn cmd_clean(args: i64, argc: i64, arg_idx: i64) -> i64 {
 }
 
 // ============================================================================
+// Command: update
+// ============================================================================
+
+fn cmd_update(args: i64, argc: i64, arg_idx: i64) -> i64 {
+    // Load manifest
+    let manifest: i64 = manifest_load("simplex.json");
+    if manifest == 0 {
+        println("Error: simplex.json not found");
+        return 1;
+    }
+
+    var verbose: bool = false;
+
+    // Parse options
+    var i: i64 = arg_idx;
+    while i < argc {
+        let arg: i64 = vec_get(args, i);
+        if string_eq(arg, "-v") || string_eq(arg, "--verbose") {
+            verbose = true;
+        }
+        i = i + 1;
+    }
+
+    println("Updating dependencies...");
+
+    // Remove existing lock file to force re-resolution
+    if check_file_exists("simplex.lock") {
+        process_run("rm simplex.lock");
+        if verbose {
+            println("Removed existing simplex.lock");
+        }
+    }
+
+    // Resolve dependencies fresh
+    let result: i64 = resolve_dependencies(manifest, verbose);
+    if result != 0 {
+        println("Error: failed to resolve dependencies");
+        return result;
+    }
+
+    // Generate new lock file
+    let graph: DepGraph = build_dep_graph(manifest, verbose);
+    generate_lockfile(graph, verbose);
+
+    println("Dependencies updated successfully");
+    0
+}
+
+// ============================================================================
+// Command: check
+// ============================================================================
+
+fn cmd_check(args: i64, argc: i64, arg_idx: i64) -> i64 {
+    // Load manifest
+    let manifest: i64 = manifest_load("simplex.json");
+    if manifest == 0 {
+        println("Error: simplex.json not found");
+        return 1;
+    }
+
+    // Validate manifest
+    let errors: i64 = manifest_validate(manifest);
+    if vec_len(errors) > 0 {
+        println("Error: invalid simplex.json:");
+        var i: i64 = 0;
+        while i < vec_len(errors) {
+            print("  - ");
+            println(vec_get(errors, i));
+            i = i + 1;
+        }
+        return 1;
+    }
+
+    let name: i64 = manifest_name(manifest);
+    let entry: i64 = manifest_entry(manifest);
+
+    var verbose: bool = false;
+
+    // Parse options
+    var i: i64 = arg_idx;
+    while i < argc {
+        let arg: i64 = vec_get(args, i);
+        if string_eq(arg, "-v") || string_eq(arg, "--verbose") {
+            verbose = true;
+        }
+        i = i + 1;
+    }
+
+    print("Checking ");
+    println(name);
+
+    // Just compile to LLVM IR without linking (type checking)
+    let resolve_result: i64 = resolve_with_lockfile(manifest, verbose);
+    if resolve_result != 0 {
+        println("Error: failed to resolve dependencies");
+        return 1;
+    }
+
+    // Run compiler in check-only mode
+    let sb: i64 = sb_new();
+    sb_append(sb, "python3 stage0.py ");
+    sb_append(sb, entry);
+    sb_append(sb, " --check");
+    let compile_cmd: i64 = sb_to_string(sb);
+
+    if verbose {
+        print("Running: ");
+        println(compile_cmd);
+    }
+
+    let result: i64 = process_run(compile_cmd);
+
+    if result == 0 {
+        println("Check passed!");
+    } else {
+        println("Check failed");
+    }
+
+    result
+}
+
+// ============================================================================
 // Command: add
 // ============================================================================
 
@@ -1507,13 +1629,13 @@ fn path_basename(path: i64) -> i64 {
 // Main Entry Point
 // ============================================================================
 
-fn main() {
+fn main() -> i64 {
     let args: i64 = get_args();
     let argc: i64 = vec_len(args);
 
     if argc < 2 {
         sxpm_show_help();
-        return;
+        return 0;
     }
 
     let cmd: i64 = vec_get(args, 1);
@@ -1521,12 +1643,12 @@ fn main() {
     // Help flags
     if string_eq(cmd, "-h") || string_eq(cmd, "--help") {
         sxpm_show_help();
-        return;
+        return 0;
     }
 
     if string_eq(cmd, "--version") {
         sxpm_show_version();
-        return;
+        return 0;
     }
 
     // Commands
@@ -1544,6 +1666,10 @@ fn main() {
         result = cmd_test(args, argc, 2);
     } else if string_eq(cmd, "clean") {
         result = cmd_clean(args, argc, 2);
+    } else if string_eq(cmd, "update") {
+        result = cmd_update(args, argc, 2);
+    } else if string_eq(cmd, "check") {
+        result = cmd_check(args, argc, 2);
     } else if string_eq(cmd, "add") {
         result = cmd_add(args, argc, 2);
     } else if string_eq(cmd, "remove") {

@@ -2691,6 +2691,7 @@ class CodeGen:
         self.emit('declare void @intrinsic_vec_set(ptr, i64, ptr)')
         self.emit('declare ptr @intrinsic_vec_pop(ptr)')
         self.emit('declare void @intrinsic_vec_clear(ptr)')
+        self.emit('declare void @intrinsic_vec_remove(ptr, i64)')
         self.emit('declare i64 @intrinsic_vec_capacity(ptr)')
         self.emit('declare void @intrinsic_vec_reserve(ptr, i64)')
         self.emit('; Option<T> type: tag(0)=None, tag(1)=Some with value at offset 8')
@@ -3767,6 +3768,7 @@ class CodeGen:
         self.emit('declare i64 @cli_setenv(i64, i64)')
         self.emit('declare i64 @cli_cwd()')
         self.emit('declare void @cli_exit(i64)')
+        self.emit('declare void @intrinsic_exit(i64)')
         self.emit('declare i64 @cli_has_flag(i64)')
         self.emit('declare i64 @cli_get_option(i64)')
         self.emit('declare i64 @cli_positional_args()')
@@ -6525,6 +6527,10 @@ class CodeGen:
                 'vec_push': 'intrinsic_vec_push',
                 'vec_get': 'intrinsic_vec_get',
                 'vec_len': 'intrinsic_vec_len',
+                'vec_clear': 'intrinsic_vec_clear',
+                'vec_set': 'intrinsic_vec_set',
+                'vec_pop': 'intrinsic_vec_pop',
+                'vec_remove': 'intrinsic_vec_remove',
                 'println': 'intrinsic_println',
                 'print': 'intrinsic_print',
                 'int_to_string': 'intrinsic_int_to_string',
@@ -6679,6 +6685,7 @@ class CodeGen:
                 'is_directory': 'intrinsic_is_directory',
                 'is_file': 'intrinsic_is_file',
                 'mkdir_p': 'intrinsic_mkdir_p',
+                'mkdir': 'intrinsic_mkdir_p',
                 'remove_path': 'intrinsic_remove_path',
                 'file_size': 'intrinsic_file_size',
                 'file_mtime': 'intrinsic_file_mtime',
@@ -6707,6 +6714,7 @@ class CodeGen:
                 'json_string': 'json_string_sx',
                 'json_array': 'json_array',
                 'json_object': 'json_object',
+                'json_object_new': 'json_object',
                 'json_is_null': 'json_is_null',
                 'json_is_bool': 'json_is_bool',
                 'json_is_number': 'json_is_number',
@@ -6825,7 +6833,9 @@ class CodeGen:
                 'cli_getenv': 'cli_getenv',
                 'cli_setenv': 'cli_setenv',
                 'cli_cwd': 'cli_cwd',
+                'get_cwd': 'cli_cwd',
                 'cli_exit': 'cli_exit',
+                'exit': 'intrinsic_exit',
                 'cli_has_flag': 'cli_has_flag',
                 'cli_get_option': 'cli_get_option',
                 'cli_positional_args': 'cli_positional_args',
@@ -7430,7 +7440,9 @@ class CodeGen:
                 'cli_getenv': (['i64'], 'i64'),
                 'cli_setenv': (['i64', 'i64'], 'i64'),
                 'cli_cwd': ([], 'i64'),
+                'get_cwd': ([], 'i64'),
                 'cli_exit': (['i64'], 'void'),
+                'exit': (['i64'], 'void'),
                 'cli_has_flag': (['i64'], 'i64'),
                 'cli_get_option': (['i64'], 'i64'),
                 'cli_positional_args': ([], 'i64'),
@@ -9062,10 +9074,22 @@ def main():
     import os
 
     if len(sys.argv) < 2:
-        print("Usage: stage0.py <input.sx> [input2.sx ...]")
+        print("Usage: stage0.py <input.sx> [input2.sx ...] [--check]")
         sys.exit(1)
 
-    input_files = sys.argv[1:]
+    # Parse arguments
+    input_files = []
+    check_only = False
+
+    for arg in sys.argv[1:]:
+        if arg == '--check':
+            check_only = True
+        elif not arg.startswith('-'):
+            input_files.append(arg)
+
+    if not input_files:
+        print("Error: no input files specified")
+        sys.exit(1)
 
     # First pass: parse all files and collect enums and structs
     # Initialize with built-in enums: Option<T> and Result<T,E>
@@ -9109,22 +9133,36 @@ def main():
         codegen.structs = all_structs.copy()  # Pre-populate with all structs
         llvm_ir = codegen.generate(items)
 
-        # Output
-        output_file = input_file.replace('.sx', '.ll')
-        with open(output_file, 'w') as f:
-            f.write(llvm_ir)
+        if check_only:
+            # In check mode, just verify parsing and codegen succeeded
+            print(f"Checked {input_file}")
+            print(f"Items: {len(items)}")
+            for item in items:
+                if item['type'] == 'FnDef':
+                    print(f"  fn {item['name']}")
+                elif item['type'] == 'EnumDef':
+                    print(f"  enum {item['name']}")
+                elif item['type'] == 'StructDef':
+                    print(f"  struct {item['name']}")
+                elif item['type'] == 'ImplDef':
+                    print(f"  impl {item['type_name']}")
+        else:
+            # Output
+            output_file = input_file.replace('.sx', '.ll')
+            with open(output_file, 'w') as f:
+                f.write(llvm_ir)
 
-        print(f"Generated {output_file}")
-        print(f"Items: {len(items)}")
-        for item in items:
-            if item['type'] == 'FnDef':
-                print(f"  fn {item['name']}")
-            elif item['type'] == 'EnumDef':
-                print(f"  enum {item['name']}")
-            elif item['type'] == 'StructDef':
-                print(f"  struct {item['name']}")
-            elif item['type'] == 'ImplDef':
-                print(f"  impl {item['type_name']}")
+            print(f"Generated {output_file}")
+            print(f"Items: {len(items)}")
+            for item in items:
+                if item['type'] == 'FnDef':
+                    print(f"  fn {item['name']}")
+                elif item['type'] == 'EnumDef':
+                    print(f"  enum {item['name']}")
+                elif item['type'] == 'StructDef':
+                    print(f"  struct {item['name']}")
+                elif item['type'] == 'ImplDef':
+                    print(f"  impl {item['type_name']}")
 
 
 if __name__ == '__main__':
