@@ -105,6 +105,8 @@ Simplex draws from:
 | 0.2.0 | 2025-08 | Added Cognitive Hive AI (CHAI) specification |
 | 0.3.0 | 2025-12 | Self-hosted native compiler via LLVM |
 | 0.3.1 | 2026-01 | Complete toolchain: sxc, cursus, sxdoc, sxlsp all compiled |
+| 0.3.2 | 2026-01 | Added Linux epoll support for async I/O (was macOS kqueue only) |
+| 0.3.3 | 2026-01 | Fixed github test suite failure log |
 
 ---
 
