@@ -1,0 +1,173 @@
+/// simplex-regex - Regular expression matching for Simplex
+///
+/// # Example
+/// ```simplex
+/// use modulus::simplex_regex::regex
+///
+/// // Basic matching
+/// let re = regex_new("[0-9]+", 0)
+/// if regex_is_match(re, "hello123world") == 1 {
+///     println("Found digits!")
+/// }
+///
+/// // Find and extract
+/// let found = regex_find_str(re, "price: $42.50")
+/// println(found)  // "42"
+///
+/// // Replace all matches
+/// let result = regex_replace(re, "a1b2c3", "X")
+/// println(result)  // "aXbXcX"
+///
+/// regex_free(re)
+/// ```
+
+// ============================================================================
+// Regex Flags
+// ============================================================================
+
+/// Case-insensitive matching
+pub let REGEX_ICASE: i64 = 1
+
+/// Treat newlines as normal characters
+pub let REGEX_NEWLINE: i64 = 2
+
+// ============================================================================
+// Core Functions
+// ============================================================================
+
+/// Compile a regex pattern
+/// pattern: The regular expression pattern (POSIX extended syntax)
+/// flags: 0 = default, REGEX_ICASE = case insensitive, REGEX_NEWLINE = newline mode
+/// Returns regex handle or 0 on error
+pub fn regex_new(pattern: String, flags: i64) -> i64 {
+    regex_new(pattern, flags)
+}
+
+/// Free a compiled regex
+pub fn regex_free(rx: i64) -> i64 {
+    regex_free(rx)
+    0
+}
+
+/// Check if pattern matches anywhere in text
+/// Returns 1 if match found, 0 otherwise
+pub fn regex_is_match(rx: i64, text: String) -> Bool {
+    regex_is_match(rx, text) == 1
+}
+
+// ============================================================================
+// Finding Matches
+// ============================================================================
+
+/// Find first match position
+/// Returns packed (start << 32 | end) or -1 if no match
+pub fn regex_find(rx: i64, text: String) -> i64 {
+    regex_find(rx, text)
+}
+
+/// Get the matched substring (first match)
+pub fn regex_find_str(rx: i64, text: String) -> String {
+    regex_find_str(rx, text)
+}
+
+/// Count number of matches in text
+pub fn regex_count(rx: i64, text: String) -> i64 {
+    regex_count(rx, text)
+}
+
+// ============================================================================
+// Replacement
+// ============================================================================
+
+/// Replace all matches with replacement string
+pub fn regex_replace(rx: i64, text: String, replacement: String) -> String {
+    regex_replace(rx, text, replacement)
+}
+
+/// Replace first match only
+pub fn regex_replace_first(rx: i64, text: String, replacement: String) -> String {
+    regex_replace_first(rx, text, replacement)
+}
+
+// ============================================================================
+// Splitting
+// ============================================================================
+
+/// Split string by regex pattern
+/// Returns list of strings
+pub fn regex_split(rx: i64, text: String) -> i64 {
+    regex_split(rx, text)
+}
+
+// ============================================================================
+// Capture Groups
+// ============================================================================
+
+/// Get number of capture groups in pattern
+pub fn regex_group_count(rx: i64) -> i64 {
+    regex_group_count(rx)
+}
+
+/// Get captured groups from first match
+/// Returns list of strings: [full_match, group1, group2, ...]
+pub fn regex_captures(rx: i64, text: String) -> i64 {
+    regex_captures(rx, text)
+}
+
+// ============================================================================
+// Error Handling
+// ============================================================================
+
+/// Get error message for invalid pattern
+/// Returns empty string if pattern is valid
+pub fn regex_error(pattern: String) -> String {
+    regex_error(pattern)
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Unpack match position - get start index
+pub fn regex_match_start(pos: i64) -> i64 {
+    if pos < 0 {
+        return -1
+    }
+    pos >> 32
+}
+
+/// Unpack match position - get end index
+pub fn regex_match_end(pos: i64) -> i64 {
+    if pos < 0 {
+        return -1
+    }
+    pos & 0xFFFFFFFF
+}
+
+/// Check if pattern is valid
+pub fn regex_is_valid(pattern: String) -> Bool {
+    let err: String = regex_error(pattern)
+    string_len(err) == 0
+}
+
+/// Simple match helper - compile, match, free
+pub fn regex_matches(pattern: String, text: String) -> Bool {
+    let rx: i64 = regex_new(pattern, 0)
+    if rx == 0 {
+        return false
+    }
+    let result: Bool = regex_is_match(rx, text)
+    regex_free(rx)
+    result
+}
+
+/// Simple replace helper - compile, replace, free
+pub fn regex_replace_all(pattern: String, text: String, replacement: String) -> String {
+    let rx: i64 = regex_new(pattern, 0)
+    if rx == 0 {
+        return text
+    }
+    let result: String = regex_replace(rx, text, replacement)
+    regex_free(rx)
+    result
+}

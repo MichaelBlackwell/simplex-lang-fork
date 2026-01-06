@@ -1,0 +1,228 @@
+// Test file for Crypto Library
+// Tests: crypto_sha256, crypto_sha512, crypto_hmac_sha256, crypto_base64_*, crypto_hex_*, etc.
+
+fn test_sha256() -> i64 {
+    let hash: String = crypto_sha256("hello world")
+
+    // SHA256 of "hello world" is well-known
+    let expected: String = "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+
+    if !string_eq(hash, expected) {
+        print("FAIL: SHA256 mismatch. Got: ")
+        println(hash)
+        return 1
+    }
+
+    println("PASS: test_sha256")
+    0
+}
+
+fn test_sha512() -> i64 {
+    let hash: String = crypto_sha512("hello world")
+
+    // SHA512 produces 128-character hex string
+    let len: i64 = string_len(hash)
+    if len != 128 {
+        print("FAIL: SHA512 should be 128 chars, got: ")
+        println(int_to_string(len))
+        return 1
+    }
+
+    println("PASS: test_sha512")
+    0
+}
+
+fn test_hmac_sha256() -> i64 {
+    let key: String = "secret key"
+    let data: String = "message to authenticate"
+
+    let mac: String = crypto_hmac_sha256(key, data)
+
+    // HMAC-SHA256 produces 64-character hex string
+    let len: i64 = string_len(mac)
+    if len != 64 {
+        print("FAIL: HMAC-SHA256 should be 64 chars, got: ")
+        println(int_to_string(len))
+        return 1
+    }
+
+    // Same key+message should produce same MAC
+    let mac2: String = crypto_hmac_sha256(key, data)
+    if !string_eq(mac, mac2) {
+        println("FAIL: HMAC should be deterministic")
+        return 1
+    }
+
+    // Different key should produce different MAC
+    let mac3: String = crypto_hmac_sha256("different key", data)
+    if string_eq(mac, mac3) {
+        println("FAIL: Different keys should produce different MACs")
+        return 1
+    }
+
+    println("PASS: test_hmac_sha256")
+    0
+}
+
+fn test_base64_encode() -> i64 {
+    let encoded: String = crypto_base64_encode("hello")
+
+    // Base64 of "hello" is "aGVsbG8="
+    let expected: String = "aGVsbG8="
+
+    if !string_eq(encoded, expected) {
+        print("FAIL: Base64 encode mismatch. Got: ")
+        println(encoded)
+        return 1
+    }
+
+    println("PASS: test_base64_encode")
+    0
+}
+
+fn test_base64_decode() -> i64 {
+    let decoded: String = crypto_base64_decode("aGVsbG8=")
+
+    if !string_eq(decoded, "hello") {
+        print("FAIL: Base64 decode mismatch. Got: ")
+        println(decoded)
+        return 1
+    }
+
+    println("PASS: test_base64_decode")
+    0
+}
+
+fn test_base64_roundtrip() -> i64 {
+    let original: String = "The quick brown fox jumps over the lazy dog"
+    let encoded: String = crypto_base64_encode(original)
+    let decoded: String = crypto_base64_decode(encoded)
+
+    if !string_eq(original, decoded) {
+        println("FAIL: Base64 roundtrip failed")
+        print("Original: ")
+        println(original)
+        print("Decoded:  ")
+        println(decoded)
+        return 1
+    }
+
+    println("PASS: test_base64_roundtrip")
+    0
+}
+
+fn test_hex_encode() -> i64 {
+    let encoded: String = crypto_hex_encode("ABC")
+
+    // Hex of "ABC" is "414243"
+    let expected: String = "414243"
+
+    if !string_eq(encoded, expected) {
+        print("FAIL: Hex encode mismatch. Got: ")
+        println(encoded)
+        return 1
+    }
+
+    println("PASS: test_hex_encode")
+    0
+}
+
+fn test_hex_decode() -> i64 {
+    let decoded: String = crypto_hex_decode("414243")
+
+    if !string_eq(decoded, "ABC") {
+        print("FAIL: Hex decode mismatch. Got: ")
+        println(decoded)
+        return 1
+    }
+
+    println("PASS: test_hex_decode")
+    0
+}
+
+fn test_hex_roundtrip() -> i64 {
+    let original: String = "Hello, World!"
+    let encoded: String = crypto_hex_encode(original)
+    let decoded: String = crypto_hex_decode(encoded)
+
+    if !string_eq(original, decoded) {
+        println("FAIL: Hex roundtrip failed")
+        return 1
+    }
+
+    println("PASS: test_hex_roundtrip")
+    0
+}
+
+fn test_random_bytes() -> i64 {
+    let random1: String = crypto_random_bytes(16)
+    let random2: String = crypto_random_bytes(16)
+
+    // 16 bytes = 32 hex chars
+    let len: i64 = string_len(random1)
+    if len != 32 {
+        print("FAIL: random_bytes(16) should be 32 hex chars, got: ")
+        println(int_to_string(len))
+        return 1
+    }
+
+    // Two calls should produce different values (with overwhelming probability)
+    if string_eq(random1, random2) {
+        println("FAIL: random_bytes should produce unique values")
+        return 1
+    }
+
+    println("PASS: test_random_bytes")
+    0
+}
+
+fn test_crypto_compare() -> i64 {
+    let a: String = "secret_value_123"
+    let b: String = "secret_value_123"
+    let c: String = "different_value"
+
+    let result1: i64 = crypto_compare(a, b)
+    let result2: i64 = crypto_compare(a, c)
+
+    if result1 != 1 {
+        println("FAIL: crypto_compare should return 1 for equal strings")
+        return 1
+    }
+
+    if result2 != 0 {
+        println("FAIL: crypto_compare should return 0 for different strings")
+        return 1
+    }
+
+    println("PASS: test_crypto_compare")
+    0
+}
+
+fn main() -> i64 {
+    println("=== Crypto Tests ===")
+    println("")
+
+    var failures: i64 = 0
+
+    failures = failures + test_sha256()
+    failures = failures + test_sha512()
+    failures = failures + test_hmac_sha256()
+    failures = failures + test_base64_encode()
+    failures = failures + test_base64_decode()
+    failures = failures + test_base64_roundtrip()
+    failures = failures + test_hex_encode()
+    failures = failures + test_hex_decode()
+    failures = failures + test_hex_roundtrip()
+    failures = failures + test_random_bytes()
+    failures = failures + test_crypto_compare()
+
+    println("")
+    if failures == 0 {
+        println("All Crypto tests passed!")
+    } else {
+        print("Crypto tests failed: ")
+        println(int_to_string(failures))
+    }
+
+    failures
+}

@@ -2711,6 +2711,46 @@ class CodeGen:
         self.emit('declare i64 @result_unwrap_or(i64, i64)')
         self.emit('declare i64 @result_map(i64, i64)')      # result_map(res, fn_ptr)
         self.emit('declare i64 @result_map_err(i64, i64)')  # result_map_err(res, fn_ptr)
+        self.emit('; JSON types and functions')
+        self.emit('declare i64 @json_null()')
+        self.emit('declare i64 @json_bool(i8)')
+        self.emit('declare i64 @json_number(double)')
+        self.emit('declare i64 @json_number_i64(i64)')
+        self.emit('declare i64 @json_string(ptr)')
+        self.emit('declare i64 @json_string_sx(i64)')
+        self.emit('declare i64 @json_array()')
+        self.emit('declare i64 @json_object()')
+        self.emit('declare i8 @json_is_null(i64)')
+        self.emit('declare i8 @json_is_bool(i64)')
+        self.emit('declare i8 @json_is_number(i64)')
+        self.emit('declare i8 @json_is_string(i64)')
+        self.emit('declare i8 @json_is_array(i64)')
+        self.emit('declare i8 @json_is_object(i64)')
+        self.emit('declare i64 @json_type(i64)')
+        self.emit('declare i8 @json_as_bool(i64)')
+        self.emit('declare double @json_as_f64(i64)')
+        self.emit('declare i64 @json_as_i64(i64)')
+        self.emit('declare i64 @json_as_string(i64)')
+        self.emit('declare void @json_array_push(i64, i64)')
+        self.emit('declare i64 @json_get_index(i64, i64)')
+        self.emit('declare i64 @json_array_len(i64)')
+        self.emit('declare void @json_object_set(i64, ptr, i64)')
+        self.emit('declare void @json_object_set_sx(i64, i64, i64)')
+        self.emit('declare i64 @json_get(i64, ptr)')
+        self.emit('declare i64 @json_get_sx(i64, i64)')
+        self.emit('declare i64 @json_object_len(i64)')
+        self.emit('declare i8 @json_object_has(i64, ptr)')
+        self.emit('declare i8 @json_object_has_sx(i64, i64)')
+        self.emit('declare i64 @json_object_key_at(i64, i64)')
+        self.emit('declare i64 @json_object_value_at(i64, i64)')
+        self.emit('declare i64 @json_keys(i64)')
+        self.emit('declare void @json_free(i64)')
+        self.emit('declare i64 @json_stringify(i64)')
+        self.emit('declare i64 @json_stringify_pretty(i64, i64)')
+        self.emit('declare i64 @json_parse(i64)')
+        self.emit('declare i64 @json_parse_cstr(ptr)')
+        self.emit('declare i64 @json_clone(i64)')
+        self.emit('declare i8 @json_equals(i64, i64)')
         self.emit('; HashMap<K,V> type')
         self.emit('declare i64 @hashmap_new()')
         self.emit('declare i64 @hashmap_with_capacity(i64)')
@@ -3667,6 +3707,94 @@ class CodeGen:
         self.emit('declare i64 @ws_opcode_close()')
         self.emit('declare i64 @ws_opcode_ping()')
         self.emit('declare i64 @ws_opcode_pong()')
+        self.emit('; Phase 3: SQL/SQLite API')
+        self.emit('declare i64 @sql_open(i64)')
+        self.emit('declare i64 @sql_open_memory()')
+        self.emit('declare void @sql_close(i64)')
+        self.emit('declare i64 @sql_execute(i64, i64)')
+        self.emit('declare i64 @sql_error(i64)')
+        self.emit('declare i64 @sql_prepare(i64, i64)')
+        self.emit('declare i64 @sql_bind_int(i64, i64, i64)')
+        self.emit('declare i64 @sql_bind_text(i64, i64, i64)')
+        self.emit('declare i64 @sql_bind_double(i64, i64, double)')
+        self.emit('declare i64 @sql_bind_null(i64, i64)')
+        self.emit('declare i64 @sql_step(i64)')
+        self.emit('declare i64 @sql_reset(i64)')
+        self.emit('declare i64 @sql_column_count(i64)')
+        self.emit('declare i64 @sql_column_type(i64, i64)')
+        self.emit('declare i64 @sql_column_name(i64, i64)')
+        self.emit('declare i64 @sql_column_int(i64, i64)')
+        self.emit('declare i64 @sql_column_text(i64, i64)')
+        self.emit('declare double @sql_column_double(i64, i64)')
+        self.emit('declare i64 @sql_column_blob(i64, i64)')
+        self.emit('declare i64 @sql_column_blob_len(i64, i64)')
+        self.emit('declare i64 @sql_column_is_null(i64, i64)')
+        self.emit('declare void @sql_finalize(i64)')
+        self.emit('declare i64 @sql_begin(i64)')
+        self.emit('declare i64 @sql_commit(i64)')
+        self.emit('declare i64 @sql_rollback(i64)')
+        self.emit('declare i64 @sql_last_insert_id(i64)')
+        self.emit('declare i64 @sql_changes(i64)')
+        self.emit('declare i64 @sql_total_changes(i64)')
+        self.emit('; Phase 3: Regex API')
+        self.emit('declare i64 @regex_new(i64, i64)')
+        self.emit('declare void @regex_free(i64)')
+        self.emit('declare i64 @regex_is_match(i64, i64)')
+        self.emit('declare i64 @regex_find(i64, i64)')
+        self.emit('declare i64 @regex_find_str(i64, i64)')
+        self.emit('declare i64 @regex_count(i64, i64)')
+        self.emit('declare i64 @regex_replace(i64, i64, i64)')
+        self.emit('declare i64 @regex_replace_first(i64, i64, i64)')
+        self.emit('declare i64 @regex_split(i64, i64)')
+        self.emit('declare i64 @regex_error(i64)')
+        self.emit('declare i64 @regex_group_count(i64)')
+        self.emit('declare i64 @regex_captures(i64, i64)')
+        self.emit('; Phase 3: Crypto API')
+        self.emit('declare i64 @crypto_random_bytes(i64)')
+        self.emit('declare i64 @crypto_sha256(i64)')
+        self.emit('declare i64 @crypto_sha512(i64)')
+        self.emit('declare i64 @crypto_hmac_sha256(i64, i64)')
+        self.emit('declare i64 @crypto_base64_encode(i64)')
+        self.emit('declare i64 @crypto_base64_decode(i64)')
+        self.emit('declare i64 @crypto_hex_encode(i64)')
+        self.emit('declare i64 @crypto_hex_decode(i64)')
+        self.emit('declare i64 @crypto_compare(i64, i64)')
+        self.emit('; Phase 3: CLI API')
+        self.emit('declare i64 @cli_arg_count()')
+        self.emit('declare i64 @cli_get_arg(i64)')
+        self.emit('declare i64 @cli_args()')
+        self.emit('declare i64 @cli_getenv(i64)')
+        self.emit('declare i64 @cli_setenv(i64, i64)')
+        self.emit('declare i64 @cli_cwd()')
+        self.emit('declare void @cli_exit(i64)')
+        self.emit('declare i64 @cli_has_flag(i64)')
+        self.emit('declare i64 @cli_get_option(i64)')
+        self.emit('declare i64 @cli_positional_args()')
+        self.emit('; Phase 3: Simple Log API')
+        self.emit('declare void @slog_set_level(i64)')
+        self.emit('declare i64 @slog_get_level()')
+        self.emit('declare void @slog_trace(i64)')
+        self.emit('declare void @slog_debug(i64)')
+        self.emit('declare void @slog_info(i64)')
+        self.emit('declare void @slog_warn(i64)')
+        self.emit('declare void @slog_error(i64)')
+        self.emit('declare void @slog_info_ctx(i64, i64, i64)')
+        self.emit('declare void @slog_fmt(i64, i64, i64)')
+        self.emit('; Phase 3: Test Framework API')
+        self.emit('declare void @tfw_reset()')
+        self.emit('declare i64 @tfw_passed_count()')
+        self.emit('declare i64 @tfw_failed_count()')
+        self.emit('declare i64 @tfw_assert(i64, i64)')
+        self.emit('declare i64 @tfw_assert_eq_i64(i64, i64, i64)')
+        self.emit('declare i64 @tfw_assert_eq_str(i64, i64, i64)')
+        self.emit('declare i64 @tfw_assert_ne_i64(i64, i64, i64)')
+        self.emit('declare void @tfw_fail(i64)')
+        self.emit('declare void @tfw_summary()')
+        self.emit('; Phase 3: UUID API')
+        self.emit('declare i64 @uuid_v4()')
+        self.emit('declare i64 @uuid_nil()')
+        self.emit('declare i64 @uuid_is_nil(i64)')
+        self.emit('declare i64 @uuid_is_valid(i64)')
         self.emit('; Phase 25: Distribution & Clustering')
         self.emit('; 25.1 Cluster Membership')
         self.emit('declare i64 @cluster_new(i64, i64, i64)')
@@ -6555,6 +6683,161 @@ class CodeGen:
                 'assert_eq_str': 'intrinsic_assert_eq_str',
                 'args_count': 'intrinsic_args_count',
                 'args_get': 'intrinsic_args_get',
+                # Phase 3: JSON functions
+                'json_null': 'json_null',
+                'json_bool': 'json_bool',
+                'json_number': 'json_number',
+                'json_number_i64': 'json_number_i64',
+                'json_string': 'json_string_sx',
+                'json_array': 'json_array',
+                'json_object': 'json_object',
+                'json_is_null': 'json_is_null',
+                'json_is_bool': 'json_is_bool',
+                'json_is_number': 'json_is_number',
+                'json_is_string': 'json_is_string',
+                'json_is_array': 'json_is_array',
+                'json_is_object': 'json_is_object',
+                'json_type': 'json_type',
+                'json_as_bool': 'json_as_bool',
+                'json_as_f64': 'json_as_f64',
+                'json_as_i64': 'json_as_i64',
+                'json_as_string': 'json_as_string',
+                'json_array_push': 'json_array_push',
+                'json_get_index': 'json_get_index',
+                'json_array_len': 'json_array_len',
+                'json_object_set': 'json_object_set_sx',
+                'json_get': 'json_get_sx',
+                'json_object_len': 'json_object_len',
+                'json_object_has': 'json_object_has_sx',
+                'json_object_key_at': 'json_object_key_at',
+                'json_object_value_at': 'json_object_value_at',
+                'json_keys': 'json_keys',
+                'json_free': 'json_free',
+                'json_stringify': 'json_stringify',
+                'json_stringify_pretty': 'json_stringify_pretty',
+                'json_parse': 'json_parse',
+                'json_parse_cstr': 'json_parse_cstr',
+                'json_clone': 'json_clone',
+                'json_equals': 'json_equals',
+                # Phase 3: HTTP Client/Server
+                'http_request_new': 'http_request_new',
+                'http_request_header': 'http_request_header',
+                'http_request_body': 'http_request_body',
+                'http_request_send': 'http_request_send',
+                'http_request_free': 'http_request_free',
+                'http_response_status': 'http_response_status',
+                'http_response_status_text': 'http_response_status_text',
+                'http_response_header': 'http_response_header',
+                'http_response_body': 'http_response_body',
+                'http_response_body_len': 'http_response_body_len',
+                'http_response_free': 'http_response_free',
+                'http_get': 'http_get',
+                'http_post': 'http_post',
+                'http_server_new': 'http_server_new',
+                'http_server_tls': 'http_server_tls',
+                'http_server_route': 'http_server_route',
+                'http_server_response_new': 'http_server_response_new',
+                'http_server_response_status': 'http_server_response_status',
+                'http_server_response_header': 'http_server_response_header',
+                'http_server_response_body': 'http_server_response_body',
+                'http_server_bind': 'http_server_bind',
+                'http_server_accept_one': 'http_server_accept_one',
+                'http_server_run': 'http_server_run',
+                'http_server_stop': 'http_server_stop',
+                'http_server_close': 'http_server_close',
+                'http_server_port': 'http_server_port',
+                'http_server_request_method': 'http_server_request_method',
+                'http_server_request_path': 'http_server_request_path',
+                'http_server_request_header': 'http_server_request_header',
+                'http_server_request_body': 'http_server_request_body',
+                # Phase 3: SQL/SQLite
+                'sql_open': 'sql_open',
+                'sql_open_memory': 'sql_open_memory',
+                'sql_close': 'sql_close',
+                'sql_execute': 'sql_execute',
+                'sql_error': 'sql_error',
+                'sql_prepare': 'sql_prepare',
+                'sql_bind_int': 'sql_bind_int',
+                'sql_bind_text': 'sql_bind_text',
+                'sql_bind_double': 'sql_bind_double',
+                'sql_bind_null': 'sql_bind_null',
+                'sql_step': 'sql_step',
+                'sql_reset': 'sql_reset',
+                'sql_column_count': 'sql_column_count',
+                'sql_column_type': 'sql_column_type',
+                'sql_column_name': 'sql_column_name',
+                'sql_column_int': 'sql_column_int',
+                'sql_column_text': 'sql_column_text',
+                'sql_column_double': 'sql_column_double',
+                'sql_column_blob': 'sql_column_blob',
+                'sql_column_blob_len': 'sql_column_blob_len',
+                'sql_column_is_null': 'sql_column_is_null',
+                'sql_finalize': 'sql_finalize',
+                'sql_begin': 'sql_begin',
+                'sql_commit': 'sql_commit',
+                'sql_rollback': 'sql_rollback',
+                'sql_last_insert_id': 'sql_last_insert_id',
+                'sql_changes': 'sql_changes',
+                'sql_total_changes': 'sql_total_changes',
+                # Phase 3: Regex
+                'regex_new': 'regex_new',
+                'regex_free': 'regex_free',
+                'regex_is_match': 'regex_is_match',
+                'regex_find': 'regex_find',
+                'regex_find_str': 'regex_find_str',
+                'regex_count': 'regex_count',
+                'regex_replace': 'regex_replace',
+                'regex_replace_first': 'regex_replace_first',
+                'regex_split': 'regex_split',
+                'regex_error': 'regex_error',
+                'regex_group_count': 'regex_group_count',
+                'regex_captures': 'regex_captures',
+                # Phase 3: Crypto
+                'crypto_random_bytes': 'crypto_random_bytes',
+                'crypto_sha256': 'crypto_sha256',
+                'crypto_sha512': 'crypto_sha512',
+                'crypto_hmac_sha256': 'crypto_hmac_sha256',
+                'crypto_base64_encode': 'crypto_base64_encode',
+                'crypto_base64_decode': 'crypto_base64_decode',
+                'crypto_hex_encode': 'crypto_hex_encode',
+                'crypto_hex_decode': 'crypto_hex_decode',
+                'crypto_compare': 'crypto_compare',
+                # Phase 3: CLI
+                'cli_arg_count': 'cli_arg_count',
+                'cli_get_arg': 'cli_get_arg',
+                'cli_args': 'cli_args',
+                'cli_getenv': 'cli_getenv',
+                'cli_setenv': 'cli_setenv',
+                'cli_cwd': 'cli_cwd',
+                'cli_exit': 'cli_exit',
+                'cli_has_flag': 'cli_has_flag',
+                'cli_get_option': 'cli_get_option',
+                'cli_positional_args': 'cli_positional_args',
+                # Phase 3: Simple Log
+                'slog_set_level': 'slog_set_level',
+                'slog_get_level': 'slog_get_level',
+                'slog_trace': 'slog_trace',
+                'slog_debug': 'slog_debug',
+                'slog_info': 'slog_info',
+                'slog_warn': 'slog_warn',
+                'slog_error': 'slog_error',
+                'slog_info_ctx': 'slog_info_ctx',
+                'slog_fmt': 'slog_fmt',
+                # Phase 3: Test Framework
+                'tfw_reset': 'tfw_reset',
+                'tfw_passed_count': 'tfw_passed_count',
+                'tfw_failed_count': 'tfw_failed_count',
+                'tfw_assert': 'tfw_assert',
+                'tfw_assert_eq_i64': 'tfw_assert_eq_i64',
+                'tfw_assert_eq_str': 'tfw_assert_eq_str',
+                'tfw_assert_ne_i64': 'tfw_assert_ne_i64',
+                'tfw_fail': 'tfw_fail',
+                'tfw_summary': 'tfw_summary',
+                # Phase 3: UUID
+                'uuid_v4': 'uuid_v4',
+                'uuid_nil': 'uuid_nil',
+                'uuid_is_nil': 'uuid_is_nil',
+                'uuid_is_valid': 'uuid_is_valid',
                 # Phase 12: Memory Substrate
                 'remember': 'intrinsic_remember',
                 'recall': 'intrinsic_recall',
@@ -7025,6 +7308,125 @@ class CodeGen:
                 'histogram_min': (['i64'], 'double'),
                 'histogram_max': (['i64'], 'double'),
                 'timer_elapsed_s': (['i64'], 'double'),
+                # Phase 3: HTTP Client/Server
+                'http_request_new': (['i64', 'i64'], 'i64'),
+                'http_request_header': (['i64', 'i64', 'i64'], 'void'),
+                'http_request_body': (['i64', 'i64'], 'void'),
+                'http_request_send': (['i64'], 'i64'),
+                'http_request_free': (['i64'], 'void'),
+                'http_response_status': (['i64'], 'i64'),
+                'http_response_status_text': (['i64'], 'i64'),
+                'http_response_header': (['i64', 'i64'], 'i64'),
+                'http_response_body': (['i64'], 'i64'),
+                'http_response_body_len': (['i64'], 'i64'),
+                'http_response_free': (['i64'], 'void'),
+                'http_get': (['i64'], 'i64'),
+                'http_post': (['i64', 'i64'], 'i64'),
+                'http_server_new': (['i64'], 'i64'),
+                'http_server_tls': (['i64', 'i64', 'i64'], 'i64'),
+                'http_server_route': (['i64', 'i64', 'i64', 'i64'], 'void'),
+                'http_server_response_new': ([], 'i64'),
+                'http_server_response_status': (['i64', 'i64', 'i64'], 'void'),
+                'http_server_response_header': (['i64', 'i64', 'i64'], 'void'),
+                'http_server_response_body': (['i64', 'i64'], 'void'),
+                'http_server_bind': (['i64'], 'i64'),
+                'http_server_accept_one': (['i64'], 'i64'),
+                'http_server_run': (['i64', 'i64'], 'i64'),
+                'http_server_stop': (['i64'], 'void'),
+                'http_server_close': (['i64'], 'void'),
+                'http_server_port': (['i64'], 'i64'),
+                'http_server_request_method': (['i64'], 'i64'),
+                'http_server_request_path': (['i64'], 'i64'),
+                'http_server_request_header': (['i64', 'i64'], 'i64'),
+                'http_server_request_body': (['i64'], 'i64'),
+                # Phase 3: SQL/SQLite
+                'sql_open': (['i64'], 'i64'),
+                'sql_open_memory': ([], 'i64'),
+                'sql_close': (['i64'], 'void'),
+                'sql_execute': (['i64', 'i64'], 'i64'),
+                'sql_error': (['i64'], 'i64'),
+                'sql_prepare': (['i64', 'i64'], 'i64'),
+                'sql_bind_int': (['i64', 'i64', 'i64'], 'i64'),
+                'sql_bind_text': (['i64', 'i64', 'i64'], 'i64'),
+                'sql_bind_double': (['i64', 'i64', 'double'], 'i64'),
+                'sql_bind_null': (['i64', 'i64'], 'i64'),
+                'sql_step': (['i64'], 'i64'),
+                'sql_reset': (['i64'], 'i64'),
+                'sql_column_count': (['i64'], 'i64'),
+                'sql_column_type': (['i64', 'i64'], 'i64'),
+                'sql_column_name': (['i64', 'i64'], 'i64'),
+                'sql_column_int': (['i64', 'i64'], 'i64'),
+                'sql_column_text': (['i64', 'i64'], 'i64'),
+                'sql_column_double': (['i64', 'i64'], 'double'),
+                'sql_column_blob': (['i64', 'i64'], 'i64'),
+                'sql_column_blob_len': (['i64', 'i64'], 'i64'),
+                'sql_column_is_null': (['i64', 'i64'], 'i64'),
+                'sql_finalize': (['i64'], 'void'),
+                'sql_begin': (['i64'], 'i64'),
+                'sql_commit': (['i64'], 'i64'),
+                'sql_rollback': (['i64'], 'i64'),
+                'sql_last_insert_id': (['i64'], 'i64'),
+                'sql_changes': (['i64'], 'i64'),
+                'sql_total_changes': (['i64'], 'i64'),
+                # Phase 3: Regex
+                'regex_new': (['i64', 'i64'], 'i64'),
+                'regex_free': (['i64'], 'void'),
+                'regex_is_match': (['i64', 'i64'], 'i64'),
+                'regex_find': (['i64', 'i64'], 'i64'),
+                'regex_find_str': (['i64', 'i64'], 'i64'),
+                'regex_count': (['i64', 'i64'], 'i64'),
+                'regex_replace': (['i64', 'i64', 'i64'], 'i64'),
+                'regex_replace_first': (['i64', 'i64', 'i64'], 'i64'),
+                'regex_split': (['i64', 'i64'], 'i64'),
+                'regex_error': (['i64'], 'i64'),
+                'regex_group_count': (['i64'], 'i64'),
+                'regex_captures': (['i64', 'i64'], 'i64'),
+                # Phase 3: Crypto
+                'crypto_random_bytes': (['i64'], 'i64'),
+                'crypto_sha256': (['i64'], 'i64'),
+                'crypto_sha512': (['i64'], 'i64'),
+                'crypto_hmac_sha256': (['i64', 'i64'], 'i64'),
+                'crypto_base64_encode': (['i64'], 'i64'),
+                'crypto_base64_decode': (['i64'], 'i64'),
+                'crypto_hex_encode': (['i64'], 'i64'),
+                'crypto_hex_decode': (['i64'], 'i64'),
+                'crypto_compare': (['i64', 'i64'], 'i64'),
+                # Phase 3: CLI
+                'cli_arg_count': ([], 'i64'),
+                'cli_get_arg': (['i64'], 'i64'),
+                'cli_args': ([], 'i64'),
+                'cli_getenv': (['i64'], 'i64'),
+                'cli_setenv': (['i64', 'i64'], 'i64'),
+                'cli_cwd': ([], 'i64'),
+                'cli_exit': (['i64'], 'void'),
+                'cli_has_flag': (['i64'], 'i64'),
+                'cli_get_option': (['i64'], 'i64'),
+                'cli_positional_args': ([], 'i64'),
+                # Phase 3: Simple Log
+                'slog_set_level': (['i64'], 'void'),
+                'slog_get_level': ([], 'i64'),
+                'slog_trace': (['i64'], 'void'),
+                'slog_debug': (['i64'], 'void'),
+                'slog_info': (['i64'], 'void'),
+                'slog_warn': (['i64'], 'void'),
+                'slog_error': (['i64'], 'void'),
+                'slog_info_ctx': (['i64', 'i64', 'i64'], 'void'),
+                'slog_fmt': (['i64', 'i64', 'i64'], 'void'),
+                # Phase 3: Test Framework
+                'tfw_reset': ([], 'void'),
+                'tfw_passed_count': ([], 'i64'),
+                'tfw_failed_count': ([], 'i64'),
+                'tfw_assert': (['i64', 'i64'], 'i64'),
+                'tfw_assert_eq_i64': (['i64', 'i64', 'i64'], 'i64'),
+                'tfw_assert_eq_str': (['i64', 'i64', 'i64'], 'i64'),
+                'tfw_assert_ne_i64': (['i64', 'i64', 'i64'], 'i64'),
+                'tfw_fail': (['i64'], 'void'),
+                'tfw_summary': ([], 'void'),
+                # Phase 3: UUID
+                'uuid_v4': ([], 'i64'),
+                'uuid_nil': ([], 'i64'),
+                'uuid_is_nil': (['i64'], 'i64'),
+                'uuid_is_valid': (['i64'], 'i64'),
             }
 
             if func_name in intrinsic_types:
