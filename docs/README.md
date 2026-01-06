@@ -1,6 +1,6 @@
 # Simplex Language Documentation
 
-**Version 0.3.4**
+**Version 0.4.0**
 
 Simplex (Latin for "simple") is a programming language designed for the AI era. It combines the fault-tolerance of Erlang, the memory safety of Rust, the distributed computing model of Ray, and the content-addressable code of Unison into a cohesive system built for intelligent, distributed workloads.
 
@@ -23,6 +23,7 @@ Simplex (Latin for "simple") is a programming language designed for the AI era. 
 | [Cognitive Hive AI](spec/09-cognitive-hive.md) | CHAI architecture for SLM orchestration |
 | [Compiler Toolchain](spec/10-compiler-toolchain.md) | sxc, spx, cursus - 100% pure Simplex |
 | [Standard Library](spec/11-standard-library.md) | Complete std API reference |
+| [The Anima](spec/12-anima.md) | Cognitive soul - memory, beliefs, intentions |
 
 ### Tutorial
 
@@ -62,12 +63,12 @@ Start the tutorial: [Tutorial Index](tutorial/README.md)
 ## Quick Links
 
 - **New to Simplex?** Start with the [Tutorial](tutorial/README.md) or [Overview](spec/01-overview.md)
-- **Learning the language?** Follow the [11-chapter tutorial](tutorial/README.md)
+- **Learning the language?** Follow the [12-chapter tutorial](tutorial/README.md)
 - **Want syntax reference?** Jump to [Language Syntax](spec/04-language-syntax.md)
+- **Building AI agents?** See [The Anima](spec/12-anima.md) and [Cognitive Hive AI](spec/09-cognitive-hive.md)
 - **See complete code?** Check [Examples](examples/document-pipeline.md)
 - **Planning deployment?** See [Cost Optimization](spec/08-cost-optimization.md)
 - **Building the VM?** Read [Virtual Machine](spec/05-virtual-machine.md)
-- **Designing AI systems?** See [Cognitive Hive AI](spec/09-cognitive-hive.md)
 - **Self-hosting compiler?** See [Compiler Toolchain](spec/10-compiler-toolchain.md)
 - **Standard library API?** Check [Standard Library](spec/11-standard-library.md)
 
@@ -76,11 +77,59 @@ Start the tutorial: [Tutorial Index](tutorial/README.md)
 ## Design Principles
 
 1. **AI-native**: AI operations are first-class language constructs
-2. **Hive-oriented**: Small language models collaborate as cognitive hives (CHAI)
-3. **Distributed-first**: Programs naturally decompose across VM swarms
-4. **Fault-tolerant**: Workers can die and resume transparently
-5. **Cost-efficient**: Runs on the cheapest cloud compute (spot instances, ARM)
-6. **Simple syntax**: Lightweight, readable code
+2. **Anima-centric**: Every AI agent has a cognitive soul (anima) with memory, beliefs, and intentions
+3. **Hive-oriented**: Small language models collaborate as cognitive hives (CHAI)
+4. **Distributed-first**: Programs naturally decompose across VM swarms
+5. **Fault-tolerant**: Workers can die and resume transparently
+6. **Cost-efficient**: Runs on the cheapest cloud compute (spot instances, ARM)
+7. **Simple syntax**: Lightweight, readable code
+
+---
+
+## Key Features (v0.4.0)
+
+### Language Core
+- Static typing with inference
+- Pattern matching with guards
+- Generics and traits
+- Closures and lambdas
+- Async/await
+- Option and Result types
+- Module system with `use`, `mod`, `pub`
+
+### Actor System
+- Message passing actors
+- Supervision trees
+- Fault tolerance ("let it crash")
+- Checkpointing and recovery
+
+### AI/Cognitive (The Anima)
+- `anima` keyword for cognitive agents
+- Episodic, semantic, procedural, and working memory
+- Belief system with revision
+- BDI (Beliefs-Desires-Intentions) architecture
+- Goal-directed memory recall
+- Memory persistence and sharing
+
+### AI Specialists & Hives
+- Multi-provider support (Anthropic, OpenAI, Ollama)
+- Streaming responses
+- Tool/function calling
+- Multi-actor orchestration (pipeline, parallel, consensus)
+- Semantic routing
+
+### Observability
+- Metrics (counter, gauge, histogram)
+- Distributed tracing
+- Structured logging
+- Prometheus export
+
+### Toolchain
+- `sxc` - Native compiler (LLVM backend)
+- `sxpm` - Package manager
+- `sxdoc` - Documentation generator
+- `sxlsp` - Language server
+- `cursus` - Build system
 
 ---
 
@@ -97,17 +146,28 @@ Simplex draws from:
 
 ---
 
+## Module Terminology
+
+Simplex uses the following terminology for its module system:
+
+| Term | Definition |
+|------|------------|
+| **modulus** | A single compilation unit (like Rust's crate) |
+| **moduli** | Plural of modulus - multiple compilation units |
+| **module** | A namespace within a modulus (like Rust's mod) |
+
+---
+
 ## Document History
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 0.1.0 | 2025-04 | Initial draft specification |
-| 0.2.0 | 2025-08 | Added Cognitive Hive AI (CHAI) specification |
-| 0.3.0 | 2025-12 | Self-hosted native compiler via LLVM |
-| 0.3.1 | 2026-01 | Complete toolchain: sxc, cursus, sxdoc, sxlsp all compiled |
-| 0.3.2 | 2026-01 | Added Linux epoll support for async I/O (was macOS kqueue only) |
-| 0.3.3 | 2026-01 | Fixed github test suite failure log |
-| 0.3.4 | 2026-01 | Added Rust-style closures, block_on runtime, phase36 tests pass |
+| 0.1.0 | 2024-12 | Initial draft specification |
+| 0.2.0 | 2024-12 | Added Cognitive Hive AI (CHAI) specification |
+| 0.3.0 | 2025-01 | Self-hosted native compiler via LLVM |
+| 0.3.1 | 2025-01 | Complete toolchain: sxc, cursus, sxdoc, sxlsp all compiled |
+| 0.3.5 | 2025-01 | Added sxpm package manager, Phase 1 stdlib (HashMap, HashSet, String ops) |
+| 0.4.0 | 2026-01 | The Anima: cognitive memory, BDI, tool calling, observability, multi-actor orchestration |
 
 ---
 

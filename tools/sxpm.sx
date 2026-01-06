@@ -1,0 +1,1061 @@
+// sxpm - Simplex Package Manager
+// Build tool and package manager for Simplex projects
+// Part of Phase 2: Package Ecosystem
+
+fn SXPM_VERSION() -> i64 { "0.1.5" }
+
+// ============================================================================
+// Help and Version
+// ============================================================================
+
+fn sxpm_show_help() {
+    println("sxpm - Simplex Package Manager");
+    println("");
+    println("USAGE:");
+    println("    sxpm <COMMAND> [OPTIONS]");
+    println("");
+    println("COMMANDS:");
+    println("    new <name>           Create a new package");
+    println("    init                 Initialize package in current directory");
+    println("    build                Build the current package");
+    println("    run                  Build and run the current package");
+    println("    test                 Run tests");
+    println("    check                Type check without building");
+    println("    clean                Remove build artifacts");
+    println("    add <package>        Add a dependency");
+    println("    remove <package>     Remove a dependency");
+    println("    update               Update dependencies");
+    println("    search <query>       Search for packages");
+    println("    info <package>       Show package information");
+    println("    install <package>    Install a package");
+    println("");
+    println("OPTIONS:");
+    println("    -h, --help           Show this help");
+    println("    --version            Show version");
+    println("    --release            Build in release mode");
+    println("    -v, --verbose        Verbose output");
+}
+
+fn sxpm_show_version() {
+    print("sxpm ");
+    println(SXPM_VERSION());
+}
+
+// ============================================================================
+// Project Templates
+// ============================================================================
+
+fn template_main_sx() -> i64 {
+    "fn main() {\n    println(\"Hello, Simplex!\");\n}\n"
+}
+
+fn template_lib_sx() -> i64 {
+    "// Library entry point\n\npub fn hello() -> i64 {\n    println(\"Hello from library!\");\n    0\n}\n"
+}
+
+fn template_gitignore() -> i64 {
+    "/target/\n*.ll\n*.o\n*.sxb\n"
+}
+
+fn template_manifest(name: i64, is_lib: bool) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, "{\n");
+    sb_append(sb, "  \"name\": \"");
+    sb_append(sb, name);
+    sb_append(sb, "\",\n");
+    sb_append(sb, "  \"version\": \"0.1.0\",\n");
+    sb_append(sb, "  \"authors\": [],\n");
+    sb_append(sb, "  \"description\": \"\",\n");
+    sb_append(sb, "  \"license\": \"MIT\",\n");
+    sb_append(sb, "  \"build\": {\n");
+    sb_append(sb, "    \"entry\": \"src/");
+    if is_lib {
+        sb_append(sb, "lib.sx");
+    } else {
+        sb_append(sb, "main.sx");
+    }
+    sb_append(sb, "\"\n");
+    sb_append(sb, "  },\n");
+    sb_append(sb, "  \"dependencies\": {}\n");
+    sb_append(sb, "}\n");
+    let result: i64 = sb_to_string(sb);
+    sb_free(sb);
+    result
+}
+
+fn template_test_sx(name: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, "// Tests for ");
+    sb_append(sb, name);
+    sb_append(sb, "\n\n");
+    sb_append(sb, "fn test_example() {\n");
+    sb_append(sb, "    // Add your tests here\n");
+    sb_append(sb, "    println(\"PASS: example test\");\n");
+    sb_append(sb, "}\n\n");
+    sb_append(sb, "fn main() {\n");
+    sb_append(sb, "    test_example();\n");
+    sb_append(sb, "}\n");
+    let result: i64 = sb_to_string(sb);
+    sb_free(sb);
+    result
+}
+
+// ============================================================================
+// File System Helpers
+// ============================================================================
+
+fn path_join(dir: i64, name: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, dir);
+    if string_char_at(dir, string_len(dir) - 1) != 47 {  // '/'
+        sb_append_char(sb, 47);
+    }
+    sb_append(sb, name);
+    let result: i64 = sb_to_string(sb);
+    sb_free(sb);
+    result
+}
+
+fn mkdir_p(path: i64) -> i64 {
+    // Use mkdir intrinsic (calls intrinsic_mkdir_p which handles -p behavior)
+    mkdir(path)
+}
+
+// Note: file_exists is now a built-in intrinsic
+// No need to redefine it here
+
+fn check_file_exists(path: i64) -> bool {
+    file_exists(path) != 0
+}
+
+fn write_file_safe(path: i64, content: i64) -> i64 {
+    write_file(path, content)
+}
+
+// ============================================================================
+// Manifest Parsing
+// ============================================================================
+
+fn manifest_load(path: i64) -> i64 {
+    let content: i64 = read_file(path);
+    if content == 0 {
+        return 0;
+    }
+    json_parse(content)
+}
+
+fn manifest_name(manifest: i64) -> i64 {
+    let opt: i64 = json_get(manifest, "name");
+    if json_is_string(opt) {
+        return json_as_string(opt);
+    }
+    "unknown"
+}
+
+fn manifest_version(manifest: i64) -> i64 {
+    let opt: i64 = json_get(manifest, "version");
+    if json_is_string(opt) {
+        return json_as_string(opt);
+    }
+    "0.0.0"
+}
+
+fn manifest_entry(manifest: i64) -> i64 {
+    let build: i64 = json_get(manifest, "build");
+    if json_is_object(build) {
+        let entry: i64 = json_get(build, "entry");
+        if json_is_string(entry) {
+            return json_as_string(entry);
+        }
+    }
+    "src/main.sx"
+}
+
+fn manifest_dependencies(manifest: i64) -> i64 {
+    let deps: i64 = json_get(manifest, "dependencies");
+    if json_is_object(deps) {
+        // Convert to vec of (name, value) pairs
+        let keys: i64 = json_keys(deps);
+        let result: i64 = vec_new();
+        var i: i64 = 0;
+        while i < vec_len(keys) {
+            let key: i64 = vec_get(keys, i);
+            let value: i64 = json_get(deps, key);
+            // Create dependency entry: (name, value_json)
+            let dep: i64 = malloc(16);
+            store_ptr(dep, 0, key);
+            store_ptr(dep, 1, value);
+            vec_push(result, dep);
+            i = i + 1;
+        }
+        return result;
+    }
+    vec_new()
+}
+
+fn manifest_to_json(manifest: i64) -> i64 {
+    json_stringify(manifest)
+}
+
+fn manifest_validate(manifest: i64) -> i64 {
+    // Returns a Vec of error messages (empty if valid)
+    let errors: i64 = vec_new();
+
+    // Check required fields
+    let name: i64 = json_get(manifest, "name");
+    if json_is_string(name) == false {
+        vec_push(errors, "missing 'name' field");
+    }
+
+    let version: i64 = json_get(manifest, "version");
+    if json_is_string(version) == false {
+        vec_push(errors, "missing 'version' field");
+    }
+
+    errors
+}
+
+// ============================================================================
+// Dependency Helpers
+// ============================================================================
+
+fn dep_name(dep: i64) -> i64 {
+    load_ptr(dep, 0)
+}
+
+fn dep_value(dep: i64) -> i64 {
+    load_ptr(dep, 1)
+}
+
+fn dep_is_path(dep: i64) -> bool {
+    let value: i64 = dep_value(dep);
+    if json_is_object(value) {
+        let path: i64 = json_get(value, "path");
+        return json_is_string(path);
+    }
+    false
+}
+
+fn dep_path(dep: i64) -> i64 {
+    let value: i64 = dep_value(dep);
+    let path: i64 = json_get(value, "path");
+    if json_is_string(path) {
+        return json_as_string(path);
+    }
+    ""
+}
+
+fn dep_is_git(dep: i64) -> bool {
+    let value: i64 = dep_value(dep);
+    if json_is_object(value) {
+        let git: i64 = json_get(value, "git");
+        return json_is_string(git);
+    }
+    false
+}
+
+fn dep_git(dep: i64) -> i64 {
+    let value: i64 = dep_value(dep);
+    let git: i64 = json_get(value, "git");
+    if json_is_string(git) {
+        return json_as_string(git);
+    }
+    ""
+}
+
+fn dep_is_registry(dep: i64) -> bool {
+    let value: i64 = dep_value(dep);
+    // Registry deps are just version strings or objects with "version" field
+    if json_is_string(value) {
+        return true;
+    }
+    if json_is_object(value) {
+        let version: i64 = json_get(value, "version");
+        return json_is_string(version);
+    }
+    false
+}
+
+fn dep_version(dep: i64) -> i64 {
+    let value: i64 = dep_value(dep);
+    if json_is_string(value) {
+        return json_as_string(value);
+    }
+    if json_is_object(value) {
+        let version: i64 = json_get(value, "version");
+        if json_is_string(version) {
+            return json_as_string(version);
+        }
+    }
+    "*"
+}
+
+fn dependency_new(name: i64) -> i64 {
+    // Create a new dependency entry: (name, value_json)
+    let dep: i64 = malloc(16);
+    store_ptr(dep, 0, name);
+    store_ptr(dep, 1, json_string("*"));  // Default to any version
+    dep
+}
+
+fn dep_set_path(dep: i64, path: i64) -> i64 {
+    let obj: i64 = json_object_new();
+    json_object_set(obj, "path", json_string(path));
+    store_ptr(dep, 1, obj);
+    0
+}
+
+fn dep_set_git(dep: i64, url: i64) -> i64 {
+    let obj: i64 = json_object_new();
+    json_object_set(obj, "git", json_string(url));
+    store_ptr(dep, 1, obj);
+    0
+}
+
+fn dep_set_version(dep: i64, version: i64) -> i64 {
+    store_ptr(dep, 1, json_string(version));
+    0
+}
+
+// ============================================================================
+// Command: new
+// ============================================================================
+
+fn cmd_new(args: i64, argc: i64, arg_idx: i64) -> i64 {
+    if arg_idx >= argc {
+        println("Error: missing package name");
+        println("Usage: sxpm new <name> [--lib]");
+        return 1;
+    }
+
+    let name: i64 = vec_get(args, arg_idx);
+    var is_lib: bool = false;
+
+    // Check for --lib flag
+    var i: i64 = arg_idx + 1;
+    while i < argc {
+        let arg: i64 = vec_get(args, i);
+        if string_eq(arg, "--lib") {
+            is_lib = true;
+        }
+        i = i + 1;
+    }
+
+    // Validate name
+    if string_len(name) == 0 {
+        println("Error: package name cannot be empty");
+        return 1;
+    }
+
+    let first_char: i64 = string_char_at(name, 0);
+    if first_char >= 48 && first_char <= 57 {  // '0'-'9'
+        println("Error: package name cannot start with a number");
+        return 1;
+    }
+
+    // Check if directory exists
+    if check_file_exists(name) {
+        print("Error: directory '");
+        print(name);
+        println("' already exists");
+        return 1;
+    }
+
+    print("Creating package: ");
+    println(name);
+
+    // Create directory structure
+    mkdir_p(name);
+    mkdir_p(path_join(name, "src"));
+    mkdir_p(path_join(name, "tests"));
+
+    // Write simplex.json
+    let manifest_path: i64 = path_join(name, "simplex.json");
+    write_file_safe(manifest_path, template_manifest(name, is_lib));
+    print("  Created: ");
+    println(manifest_path);
+
+    // Write main source file
+    let src_name: i64 = if is_lib { "lib.sx" } else { "main.sx" };
+    let src_path: i64 = path_join(path_join(name, "src"), src_name);
+    let src_content: i64 = if is_lib { template_lib_sx() } else { template_main_sx() };
+    write_file_safe(src_path, src_content);
+    print("  Created: ");
+    println(src_path);
+
+    // Write test file
+    let test_path: i64 = path_join(path_join(name, "tests"), "test_main.sx");
+    write_file_safe(test_path, template_test_sx(name));
+    print("  Created: ");
+    println(test_path);
+
+    // Write .gitignore
+    let gitignore_path: i64 = path_join(name, ".gitignore");
+    write_file_safe(gitignore_path, template_gitignore());
+    print("  Created: ");
+    println(gitignore_path);
+
+    println("");
+    print("Package '");
+    print(name);
+    println("' created successfully!");
+    println("");
+    println("To get started:");
+    print("  cd ");
+    println(name);
+    println("  sxpm build");
+    if is_lib == false {
+        println("  sxpm run");
+    }
+
+    0
+}
+
+// ============================================================================
+// Command: init
+// ============================================================================
+
+fn cmd_init(args: i64, argc: i64, arg_idx: i64) -> i64 {
+    // Check if simplex.json already exists
+    if check_file_exists("simplex.json") {
+        println("Error: simplex.json already exists in current directory");
+        return 1;
+    }
+
+    // Get current directory name for package name
+    let cwd: i64 = get_cwd();
+    let name: i64 = path_basename(cwd);
+
+    var is_lib: bool = false;
+
+    // Check for --lib flag
+    var i: i64 = arg_idx;
+    while i < argc {
+        let arg: i64 = vec_get(args, i);
+        if string_eq(arg, "--lib") {
+            is_lib = true;
+        }
+        i = i + 1;
+    }
+
+    print("Initializing package: ");
+    println(name);
+
+    // Create src directory if needed
+    mkdir_p("src");
+    mkdir_p("tests");
+
+    // Write simplex.json
+    write_file_safe("simplex.json", template_manifest(name, is_lib));
+    println("  Created: simplex.json");
+
+    // Create source file if it doesn't exist
+    let src_name: i64 = if is_lib { "src/lib.sx" } else { "src/main.sx" };
+    if check_file_exists(src_name) == false {
+        let src_content: i64 = if is_lib { template_lib_sx() } else { template_main_sx() };
+        write_file_safe(src_name, src_content);
+        print("  Created: ");
+        println(src_name);
+    }
+
+    // Create .gitignore if it doesn't exist
+    if check_file_exists(".gitignore") == false {
+        write_file_safe(".gitignore", template_gitignore());
+        println("  Created: .gitignore");
+    }
+
+    println("");
+    println("Package initialized successfully!");
+
+    0
+}
+
+// ============================================================================
+// Command: build
+// ============================================================================
+
+fn cmd_build(args: i64, argc: i64, arg_idx: i64) -> i64 {
+    // Load manifest
+    let manifest: i64 = manifest_load("simplex.json");
+    if manifest == 0 {
+        println("Error: simplex.json not found");
+        println("Run 'sxpm init' to create a package");
+        return 1;
+    }
+
+    // Validate manifest
+    let errors: i64 = manifest_validate(manifest);
+    if vec_len(errors) > 0 {
+        println("Error: invalid simplex.json:");
+        var i: i64 = 0;
+        while i < vec_len(errors) {
+            print("  - ");
+            println(vec_get(errors, i));
+            i = i + 1;
+        }
+        return 1;
+    }
+
+    let name: i64 = manifest_name(manifest);
+    let entry: i64 = manifest_entry(manifest);
+
+    var release_mode: bool = false;
+    var verbose: bool = false;
+
+    // Parse options
+    var i: i64 = arg_idx;
+    while i < argc {
+        let arg: i64 = vec_get(args, i);
+        if string_eq(arg, "--release") {
+            release_mode = true;
+        } else if string_eq(arg, "-v") || string_eq(arg, "--verbose") {
+            verbose = true;
+        }
+        i = i + 1;
+    }
+
+    print("Building ");
+    print(name);
+    print(" v");
+    println(manifest_version(manifest));
+
+    // Check entry file exists
+    if check_file_exists(entry) == false {
+        print("Error: entry file not found: ");
+        println(entry);
+        return 1;
+    }
+
+    // Create target directory
+    let target_dir: i64 = if release_mode { "target/release" } else { "target/debug" };
+    mkdir_p(target_dir);
+
+    // Resolve dependencies
+    let deps: i64 = manifest_dependencies(manifest);
+    if vec_len(deps) > 0 {
+        println("Resolving dependencies...");
+        let resolve_result: i64 = resolve_dependencies(manifest, verbose);
+        if resolve_result != 0 {
+            println("Error: failed to resolve dependencies");
+            return 1;
+        }
+    }
+
+    // Build the project
+    println("Compiling...");
+
+    // Construct build command
+    // For now, use sxc directly
+    let sb: i64 = sb_new();
+    sb_append(sb, "sxc build ");
+    sb_append(sb, entry);
+    sb_append(sb, " -o ");
+    sb_append(sb, target_dir);
+    sb_append_char(sb, 47);  // '/'
+    sb_append(sb, name);
+
+    let cmd: i64 = sb_to_string(sb);
+    sb_free(sb);
+
+    if verbose {
+        print("  Running: ");
+        println(cmd);
+    }
+
+    let result: i64 = process_run(cmd);
+
+    if result == 0 {
+        print("Built: ");
+        print(target_dir);
+        print("/");
+        println(name);
+    } else {
+        println("Build failed");
+    }
+
+    result
+}
+
+// ============================================================================
+// Command: run
+// ============================================================================
+
+fn cmd_run(args: i64, argc: i64, arg_idx: i64) -> i64 {
+    // Build first
+    let build_result: i64 = cmd_build(args, argc, arg_idx);
+    if build_result != 0 {
+        return build_result;
+    }
+
+    // Load manifest to get binary name
+    let manifest: i64 = manifest_load("simplex.json");
+    let name: i64 = manifest_name(manifest);
+
+    var release_mode: bool = false;
+    var i: i64 = arg_idx;
+    while i < argc {
+        let arg: i64 = vec_get(args, i);
+        if string_eq(arg, "--release") {
+            release_mode = true;
+        }
+        i = i + 1;
+    }
+
+    let target_dir: i64 = if release_mode { "target/release" } else { "target/debug" };
+    let binary_path: i64 = path_join(target_dir, name);
+
+    println("");
+    println("Running...");
+    println("---");
+
+    let result: i64 = process_run(binary_path);
+
+    println("---");
+    result
+}
+
+// ============================================================================
+// Command: test
+// ============================================================================
+
+fn cmd_test(args: i64, argc: i64, arg_idx: i64) -> i64 {
+    println("Running tests...");
+
+    // Find test files
+    let test_files: i64 = find_test_files();
+    let num_tests: i64 = vec_len(test_files);
+
+    if num_tests == 0 {
+        println("No test files found in tests/");
+        return 0;
+    }
+
+    print("Found ");
+    print(int_to_string(num_tests));
+    println(" test file(s)");
+    println("");
+
+    var passed: i64 = 0;
+    var failed: i64 = 0;
+
+    var i: i64 = 0;
+    while i < num_tests {
+        let test_file: i64 = vec_get(test_files, i);
+        print("  Running: ");
+        print(test_file);
+        print(" ... ");
+
+        // Compile and run test
+        let cmd: i64 = string_concat("sxc run ", test_file);
+        let result: i64 = process_run(cmd);
+
+        if result == 0 {
+            println("PASS");
+            passed = passed + 1;
+        } else {
+            println("FAIL");
+            failed = failed + 1;
+        }
+
+        i = i + 1;
+    }
+
+    println("");
+    println("Results:");
+    print("  Passed: ");
+    println(int_to_string(passed));
+    print("  Failed: ");
+    println(int_to_string(failed));
+
+    if failed > 0 { 1 } else { 0 }
+}
+
+fn find_test_files() -> i64 {
+    let files: i64 = vec_new();
+
+    // List tests/ directory
+    let listing: i64 = list_dir("tests");
+    if listing == 0 {
+        return files;
+    }
+
+    let n: i64 = vec_len(listing);
+    var i: i64 = 0;
+    while i < n {
+        let name: i64 = vec_get(listing, i);
+        if string_ends_with(name, ".sx") {
+            vec_push(files, path_join("tests", name));
+        }
+        i = i + 1;
+    }
+
+    files
+}
+
+// ============================================================================
+// Command: clean
+// ============================================================================
+
+fn cmd_clean(args: i64, argc: i64, arg_idx: i64) -> i64 {
+    println("Cleaning build artifacts...");
+
+    let result: i64 = process_run("rm -rf target");
+
+    if result == 0 {
+        println("Removed target/");
+    }
+
+    result
+}
+
+// ============================================================================
+// Command: add
+// ============================================================================
+
+fn cmd_add(args: i64, argc: i64, arg_idx: i64) -> i64 {
+    if arg_idx >= argc {
+        println("Error: missing package name");
+        println("Usage: sxpm add <package> [--version <ver>] [--path <path>] [--git <url>]");
+        return 1;
+    }
+
+    let package_name: i64 = vec_get(args, arg_idx);
+    var version: i64 = "*";
+    var path: i64 = "";
+    var git: i64 = "";
+
+    // Parse options
+    var i: i64 = arg_idx + 1;
+    while i < argc {
+        let arg: i64 = vec_get(args, i);
+        if string_eq(arg, "--version") && i + 1 < argc {
+            version = vec_get(args, i + 1);
+            i = i + 2;
+        } else if string_eq(arg, "--path") && i + 1 < argc {
+            path = vec_get(args, i + 1);
+            i = i + 2;
+        } else if string_eq(arg, "--git") && i + 1 < argc {
+            git = vec_get(args, i + 1);
+            i = i + 2;
+        } else {
+            i = i + 1;
+        }
+    }
+
+    // Load manifest
+    let manifest: i64 = manifest_load("simplex.json");
+    if manifest == 0 {
+        println("Error: simplex.json not found");
+        return 1;
+    }
+
+    // Check if dependency already exists
+    let deps: i64 = manifest_dependencies(manifest);
+    var j: i64 = 0;
+    while j < vec_len(deps) {
+        let dep: i64 = vec_get(deps, j);
+        if string_eq(dep_name(dep), package_name) {
+            print("Dependency '");
+            print(package_name);
+            println("' already exists");
+            return 1;
+        }
+        j = j + 1;
+    }
+
+    // Create new dependency
+    let new_dep: i64 = dependency_new(package_name);
+    if string_len(path) > 0 {
+        dep_set_path(new_dep, path);
+    } else if string_len(git) > 0 {
+        dep_set_git(new_dep, git);
+    } else {
+        dep_set_version(new_dep, version);
+    }
+
+    vec_push(deps, new_dep);
+
+    // Write updated manifest
+    let new_json: i64 = manifest_to_json(manifest);
+    write_file_safe("simplex.json", new_json);
+
+    print("Added dependency: ");
+    print(package_name);
+    if string_len(path) > 0 {
+        print(" (path: ");
+        print(path);
+        print(")");
+    } else if string_len(git) > 0 {
+        print(" (git: ");
+        print(git);
+        print(")");
+    } else {
+        print(" ");
+        print(version);
+    }
+    println("");
+
+    0
+}
+
+// ============================================================================
+// Command: remove
+// ============================================================================
+
+fn cmd_remove(args: i64, argc: i64, arg_idx: i64) -> i64 {
+    if arg_idx >= argc {
+        println("Error: missing package name");
+        println("Usage: sxpm remove <package>");
+        return 1;
+    }
+
+    let package_name: i64 = vec_get(args, arg_idx);
+
+    // Load manifest
+    let manifest: i64 = manifest_load("simplex.json");
+    if manifest == 0 {
+        println("Error: simplex.json not found");
+        return 1;
+    }
+
+    // Find and remove dependency
+    let deps: i64 = manifest_dependencies(manifest);
+    var found: bool = false;
+    var i: i64 = 0;
+    while i < vec_len(deps) {
+        let dep: i64 = vec_get(deps, i);
+        if string_eq(dep_name(dep), package_name) {
+            vec_remove(deps, i);
+            found = true;
+            i = vec_len(deps);  // break
+        } else {
+            i = i + 1;
+        }
+    }
+
+    if found == false {
+        print("Dependency '");
+        print(package_name);
+        println("' not found");
+        return 1;
+    }
+
+    // Write updated manifest
+    let new_json: i64 = manifest_to_json(manifest);
+    write_file_safe("simplex.json", new_json);
+
+    print("Removed dependency: ");
+    println(package_name);
+
+    0
+}
+
+// ============================================================================
+// Search, Info, Install Commands
+// ============================================================================
+
+fn cmd_search(args: i64, argc: i64, arg_idx: i64) -> i64 {
+    if arg_idx >= argc {
+        println("Error: missing search query");
+        println("Usage: sxpm search <query>");
+        return 1;
+    }
+
+    let query: i64 = vec_get(args, arg_idx);
+    print("Searching for: ");
+    println(query);
+    println("Registry search not yet implemented");
+    println("For now, use git dependencies or local paths");
+    0
+}
+
+fn cmd_info(args: i64, argc: i64, arg_idx: i64) -> i64 {
+    if arg_idx >= argc {
+        println("Error: missing package name");
+        println("Usage: sxpm info <package>");
+        return 1;
+    }
+
+    let package_name: i64 = vec_get(args, arg_idx);
+    print("Package: ");
+    println(package_name);
+    println("Registry info not yet implemented");
+    0
+}
+
+fn cmd_install(args: i64, argc: i64, arg_idx: i64) -> i64 {
+    // Install dependencies from simplex.json
+    let manifest: i64 = manifest_load("simplex.json");
+    if manifest == 0 {
+        println("Error: simplex.json not found");
+        println("Run 'sxpm init' to create a new project");
+        return 1;
+    }
+
+    println("Installing dependencies...");
+    let result: i64 = resolve_dependencies(manifest, true);
+    if result == 0 {
+        println("Dependencies installed successfully");
+    }
+    result
+}
+
+// ============================================================================
+// Dependency Resolution
+// ============================================================================
+
+fn resolve_dependencies(manifest: i64, verbose: bool) -> i64 {
+    let deps: i64 = manifest_dependencies(manifest);
+    let n: i64 = vec_len(deps);
+
+    var i: i64 = 0;
+    while i < n {
+        let dep: i64 = vec_get(deps, i);
+        let name: i64 = dep_name(dep);
+
+        if verbose {
+            print("  Resolving: ");
+            println(name);
+        }
+
+        if dep_is_path(dep) {
+            // Local path dependency
+            let path: i64 = dep_path(dep);
+            let dep_manifest_path: i64 = path_join(path, "simplex.json");
+            if check_file_exists(dep_manifest_path) == false {
+                print("Error: dependency '");
+                print(name);
+                print("' not found at path: ");
+                println(path);
+                return 1;
+            }
+        } else if dep_is_git(dep) {
+            // Git dependency - clone if needed
+            let git_url: i64 = dep_git(dep);
+            let cache_dir: i64 = path_join(".simplex/deps", name);
+
+            if check_file_exists(cache_dir) == false {
+                if verbose {
+                    print("    Cloning from: ");
+                    println(git_url);
+                }
+
+                mkdir_p(".simplex/deps");
+                let clone_cmd: i64 = string_concat("git clone ", string_concat(git_url, string_concat(" ", cache_dir)));
+                let result: i64 = process_run(clone_cmd);
+                if result != 0 {
+                    print("Error: failed to clone ");
+                    println(name);
+                    return 1;
+                }
+            }
+        } else if dep_is_registry(dep) {
+            // Registry dependency - download from registry
+            let version_spec: i64 = dep_version(dep);
+            if verbose {
+                print("    Version: ");
+                println(version_spec);
+            }
+
+            // For now, just check if it's cached
+            let cache_dir: i64 = path_join(".simplex/deps", name);
+            if check_file_exists(cache_dir) == false {
+                print("Warning: registry dependency '");
+                print(name);
+                println("' not in cache");
+                println("Registry support not yet implemented");
+            }
+        }
+
+        i = i + 1;
+    }
+
+    0
+}
+
+// ============================================================================
+// Helper Functions (requires runtime support)
+// ============================================================================
+
+fn path_basename(path: i64) -> i64 {
+    let len: i64 = string_len(path);
+    var last_slash: i64 = 0 - 1;
+    var i: i64 = 0;
+
+    while i < len {
+        if string_char_at(path, i) == 47 {  // '/'
+            last_slash = i;
+        }
+        i = i + 1;
+    }
+
+    if last_slash < 0 {
+        return path;
+    }
+
+    string_slice(path, last_slash + 1, len)
+}
+
+// get_cwd and list_dir are now intrinsics - no wrapper needed
+
+// ============================================================================
+// Main Entry Point
+// ============================================================================
+
+fn main() {
+    let args: i64 = get_args();
+    let argc: i64 = vec_len(args);
+
+    if argc < 2 {
+        sxpm_show_help();
+        return;
+    }
+
+    let cmd: i64 = vec_get(args, 1);
+
+    // Help flags
+    if string_eq(cmd, "-h") || string_eq(cmd, "--help") {
+        sxpm_show_help();
+        return;
+    }
+
+    if string_eq(cmd, "--version") {
+        sxpm_show_version();
+        return;
+    }
+
+    // Commands
+    let result: i64 = 0;
+
+    if string_eq(cmd, "new") {
+        result = cmd_new(args, argc, 2);
+    } else if string_eq(cmd, "init") {
+        result = cmd_init(args, argc, 2);
+    } else if string_eq(cmd, "build") {
+        result = cmd_build(args, argc, 2);
+    } else if string_eq(cmd, "run") {
+        result = cmd_run(args, argc, 2);
+    } else if string_eq(cmd, "test") {
+        result = cmd_test(args, argc, 2);
+    } else if string_eq(cmd, "clean") {
+        result = cmd_clean(args, argc, 2);
+    } else if string_eq(cmd, "add") {
+        result = cmd_add(args, argc, 2);
+    } else if string_eq(cmd, "remove") {
+        result = cmd_remove(args, argc, 2);
+    } else if string_eq(cmd, "search") {
+        result = cmd_search(args, argc, 2);
+    } else if string_eq(cmd, "info") {
+        result = cmd_info(args, argc, 2);
+    } else if string_eq(cmd, "install") {
+        result = cmd_install(args, argc, 2);
+    } else {
+        print("Unknown command: ");
+        println(cmd);
+        println("");
+        sxpm_show_help();
+        result = 1;
+    }
+
+    exit(result);
+}

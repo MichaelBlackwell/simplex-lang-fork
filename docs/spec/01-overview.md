@@ -1,6 +1,6 @@
 # Simplex Overview and Philosophy
 
-**Version 0.1.0**
+**Version 0.4.0**
 
 ---
 

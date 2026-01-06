@@ -1,6 +1,6 @@
 # Simplex Compiler Toolchain
 
-**Version 0.3.4**
+**Version 0.3.5**
 
 This document describes the Simplex compiler toolchain, which is **self-hosted** and compiles to native binaries via LLVM.
 
@@ -8,14 +8,15 @@ This document describes the Simplex compiler toolchain, which is **self-hosted**
 
 ## Overview
 
-The Simplex toolchain consists of four main components:
+The Simplex toolchain consists of five main components:
 
 | Component | Binary | Version | Description |
 |-----------|--------|---------|-------------|
-| **sxc** | `sxc` | v0.3.4 | Simplex Compiler - compiles `.sx` source to native executables |
-| **cursus** | `cursus` | v0.1.3 | Bytecode VM and build tool |
-| **sxdoc** | `sxdoc` | v0.1.3 | Documentation generator |
-| **sxlsp** | `sxlsp` | v0.1.3 | Language Server Protocol implementation |
+| **sxc** | `sxc` | v0.3.5 | Simplex Compiler - compiles `.sx` source to native executables |
+| **sxpm** | `sxpm` | v0.1.5 | Package manager with dependency resolution |
+| **cursus** | `cursus` | v0.1.5 | Bytecode VM with garbage collection |
+| **sxdoc** | `sxdoc` | v0.1.5 | Documentation generator |
+| **sxlsp** | `sxlsp` | v0.1.5 | Language Server Protocol implementation |
 
 All components are written in **Simplex** and compile to native binaries.
 
@@ -88,6 +89,7 @@ Native Binary
 simplex-lang/
 ├── sxc                     # Compiler wrapper script (bash)
 ├── sxc-compile             # Native self-hosted compiler (387KB)
+├── sxpm                    # Package manager
 ├── cursus                  # Bytecode VM (227KB)
 ├── sxdoc                   # Documentation generator (225KB)
 ├── sxlsp                   # Language server (220KB)
@@ -322,9 +324,6 @@ Total toolchain: ~1MB of native binaries.
 | 0.2.0 | 2024-12 | Self-hosted compiler (Stage 1) |
 | 0.3.0 | 2025-01 | Native binary compilation |
 | 0.3.1 | 2025-01 | Fixed lookup_variant bug, all tools compiled |
-| 0.3.2 | 2026-01 | Added Linux epoll support for async I/O |
-| 0.3.3 | 2026-01 | Fixed github test suite failure log |
-| 0.3.4 | 2026-01 | Rust-style closures, block_on runtime, phase36 tests |
 
 ---
 

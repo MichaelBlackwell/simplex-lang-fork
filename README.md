@@ -219,7 +219,8 @@ simplex-lang/
 │   └── standalone_runtime.c  # C runtime library (471KB)
 ├── tools/
 │   ├── sxc.sx              # CLI compiler wrapper
-│   ├── cursus.sx           # Build/package manager
+│   ├── sxpm.sx             # Package manager
+│   ├── cursus.sx           # Bytecode VM
 │   ├── sxdoc.sx            # Documentation generator
 │   └── sxlsp.sx            # Language server protocol
 ├── tests/
@@ -227,7 +228,10 @@ simplex-lang/
 │   ├── types/              # Type system tests
 │   ├── async/              # Async/await tests
 │   ├── actors/             # Actor model tests
-│   └── phase36/            # Phase 36 feature tests
+│   ├── phase36/            # Phase 36 feature tests
+│   ├── stdlib/             # Standard library tests
+│   ├── language/           # Language feature tests
+│   └── integration/        # Integration tests
 ├── examples/               # Example programs
 └── docs/
     ├── spec/               # Language specification
@@ -239,10 +243,18 @@ simplex-lang/
 
 | Tool | Description | Status |
 |------|-------------|--------|
-| `sxc` | Simplex compiler (self-hosted native binary) | v0.3.4 |
-| `cursus` | Build tool and bytecode VM | v0.1.3 |
-| `sxdoc` | Documentation generator | v0.1.3 |
-| `sxlsp` | Language server for IDE support | v0.1.3 |
+| `sxc` | Simplex compiler (self-hosted native binary) | v0.3.5 |
+| `sxpm` | Package manager and build tool | v0.1.5 |
+| `cursus` | Bytecode VM with garbage collection | v0.1.5 |
+| `sxdoc` | Documentation generator | v0.1.5 |
+| `sxlsp` | Language server for IDE support | v0.1.5 |
+
+**v0.3.5 Changes:**
+- Added `sxpm` package manager with full dependency resolution
+- Phase 1 stdlib: HashMap, HashSet, Vec extensions, String operations
+- Phase 2: Package ecosystem with JSON manifest support
+- Added json_parse_simple, json_object_new, json_array_new, json_keys
+- Fixed codegen handlers for stdlib functions
 
 **v0.3.4 Changes:**
 - Added Rust-style closure syntax (`|| expr` and `|x| expr`) to parser
@@ -272,6 +284,19 @@ sxc compile <file.sx>             # Compile to LLVM IR (.ll)
 sxc run <file.sx>                 # Compile and run immediately
 sxc version                        # Show version info
 sxc help                          # Show usage help
+```
+
+### sxpm Commands
+
+```bash
+sxpm new <name>           # Create a new package
+sxpm init                 # Initialize package in current directory
+sxpm build                # Build the current package
+sxpm run                  # Build and run the current package
+sxpm test                 # Run tests
+sxpm add <package>        # Add a dependency
+sxpm remove <package>     # Remove a dependency
+sxpm install              # Install dependencies
 ```
 
 ## Language Features

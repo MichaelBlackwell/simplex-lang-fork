@@ -82,6 +82,7 @@ class TokenKind:
     # AI/Hive keywords
     KW_SPECIALIST = 'KW_SPECIALIST'
     KW_HIVE = 'KW_HIVE'
+    KW_ANIMA = 'KW_ANIMA'
     KW_INFER = 'KW_INFER'
     KW_AWAIT = 'KW_AWAIT'
     KW_YIELD = 'KW_YIELD'
@@ -129,6 +130,7 @@ KEYWORDS = {
     'init': TokenKind.KW_INIT,
     'specialist': TokenKind.KW_SPECIALIST,
     'hive': TokenKind.KW_HIVE,
+    'anima': TokenKind.KW_ANIMA,
     'infer': TokenKind.KW_INFER,
     'await': TokenKind.KW_AWAIT,
     'yield': TokenKind.KW_YIELD,
@@ -478,8 +480,14 @@ def make_ask_expr(target, message_name, args):
 def make_specialist_def(name, config, state_vars, handlers):
     return {'type': 'SpecialistDef', 'name': name, 'config': config, 'state_vars': state_vars, 'handlers': handlers}
 
-def make_hive_def(name, specialists, router, strategy):
-    return {'type': 'HiveDef', 'name': name, 'specialists': specialists, 'router': router, 'strategy': strategy}
+def make_hive_def(name, specialists, router, strategy, mnemonic=None):
+    return {'type': 'HiveDef', 'name': name, 'specialists': specialists, 'router': router,
+            'strategy': strategy, 'mnemonic': mnemonic or {}}
+
+def make_anima_def(name, identity, memory, beliefs, slm, persistence, desires=None, intentions=None):
+    return {'type': 'AnimaDef', 'name': name, 'identity': identity, 'memory': memory,
+            'beliefs': beliefs, 'slm': slm, 'persistence': persistence,
+            'desires': desires or [], 'intentions': intentions or []}
 
 def make_infer_expr(prompt, options):
     return {'type': 'InferExpr', 'prompt': prompt, 'options': options}
@@ -600,6 +608,8 @@ class Parser:
             item = self.parse_specialist_def()
         elif self.check(TokenKind.KW_HIVE):
             item = self.parse_hive_def()
+        elif self.check(TokenKind.KW_ANIMA):
+            item = self.parse_anima_def()
         elif self.check(TokenKind.KW_MOD):
             item = self.parse_mod_def()
         elif self.check(TokenKind.KW_USE):
@@ -675,8 +685,14 @@ class Parser:
         # Merge bounds
         all_bounds = {**type_bounds, **where_bounds}
 
-        body = self.parse_block()
-        fn_def = make_fn_def(name, params, return_type, body, type_params, is_async)
+        # Check for external function declaration (ends with semicolon, no body)
+        if self.check(TokenKind.SEMI):
+            self.advance()  # consume semicolon
+            fn_def = make_fn_def(name, params, return_type, None, type_params, is_async)
+            fn_def['is_extern'] = True
+        else:
+            body = self.parse_block()
+            fn_def = make_fn_def(name, params, return_type, body, type_params, is_async)
         if all_bounds:
             fn_def['type_bounds'] = all_bounds
         return fn_def
@@ -1098,6 +1114,10 @@ class Parser:
                     config[field_name] = self.advance().text
                 elif self.check(TokenKind.INT):
                     config[field_name] = int(self.advance().text)
+                elif self.check(TokenKind.FLOAT):
+                    # Store float as integer * 100 for temperature (e.g., 0.7 -> 70)
+                    val = float(self.advance().text)
+                    config[field_name] = int(val * 100)
                 else:
                     # Parse as expression
                     config[field_name] = self.parse_expr()
@@ -1140,11 +1160,16 @@ class Parser:
         return make_specialist_def(name, config, state_vars, handlers)
 
     def parse_hive_def(self):
-        """Parse hive definition - supervisor for specialists.
+        """Parse hive definition - supervisor for specialists with shared memory.
         hive Name {
             specialists: [Spec1, Spec2],
             router: RuleRouter,
-            strategy: OneForOne
+            strategy: OneForOne,
+            mnemonic {
+                episodic: { capacity: 1000 },
+                semantic: { path: "knowledge.db" },
+                beliefs: { revision_threshold: 0.3 }
+            }
         }
         """
         self.expect(TokenKind.KW_HIVE)
@@ -1154,28 +1179,161 @@ class Parser:
         specialists = []
         router = None
         strategy = 'OneForOne'
+        mnemonic = {}
 
         while not self.check(TokenKind.RBRACE):
             field_name = self.expect(TokenKind.IDENT).text
-            self.expect(TokenKind.COLON)
 
-            if field_name == 'specialists':
-                self.expect(TokenKind.LBRACKET)
-                while not self.check(TokenKind.RBRACKET):
-                    specialists.append(self.expect(TokenKind.IDENT).text)
+            # Check for mnemonic block (no colon, just brace)
+            if field_name == 'mnemonic' and self.check(TokenKind.LBRACE):
+                self.advance()  # consume LBRACE
+                # Parse mnemonic sub-blocks: episodic, semantic, beliefs
+                while not self.check(TokenKind.RBRACE):
+                    block_name = self.expect(TokenKind.IDENT).text
+                    self.expect(TokenKind.COLON)
+                    self.expect(TokenKind.LBRACE)
+
+                    block_config = {}
+                    while not self.check(TokenKind.RBRACE):
+                        key = self.expect(TokenKind.IDENT).text
+                        self.expect(TokenKind.COLON)
+
+                        # Parse value
+                        if self.check(TokenKind.STRING):
+                            value = self.advance().text
+                        elif self.check(TokenKind.INT):
+                            value = int(self.advance().text)
+                        elif self.check(TokenKind.FLOAT):
+                            value = float(self.advance().text)
+                        elif self.check(TokenKind.KW_TRUE):
+                            self.advance()
+                            value = True
+                        elif self.check(TokenKind.KW_FALSE):
+                            self.advance()
+                            value = False
+                        else:
+                            value = self.advance().text
+
+                        block_config[key] = value
+                        if self.check(TokenKind.COMMA):
+                            self.advance()
+
+                    self.expect(TokenKind.RBRACE)
+                    mnemonic[block_name] = block_config
+
                     if self.check(TokenKind.COMMA):
                         self.advance()
-                self.expect(TokenKind.RBRACKET)
-            elif field_name == 'router':
-                router = self.expect(TokenKind.IDENT).text
-            elif field_name == 'strategy':
-                strategy = self.expect(TokenKind.IDENT).text
+
+                self.expect(TokenKind.RBRACE)
+            else:
+                self.expect(TokenKind.COLON)
+
+                if field_name == 'specialists':
+                    self.expect(TokenKind.LBRACKET)
+                    while not self.check(TokenKind.RBRACKET):
+                        specialists.append(self.expect(TokenKind.IDENT).text)
+                        if self.check(TokenKind.COMMA):
+                            self.advance()
+                    self.expect(TokenKind.RBRACKET)
+                elif field_name == 'router':
+                    router = self.expect(TokenKind.IDENT).text
+                elif field_name == 'strategy':
+                    strategy = self.expect(TokenKind.IDENT).text
 
             if self.check(TokenKind.COMMA):
                 self.advance()
 
         self.expect(TokenKind.RBRACE)
-        return make_hive_def(name, specialists, router, strategy)
+        return make_hive_def(name, specialists, router, strategy, mnemonic)
+
+    def parse_anima_def(self):
+        """Parse anima definition - cognitive soul.
+        anima Name {
+            identity { purpose: "...", values: [...] }
+            memory { episodic: "...", semantic: "..." }
+            beliefs { revision_threshold: 0.3 }
+            slm { model: "...", quantization: "..." }
+            persistence { path: "...", auto_save: true }
+        }
+        """
+        self.expect(TokenKind.KW_ANIMA)
+        name = self.expect(TokenKind.IDENT).text
+        self.expect(TokenKind.LBRACE)
+
+        identity = {}
+        memory = {}
+        beliefs = {}
+        slm = {}
+        persistence = {}
+        desires = []
+        intentions = []
+
+        while not self.check(TokenKind.RBRACE):
+            block_name = self.expect(TokenKind.IDENT).text
+            self.expect(TokenKind.LBRACE)
+
+            config = {}
+            while not self.check(TokenKind.RBRACE):
+                key = self.expect(TokenKind.IDENT).text
+                self.expect(TokenKind.COLON)
+
+                # Parse value - can be string, array, number, or identifier
+                if self.check(TokenKind.STRING):
+                    value = self.advance().text
+                elif self.check(TokenKind.LBRACKET):
+                    # Array of strings/identifiers
+                    self.advance()
+                    items = []
+                    while not self.check(TokenKind.RBRACKET):
+                        if self.check(TokenKind.STRING):
+                            items.append(self.advance().text)
+                        elif self.check(TokenKind.IDENT):
+                            items.append(self.advance().text)
+                        if self.check(TokenKind.COMMA):
+                            self.advance()
+                    self.expect(TokenKind.RBRACKET)
+                    value = items
+                elif self.check(TokenKind.INT):
+                    value = int(self.advance().text)
+                elif self.check(TokenKind.FLOAT):
+                    value = float(self.advance().text)
+                elif self.check(TokenKind.KW_TRUE):
+                    self.advance()
+                    value = True
+                elif self.check(TokenKind.KW_FALSE):
+                    self.advance()
+                    value = False
+                elif self.check(TokenKind.IDENT):
+                    value = self.advance().text
+                else:
+                    value = None
+                    self.advance()
+
+                config[key] = value
+                if self.check(TokenKind.COMMA):
+                    self.advance()
+
+            self.expect(TokenKind.RBRACE)
+
+            if block_name == 'identity':
+                identity = config
+            elif block_name == 'memory':
+                memory = config
+            elif block_name == 'beliefs':
+                beliefs = config
+            elif block_name == 'slm':
+                slm = config
+            elif block_name == 'persistence':
+                persistence = config
+            elif block_name == 'desires':
+                # Desires is a list of goals with priority
+                desires = config.get('goals', [])
+            elif block_name == 'intentions':
+                # Intentions is a list of active plans
+                intentions = config.get('plans', [])
+
+        self.expect(TokenKind.RBRACE)
+        return make_anima_def(name, identity, memory, beliefs, slm, persistence, desires, intentions)
 
     def parse_mod_def(self):
         """Parse mod name; or mod name { ... } declaration"""
@@ -2329,23 +2487,56 @@ class CodeGen:
         self.string_constants.append((label, value))
         return label
 
-    def load_module(self, mod_name):
-        """Load and parse a module file, adding its items to the current context."""
+    def load_module(self, mod_name, base_path=None):
+        """Load and parse a module file, adding its items to the current context.
+
+        Args:
+            mod_name: Module name (e.g., 'io' or 'foo::bar')
+            base_path: Base directory for module lookup (used for nested modules)
+        """
         import os
         # Track loaded modules to avoid circular imports
         if not hasattr(self, 'loaded_modules'):
             self.loaded_modules = set()
+
+        # Handle nested module paths (foo::bar::baz)
+        if '::' in mod_name:
+            parts = mod_name.split('::')
+            # Load each level, building up the full path
+            current_mod = parts[0]
+            self.load_module(current_mod)
+            for part in parts[1:]:
+                # Look for nested module in parent's directory
+                nested_mod = f"{current_mod}::{part}"
+                self.load_module(nested_mod, current_mod)
+                current_mod = nested_mod
+            return
+
+        full_mod_name = mod_name
         if mod_name in self.loaded_modules:
             return  # Already loaded
         self.loaded_modules.add(mod_name)
 
         # Find module file (mod_name.sx in current directory or src/)
-        candidates = [
-            f"{mod_name}.sx",
-            f"src/{mod_name}.sx",
-            f"{mod_name}/mod.sx",
-            f"src/{mod_name}/mod.sx"
-        ]
+        # If base_path is provided, look in that directory first
+        candidates = []
+        if base_path:
+            # Nested module: look relative to parent
+            base_dir = base_path.replace('::', '/')
+            candidates = [
+                f"{base_dir}/{mod_name.split('::')[-1]}.sx",
+                f"{base_dir}/{mod_name.split('::')[-1]}/mod.sx",
+                f"src/{base_dir}/{mod_name.split('::')[-1]}.sx",
+                f"src/{base_dir}/{mod_name.split('::')[-1]}/mod.sx",
+            ]
+        else:
+            candidates = [
+                f"{mod_name}.sx",
+                f"src/{mod_name}.sx",
+                f"{mod_name}/mod.sx",
+                f"src/{mod_name}/mod.sx",
+                f"runtime/{mod_name}.sx",  # Also check runtime directory
+            ]
 
         mod_path = None
         for path in candidates:
@@ -2369,45 +2560,94 @@ class CodeGen:
         # Store module items for later code generation
         if not hasattr(self, 'module_items'):
             self.module_items = {}
-        self.module_items[mod_name] = mod_items
+        self.module_items[full_mod_name] = mod_items
 
-        # Register module's types, functions, etc.
+        # Register module's types, functions, etc. with visibility tracking
         for item in mod_items:
+            item_name = item.get('name', '')
+            is_pub = item.get('is_pub', False)
+
             if item['type'] == 'EnumDef':
                 # Handle both old format (list of strings) and new format (list of dicts)
                 variants = item['variants']
                 if variants and isinstance(variants[0], dict):
-                    self.enums[f"{mod_name}::{item['name']}"] = {v['name']: i for i, v in enumerate(variants)}
+                    self.enums[f"{full_mod_name}::{item['name']}"] = {v['name']: i for i, v in enumerate(variants)}
                 else:
-                    self.enums[f"{mod_name}::{item['name']}"] = {v: i for i, v in enumerate(variants)}
-                self.enums[item['name']] = self.enums[f"{mod_name}::{item['name']}"]
+                    self.enums[f"{full_mod_name}::{item['name']}"] = {v: i for i, v in enumerate(variants)}
+                # Also register short name for convenience
+                self.enums[item['name']] = self.enums[f"{full_mod_name}::{item['name']}"]
+                self.register_item_visibility(full_mod_name, item['name'], is_pub)
+
             elif item['type'] == 'StructDef':
-                self.structs[f"{mod_name}::{item['name']}"] = item['fields']
+                self.structs[f"{full_mod_name}::{item['name']}"] = item['fields']
                 self.structs[item['name']] = item['fields']
+                self.register_item_visibility(full_mod_name, item['name'], is_pub)
+
             elif item['type'] == 'FnDef':
                 # Store function for generation when needed
-                self.functions.add(f"{mod_name}_{item['name']}")
+                self.functions.add(f"{full_mod_name}_{item['name']}")
                 self.functions.add(item['name'])
+                self.register_item_visibility(full_mod_name, item['name'], is_pub)
+
             elif item['type'] == 'TraitDef':
                 self.traits[item['name']] = item
+                self.register_item_visibility(full_mod_name, item['name'], is_pub)
+
+        # Handle nested use statements within the module
+        for item in mod_items:
+            if item['type'] == 'UseDef':
+                self.import_from_path(item['path'])
 
     def import_from_path(self, path):
-        """Import items from a module path like ['std', 'io']."""
+        """Import items from a module path like ['std', 'io'] or ['ai', 'memory', 'EpisodicMemory'].
+
+        Handles three cases:
+        1. use foo;           -> imports module 'foo', items accessible as foo::item
+        2. use foo::bar;      -> imports submodule or item 'bar' from 'foo'
+        3. use foo::bar::Baz; -> imports specific item 'Baz' from 'foo::bar'
+        """
         if len(path) < 1:
             return
 
-        mod_name = path[0]
-        self.load_module(mod_name)
+        # Initialize imported_items if needed
+        if not hasattr(self, 'imported_items'):
+            self.imported_items = {}
 
-        # If path has more components, it specifies what to import
-        # e.g., use std::io -> imports all from std/io
-        # e.g., use std::io::println -> imports just println
-        if len(path) > 1:
-            # Mark specific items as imported into current namespace
-            if not hasattr(self, 'imported_items'):
-                self.imported_items = {}
-            full_path = '::'.join(path)
-            self.imported_items[path[-1]] = full_path
+        if len(path) == 1:
+            # Simple module import: use foo;
+            mod_name = path[0]
+            self.load_module(mod_name)
+        else:
+            # Path with multiple components
+            # First, try loading as a nested module
+            full_mod_path = '::'.join(path[:-1])
+            item_name = path[-1]
+
+            # Check if last component is a module or an item
+            # Try loading as nested module first
+            full_path_as_mod = '::'.join(path)
+            self.load_module(full_path_as_mod)
+
+            # If that worked (module was loaded), all items are now available
+            if hasattr(self, 'loaded_modules') and full_path_as_mod in self.loaded_modules:
+                # Imported a module, make its items available via short names
+                if hasattr(self, 'module_items') and full_path_as_mod in self.module_items:
+                    for item in self.module_items[full_path_as_mod]:
+                        if item.get('is_pub', False) or item.get('name'):
+                            self.imported_items[item.get('name', '')] = f"{full_path_as_mod}::{item.get('name', '')}"
+            else:
+                # Last component might be a specific item (struct, fn, etc.)
+                # Load the parent module and import just the item
+                if len(path) > 1:
+                    parent_mod = path[0] if len(path) == 2 else '::'.join(path[:-1])
+                    self.load_module(parent_mod)
+
+                # Mark the specific item as imported
+                self.imported_items[item_name] = '::'.join(path)
+
+        # Also store the full path for resolution
+        full_path = '::'.join(path)
+        self.imported_items[path[-1]] = full_path
 
     def generate(self, items):
         # Header
@@ -2652,6 +2892,295 @@ class CodeGen:
         self.emit('declare void @epoch_defer_free(i64, i64)')          # defer free to safe epoch
         self.emit('declare void @epoch_collect(i64)')                  # collect garbage
 
+        self.emit('; Phase 4: Anima Cognitive Memory System')
+        self.emit('declare i64 @anima_memory_new(i64)')               # create memory system
+        self.emit('declare i64 @anima_remember(i64, i64, double)')    # store episodic memory
+        self.emit('declare i64 @anima_learn(i64, i64, double, i64)')  # store semantic memory
+        self.emit('declare i64 @anima_store_procedure(i64, i64, i64)') # store procedural memory
+        self.emit('declare i64 @anima_believe(i64, i64, double, i64)') # store belief
+        self.emit('declare i64 @anima_revise_belief(i64, i64, double, i64)') # revise belief
+        self.emit('declare i64 @anima_working_push(i64, i64)')        # push to working memory
+        self.emit('declare i64 @anima_working_pop(i64)')              # pop from working memory
+        self.emit('declare i64 @anima_working_context(i64)')          # get working memory context
+        self.emit('declare i64 @anima_recall_for_goal(i64, i64, i64, i64)') # goal-directed recall
+        self.emit('declare i64 @anima_episodic_count(i64)')           # episodic memory count
+        self.emit('declare i64 @anima_semantic_count(i64)')           # semantic memory count
+        self.emit('declare i64 @anima_beliefs_count(i64)')            # beliefs count
+        self.emit('declare i64 @anima_working_count(i64)')            # working memory count
+        self.emit('declare i64 @anima_consolidate(i64)')              # consolidate memory
+        self.emit('declare i64 @anima_memory_close(i64)')             # cleanup memory system
+        self.emit('; Phase 4: Anima BDI (Beliefs-Desires-Intentions)')
+        self.emit('declare i64 @anima_bdi_new()')                     # create BDI system
+        self.emit('declare i64 @anima_add_desire(i64, i64, double)')  # add desire with priority
+        self.emit('declare i64 @anima_get_top_desire(i64)')           # get highest priority desire
+        self.emit('declare i64 @anima_desires_count(i64)')            # count desires
+        self.emit('declare i64 @anima_set_desire_status(i64, i64, i64)') # set desire status
+        self.emit('declare i64 @anima_add_intention(i64, i64, i64, i64)') # add intention
+        self.emit('declare i64 @anima_advance_intention(i64, i64)')   # advance intention step
+        self.emit('declare i64 @anima_intention_step(i64, i64)')      # get current step
+        self.emit('declare i64 @anima_intentions_count(i64)')         # count intentions
+        self.emit('declare i64 @anima_set_intention_status(i64, i64, i64)') # set intention status
+        self.emit('declare void @anima_bdi_close(i64)')               # cleanup BDI system
+        self.emit('; Phase 4: Anima Persistence')
+        self.emit('declare i64 @anima_save(i64, i64)')                # save to file
+        self.emit('declare i64 @anima_load(i64)')                     # load from file
+        self.emit('declare i64 @anima_exists(i64)')                   # check if file exists
+
+        self.emit('; Phase 4: Tool System')
+        self.emit('declare i64 @tool_registry_new()')                  # create registry
+        self.emit('declare i64 @tool_register(i64, i64, i64, i64)')    # register tool
+        self.emit('declare i64 @tool_get(i64, i64)')                   # get tool by name
+        self.emit('declare i64 @tool_count(i64)')                      # count registered tools
+        self.emit('declare i64 @tool_list(i64)')                       # list all tool names
+        self.emit('declare i64 @tool_execute(i64, i64, i64)')          # execute tool with args
+        self.emit('declare i64 @tool_register_builtins(i64)')          # register all builtins
+        self.emit('declare i64 @tool_get_schema(i64, i64)')            # get tool schema
+        self.emit('declare i64 @tool_get_all_schemas(i64)')            # get all schemas as JSON
+        self.emit('declare i64 @tool_result_output(i64)')              # get result output
+        self.emit('declare void @tool_result_free(i64)')               # free result
+        self.emit('declare void @tool_registry_close(i64)')            # close registry
+
+        self.emit('; Phase 4: Multi-Actor Orchestration')
+        self.emit('declare i64 @ai_actor_system_new()')                # create actor system
+        self.emit('declare i64 @ai_actor_config_new(i64, i64)')        # create config
+        self.emit('declare void @ai_actor_config_set_tools(i64, i64)') # set tools
+        self.emit('declare void @ai_actor_config_set_memory(i64, i64)')# set memory
+        self.emit('declare void @ai_actor_config_set_timeout(i64, i64)')# set timeout
+        self.emit('declare i64 @ai_actor_spawn(i64, i64)')             # spawn actor
+        self.emit('declare i64 @ai_actor_status(i64, i64)')            # get status
+        self.emit('declare i64 @ai_actor_name(i64, i64)')              # get name
+        self.emit('declare void @ai_actor_stop(i64, i64)')             # stop actor
+        self.emit('declare i64 @ai_actor_add_message(i64, i64, i64, i64)')  # add to history
+        self.emit('declare i64 @ai_actor_history_len(i64, i64)')       # history length
+        self.emit('declare i64 @ai_actor_get_message(i64, i64, i64)')  # get message
+        self.emit('declare void @ai_actor_clear_history(i64, i64)')    # clear history
+        self.emit('declare i64 @ai_actor_system_count(i64)')           # actor count
+        self.emit('declare i64 @ai_actor_system_list(i64)')            # list actors
+        self.emit('declare void @ai_actor_system_close(i64)')          # close system
+        self.emit('; Pipeline orchestration')
+        self.emit('declare i64 @pipeline_new(i64)')                    # create pipeline
+        self.emit('declare i64 @pipeline_add_stage(i64, i64, i64)')    # add stage
+        self.emit('declare i64 @pipeline_execute(i64, i64, i64)')      # execute pipeline
+        self.emit('declare i64 @pipeline_stage_count(i64)')            # stage count
+        self.emit('declare void @pipeline_close(i64)')                 # close pipeline
+        self.emit('; Parallel orchestration')
+        self.emit('declare i64 @parallel_group_new(i64)')              # create group
+        self.emit('declare i64 @parallel_group_add(i64, i64)')         # add actor
+        self.emit('declare i64 @parallel_group_execute(i64, i64, i64)')# execute parallel
+        self.emit('declare i64 @parallel_group_size(i64)')             # group size
+        self.emit('declare void @parallel_group_close(i64)')           # close group
+        self.emit('; Consensus orchestration')
+        self.emit('declare i64 @consensus_group_new(i64, i64)')         # create consensus (threshold %)
+        self.emit('declare i64 @consensus_group_add(i64, i64)')        # add actor
+        self.emit('declare i64 @consensus_group_vote(i64, i64, i64)')  # vote
+        self.emit('declare void @consensus_group_close(i64)')          # close consensus
+        self.emit('; AI Supervisor')
+        self.emit('declare i64 @ai_supervisor_new(i64, i64)')             # create supervisor
+        self.emit('declare i64 @ai_supervisor_add_child(i64, i64)')       # add child
+        self.emit('declare i64 @ai_supervisor_check_health(i64, i64)')    # check health
+        self.emit('declare i64 @ai_supervisor_child_count(i64)')          # child count
+        self.emit('declare void @ai_supervisor_close(i64)')               # close supervisor
+        self.emit('; Shared memory')
+        self.emit('declare i64 @shared_memory_new(i64, i64)')          # create shared memory
+        self.emit('declare i64 @shared_memory_grant_read(i64, i64)')   # grant read
+        self.emit('declare i64 @shared_memory_grant_write(i64, i64)')  # grant write
+        self.emit('declare i64 @shared_memory_recall(i64, i64, i64, i64)')  # recall
+        self.emit('declare i64 @shared_memory_remember(i64, i64, i64, double)')  # remember
+        self.emit('declare void @shared_memory_close(i64)')            # close shared memory
+
+        self.emit('; Phase 4.9: Specialist Enhancements')
+        self.emit('; Provider Configuration')
+        self.emit('declare i64 @provider_registry_new()')               # create registry
+        self.emit('declare i64 @provider_config_new(i64, i64)')         # create config (type, name)
+        self.emit('declare void @provider_config_set_key(i64, i64)')    # set API key
+        self.emit('declare void @provider_config_set_model(i64, i64)')  # set model
+        self.emit('declare void @provider_config_set_url(i64, i64)')    # set base URL
+        self.emit('declare void @provider_config_set_temp(i64, double)')  # set temperature
+        self.emit('declare void @provider_config_set_max_tokens(i64, i64)')  # set max tokens
+        self.emit('declare void @provider_config_set_timeout(i64, i64)')  # set timeout
+        self.emit('declare void @provider_config_set_priority(i64, i64)')  # set priority
+        self.emit('declare void @provider_config_set_cost(i64, double, double)')  # set cost
+        self.emit('declare i64 @provider_registry_add(i64, i64)')       # add provider
+        self.emit('declare i64 @provider_registry_get(i64, i64)')       # get provider
+        self.emit('declare i64 @provider_registry_count(i64)')          # count providers
+        self.emit('declare void @provider_registry_set_default(i64, i64)')  # set default
+        self.emit('declare i64 @provider_get_by_tier(i64, i64)')        # get by tier
+        self.emit('declare i64 @provider_registry_list(i64)')           # list providers
+        self.emit('declare void @provider_registry_close(i64)')         # close registry
+        self.emit('; Token Counting & Cost Tracking')
+        self.emit('declare i64 @estimate_tokens(i64)')                  # estimate tokens
+        self.emit('declare i64 @count_tokens_accurate(i64)')            # accurate count
+        self.emit('declare double @calculate_cost(i64, i64, i64)')      # calculate cost
+        self.emit('declare i64 @provider_get_stats(i64)')               # get stats JSON
+        self.emit('declare void @provider_record_request(i64, i32, i64, i64, double, double)')  # record
+        self.emit('declare double @provider_total_cost(i64)')           # total cost
+        self.emit('; Retry with Exponential Backoff')
+        self.emit('declare i64 @retry_config_new()')                    # create config
+        self.emit('declare void @retry_config_set_max(i64, i64)')       # set max retries
+        self.emit('declare void @retry_config_set_delay(i64, i64)')     # set initial delay
+        self.emit('declare void @retry_config_set_backoff(i64, double)')  # set multiplier
+        self.emit('declare i64 @retry_calculate_delay(i64, i64)')       # calculate delay
+        self.emit('declare i64 @retry_should_retry(i64, i64, i64)')     # should retry?
+        self.emit('declare void @retry_config_close(i64)')              # free config
+        self.emit('; Fallback Provider Chain')
+        self.emit('declare i64 @fallback_chain_new()')                  # create chain
+        self.emit('declare i64 @fallback_chain_add(i64, i64)')          # add provider
+        self.emit('declare i64 @fallback_chain_next(i64, i64)')         # get next
+        self.emit('declare i64 @fallback_chain_get(i64, i64)')          # get by index
+        self.emit('declare i64 @fallback_chain_size(i64)')              # chain size
+        self.emit('declare void @fallback_chain_close(i64)')            # close chain
+        self.emit('; Streaming Support')
+        self.emit('declare i64 @stream_context_new(i64, i64)')          # create context
+        self.emit('declare void @stream_process_chunk(i64, i64)')       # process chunk
+        self.emit('declare void @stream_complete(i64)')                 # mark complete
+        self.emit('declare void @stream_error(i64, i64)')               # mark error
+        self.emit('declare i64 @stream_get_content(i64)')               # get content
+        self.emit('declare i64 @stream_is_complete(i64)')               # is complete?
+        self.emit('declare i64 @stream_has_error(i64)')                 # has error?
+        self.emit('declare i64 @stream_get_error(i64)')                 # get error msg
+        self.emit('declare i64 @stream_token_count(i64)')               # token count
+        self.emit('declare void @stream_context_close(i64)')            # close context
+        self.emit('; Structured Output (JSON Schema)')
+        self.emit('declare i64 @output_schema_new(i64, i64)')           # create schema
+        self.emit('declare void @output_schema_set_strict(i64, i64)')   # set strict
+        self.emit('declare i64 @output_schema_get_json(i64)')           # get JSON
+        self.emit('declare i64 @validate_json_output(i64, i64)')        # validate
+        self.emit('declare void @output_schema_close(i64)')             # close schema
+        self.emit('; Request Builder')
+        self.emit('declare i64 @llm_request_new(i64)')                  # create request
+        self.emit('declare void @llm_request_set_system(i64, i64)')     # set system
+        self.emit('declare void @llm_request_set_prompt(i64, i64)')     # set prompt
+        self.emit('declare void @llm_request_set_model(i64, i64)')      # set model
+        self.emit('declare void @llm_request_set_max_tokens(i64, i64)') # set max tokens
+        self.emit('declare void @llm_request_set_temperature(i64, double)')  # set temp
+        self.emit('declare void @llm_request_set_schema(i64, i64)')     # set schema
+        self.emit('declare void @llm_request_enable_stream(i64, i64)')  # enable stream
+        self.emit('declare void @llm_request_set_tools(i64, i64)')      # set tools
+        self.emit('declare void @llm_request_set_retry(i64, i64)')      # set retry
+        self.emit('declare i64 @llm_request_to_json(i64, i64)')         # to JSON
+        self.emit('declare void @llm_request_close(i64)')               # close request
+        self.emit('; Response Handler')
+        self.emit('declare i64 @llm_response_new()')                    # create response
+        self.emit('declare void @llm_response_set_success(i64, i64)')   # set success
+        self.emit('declare void @llm_response_set_content(i64, i64)')   # set content
+        self.emit('declare void @llm_response_set_error(i64, i64)')     # set error
+        self.emit('declare void @llm_response_set_tokens(i64, i64, i64)')  # set tokens
+        self.emit('declare void @llm_response_set_cost(i64, double)')   # set cost
+        self.emit('declare void @llm_response_set_latency(i64, double)')  # set latency
+        self.emit('declare i64 @llm_response_is_success(i64)')          # is success?
+        self.emit('declare i64 @llm_response_get_content(i64)')         # get content
+        self.emit('declare i64 @llm_response_get_error(i64)')           # get error
+        self.emit('declare i64 @llm_response_input_tokens(i64)')        # input tokens
+        self.emit('declare i64 @llm_response_output_tokens(i64)')       # output tokens
+        self.emit('declare double @llm_response_get_cost(i64)')         # get cost
+        self.emit('declare double @llm_response_get_latency(i64)')      # get latency
+        self.emit('declare i64 @llm_response_to_json(i64)')             # to JSON
+        self.emit('declare void @llm_response_close(i64)')              # close response
+
+        self.emit('; Phase 4.10: Actor-Anima Integration')
+        self.emit('; Cognitive Actor')
+        self.emit('declare i64 @cognitive_actor_new(i64, i64, i64)')    # create (actor_id, name, personality)
+        self.emit('declare i64 @cognitive_actor_get_anima(i64)')        # get anima memory
+        self.emit('declare void @cognitive_actor_set_tools(i64, i64)')  # set tools
+        self.emit('declare void @cognitive_actor_set_provider(i64, i64)')  # set provider
+        self.emit('declare void @cognitive_actor_set_auto_learn(i64, i64)')  # enable/disable
+        self.emit('declare void @cognitive_actor_set_auto_remember(i64, i64)')  # enable/disable
+        self.emit('declare void @cognitive_actor_set_threshold(i64, double)')  # set threshold
+        self.emit('declare i64 @cognitive_actor_get_personality(i64)')  # get personality
+        self.emit('declare void @cognitive_actor_set_personality(i64, i64)')  # set personality
+        self.emit('; Cognitive Actor Operations')
+        self.emit('declare i64 @cognitive_actor_remember(i64, i64, double)')  # remember
+        self.emit('declare i64 @cognitive_actor_learn(i64, i64, double, i64)')  # learn
+        self.emit('declare i64 @cognitive_actor_believe(i64, i64, double, i64)')  # believe
+        self.emit('declare i64 @cognitive_actor_recall(i64, i64, i64)')  # recall
+        self.emit('declare i64 @cognitive_actor_process_interaction(i64, i64, i64, double)')  # process
+        self.emit('declare i64 @cognitive_actor_get_context(i64, i64)')  # get context
+        self.emit('declare i64 @cognitive_actor_build_prompt(i64, i64)')  # build prompt
+        self.emit('; Cognitive Team')
+        self.emit('declare i64 @cognitive_team_new(i64)')               # create team
+        self.emit('declare i64 @cognitive_team_add(i64, i64)')          # add actor
+        self.emit('declare i64 @cognitive_team_share(i64, i64, i64, double)')  # share knowledge
+        self.emit('declare i64 @cognitive_team_size(i64)')              # team size
+        self.emit('declare i64 @cognitive_team_get_shared(i64)')        # get shared memory
+        self.emit('declare i64 @cognitive_team_recall(i64, i64, i64)')  # recall from team
+        self.emit('declare void @cognitive_team_close(i64)')            # close team
+        self.emit('; Cognitive Actor Persistence')
+        self.emit('declare i64 @cognitive_actor_save(i64, i64)')        # save actor
+        self.emit('declare i64 @cognitive_actor_load(i64)')             # load actor
+        self.emit('declare void @cognitive_actor_close(i64)')           # close actor
+        self.emit('declare i64 @cognitive_actor_info(i64)')             # get info JSON
+
+        self.emit('; Phase 4.11: Observability - Metrics, Tracing, Logging')
+        self.emit('; Metrics Registry')
+        self.emit('declare i64 @metrics_registry_new()')                 # create registry
+        self.emit('declare i64 @metrics_registry_global()')              # get/create global registry
+        self.emit('declare i64 @metrics_registry_count(i64)')            # count metrics
+        self.emit('declare i64 @metrics_export_json(i64)')               # export as JSON
+        self.emit('declare i64 @metrics_export_prometheus(i64)')         # export as Prometheus
+        self.emit('declare void @metrics_registry_close(i64)')           # close registry
+        self.emit('; Counter Metric')
+        self.emit('declare i64 @counter_new(i64, i64)')                  # create counter (name, desc)
+        self.emit('declare void @counter_inc(i64)')                      # increment by 1
+        self.emit('declare void @counter_add(i64, double)')              # add value
+        self.emit('declare double @counter_value(i64)')                  # get value
+        self.emit('declare void @counter_add_label(i64, i64, i64)')      # add label
+        self.emit('; Gauge Metric')
+        self.emit('declare i64 @gauge_new(i64, i64)')                    # create gauge (name, desc)
+        self.emit('declare void @gauge_set(i64, double)')                # set value
+        self.emit('declare void @gauge_inc(i64)')                        # increment by 1
+        self.emit('declare void @gauge_dec(i64)')                        # decrement by 1
+        self.emit('declare void @gauge_add(i64, double)')                # add value
+        self.emit('declare double @gauge_value(i64)')                    # get value
+        self.emit('; Histogram Metric')
+        self.emit('declare i64 @histogram_new(i64, i64)')                # create histogram (name, desc)
+        self.emit('declare i64 @histogram_new_with_buckets(i64, i64, i64)')  # with custom buckets
+        self.emit('declare void @histogram_observe(i64, double)')        # observe value
+        self.emit('declare double @histogram_sum(i64)')                  # get sum
+        self.emit('declare i64 @histogram_count(i64)')                   # get count
+        self.emit('declare double @histogram_mean(i64)')                 # get mean
+        self.emit('declare double @histogram_min(i64)')                  # get min
+        self.emit('declare double @histogram_max(i64)')                  # get max
+        self.emit('declare i64 @histogram_to_json(i64)')                 # get JSON representation
+        self.emit('; Tracer')
+        self.emit('declare i64 @tracer_new(i64)')                        # create tracer (service_name)
+        self.emit('declare i64 @tracer_active_spans(i64)')               # count active spans
+        self.emit('declare void @tracer_close(i64)')                     # close tracer
+        self.emit('; Span')
+        self.emit('declare i64 @span_start(i64, i64)')                   # start span (tracer, name)
+        self.emit('declare i64 @span_start_child(i64, i64, i64)')        # start child span
+        self.emit('declare void @span_end(i64)')                         # end span
+        self.emit('declare void @span_set_status(i64, i64, i64)')        # set status (span, status, msg)
+        self.emit('declare void @span_set_attribute(i64, i64, i64)')     # set attribute (key, value)
+        self.emit('declare void @span_add_event(i64, i64)')              # add event
+        self.emit('declare i64 @span_duration_us(i64)')                  # get duration in microseconds
+        self.emit('declare i64 @span_trace_id(i64)')                     # get trace ID
+        self.emit('declare i64 @span_id(i64)')                           # get span ID
+        self.emit('declare i64 @span_to_json(i64)')                      # export as JSON
+        self.emit('declare void @span_close(i64)')                       # close span
+        self.emit('; Logger')
+        self.emit('declare i64 @logger_new(i64)')                        # create logger (name)
+        self.emit('declare i64 @logger_global()')                        # get global logger
+        self.emit('declare void @logger_set_level(i64, i64)')            # set min level
+        self.emit('declare void @logger_set_console(i64, i64)')          # enable/disable console
+        self.emit('declare void @logger_set_json(i64, i64)')             # enable/disable JSON format
+        self.emit('declare void @logger_set_file(i64, i64)')             # set file output
+        self.emit('declare void @logger_add_context(i64, i64, i64)')     # add context field
+        self.emit('declare void @log_debug(i64, i64)')                   # log debug
+        self.emit('declare void @log_info(i64, i64)')                    # log info
+        self.emit('declare void @log_warn(i64, i64)')                    # log warn
+        self.emit('declare void @log_error(i64, i64)')                   # log error
+        self.emit('declare void @log_fatal(i64, i64)')                   # log fatal
+        self.emit('declare void @log_with_field(i64, i64, i64, i64, i64)')  # log with field
+        self.emit('declare void @log_with_span(i64, i64, i64, i64)')     # log with span context
+        self.emit('declare void @logger_close(i64)')                     # close logger
+        self.emit('; Timer')
+        self.emit('declare i64 @timer_start(i64)')                       # start timer (name)
+        self.emit('declare i64 @timer_elapsed_us(i64)')                  # elapsed microseconds
+        self.emit('declare i64 @timer_elapsed_ms(i64)')                  # elapsed milliseconds
+        self.emit('declare double @timer_elapsed_s(i64)')                # elapsed seconds
+        self.emit('declare void @timer_record_to(i64, i64)')             # record to histogram
+        self.emit('declare void @timer_close(i64)')                      # close timer
+
         self.emit('; Incremental compilation')
         self.emit('declare i64 @incremental_cache_get(i64)')           # get cached artifact
         self.emit('declare void @incremental_cache_put(i64, i64)')     # cache artifact
@@ -2704,6 +3233,12 @@ class CodeGen:
         self.emit('declare ptr @intrinsic_path_dirname(ptr)')
         self.emit('declare ptr @intrinsic_path_basename(ptr)')
         self.emit('declare ptr @intrinsic_path_extension(ptr)')
+        self.emit('; Phase 2: Additional I/O')
+        self.emit('declare i64 @intrinsic_file_copy(ptr, ptr)')
+        self.emit('declare i64 @intrinsic_file_rename(ptr, ptr)')
+        self.emit('declare ptr @intrinsic_stdin_read_line()')
+        self.emit('declare void @intrinsic_stderr_write(ptr)')
+        self.emit('declare void @intrinsic_stderr_writeln(ptr)')
         self.emit('; Phase 7: Actor Runtime')
         self.emit('declare i64 @intrinsic_get_num_cpus()')
         self.emit('; Threading')
@@ -3345,13 +3880,7 @@ class CodeGen:
         self.emit('declare i64 @specialist_memory_forget(i64, i64)')
         self.emit('declare i64 @specialist_memory_count(i64)')
         self.emit('declare void @specialist_memory_close(i64)')
-        self.emit('; 29.3 Tool Registry')
-        self.emit('declare i64 @tool_registry_new()')
-        self.emit('declare i64 @tool_register(i64, i64, i64, i64)')
-        self.emit('declare i64 @tool_get(i64, i64)')
-        self.emit('declare i64 @tool_list(i64)')
-        self.emit('declare i64 @tool_invoke(i64, i64, i64)')
-        self.emit('declare void @tool_registry_close(i64)')
+        self.emit('; 29.3 Tool Registry - see Phase 4 Tool System for declarations')
         self.emit('; Phase 30: Evolution')
         self.emit('; 30.1 Individuals')
         self.emit('declare i64 @individual_new(i64)')
@@ -3672,9 +4201,20 @@ class CodeGen:
                 self.structs[item['name']] = [(v['name'], v['ty']) for v in item['state_vars']]
             elif item['type'] == 'SpecialistDef':
                 # Register specialist like actor (specialist is actor + AI)
-                self.specialists[item['name']] = item
-                self.actors[item['name']] = item  # Specialists are actors
-                self.structs[item['name']] = [(v['name'], v['ty']) for v in item['state_vars']]
+                # Prepend __model and __temperature to state_vars to match codegen
+                config = item['config']
+                model_name = config.get('model', 'default')
+                temp_val = config.get('temperature', 70)
+                prepended_vars = [
+                    {'name': '__model', 'ty': 'String', 'init': make_string_expr(model_name)},
+                    {'name': '__temperature', 'ty': 'i64', 'init': make_int_expr(temp_val)}
+                ] + item['state_vars']
+                # Create a copy with prepended state vars for proper offset calculation
+                updated_item = dict(item)
+                updated_item['state_vars'] = prepended_vars
+                self.specialists[item['name']] = updated_item
+                self.actors[item['name']] = updated_item  # Specialists are actors
+                self.structs[item['name']] = [(v['name'], v['ty']) for v in prepended_vars]
             elif item['type'] == 'HiveDef':
                 self.hives[item['name']] = item
             elif item['type'] == 'TraitDef':
@@ -3707,6 +4247,8 @@ class CodeGen:
                 self.generate_specialist(item)
             elif item['type'] == 'HiveDef':
                 self.generate_hive(item)
+            elif item['type'] == 'AnimaDef':
+                self.generate_anima(item)
 
         # Generate pending generic instantiations
         while self.pending_instantiations:
@@ -4400,6 +4942,104 @@ class CodeGen:
         # Track function name for function pointer references
         self.functions.add(fn['name'])
 
+        # Handle external function declarations (no body)
+        if fn.get('is_extern', False):
+            # Skip functions that are already declared in the runtime header
+            runtime_funcs = {
+                'anima_memory_new', 'anima_remember', 'anima_learn', 'anima_store_procedure',
+                'anima_believe', 'anima_revise_belief', 'anima_working_push', 'anima_working_pop',
+                'anima_working_context', 'anima_recall_for_goal', 'anima_episodic_count',
+                'anima_semantic_count', 'anima_beliefs_count', 'anima_working_count',
+                'anima_consolidate', 'anima_memory_close', 'anima_bdi_new', 'anima_add_desire',
+                'anima_get_top_desire', 'anima_desires_count', 'anima_set_desire_status',
+                'anima_add_intention', 'anima_advance_intention', 'anima_intention_step',
+                'anima_intentions_count', 'anima_set_intention_status', 'anima_bdi_close',
+                'anima_save', 'anima_load', 'anima_exists',
+                'tool_registry_new', 'tool_register', 'tool_get', 'tool_count', 'tool_list',
+                'tool_execute', 'tool_register_builtins', 'tool_get_schema', 'tool_get_all_schemas',
+                'tool_result_output', 'tool_result_free', 'tool_registry_close',
+                'ai_actor_system_new', 'ai_actor_config_new', 'ai_actor_config_set_tools',
+                'ai_actor_config_set_memory', 'ai_actor_config_set_timeout', 'ai_actor_spawn',
+                'ai_actor_status', 'ai_actor_name', 'ai_actor_stop', 'ai_actor_add_message',
+                'ai_actor_history_len', 'ai_actor_get_message', 'ai_actor_clear_history',
+                'ai_actor_system_count', 'ai_actor_system_list', 'ai_actor_system_close',
+                'pipeline_new', 'pipeline_add_stage', 'pipeline_execute', 'pipeline_stage_count',
+                'pipeline_close', 'parallel_group_new', 'parallel_group_add', 'parallel_group_execute',
+                'parallel_group_size', 'parallel_group_close', 'consensus_group_new',
+                'consensus_group_add', 'consensus_group_vote', 'consensus_group_close',
+                'ai_supervisor_new', 'ai_supervisor_add_child', 'ai_supervisor_check_health',
+                'ai_supervisor_child_count', 'ai_supervisor_close', 'shared_memory_new',
+                'shared_memory_grant_read', 'shared_memory_grant_write', 'shared_memory_recall',
+                'shared_memory_remember', 'shared_memory_close',
+                # Phase 4.9: Specialist Enhancements
+                'provider_registry_new', 'provider_config_new', 'provider_config_set_key',
+                'provider_config_set_model', 'provider_config_set_url', 'provider_config_set_temp',
+                'provider_config_set_max_tokens', 'provider_config_set_timeout',
+                'provider_config_set_priority', 'provider_config_set_cost',
+                'provider_registry_add', 'provider_registry_get', 'provider_registry_count',
+                'provider_registry_set_default', 'provider_get_by_tier', 'provider_registry_list',
+                'provider_registry_close', 'estimate_tokens', 'count_tokens_accurate',
+                'calculate_cost', 'provider_get_stats', 'provider_record_request',
+                'provider_total_cost', 'retry_config_new', 'retry_config_set_max',
+                'retry_config_set_delay', 'retry_config_set_backoff', 'retry_calculate_delay',
+                'retry_should_retry', 'retry_config_close', 'fallback_chain_new',
+                'fallback_chain_add', 'fallback_chain_next', 'fallback_chain_get',
+                'fallback_chain_size', 'fallback_chain_close', 'stream_context_new',
+                'stream_process_chunk', 'stream_complete', 'stream_error', 'stream_get_content',
+                'stream_is_complete', 'stream_has_error', 'stream_get_error', 'stream_token_count',
+                'stream_context_close', 'output_schema_new', 'output_schema_set_strict',
+                'output_schema_get_json', 'validate_json_output', 'output_schema_close',
+                'llm_request_new', 'llm_request_set_system', 'llm_request_set_prompt',
+                'llm_request_set_model', 'llm_request_set_max_tokens', 'llm_request_set_temperature',
+                'llm_request_set_schema', 'llm_request_enable_stream', 'llm_request_set_tools',
+                'llm_request_set_retry', 'llm_request_to_json', 'llm_request_close',
+                'llm_response_new', 'llm_response_set_success', 'llm_response_set_content',
+                'llm_response_set_error', 'llm_response_set_tokens', 'llm_response_set_cost',
+                'llm_response_set_latency', 'llm_response_is_success', 'llm_response_get_content',
+                'llm_response_get_error', 'llm_response_input_tokens', 'llm_response_output_tokens',
+                'llm_response_get_cost', 'llm_response_get_latency', 'llm_response_to_json',
+                'llm_response_close',
+                # Phase 4.10: Actor-Anima Integration
+                'cognitive_actor_new', 'cognitive_actor_get_anima', 'cognitive_actor_set_tools',
+                'cognitive_actor_set_provider', 'cognitive_actor_set_auto_learn',
+                'cognitive_actor_set_auto_remember', 'cognitive_actor_set_threshold',
+                'cognitive_actor_get_personality', 'cognitive_actor_set_personality',
+                'cognitive_actor_remember', 'cognitive_actor_learn', 'cognitive_actor_believe',
+                'cognitive_actor_recall', 'cognitive_actor_process_interaction',
+                'cognitive_actor_get_context', 'cognitive_actor_build_prompt',
+                'cognitive_team_new', 'cognitive_team_add', 'cognitive_team_share',
+                'cognitive_team_size', 'cognitive_team_get_shared', 'cognitive_team_recall',
+                'cognitive_team_close', 'cognitive_actor_save', 'cognitive_actor_load',
+                'cognitive_actor_close', 'cognitive_actor_info',
+                # Phase 4.11: Observability
+                'metrics_registry_new', 'metrics_registry_global', 'metrics_registry_count',
+                'metrics_export_json', 'metrics_export_prometheus', 'metrics_registry_close',
+                'counter_new', 'counter_inc', 'counter_add', 'counter_value', 'counter_add_label',
+                'gauge_new', 'gauge_set', 'gauge_inc', 'gauge_dec', 'gauge_add', 'gauge_value',
+                'histogram_new', 'histogram_new_with_buckets', 'histogram_observe',
+                'histogram_sum', 'histogram_count', 'histogram_mean', 'histogram_min',
+                'histogram_max', 'histogram_to_json',
+                'tracer_new', 'tracer_active_spans', 'tracer_close',
+                'span_start', 'span_start_child', 'span_end', 'span_set_status',
+                'span_set_attribute', 'span_add_event', 'span_duration_us',
+                'span_trace_id', 'span_id', 'span_to_json', 'span_close',
+                'logger_new', 'logger_global', 'logger_set_level', 'logger_set_console',
+                'logger_set_json', 'logger_set_file', 'logger_add_context',
+                'log_debug', 'log_info', 'log_warn', 'log_error', 'log_fatal',
+                'log_with_field', 'log_with_span', 'logger_close',
+                'timer_start', 'timer_elapsed_us', 'timer_elapsed_ms', 'timer_elapsed_s',
+                'timer_record_to', 'timer_close',
+                'malloc', 'free', 'print_i64', 'print_string', 'println', 'string_from',
+                'vec_new', 'vec_push', 'vec_get', 'vec_len', 'vec_set', 'vec_pop',
+            }
+            if fn['name'] in runtime_funcs:
+                return  # Already declared in header
+            ret_type = self.type_to_llvm(fn['return_type'])
+            params = fn['params']
+            params_str = ', '.join(f"{self.type_to_llvm(p['ty'])}" for p in params)
+            self.emit(f'declare {ret_type} @"{fn["name"]}"({params_str})')
+            return
+
         # Handle async functions
         if fn.get('is_async', False):
             return self.generate_async_fn(fn)
@@ -4809,17 +5449,21 @@ class CodeGen:
 
     def generate_hive(self, hive_def):
         """Generate code for a hive definition.
-        Hive is a supervisor that spawns and manages specialists.
+        Hive is a supervisor that spawns and manages specialists with shared mnemonic memory.
         """
         hive_name = hive_def['name']
         specialists = hive_def['specialists']
         router = hive_def['router']
         strategy = hive_def['strategy']
+        mnemonic = hive_def.get('mnemonic', {})
 
         num_specs = len(specialists)
-        struct_size = max(num_specs * 8, 8)
+        has_mnemonic = bool(mnemonic)
+        # Struct layout: specialists[n], mnemonic_ptr (if present)
+        struct_size = (num_specs + (1 if has_mnemonic else 0)) * 8
+        struct_size = max(struct_size, 8)
 
-        # Generate constructor that spawns all specialists
+        # Generate constructor that spawns all specialists and creates shared memory
         self.emit(f'; Hive {hive_name} constructor')
         self.emit(f'define i64 @"{hive_name}_new"() {{')
         self.emit('entry:')
@@ -4838,9 +5482,161 @@ class CodeGen:
             self.emit(f'  {gep_temp} = getelementptr i8, ptr {ptr_temp}, i64 {offset}')
             self.emit(f'  store i64 {spec_ptr}, ptr {gep_temp}')
 
+        # Create mnemonic (shared memory) if defined
+        if has_mnemonic:
+            mnemonic_name_label = self.add_string_constant(f'{hive_name}_mnemonic')
+            self.emit(f'  ; Create mnemonic (shared memory) for hive')
+            # Create a cognitive team for shared memory
+            str_ptr = self.new_temp()
+            self.emit(f'  {str_ptr} = call ptr @intrinsic_string_new(ptr {mnemonic_name_label})')
+            name_temp = self.new_temp()
+            self.emit(f'  {name_temp} = ptrtoint ptr {str_ptr} to i64')
+            mnemonic_ptr = self.new_temp()
+            self.emit(f'  {mnemonic_ptr} = call i64 @cognitive_team_new(i64 {name_temp})')
+
+            # Store mnemonic ptr at end of struct
+            offset = num_specs * 8
+            gep_temp = self.new_temp()
+            self.emit(f'  {gep_temp} = getelementptr i8, ptr {ptr_temp}, i64 {offset}')
+            self.emit(f'  store i64 {mnemonic_ptr}, ptr {gep_temp}')
+
         result = self.new_temp()
         self.emit(f'  {result} = ptrtoint ptr {ptr_temp} to i64')
         self.emit(f'  ret i64 {result}')
+        self.emit('}')
+        self.emit('')
+
+        # Generate mnemonic accessor functions
+        if has_mnemonic:
+            self.emit(f'; Hive {hive_name} mnemonic accessor')
+            self.emit(f'define i64 @"{hive_name}_mnemonic"(i64 %hive) {{')
+            self.emit('entry:')
+            self.emit(f'  %ptr = inttoptr i64 %hive to ptr')
+            offset = num_specs * 8
+            self.emit(f'  %gep = getelementptr i8, ptr %ptr, i64 {offset}')
+            self.emit(f'  %mnemonic = load i64, ptr %gep')
+            self.emit(f'  ret i64 %mnemonic')
+            self.emit('}')
+            self.emit('')
+
+            # Generate share function - shares knowledge from specialist to mnemonic
+            # Takes i64 for importance (bitcast from double) since caller uses i64 calling convention
+            self.emit(f'define i64 @"{hive_name}_share"(i64 %hive, i64 %knowledge, i64 %importance_bits) {{')
+            self.emit('entry:')
+            self.emit(f'  %importance = bitcast i64 %importance_bits to double')
+            self.emit(f'  %mnemonic = call i64 @"{hive_name}_mnemonic"(i64 %hive)')
+            self.emit(f'  ; Share to team mnemonic (use first specialist as source)')
+            self.emit(f'  %ptr = inttoptr i64 %hive to ptr')
+            self.emit(f'  %spec_ptr = load i64, ptr %ptr')
+            self.emit(f'  %result = call i64 @cognitive_team_share(i64 %mnemonic, i64 %spec_ptr, i64 %knowledge, double %importance)')
+            self.emit(f'  ret i64 %result')
+            self.emit('}')
+            self.emit('')
+
+            # Generate recall function - recalls from shared mnemonic
+            self.emit(f'define i64 @"{hive_name}_recall"(i64 %hive, i64 %goal) {{')
+            self.emit('entry:')
+            self.emit(f'  %mnemonic = call i64 @"{hive_name}_mnemonic"(i64 %hive)')
+            self.emit(f'  %ptr = inttoptr i64 %hive to ptr')
+            self.emit(f'  %spec_ptr = load i64, ptr %ptr')
+            self.emit(f'  %result = call i64 @cognitive_team_recall(i64 %mnemonic, i64 %spec_ptr, i64 %goal)')
+            self.emit(f'  ret i64 %result')
+            self.emit('}')
+            self.emit('')
+
+    def generate_anima(self, anima_def):
+        """Generate code for an anima definition (cognitive soul).
+        Anima contains: identity, memory stores, beliefs, SLM config, persistence.
+        Uses the cognitive memory system from standalone_runtime.c.
+        """
+        anima_name = anima_def['name']
+        identity = anima_def.get('identity', {})
+        memory = anima_def.get('memory', {})
+        beliefs = anima_def.get('beliefs', {})
+        slm = anima_def.get('slm', {})
+        persistence = anima_def.get('persistence', {})
+
+        self.emit(f'; Anima {anima_name}')
+        self.emit('; Using cognitive memory system from runtime')
+
+        # Generate constructor that creates AnimaMemory
+        self.emit(f'define i64 @"{anima_name}_new"() {{')
+        self.emit('entry:')
+        self.emit('  ; Create AnimaMemory with working memory capacity of 10')
+        self.emit('  %mem = call i64 @anima_memory_new(i64 10)')
+        self.emit('  ret i64 %mem')
+        self.emit('}')
+        self.emit('')
+
+        # Generate remember function - stores episodic memory with importance
+        self.emit(f'define i64 @"{anima_name}_remember"(i64 %self, i64 %experience) {{')
+        self.emit('entry:')
+        self.emit('  ; Store experience with default importance of 0.5')
+        self.emit('  %id = call i64 @anima_remember(i64 %self, i64 %experience, double 5.0e-1)')
+        self.emit('  ret i64 %id')
+        self.emit('}')
+        self.emit('')
+
+        # Generate learn function - stores semantic memory
+        self.emit(f'define i64 @"{anima_name}_learn"(i64 %self, i64 %fact) {{')
+        self.emit('entry:')
+        self.emit('  ; Store fact with high confidence (0.8) and no source')
+        self.emit('  %id = call i64 @anima_learn(i64 %self, i64 %fact, double 8.0e-1, i64 0)')
+        self.emit('  ret i64 %id')
+        self.emit('}')
+        self.emit('')
+
+        # Generate believe function - stores belief with confidence
+        self.emit(f'define i64 @"{anima_name}_believe"(i64 %self, i64 %belief, i64 %confidence) {{')
+        self.emit('entry:')
+        self.emit('  ; Convert confidence from i64 (0-100) to double (0.0-1.0)')
+        self.emit('  %conf_f = sitofp i64 %confidence to double')
+        self.emit('  %conf = fdiv double %conf_f, 1.0e2')
+        self.emit('  %id = call i64 @anima_believe(i64 %self, i64 %belief, double %conf, i64 0)')
+        self.emit('  ret i64 %id')
+        self.emit('}')
+        self.emit('')
+
+        # Generate recall_for function - goal-directed recall
+        self.emit(f'define i64 @"{anima_name}_recall_for"(i64 %self, i64 %goal, i64 %context) {{')
+        self.emit('entry:')
+        self.emit('  ; Recall up to 10 relevant memories')
+        self.emit('  %results = call i64 @anima_recall_for_goal(i64 %self, i64 %goal, i64 %context, i64 10)')
+        self.emit('  ret i64 %results')
+        self.emit('}')
+        self.emit('')
+
+        # Generate think function - placeholder for SLM integration
+        self.emit(f'define i64 @"{anima_name}_think"(i64 %self, i64 %question) {{')
+        self.emit('entry:')
+        self.emit('  ; TODO: Integrate with SLM for actual reasoning')
+        self.emit('  ; For now, just return the question')
+        self.emit('  ret i64 %question')
+        self.emit('}')
+        self.emit('')
+
+        # Generate save function - placeholder for persistence
+        self.emit(f'define i64 @"{anima_name}_save"(i64 %self, i64 %path) {{')
+        self.emit('entry:')
+        self.emit('  ; TODO: Implement persistence')
+        self.emit('  ret i64 1')
+        self.emit('}')
+        self.emit('')
+
+        # Generate load function - placeholder for persistence
+        self.emit(f'define i64 @"{anima_name}_load"(i64 %path) {{')
+        self.emit('entry:')
+        self.emit(f'  %anima = call i64 @"{anima_name}_new"()')
+        self.emit('  ; TODO: Load state from path')
+        self.emit('  ret i64 %anima')
+        self.emit('}')
+        self.emit('')
+
+        # Generate close function - cleanup
+        self.emit(f'define void @"{anima_name}_close"(i64 %self) {{')
+        self.emit('entry:')
+        self.emit('  call i64 @anima_memory_close(i64 %self)')
+        self.emit('  ret void')
         self.emit('}')
         self.emit('')
 
@@ -5110,8 +5906,11 @@ class CodeGen:
             return str(expr['value'])
 
         if expr_type == 'FloatExpr':
-            # Return float as LLVM double constant
-            return f"0x{struct.pack('>d', expr['value']).hex().upper()}"
+            # Convert float to i64 bits for passing through i64 calling convention
+            # Use struct to get the raw bits of the double
+            import struct as st
+            bits = st.unpack('>Q', st.pack('>d', expr['value']))[0]
+            return str(bits)
 
         if expr_type == 'BoolExpr':
             return '1' if expr['value'] else '0'
@@ -5315,11 +6114,31 @@ class CodeGen:
             return '0'
 
         if expr_type == 'BinaryExpr':
-            left = self.generate_expr(expr['left'])
-            right = self.generate_expr(expr['right'])
+            left_expr = expr['left']
+            right_expr = expr['right']
+            op = expr['op']
+
+            # Check if this is string concatenation (either operand is a string)
+            left_is_string = left_expr.get('type') == 'StringExpr'
+            right_is_string = right_expr.get('type') == 'StringExpr'
+            if op == '+' and (left_is_string or right_is_string):
+                # String concatenation
+                left = self.generate_expr(left_expr)
+                right = self.generate_expr(right_expr)
+                left_ptr = self.new_temp()
+                right_ptr = self.new_temp()
+                self.emit(f'  {left_ptr} = inttoptr i64 {left} to ptr')
+                self.emit(f'  {right_ptr} = inttoptr i64 {right} to ptr')
+                result_ptr = self.new_temp()
+                self.emit(f'  {result_ptr} = call ptr @intrinsic_string_concat(ptr {left_ptr}, ptr {right_ptr})')
+                temp = self.new_temp()
+                self.emit(f'  {temp} = ptrtoint ptr {result_ptr} to i64')
+                return temp
+
+            left = self.generate_expr(left_expr)
+            right = self.generate_expr(right_expr)
             temp = self.new_temp()
 
-            op = expr['op']
             if op == '+':
                 self.emit(f'  {temp} = add i64 {left}, {right}')
             elif op == '-':
@@ -5711,18 +6530,26 @@ class CodeGen:
                 'process_run': 'intrinsic_process_run',
                 'process_output': 'intrinsic_process_output',
                 'file_exists': 'intrinsic_file_exists',
+                'file_read': 'intrinsic_read_file',
+                'file_write': 'intrinsic_write_file',
                 'is_directory': 'intrinsic_is_directory',
                 'is_file': 'intrinsic_is_file',
                 'mkdir_p': 'intrinsic_mkdir_p',
                 'remove_path': 'intrinsic_remove_path',
                 'file_size': 'intrinsic_file_size',
                 'file_mtime': 'intrinsic_file_mtime',
+                'file_copy': 'intrinsic_file_copy',
+                'file_rename': 'intrinsic_file_rename',
                 'temp_file': 'intrinsic_temp_file',
                 'temp_dir': 'intrinsic_temp_dir',
                 'path_join': 'intrinsic_path_join',
                 'path_dirname': 'intrinsic_path_dirname',
                 'path_basename': 'intrinsic_path_basename',
                 'path_extension': 'intrinsic_path_extension',
+                'stdin_read_line': 'intrinsic_stdin_read_line',
+                'stderr_write': 'intrinsic_stderr_write',
+                'stderr_writeln': 'intrinsic_stderr_writeln',
+                'list_dir': 'intrinsic_list_dir',
                 'assert_fail': 'intrinsic_assert_fail',
                 'assert_eq_i64': 'intrinsic_assert_eq_i64',
                 'assert_eq_str': 'intrinsic_assert_eq_str',
@@ -6001,6 +6828,13 @@ class CodeGen:
                 'intrinsic_assert_eq_str': (['ptr', 'ptr', 'ptr', 'i64'], 'void'),
                 'intrinsic_args_count': ([], 'i64'),
                 'intrinsic_args_get': (['i64'], 'ptr'),
+                # Phase 2: Additional I/O Operations
+                'intrinsic_file_copy': (['ptr', 'ptr'], 'i64'),
+                'intrinsic_file_rename': (['ptr', 'ptr'], 'i64'),
+                'intrinsic_stdin_read_line': ([], 'ptr'),
+                'intrinsic_stderr_write': (['ptr'], 'void'),
+                'intrinsic_stderr_writeln': (['ptr'], 'void'),
+                'intrinsic_list_dir': (['ptr'], 'ptr'),
                 # Phase 12: Memory Substrate
                 # Note: importance passed as i64 (0-100 scale) since bootstrap lacks f64
                 'intrinsic_remember': (['ptr', 'i64', 'i64'], 'i64'),
@@ -6152,6 +6986,45 @@ class CodeGen:
                 'swarm_get_position': (['i64', 'i64', 'i64'], 'double'),
                 'swarm_set_velocity': (['i64', 'i64', 'i64', 'double'], 'i64'),
                 'swarm_best_fitness': (['i64'], 'double'),
+                # Phase 4: Anima Cognitive Memory functions with double params
+                'anima_remember': (['i64', 'i64', 'double'], 'i64'),
+                'anima_learn': (['i64', 'i64', 'double', 'i64'], 'i64'),
+                'anima_believe': (['i64', 'i64', 'double', 'i64'], 'i64'),
+                'anima_revise_belief': (['i64', 'i64', 'double', 'i64'], 'i64'),
+                # Phase 4: Anima BDI functions with double params
+                'anima_add_desire': (['i64', 'i64', 'double'], 'i64'),
+                # Phase 4.9: Specialist Enhancement functions with double params
+                'provider_config_set_temp': (['i64', 'double'], 'void'),
+                'provider_config_set_cost': (['i64', 'double', 'double'], 'void'),
+                'calculate_cost': (['i64', 'i64', 'i64'], 'double'),
+                'provider_record_request': (['i64', 'i32', 'i64', 'i64', 'double', 'double'], 'void'),
+                'provider_total_cost': (['i64'], 'double'),
+                'retry_config_set_backoff': (['i64', 'double'], 'void'),
+                'llm_request_set_temperature': (['i64', 'double'], 'void'),
+                'llm_response_set_cost': (['i64', 'double'], 'void'),
+                'llm_response_set_latency': (['i64', 'double'], 'void'),
+                'llm_response_get_cost': (['i64'], 'double'),
+                'llm_response_get_latency': (['i64'], 'double'),
+                'shared_memory_remember': (['i64', 'i64', 'i64', 'double'], 'i64'),
+                # Phase 4.10: Actor-Anima Integration functions with double params
+                'cognitive_actor_set_threshold': (['i64', 'double'], 'void'),
+                'cognitive_actor_remember': (['i64', 'i64', 'double'], 'i64'),
+                'cognitive_actor_learn': (['i64', 'i64', 'double', 'i64'], 'i64'),
+                'cognitive_actor_believe': (['i64', 'i64', 'double', 'i64'], 'i64'),
+                'cognitive_actor_process_interaction': (['i64', 'i64', 'i64', 'double'], 'i64'),
+                'cognitive_team_share': (['i64', 'i64', 'i64', 'double'], 'i64'),
+                # Phase 4.11: Observability functions with double params
+                'counter_add': (['i64', 'double'], 'void'),
+                'counter_value': (['i64'], 'double'),
+                'gauge_set': (['i64', 'double'], 'void'),
+                'gauge_add': (['i64', 'double'], 'void'),
+                'gauge_value': (['i64'], 'double'),
+                'histogram_observe': (['i64', 'double'], 'void'),
+                'histogram_sum': (['i64'], 'double'),
+                'histogram_mean': (['i64'], 'double'),
+                'histogram_min': (['i64'], 'double'),
+                'histogram_max': (['i64'], 'double'),
+                'timer_elapsed_s': (['i64'], 'double'),
             }
 
             if func_name in intrinsic_types:

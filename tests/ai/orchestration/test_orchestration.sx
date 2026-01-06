@@ -1,0 +1,199 @@
+// Test file for Multi-Actor Orchestration
+// Phase 4: AI Actor System, Pipeline, Parallel, Consensus, Supervisor
+
+// External declarations
+fn ai_actor_system_new() -> i64;
+fn ai_actor_config_new(name: i64, role: i64) -> i64;
+fn ai_actor_config_set_tools(config: i64, tools: i64);
+fn ai_actor_config_set_memory(config: i64, memory: i64);
+fn ai_actor_config_set_timeout(config: i64, timeout: i64);
+fn ai_actor_spawn(sys: i64, config: i64) -> i64;
+fn ai_actor_status(sys: i64, actor_id: i64) -> i64;
+fn ai_actor_name(sys: i64, actor_id: i64) -> i64;
+fn ai_actor_stop(sys: i64, actor_id: i64);
+fn ai_actor_add_message(sys: i64, actor_id: i64, role: i64, content: i64) -> i64;
+fn ai_actor_history_len(sys: i64, actor_id: i64) -> i64;
+fn ai_actor_get_message(sys: i64, actor_id: i64, index: i64) -> i64;
+fn ai_actor_clear_history(sys: i64, actor_id: i64);
+fn ai_actor_system_count(sys: i64) -> i64;
+fn ai_actor_system_list(sys: i64) -> i64;
+fn ai_actor_system_close(sys: i64);
+
+fn pipeline_new(name: i64) -> i64;
+fn pipeline_add_stage(pipeline: i64, actor_id: i64, transform: i64) -> i64;
+fn pipeline_execute(sys: i64, pipeline: i64, input: i64) -> i64;
+fn pipeline_stage_count(pipeline: i64) -> i64;
+fn pipeline_close(pipeline: i64);
+
+fn parallel_group_new(name: i64) -> i64;
+fn parallel_group_add(group: i64, actor_id: i64) -> i64;
+fn parallel_group_execute(sys: i64, group: i64, input: i64) -> i64;
+fn parallel_group_size(group: i64) -> i64;
+fn parallel_group_close(group: i64);
+
+fn consensus_group_new(name: i64, threshold: i64) -> i64;  // threshold as int (50 = 0.50)
+fn consensus_group_add(group: i64, actor_id: i64) -> i64;
+fn consensus_group_vote(sys: i64, group: i64, question: i64) -> i64;
+fn consensus_group_close(group: i64);
+
+fn ai_supervisor_new(name: i64, strategy: i64) -> i64;
+fn ai_supervisor_add_child(sup: i64, actor_id: i64) -> i64;
+fn ai_supervisor_check_health(sys: i64, sup: i64) -> i64;
+fn ai_supervisor_child_count(sup: i64) -> i64;
+fn ai_supervisor_close(sup: i64);
+
+fn main() {
+    println("=== Multi-Actor Orchestration Test ===");
+    println("");
+
+    // Create actor system
+    println("--- Creating Actor System ---");
+    let sys: i64 = ai_actor_system_new();
+    if sys != 0 {
+        println("Created actor system");
+    }
+
+    // Create and spawn actors
+    println("");
+    println("--- Spawning AI Actors ---");
+
+    let config1: i64 = ai_actor_config_new(string_from("analyzer"), string_from("code_analysis"));
+    ai_actor_config_set_timeout(config1, 30000);
+    let actor1: i64 = ai_actor_spawn(sys, config1);
+    print("Spawned analyzer with ID: ");
+    print_i64(actor1);
+    println("");
+
+    let config2: i64 = ai_actor_config_new(string_from("reviewer"), string_from("code_review"));
+    let actor2: i64 = ai_actor_spawn(sys, config2);
+    print("Spawned reviewer with ID: ");
+    print_i64(actor2);
+    println("");
+
+    let config3: i64 = ai_actor_config_new(string_from("writer"), string_from("code_generation"));
+    let actor3: i64 = ai_actor_spawn(sys, config3);
+    print("Spawned writer with ID: ");
+    print_i64(actor3);
+    println("");
+
+    // Check system
+    print("Total actors: ");
+    print_i64(ai_actor_system_count(sys));
+    println("");
+
+    // Get actor name
+    let name1: i64 = ai_actor_name(sys, actor1);
+    print("Actor 1 name: ");
+    print_string(name1);
+    println("");
+
+    // Test conversation history
+    println("");
+    println("--- Testing Conversation History ---");
+    ai_actor_add_message(sys, actor1, string_from("user"), string_from("Analyze this code"));
+    ai_actor_add_message(sys, actor1, string_from("assistant"), string_from("The code looks good"));
+
+    print("Actor 1 history length: ");
+    print_i64(ai_actor_history_len(sys, actor1));
+    println("");
+
+    let msg: i64 = ai_actor_get_message(sys, actor1, 0);
+    print("First message: ");
+    print_string(msg);
+    println("");
+
+    // Test Pipeline
+    println("");
+    println("--- Testing Pipeline ---");
+    let pipe: i64 = pipeline_new(string_from("code_pipeline"));
+
+    pipeline_add_stage(pipe, actor1, string_from("analyze"));
+    pipeline_add_stage(pipe, actor2, string_from("review"));
+    pipeline_add_stage(pipe, actor3, string_from("refactor"));
+
+    print("Pipeline stages: ");
+    print_i64(pipeline_stage_count(pipe));
+    println("");
+
+    let pipe_result: i64 = pipeline_execute(sys, pipe, string_from("function foo() {}"));
+    print("Pipeline result: ");
+    print_string(pipe_result);
+    println("");
+
+    // Test Parallel Group
+    println("");
+    println("--- Testing Parallel Group ---");
+    let pgroup: i64 = parallel_group_new(string_from("reviewers"));
+
+    parallel_group_add(pgroup, actor1);
+    parallel_group_add(pgroup, actor2);
+    parallel_group_add(pgroup, actor3);
+
+    print("Parallel group size: ");
+    print_i64(parallel_group_size(pgroup));
+    println("");
+
+    let par_result: i64 = parallel_group_execute(sys, pgroup, string_from("Review this PR"));
+    print("Parallel results: ");
+    print_string(par_result);
+    println("");
+
+    // Test Consensus Group
+    println("");
+    println("--- Testing Consensus Group ---");
+    let cgroup: i64 = consensus_group_new(string_from("voters"), 50);  // 50%
+
+    consensus_group_add(cgroup, actor1);
+    consensus_group_add(cgroup, actor2);
+    consensus_group_add(cgroup, actor3);
+
+    let vote_result: i64 = consensus_group_vote(sys, cgroup, string_from("Should we merge?"));
+    print("Vote result: ");
+    print_string(vote_result);
+    println("");
+
+    // Test Supervisor
+    println("");
+    println("--- Testing Supervisor ---");
+    let sup: i64 = ai_supervisor_new(string_from("main_supervisor"), 0);  // ONE_FOR_ONE strategy
+
+    ai_supervisor_add_child(sup, actor1);
+    ai_supervisor_add_child(sup, actor2);
+    ai_supervisor_add_child(sup, actor3);
+
+    print("Supervisor children: ");
+    print_i64(ai_supervisor_child_count(sup));
+    println("");
+
+    let health: i64 = ai_supervisor_check_health(sys, sup);
+    print("Health check: ");
+    print_string(health);
+    println("");
+
+    // Stop an actor and check health again
+    ai_actor_stop(sys, actor2);
+    println("Stopped actor 2");
+
+    let health2: i64 = ai_supervisor_check_health(sys, sup);
+    print("Health after stop: ");
+    print_string(health2);
+    println("");
+
+    // List all actors
+    println("");
+    println("--- Listing All Actors ---");
+    let actors: i64 = ai_actor_system_list(sys);
+    print("Actors: ");
+    print_string(actors);
+    println("");
+
+    // Cleanup
+    pipeline_close(pipe);
+    parallel_group_close(pgroup);
+    consensus_group_close(cgroup);
+    ai_supervisor_close(sup);
+    ai_actor_system_close(sys);
+
+    println("");
+    println("=== Orchestration Test Complete! ===");
+}

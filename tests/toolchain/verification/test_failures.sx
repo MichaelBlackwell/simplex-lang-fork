@@ -1,0 +1,558 @@
+// Phase 34 Validation: Test Failures to Fix (Section 34.11)
+// These tests validate fixes for specific test failures identified in Phase 33
+
+// ============================================
+// 34.11.1 Phase 27: belief_store_count tracking
+// ============================================
+
+struct BeliefStore {
+    beliefs: Vec<Belief>,
+    count: i64
+}
+
+fn test_belief_store_count_on_add() -> i64 {
+    let store: BeliefStore = BeliefStore::new();
+
+    // Count should start at 0
+    let initial: i64 = store.count();
+    if initial != 0 {
+        print_string("FAIL: Initial count not 0\n");
+        return 0;
+    }
+
+    // Add beliefs
+    store.add(Belief::new("fact1"));
+    store.add(Belief::new("fact2"));
+    store.add(Belief::new("fact3"));
+
+    // Count should be 3
+    let after_add: i64 = store.count();
+    if after_add != 3 {
+        print_string("FAIL: Count after add not 3, got ");
+        print_i64(after_add);
+        print_string("\n");
+        return 0;
+    }
+
+    1
+}
+
+fn test_belief_store_count_on_remove() -> i64 {
+    let store: BeliefStore = BeliefStore::new();
+
+    store.add(Belief::new("fact1"));
+    store.add(Belief::new("fact2"));
+    store.add(Belief::new("fact3"));
+
+    // Remove one
+    store.remove("fact2");
+
+    // Count should be 2
+    let after_remove: i64 = store.count();
+    if after_remove != 2 {
+        print_string("FAIL: Count after remove not 2, got ");
+        print_i64(after_remove);
+        print_string("\n");
+        return 0;
+    }
+
+    1
+}
+
+fn test_belief_store_count_on_clear() -> i64 {
+    let store: BeliefStore = BeliefStore::new();
+
+    store.add(Belief::new("fact1"));
+    store.add(Belief::new("fact2"));
+
+    // Clear all
+    store.clear();
+
+    // Count should be 0
+    let after_clear: i64 = store.count();
+    if after_clear != 0 {
+        print_string("FAIL: Count after clear not 0, got ");
+        print_i64(after_clear);
+        print_string("\n");
+        return 0;
+    }
+
+    1
+}
+
+fn test_belief_store_count_idempotent() -> i64 {
+    let store: BeliefStore = BeliefStore::new();
+
+    store.add(Belief::new("fact1"));
+
+    // Adding duplicate should not increase count
+    store.add(Belief::new("fact1"));
+
+    let count: i64 = store.count();
+    if count != 1 {
+        print_string("FAIL: Duplicate add increased count to ");
+        print_i64(count);
+        print_string("\n");
+        return 0;
+    }
+
+    1
+}
+
+// ============================================
+// 34.11.2 Phase 29: specialist_memory_count after forget
+// ============================================
+
+struct SpecialistMemory {
+    memories: Vec<Memory>,
+    count: i64
+}
+
+fn test_specialist_memory_count_after_forget() -> i64 {
+    let memory: SpecialistMemory = SpecialistMemory::new();
+
+    // Add memories
+    memory.remember("memory1");
+    memory.remember("memory2");
+    memory.remember("memory3");
+
+    // Forget one
+    memory.forget("memory2");
+
+    // Count should be 2
+    let count: i64 = memory.count();
+    if count != 2 {
+        print_string("FAIL: Count after forget not 2, got ");
+        print_i64(count);
+        print_string("\n");
+        return 0;
+    }
+
+    1
+}
+
+fn test_specialist_memory_forget_nonexistent() -> i64 {
+    let memory: SpecialistMemory = SpecialistMemory::new();
+
+    memory.remember("memory1");
+
+    // Forget something that doesn't exist
+    memory.forget("nonexistent");
+
+    // Count should still be 1
+    let count: i64 = memory.count();
+    if count != 1 {
+        print_string("FAIL: Forget nonexistent changed count to ");
+        print_i64(count);
+        print_string("\n");
+        return 0;
+    }
+
+    1
+}
+
+fn test_specialist_memory_forget_all() -> i64 {
+    let memory: SpecialistMemory = SpecialistMemory::new();
+
+    memory.remember("memory1");
+    memory.remember("memory2");
+
+    // Forget all
+    memory.forget("memory1");
+    memory.forget("memory2");
+
+    let count: i64 = memory.count();
+    if count != 0 {
+        print_string("FAIL: Count after forget all not 0, got ");
+        print_i64(count);
+        print_string("\n");
+        return 0;
+    }
+
+    1
+}
+
+// ============================================
+// 34.11.3 Phase 30: population_size after add
+// ============================================
+
+struct Population {
+    individuals: Vec<Individual>,
+    size: i64
+}
+
+fn test_population_size_after_add() -> i64 {
+    let pop: Population = Population::new();
+
+    // Add individuals
+    pop.add(Individual::new(1));
+    pop.add(Individual::new(2));
+    pop.add(Individual::new(3));
+
+    // Size should be 3
+    let size: i64 = pop.size();
+    if size != 3 {
+        print_string("FAIL: Population size not 3, got ");
+        print_i64(size);
+        print_string("\n");
+        return 0;
+    }
+
+    1
+}
+
+fn test_population_size_after_remove() -> i64 {
+    let pop: Population = Population::new();
+
+    pop.add(Individual::new(1));
+    pop.add(Individual::new(2));
+    pop.add(Individual::new(3));
+
+    // Remove one
+    pop.remove(2);
+
+    let size: i64 = pop.size();
+    if size != 2 {
+        print_string("FAIL: Population size after remove not 2, got ");
+        print_i64(size);
+        print_string("\n");
+        return 0;
+    }
+
+    1
+}
+
+fn test_population_size_consistency() -> i64 {
+    let pop: Population = Population::new();
+
+    // Multiple operations
+    pop.add(Individual::new(1));
+    pop.add(Individual::new(2));
+    pop.remove(1);
+    pop.add(Individual::new(3));
+    pop.add(Individual::new(4));
+    pop.remove(3);
+
+    // Should be 2 (individuals 2 and 4)
+    let size: i64 = pop.size();
+    let actual_count: i64 = pop.individuals.len();
+
+    if size != actual_count {
+        print_string("FAIL: Size/count mismatch: size=");
+        print_i64(size);
+        print_string(", actual=");
+        print_i64(actual_count);
+        print_string("\n");
+        return 0;
+    }
+
+    1
+}
+
+// ============================================
+// 34.11.4 Phase 31: voting_add_option ID return
+// ============================================
+
+struct VotingSystem {
+    options: Vec<VoteOption>,
+    next_id: i64
+}
+
+struct VoteOption {
+    id: i64,
+    name: String,
+    votes: i64
+}
+
+fn test_voting_add_option_returns_id() -> i64 {
+    let voting: VotingSystem = VotingSystem::new();
+
+    // Add options and check returned IDs
+    let id1: i64 = voting.add_option("Option A");
+    let id2: i64 = voting.add_option("Option B");
+    let id3: i64 = voting.add_option("Option C");
+
+    // IDs should be sequential or unique
+    if id1 < 0 || id2 < 0 || id3 < 0 {
+        print_string("FAIL: Negative ID returned\n");
+        return 0;
+    }
+
+    if id1 == id2 || id2 == id3 || id1 == id3 {
+        print_string("FAIL: Duplicate IDs returned\n");
+        return 0;
+    }
+
+    1
+}
+
+fn test_voting_add_option_id_usable() -> i64 {
+    let voting: VotingSystem = VotingSystem::new();
+
+    let id: i64 = voting.add_option("Test Option");
+
+    // Should be able to vote using returned ID
+    let result: bool = voting.vote(id);
+
+    if !result {
+        print_string("FAIL: Cannot vote using returned ID\n");
+        return 0;
+    }
+
+    // Check vote was counted
+    let option: VoteOption = voting.get_option(id);
+    if option.votes != 1 {
+        print_string("FAIL: Vote not counted\n");
+        return 0;
+    }
+
+    1
+}
+
+fn test_voting_add_option_id_after_remove() -> i64 {
+    let voting: VotingSystem = VotingSystem::new();
+
+    let id1: i64 = voting.add_option("Option 1");
+    let id2: i64 = voting.add_option("Option 2");
+
+    // Remove first option
+    voting.remove_option(id1);
+
+    // Add new option
+    let id3: i64 = voting.add_option("Option 3");
+
+    // New ID should not conflict with existing
+    if id3 == id2 {
+        print_string("FAIL: New ID conflicts with existing\n");
+        return 0;
+    }
+
+    1
+}
+
+// ============================================
+// 34.11.5 Phase 31: voting_tally return value
+// ============================================
+
+fn test_voting_tally_returns_winner() -> i64 {
+    let voting: VotingSystem = VotingSystem::new();
+
+    let a: i64 = voting.add_option("Option A");
+    let b: i64 = voting.add_option("Option B");
+
+    // Vote for A 3 times, B 1 time
+    voting.vote(a);
+    voting.vote(a);
+    voting.vote(a);
+    voting.vote(b);
+
+    // Tally should return Option A's ID
+    let winner: i64 = voting.tally();
+
+    if winner != a {
+        print_string("FAIL: Tally did not return winner, got ");
+        print_i64(winner);
+        print_string(" expected ");
+        print_i64(a);
+        print_string("\n");
+        return 0;
+    }
+
+    1
+}
+
+fn test_voting_tally_no_votes() -> i64 {
+    let voting: VotingSystem = VotingSystem::new();
+
+    voting.add_option("Option A");
+    voting.add_option("Option B");
+
+    // No votes cast
+    let result: i64 = voting.tally();
+
+    // Should return -1 or similar sentinel for no winner
+    if result >= 0 {
+        print_string("FAIL: Tally with no votes should return -1, got ");
+        print_i64(result);
+        print_string("\n");
+        return 0;
+    }
+
+    1
+}
+
+fn test_voting_tally_tie() -> i64 {
+    let voting: VotingSystem = VotingSystem::new();
+
+    let a: i64 = voting.add_option("Option A");
+    let b: i64 = voting.add_option("Option B");
+
+    // Tie
+    voting.vote(a);
+    voting.vote(b);
+
+    let result: i64 = voting.tally();
+
+    // Should return one of the tied options or a special value
+    // (implementation dependent, but should be consistent)
+    if result != a && result != b && result != -1 {
+        print_string("FAIL: Tally on tie returned invalid value ");
+        print_i64(result);
+        print_string("\n");
+        return 0;
+    }
+
+    1
+}
+
+fn test_voting_tally_result_struct() -> i64 {
+    let voting: VotingSystem = VotingSystem::new();
+
+    let a: i64 = voting.add_option("Option A");
+    let b: i64 = voting.add_option("Option B");
+
+    voting.vote(a);
+    voting.vote(a);
+    voting.vote(b);
+
+    // Alternative: return full result
+    let result: TallyResult = voting.tally_detailed();
+
+    if result.winner_id != a {
+        print_string("FAIL: Detailed tally wrong winner\n");
+        return 0;
+    }
+
+    if result.winner_votes != 2 {
+        print_string("FAIL: Detailed tally wrong vote count\n");
+        return 0;
+    }
+
+    if result.total_votes != 3 {
+        print_string("FAIL: Detailed tally wrong total\n");
+        return 0;
+    }
+
+    1
+}
+
+// ============================================
+// Main test runner
+// ============================================
+
+fn main() -> i64 {
+    print_string("=== Test Failures Fix Validation (34.11) ===\n");
+
+    let passed: i64 = 0;
+    let total: i64 = 0;
+
+    // Phase 27: belief_store_count
+    print_string("\n--- Phase 27: belief_store_count ---\n");
+
+    print_string("Test belief_store_count_on_add: ");
+    total = total + 1;
+    let r1: i64 = test_belief_store_count_on_add();
+    if r1 == 1 { print_string("PASS\n"); passed = passed + 1; } else { print_string("FAIL\n"); }
+
+    print_string("Test belief_store_count_on_remove: ");
+    total = total + 1;
+    let r2: i64 = test_belief_store_count_on_remove();
+    if r2 == 1 { print_string("PASS\n"); passed = passed + 1; } else { print_string("FAIL\n"); }
+
+    print_string("Test belief_store_count_on_clear: ");
+    total = total + 1;
+    let r3: i64 = test_belief_store_count_on_clear();
+    if r3 == 1 { print_string("PASS\n"); passed = passed + 1; } else { print_string("FAIL\n"); }
+
+    print_string("Test belief_store_count_idempotent: ");
+    total = total + 1;
+    let r4: i64 = test_belief_store_count_idempotent();
+    if r4 == 1 { print_string("PASS\n"); passed = passed + 1; } else { print_string("FAIL\n"); }
+
+    // Phase 29: specialist_memory_count
+    print_string("\n--- Phase 29: specialist_memory_count ---\n");
+
+    print_string("Test specialist_memory_count_after_forget: ");
+    total = total + 1;
+    let r5: i64 = test_specialist_memory_count_after_forget();
+    if r5 == 1 { print_string("PASS\n"); passed = passed + 1; } else { print_string("FAIL\n"); }
+
+    print_string("Test specialist_memory_forget_nonexistent: ");
+    total = total + 1;
+    let r6: i64 = test_specialist_memory_forget_nonexistent();
+    if r6 == 1 { print_string("PASS\n"); passed = passed + 1; } else { print_string("FAIL\n"); }
+
+    print_string("Test specialist_memory_forget_all: ");
+    total = total + 1;
+    let r7: i64 = test_specialist_memory_forget_all();
+    if r7 == 1 { print_string("PASS\n"); passed = passed + 1; } else { print_string("FAIL\n"); }
+
+    // Phase 30: population_size
+    print_string("\n--- Phase 30: population_size ---\n");
+
+    print_string("Test population_size_after_add: ");
+    total = total + 1;
+    let r8: i64 = test_population_size_after_add();
+    if r8 == 1 { print_string("PASS\n"); passed = passed + 1; } else { print_string("FAIL\n"); }
+
+    print_string("Test population_size_after_remove: ");
+    total = total + 1;
+    let r9: i64 = test_population_size_after_remove();
+    if r9 == 1 { print_string("PASS\n"); passed = passed + 1; } else { print_string("FAIL\n"); }
+
+    print_string("Test population_size_consistency: ");
+    total = total + 1;
+    let r10: i64 = test_population_size_consistency();
+    if r10 == 1 { print_string("PASS\n"); passed = passed + 1; } else { print_string("FAIL\n"); }
+
+    // Phase 31: voting_add_option
+    print_string("\n--- Phase 31: voting_add_option ---\n");
+
+    print_string("Test voting_add_option_returns_id: ");
+    total = total + 1;
+    let r11: i64 = test_voting_add_option_returns_id();
+    if r11 == 1 { print_string("PASS\n"); passed = passed + 1; } else { print_string("FAIL\n"); }
+
+    print_string("Test voting_add_option_id_usable: ");
+    total = total + 1;
+    let r12: i64 = test_voting_add_option_id_usable();
+    if r12 == 1 { print_string("PASS\n"); passed = passed + 1; } else { print_string("FAIL\n"); }
+
+    print_string("Test voting_add_option_id_after_remove: ");
+    total = total + 1;
+    let r13: i64 = test_voting_add_option_id_after_remove();
+    if r13 == 1 { print_string("PASS\n"); passed = passed + 1; } else { print_string("FAIL\n"); }
+
+    // Phase 31: voting_tally
+    print_string("\n--- Phase 31: voting_tally ---\n");
+
+    print_string("Test voting_tally_returns_winner: ");
+    total = total + 1;
+    let r14: i64 = test_voting_tally_returns_winner();
+    if r14 == 1 { print_string("PASS\n"); passed = passed + 1; } else { print_string("FAIL\n"); }
+
+    print_string("Test voting_tally_no_votes: ");
+    total = total + 1;
+    let r15: i64 = test_voting_tally_no_votes();
+    if r15 == 1 { print_string("PASS\n"); passed = passed + 1; } else { print_string("FAIL\n"); }
+
+    print_string("Test voting_tally_tie: ");
+    total = total + 1;
+    let r16: i64 = test_voting_tally_tie();
+    if r16 == 1 { print_string("PASS\n"); passed = passed + 1; } else { print_string("FAIL\n"); }
+
+    print_string("Test voting_tally_result_struct: ");
+    total = total + 1;
+    let r17: i64 = test_voting_tally_result_struct();
+    if r17 == 1 { print_string("PASS\n"); passed = passed + 1; } else { print_string("FAIL\n"); }
+
+    // Summary
+    print_string("\n=== Summary ===\n");
+    print_string("Passed: ");
+    print_i64(passed);
+    print_string(" / ");
+    print_i64(total);
+    print_string("\n");
+
+    0
+}
