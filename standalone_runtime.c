@@ -4899,6 +4899,75 @@ void* intrinsic_list_dir(void* path_ptr) {
     return result;
 }
 
+// Stdin/stderr I/O
+void* intrinsic_stdin_read_line(void) {
+    char buffer[4096];
+    if (fgets(buffer, sizeof(buffer), stdin) == NULL) {
+        return intrinsic_string_new("");
+    }
+    // Remove trailing newline
+    size_t len = strlen(buffer);
+    if (len > 0 && buffer[len - 1] == '\n') {
+        buffer[len - 1] = '\0';
+    }
+    return intrinsic_string_new(buffer);
+}
+
+void intrinsic_stderr_write(void* msg_ptr) {
+    SxString* msg = (SxString*)msg_ptr;
+    if (msg && msg->data) {
+        fprintf(stderr, "%s", msg->data);
+    }
+}
+
+void intrinsic_stderr_writeln(void* msg_ptr) {
+    SxString* msg = (SxString*)msg_ptr;
+    if (msg && msg->data) {
+        fprintf(stderr, "%s\n", msg->data);
+    } else {
+        fprintf(stderr, "\n");
+    }
+}
+
+// File copy
+int64_t intrinsic_file_copy(void* src_ptr, void* dst_ptr) {
+    SxString* src = (SxString*)src_ptr;
+    SxString* dst = (SxString*)dst_ptr;
+    if (!src || !src->data || !dst || !dst->data) return -1;
+
+    FILE* fsrc = fopen(src->data, "rb");
+    if (!fsrc) return -1;
+
+    FILE* fdst = fopen(dst->data, "wb");
+    if (!fdst) {
+        fclose(fsrc);
+        return -1;
+    }
+
+    char buffer[8192];
+    size_t n;
+    while ((n = fread(buffer, 1, sizeof(buffer), fsrc)) > 0) {
+        if (fwrite(buffer, 1, n, fdst) != n) {
+            fclose(fsrc);
+            fclose(fdst);
+            return -1;
+        }
+    }
+
+    fclose(fsrc);
+    fclose(fdst);
+    return 0;
+}
+
+// File rename/move
+int64_t intrinsic_file_rename(void* src_ptr, void* dst_ptr) {
+    SxString* src = (SxString*)src_ptr;
+    SxString* dst = (SxString*)dst_ptr;
+    if (!src || !src->data || !dst || !dst->data) return -1;
+
+    return rename(src->data, dst->data);
+}
+
 // Assertion helpers
 void intrinsic_assert_fail(void* msg_ptr, void* file_ptr, int64_t line) {
     SxString* msg = (SxString*)msg_ptr;
@@ -15270,7 +15339,973 @@ void specialist_memory_close(int64_t mem_ptr) {
 }
 
 // --------------------------------------------------------------------------
-// 29.6 Tool Registry
+// 29.6 Anima Cognitive Memory System
+// --------------------------------------------------------------------------
+// The Anima is the cognitive soul of a Simplex AI application.
+// It contains: episodic memory (experiences), semantic memory (facts),
+// procedural memory (skills), working memory (active context), and beliefs.
+
+typedef struct Experience {
+    int64_t id;
+    char* content;
+    double importance;
+    int64_t timestamp;
+    struct Experience* next;
+} Experience;
+
+typedef struct Fact {
+    int64_t id;
+    char* content;
+    double confidence;
+    char* source;
+    struct Fact* next;
+} Fact;
+
+typedef struct AnimaProcedure {
+    int64_t id;
+    char* name;
+    char* steps_json;
+    double success_rate;
+    struct AnimaProcedure* next;
+} AnimaProcedure;
+
+typedef struct AnimaBelief {
+    int64_t id;
+    char* content;
+    double confidence;
+    char* evidence_json;
+    struct AnimaBelief* next;
+} AnimaBelief;
+
+typedef struct AnimaMemory {
+    // Memory stores
+    Experience* episodic_head;
+    int64_t episodic_count;
+    Fact* semantic_head;
+    int64_t semantic_count;
+    AnimaProcedure* procedural_head;
+    int64_t procedural_count;
+    AnimaBelief* beliefs_head;
+    int64_t beliefs_count;
+    // Working memory (ring buffer)
+    void** working;
+    int64_t working_capacity;
+    int64_t working_head;
+    int64_t working_count;
+    // Counters
+    int64_t next_id;
+    pthread_mutex_t lock;
+} AnimaMemory;
+
+// Create new anima memory system
+int64_t anima_memory_new(int64_t working_capacity) {
+    AnimaMemory* mem = (AnimaMemory*)calloc(1, sizeof(AnimaMemory));
+    if (!mem) return 0;
+
+    mem->working_capacity = working_capacity > 0 ? working_capacity : 10;
+    mem->working = (void**)calloc(mem->working_capacity, sizeof(void*));
+    mem->next_id = 1;
+    pthread_mutex_init(&mem->lock, NULL);
+
+    return (int64_t)mem;
+}
+
+// Store experience in episodic memory
+int64_t anima_remember(int64_t mem_ptr, int64_t content_ptr, double importance) {
+    AnimaMemory* mem = (AnimaMemory*)mem_ptr;
+    SxString* content = (SxString*)content_ptr;
+    if (!mem || !content) return 0;
+
+    pthread_mutex_lock(&mem->lock);
+
+    Experience* exp = (Experience*)malloc(sizeof(Experience));
+    exp->id = mem->next_id++;
+    exp->content = strdup(content->data);
+    exp->importance = importance;
+    exp->timestamp = (int64_t)time(NULL);
+    exp->next = mem->episodic_head;
+    mem->episodic_head = exp;
+    mem->episodic_count++;
+
+    pthread_mutex_unlock(&mem->lock);
+    return exp->id;
+}
+
+// Store fact in semantic memory
+int64_t anima_learn(int64_t mem_ptr, int64_t content_ptr, double confidence, int64_t source_ptr) {
+    AnimaMemory* mem = (AnimaMemory*)mem_ptr;
+    SxString* content = (SxString*)content_ptr;
+    SxString* source = (SxString*)source_ptr;
+    if (!mem || !content) return 0;
+
+    pthread_mutex_lock(&mem->lock);
+
+    Fact* fact = (Fact*)malloc(sizeof(Fact));
+    fact->id = mem->next_id++;
+    fact->content = strdup(content->data);
+    fact->confidence = confidence;
+    fact->source = source ? strdup(source->data) : NULL;
+    fact->next = mem->semantic_head;
+    mem->semantic_head = fact;
+    mem->semantic_count++;
+
+    pthread_mutex_unlock(&mem->lock);
+    return fact->id;
+}
+
+// Store procedure in procedural memory
+int64_t anima_store_procedure(int64_t mem_ptr, int64_t name_ptr, int64_t steps_ptr) {
+    AnimaMemory* mem = (AnimaMemory*)mem_ptr;
+    SxString* name = (SxString*)name_ptr;
+    SxString* steps = (SxString*)steps_ptr;
+    if (!mem || !name) return 0;
+
+    pthread_mutex_lock(&mem->lock);
+
+    AnimaProcedure* proc = (AnimaProcedure*)malloc(sizeof(AnimaProcedure));
+    proc->id = mem->next_id++;
+    proc->name = strdup(name->data);
+    proc->steps_json = steps ? strdup(steps->data) : NULL;
+    proc->success_rate = 1.0;
+    proc->next = mem->procedural_head;
+    mem->procedural_head = proc;
+    mem->procedural_count++;
+
+    pthread_mutex_unlock(&mem->lock);
+    return proc->id;
+}
+
+// Store belief with confidence
+int64_t anima_believe(int64_t mem_ptr, int64_t content_ptr, double confidence, int64_t evidence_ptr) {
+    AnimaMemory* mem = (AnimaMemory*)mem_ptr;
+    SxString* content = (SxString*)content_ptr;
+    SxString* evidence = (SxString*)evidence_ptr;
+    if (!mem || !content) return 0;
+
+    pthread_mutex_lock(&mem->lock);
+
+    // Check for existing belief with same content
+    AnimaBelief* existing = mem->beliefs_head;
+    while (existing) {
+        if (strcmp(existing->content, content->data) == 0) {
+            // Update existing belief
+            existing->confidence = confidence;
+            if (evidence && existing->evidence_json) {
+                free(existing->evidence_json);
+                existing->evidence_json = strdup(evidence->data);
+            }
+            pthread_mutex_unlock(&mem->lock);
+            return existing->id;
+        }
+        existing = existing->next;
+    }
+
+    // Create new belief
+    AnimaBelief* belief = (AnimaBelief*)malloc(sizeof(AnimaBelief));
+    belief->id = mem->next_id++;
+    belief->content = strdup(content->data);
+    belief->confidence = confidence;
+    belief->evidence_json = evidence ? strdup(evidence->data) : NULL;
+    belief->next = mem->beliefs_head;
+    mem->beliefs_head = belief;
+    mem->beliefs_count++;
+
+    pthread_mutex_unlock(&mem->lock);
+    return belief->id;
+}
+
+// Revise belief based on new evidence
+int64_t anima_revise_belief(int64_t mem_ptr, int64_t belief_id, double new_confidence, int64_t new_evidence_ptr) {
+    AnimaMemory* mem = (AnimaMemory*)mem_ptr;
+    SxString* new_evidence = (SxString*)new_evidence_ptr;
+    if (!mem) return 0;
+
+    pthread_mutex_lock(&mem->lock);
+
+    AnimaBelief* belief = mem->beliefs_head;
+    while (belief) {
+        if (belief->id == belief_id) {
+            belief->confidence = new_confidence;
+            if (new_evidence) {
+                if (belief->evidence_json) free(belief->evidence_json);
+                belief->evidence_json = strdup(new_evidence->data);
+            }
+            pthread_mutex_unlock(&mem->lock);
+            return 1;
+        }
+        belief = belief->next;
+    }
+
+    pthread_mutex_unlock(&mem->lock);
+    return 0;
+}
+
+// Push to working memory
+int64_t anima_working_push(int64_t mem_ptr, int64_t item_ptr) {
+    AnimaMemory* mem = (AnimaMemory*)mem_ptr;
+    if (!mem) return 0;
+
+    pthread_mutex_lock(&mem->lock);
+
+    // If at capacity, pop oldest
+    if (mem->working_count >= mem->working_capacity) {
+        // Oldest is at (head - count) mod capacity
+        // Just overwrite the oldest slot
+    }
+
+    int64_t slot = (mem->working_head + mem->working_count) % mem->working_capacity;
+    mem->working[slot] = (void*)item_ptr;
+
+    if (mem->working_count < mem->working_capacity) {
+        mem->working_count++;
+    } else {
+        mem->working_head = (mem->working_head + 1) % mem->working_capacity;
+    }
+
+    pthread_mutex_unlock(&mem->lock);
+    return 1;
+}
+
+// Pop from working memory
+int64_t anima_working_pop(int64_t mem_ptr) {
+    AnimaMemory* mem = (AnimaMemory*)mem_ptr;
+    if (!mem || mem->working_count == 0) return 0;
+
+    pthread_mutex_lock(&mem->lock);
+
+    int64_t last_slot = (mem->working_head + mem->working_count - 1) % mem->working_capacity;
+    void* item = mem->working[last_slot];
+    mem->working[last_slot] = NULL;
+    mem->working_count--;
+
+    pthread_mutex_unlock(&mem->lock);
+    return (int64_t)item;
+}
+
+// Get working memory as vector
+int64_t anima_working_context(int64_t mem_ptr) {
+    AnimaMemory* mem = (AnimaMemory*)mem_ptr;
+    if (!mem) return 0;
+
+    pthread_mutex_lock(&mem->lock);
+
+    SxVec* vec = intrinsic_vec_new();
+    for (int64_t i = 0; i < mem->working_count; i++) {
+        int64_t slot = (mem->working_head + i) % mem->working_capacity;
+        if (mem->working[slot]) {
+            intrinsic_vec_push(vec, mem->working[slot]);
+        }
+    }
+
+    pthread_mutex_unlock(&mem->lock);
+    return (int64_t)vec;
+}
+
+// Goal-directed recall - finds relevant memories for a goal
+int64_t anima_recall_for_goal(int64_t mem_ptr, int64_t goal_ptr, int64_t context_ptr, int64_t max_results) {
+    AnimaMemory* mem = (AnimaMemory*)mem_ptr;
+    SxString* goal = (SxString*)goal_ptr;
+    if (!mem || !goal) return 0;
+
+    pthread_mutex_lock(&mem->lock);
+
+    SxVec* results = intrinsic_vec_new();
+
+    // Simple keyword matching for now - will be enhanced with SLM
+    // Search episodic memory
+    Experience* exp = mem->episodic_head;
+    int64_t count = 0;
+    while (exp && count < max_results) {
+        if (strstr(exp->content, goal->data) != NULL) {
+            // Return as string for now
+            SxString* s = intrinsic_string_new(exp->content);
+            intrinsic_vec_push(results, s);
+            count++;
+        }
+        exp = exp->next;
+    }
+
+    // Search semantic memory
+    Fact* fact = mem->semantic_head;
+    while (fact && count < max_results) {
+        if (strstr(fact->content, goal->data) != NULL) {
+            SxString* s = intrinsic_string_new(fact->content);
+            intrinsic_vec_push(results, s);
+            count++;
+        }
+        fact = fact->next;
+    }
+
+    pthread_mutex_unlock(&mem->lock);
+    return (int64_t)results;
+}
+
+// Get counts
+int64_t anima_episodic_count(int64_t mem_ptr) {
+    AnimaMemory* mem = (AnimaMemory*)mem_ptr;
+    return mem ? mem->episodic_count : 0;
+}
+
+int64_t anima_semantic_count(int64_t mem_ptr) {
+    AnimaMemory* mem = (AnimaMemory*)mem_ptr;
+    return mem ? mem->semantic_count : 0;
+}
+
+int64_t anima_beliefs_count(int64_t mem_ptr) {
+    AnimaMemory* mem = (AnimaMemory*)mem_ptr;
+    return mem ? mem->beliefs_count : 0;
+}
+
+int64_t anima_working_count(int64_t mem_ptr) {
+    AnimaMemory* mem = (AnimaMemory*)mem_ptr;
+    return mem ? mem->working_count : 0;
+}
+
+// Memory consolidation - summarize and prune low-importance memories
+int64_t anima_consolidate(int64_t mem_ptr) {
+    AnimaMemory* mem = (AnimaMemory*)mem_ptr;
+    if (!mem) return 0;
+
+    pthread_mutex_lock(&mem->lock);
+
+    // Prune low importance experiences (importance < 0.3)
+    Experience** exp_ptr = &mem->episodic_head;
+    int64_t pruned = 0;
+    while (*exp_ptr) {
+        if ((*exp_ptr)->importance < 0.3) {
+            Experience* to_free = *exp_ptr;
+            *exp_ptr = to_free->next;
+            free(to_free->content);
+            free(to_free);
+            mem->episodic_count--;
+            pruned++;
+        } else {
+            exp_ptr = &(*exp_ptr)->next;
+        }
+    }
+
+    // Prune low confidence facts (confidence < 0.5)
+    Fact** fact_ptr = &mem->semantic_head;
+    while (*fact_ptr) {
+        if ((*fact_ptr)->confidence < 0.5) {
+            Fact* to_free = *fact_ptr;
+            *fact_ptr = to_free->next;
+            free(to_free->content);
+            if (to_free->source) free(to_free->source);
+            free(to_free);
+            mem->semantic_count--;
+            pruned++;
+        } else {
+            fact_ptr = &(*fact_ptr)->next;
+        }
+    }
+
+    pthread_mutex_unlock(&mem->lock);
+    return pruned;
+}
+
+// Close and free anima memory
+void anima_memory_close(int64_t mem_ptr) {
+    AnimaMemory* mem = (AnimaMemory*)mem_ptr;
+    if (!mem) return;
+
+    pthread_mutex_lock(&mem->lock);
+
+    // Free episodic memory
+    Experience* exp = mem->episodic_head;
+    while (exp) {
+        Experience* next = exp->next;
+        free(exp->content);
+        free(exp);
+        exp = next;
+    }
+
+    // Free semantic memory
+    Fact* fact = mem->semantic_head;
+    while (fact) {
+        Fact* next = fact->next;
+        free(fact->content);
+        if (fact->source) free(fact->source);
+        free(fact);
+        fact = next;
+    }
+
+    // Free procedural memory
+    AnimaProcedure* proc = mem->procedural_head;
+    while (proc) {
+        AnimaProcedure* next = proc->next;
+        free(proc->name);
+        if (proc->steps_json) free(proc->steps_json);
+        free(proc);
+        proc = next;
+    }
+
+    // Free beliefs
+    AnimaBelief* belief = mem->beliefs_head;
+    while (belief) {
+        AnimaBelief* next = belief->next;
+        free(belief->content);
+        if (belief->evidence_json) free(belief->evidence_json);
+        free(belief);
+        belief = next;
+    }
+
+    // Free working memory
+    free(mem->working);
+
+    pthread_mutex_unlock(&mem->lock);
+    pthread_mutex_destroy(&mem->lock);
+    free(mem);
+}
+
+// --------------------------------------------------------------------------
+// 29.6.5 Anima Desires and Intentions (BDI)
+// --------------------------------------------------------------------------
+
+typedef struct AnimaDesire {
+    int64_t id;
+    char* goal;
+    double priority;
+    int64_t status;  // 0=pending, 1=active, 2=achieved, 3=failed
+    struct AnimaDesire* next;
+} AnimaDesire;
+
+typedef struct AnimaIntention {
+    int64_t id;
+    char* plan;
+    char* steps_json;
+    int64_t current_step;
+    int64_t total_steps;
+    int64_t status;  // 0=pending, 1=executing, 2=completed, 3=failed
+    struct AnimaIntention* next;
+} AnimaIntention;
+
+// Extended AnimaMemory with BDI support (stored separately for modularity)
+typedef struct AnimaBDI {
+    AnimaDesire* desires_head;
+    int64_t desires_count;
+    AnimaIntention* intentions_head;
+    int64_t intentions_count;
+    int64_t next_id;
+    pthread_mutex_t lock;
+} AnimaBDI;
+
+// Create new BDI system
+int64_t anima_bdi_new() {
+    AnimaBDI* bdi = (AnimaBDI*)calloc(1, sizeof(AnimaBDI));
+    if (!bdi) return 0;
+    bdi->next_id = 1;
+    pthread_mutex_init(&bdi->lock, NULL);
+    return (int64_t)bdi;
+}
+
+// Add a desire (goal with priority)
+int64_t anima_add_desire(int64_t bdi_ptr, int64_t goal_ptr, double priority) {
+    AnimaBDI* bdi = (AnimaBDI*)bdi_ptr;
+    SxString* goal = (SxString*)goal_ptr;
+    if (!bdi || !goal) return 0;
+
+    pthread_mutex_lock(&bdi->lock);
+
+    AnimaDesire* desire = (AnimaDesire*)malloc(sizeof(AnimaDesire));
+    desire->id = bdi->next_id++;
+    desire->goal = strdup(goal->data);
+    desire->priority = priority;
+    desire->status = 0;  // pending
+    desire->next = bdi->desires_head;
+    bdi->desires_head = desire;
+    bdi->desires_count++;
+
+    pthread_mutex_unlock(&bdi->lock);
+    return desire->id;
+}
+
+// Get highest priority desire
+int64_t anima_get_top_desire(int64_t bdi_ptr) {
+    AnimaBDI* bdi = (AnimaBDI*)bdi_ptr;
+    if (!bdi) return 0;
+
+    pthread_mutex_lock(&bdi->lock);
+
+    AnimaDesire* best = NULL;
+    AnimaDesire* current = bdi->desires_head;
+    while (current) {
+        if (current->status == 0 || current->status == 1) {  // pending or active
+            if (!best || current->priority > best->priority) {
+                best = current;
+            }
+        }
+        current = current->next;
+    }
+
+    pthread_mutex_unlock(&bdi->lock);
+
+    if (best) {
+        SxString* result = (SxString*)malloc(sizeof(SxString));
+        result->data = strdup(best->goal);
+        result->len = strlen(best->goal);
+        result->cap = result->len + 1;
+        return (int64_t)result;
+    }
+    return 0;
+}
+
+// Count desires
+int64_t anima_desires_count(int64_t bdi_ptr) {
+    AnimaBDI* bdi = (AnimaBDI*)bdi_ptr;
+    if (!bdi) return 0;
+    return bdi->desires_count;
+}
+
+// Set desire status
+int64_t anima_set_desire_status(int64_t bdi_ptr, int64_t desire_id, int64_t status) {
+    AnimaBDI* bdi = (AnimaBDI*)bdi_ptr;
+    if (!bdi) return 0;
+
+    pthread_mutex_lock(&bdi->lock);
+
+    AnimaDesire* current = bdi->desires_head;
+    while (current) {
+        if (current->id == desire_id) {
+            current->status = status;
+            pthread_mutex_unlock(&bdi->lock);
+            return 1;
+        }
+        current = current->next;
+    }
+
+    pthread_mutex_unlock(&bdi->lock);
+    return 0;
+}
+
+// Add an intention (active plan)
+int64_t anima_add_intention(int64_t bdi_ptr, int64_t plan_ptr, int64_t steps_ptr, int64_t total_steps) {
+    AnimaBDI* bdi = (AnimaBDI*)bdi_ptr;
+    SxString* plan = (SxString*)plan_ptr;
+    SxString* steps = (SxString*)steps_ptr;
+    if (!bdi || !plan) return 0;
+
+    pthread_mutex_lock(&bdi->lock);
+
+    AnimaIntention* intention = (AnimaIntention*)malloc(sizeof(AnimaIntention));
+    intention->id = bdi->next_id++;
+    intention->plan = strdup(plan->data);
+    intention->steps_json = steps ? strdup(steps->data) : NULL;
+    intention->current_step = 0;
+    intention->total_steps = total_steps;
+    intention->status = 0;  // pending
+    intention->next = bdi->intentions_head;
+    bdi->intentions_head = intention;
+    bdi->intentions_count++;
+
+    pthread_mutex_unlock(&bdi->lock);
+    return intention->id;
+}
+
+// Advance intention to next step
+int64_t anima_advance_intention(int64_t bdi_ptr, int64_t intention_id) {
+    AnimaBDI* bdi = (AnimaBDI*)bdi_ptr;
+    if (!bdi) return 0;
+
+    pthread_mutex_lock(&bdi->lock);
+
+    AnimaIntention* current = bdi->intentions_head;
+    while (current) {
+        if (current->id == intention_id) {
+            current->current_step++;
+            if (current->current_step >= current->total_steps) {
+                current->status = 2;  // completed
+            } else {
+                current->status = 1;  // executing
+            }
+            pthread_mutex_unlock(&bdi->lock);
+            return current->current_step;
+        }
+        current = current->next;
+    }
+
+    pthread_mutex_unlock(&bdi->lock);
+    return -1;
+}
+
+// Get current step of intention
+int64_t anima_intention_step(int64_t bdi_ptr, int64_t intention_id) {
+    AnimaBDI* bdi = (AnimaBDI*)bdi_ptr;
+    if (!bdi) return -1;
+
+    pthread_mutex_lock(&bdi->lock);
+
+    AnimaIntention* current = bdi->intentions_head;
+    while (current) {
+        if (current->id == intention_id) {
+            int64_t step = current->current_step;
+            pthread_mutex_unlock(&bdi->lock);
+            return step;
+        }
+        current = current->next;
+    }
+
+    pthread_mutex_unlock(&bdi->lock);
+    return -1;
+}
+
+// Count intentions
+int64_t anima_intentions_count(int64_t bdi_ptr) {
+    AnimaBDI* bdi = (AnimaBDI*)bdi_ptr;
+    if (!bdi) return 0;
+    return bdi->intentions_count;
+}
+
+// Set intention status
+int64_t anima_set_intention_status(int64_t bdi_ptr, int64_t intention_id, int64_t status) {
+    AnimaBDI* bdi = (AnimaBDI*)bdi_ptr;
+    if (!bdi) return 0;
+
+    pthread_mutex_lock(&bdi->lock);
+
+    AnimaIntention* current = bdi->intentions_head;
+    while (current) {
+        if (current->id == intention_id) {
+            current->status = status;
+            pthread_mutex_unlock(&bdi->lock);
+            return 1;
+        }
+        current = current->next;
+    }
+
+    pthread_mutex_unlock(&bdi->lock);
+    return 0;
+}
+
+// Clean up BDI system
+void anima_bdi_close(int64_t bdi_ptr) {
+    AnimaBDI* bdi = (AnimaBDI*)bdi_ptr;
+    if (!bdi) return;
+
+    pthread_mutex_lock(&bdi->lock);
+
+    // Free desires
+    AnimaDesire* desire = bdi->desires_head;
+    while (desire) {
+        AnimaDesire* next = desire->next;
+        free(desire->goal);
+        free(desire);
+        desire = next;
+    }
+
+    // Free intentions
+    AnimaIntention* intention = bdi->intentions_head;
+    while (intention) {
+        AnimaIntention* next = intention->next;
+        free(intention->plan);
+        if (intention->steps_json) free(intention->steps_json);
+        free(intention);
+        intention = next;
+    }
+
+    pthread_mutex_unlock(&bdi->lock);
+    pthread_mutex_destroy(&bdi->lock);
+    free(bdi);
+}
+
+// --------------------------------------------------------------------------
+// 29.6.6 Anima Persistence (Save/Load)
+// --------------------------------------------------------------------------
+
+// Save anima memory to JSON file
+int64_t anima_save(int64_t mem_ptr, int64_t path_ptr) {
+    AnimaMemory* mem = (AnimaMemory*)mem_ptr;
+    SxString* path = (SxString*)path_ptr;
+    if (!mem || !path) return 0;
+
+    FILE* f = fopen(path->data, "w");
+    if (!f) return 0;
+
+    pthread_mutex_lock(&mem->lock);
+
+    fprintf(f, "{\n");
+
+    // Save episodic memories
+    fprintf(f, "  \"episodic\": [\n");
+    Experience* exp = mem->episodic_head;
+    int first = 1;
+    while (exp) {
+        if (!first) fprintf(f, ",\n");
+        fprintf(f, "    {\"id\": %lld, \"content\": \"%s\", \"importance\": %f, \"timestamp\": %lld}",
+                (long long)exp->id, exp->content, exp->importance, (long long)exp->timestamp);
+        first = 0;
+        exp = exp->next;
+    }
+    fprintf(f, "\n  ],\n");
+
+    // Save semantic memories
+    fprintf(f, "  \"semantic\": [\n");
+    Fact* fact = mem->semantic_head;
+    first = 1;
+    while (fact) {
+        if (!first) fprintf(f, ",\n");
+        fprintf(f, "    {\"id\": %lld, \"content\": \"%s\", \"confidence\": %f, \"source\": \"%s\"}",
+                (long long)fact->id, fact->content, fact->confidence,
+                fact->source ? fact->source : "");
+        first = 0;
+        fact = fact->next;
+    }
+    fprintf(f, "\n  ],\n");
+
+    // Save procedural memories
+    fprintf(f, "  \"procedural\": [\n");
+    AnimaProcedure* proc = mem->procedural_head;
+    first = 1;
+    while (proc) {
+        if (!first) fprintf(f, ",\n");
+        fprintf(f, "    {\"id\": %lld, \"name\": \"%s\", \"steps\": %s, \"success_rate\": %f}",
+                (long long)proc->id, proc->name,
+                proc->steps_json ? proc->steps_json : "[]", proc->success_rate);
+        first = 0;
+        proc = proc->next;
+    }
+    fprintf(f, "\n  ],\n");
+
+    // Save beliefs
+    fprintf(f, "  \"beliefs\": [\n");
+    AnimaBelief* belief = mem->beliefs_head;
+    first = 1;
+    while (belief) {
+        if (!first) fprintf(f, ",\n");
+        fprintf(f, "    {\"id\": %lld, \"content\": \"%s\", \"confidence\": %f, \"evidence\": %s}",
+                (long long)belief->id, belief->content, belief->confidence,
+                belief->evidence_json ? belief->evidence_json : "[]");
+        first = 0;
+        belief = belief->next;
+    }
+    fprintf(f, "\n  ],\n");
+
+    // Save metadata
+    fprintf(f, "  \"next_id\": %lld,\n", (long long)mem->next_id);
+    fprintf(f, "  \"working_capacity\": %lld,\n", (long long)mem->working_capacity);
+    fprintf(f, "  \"episodic_count\": %lld,\n", (long long)mem->episodic_count);
+    fprintf(f, "  \"semantic_count\": %lld,\n", (long long)mem->semantic_count);
+    fprintf(f, "  \"beliefs_count\": %lld\n", (long long)mem->beliefs_count);
+
+    fprintf(f, "}\n");
+
+    pthread_mutex_unlock(&mem->lock);
+    fclose(f);
+    return 1;
+}
+
+// Helper: Simple JSON string extraction (finds "key": "value" and returns value)
+static char* json_get_string(const char* json, const char* key) {
+    char pattern[256];
+    snprintf(pattern, sizeof(pattern), "\"%s\":", key);
+    char* pos = strstr(json, pattern);
+    if (!pos) return NULL;
+    pos += strlen(pattern);
+    while (*pos == ' ' || *pos == '\t') pos++;
+    if (*pos != '"') return NULL;
+    pos++;  // skip opening quote
+    char* end = strchr(pos, '"');
+    if (!end) return NULL;
+    size_t len = end - pos;
+    char* result = (char*)malloc(len + 1);
+    strncpy(result, pos, len);
+    result[len] = '\0';
+    return result;
+}
+
+// Helper: Simple JSON number extraction
+static double json_get_number(const char* json, const char* key) {
+    char pattern[256];
+    snprintf(pattern, sizeof(pattern), "\"%s\":", key);
+    char* pos = strstr(json, pattern);
+    if (!pos) return 0.0;
+    pos += strlen(pattern);
+    while (*pos == ' ' || *pos == '\t') pos++;
+    return atof(pos);
+}
+
+// Helper: Simple JSON integer extraction
+static int64_t json_get_int(const char* json, const char* key) {
+    char pattern[256];
+    snprintf(pattern, sizeof(pattern), "\"%s\":", key);
+    char* pos = strstr(json, pattern);
+    if (!pos) return 0;
+    pos += strlen(pattern);
+    while (*pos == ' ' || *pos == '\t') pos++;
+    return atoll(pos);
+}
+
+// Helper: Find matching closing bracket (handles nested brackets and strings)
+static char* find_matching_bracket(char* start) {
+    if (!start || *start != '[') return NULL;
+    int depth = 1;
+    char* pos = start + 1;
+    int in_string = 0;
+    while (*pos && depth > 0) {
+        if (*pos == '"' && (pos == start + 1 || *(pos-1) != '\\')) {
+            in_string = !in_string;
+        } else if (!in_string) {
+            if (*pos == '[') depth++;
+            else if (*pos == ']') depth--;
+        }
+        if (depth > 0) pos++;
+    }
+    return (depth == 0) ? pos : NULL;
+}
+
+// Helper: Find matching closing brace (handles nested objects/arrays/strings)
+static char* find_matching_brace(char* start) {
+    if (!start || *start != '{') return NULL;
+    int depth = 1;
+    char* pos = start + 1;
+    int in_string = 0;
+    while (*pos && depth > 0) {
+        if (*pos == '"' && (pos == start + 1 || *(pos-1) != '\\')) {
+            in_string = !in_string;
+        } else if (!in_string) {
+            if (*pos == '{') depth++;
+            else if (*pos == '}') depth--;
+        }
+        if (depth > 0) pos++;
+    }
+    return (depth == 0) ? pos : NULL;
+}
+
+// Load anima memory from JSON file
+int64_t anima_load(int64_t path_ptr) {
+    SxString* path = (SxString*)path_ptr;
+    if (!path) return 0;
+
+    FILE* f = fopen(path->data, "r");
+    if (!f) return 0;
+
+    // Read entire file
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char* json = (char*)malloc(size + 1);
+    fread(json, 1, size, f);
+    json[size] = '\0';
+    fclose(f);
+
+    // Create new memory system
+    int64_t capacity = json_get_int(json, "working_capacity");
+    if (capacity <= 0) capacity = 10;
+    AnimaMemory* mem = (AnimaMemory*)calloc(1, sizeof(AnimaMemory));
+    mem->working_capacity = capacity;
+    mem->working = (void**)calloc(mem->working_capacity, sizeof(void*));
+    mem->next_id = json_get_int(json, "next_id");
+    if (mem->next_id <= 0) mem->next_id = 1;
+    pthread_mutex_init(&mem->lock, NULL);
+
+    // Parse episodic memories
+    char* episodic_start = strstr(json, "\"episodic\":");
+    if (episodic_start) {
+        char* array_start = strchr(episodic_start, '[');
+        char* array_end = strchr(episodic_start, ']');
+        if (array_start && array_end) {
+            char* obj = strchr(array_start, '{');
+            while (obj && *obj == '{' && obj < array_end) {
+                char* obj_end = strchr(obj, '}');
+                if (!obj_end || obj_end > array_end) break;
+                size_t obj_len = obj_end - obj + 1;
+                char* obj_str = (char*)malloc(obj_len + 1);
+                strncpy(obj_str, obj, obj_len);
+                obj_str[obj_len] = '\0';
+
+                Experience* exp = (Experience*)malloc(sizeof(Experience));
+                exp->id = json_get_int(obj_str, "id");
+                exp->content = json_get_string(obj_str, "content");
+                exp->importance = json_get_number(obj_str, "importance");
+                exp->timestamp = json_get_int(obj_str, "timestamp");
+                exp->next = mem->episodic_head;
+                mem->episodic_head = exp;
+                mem->episodic_count++;
+
+                free(obj_str);
+                obj = strchr(obj_end, '{');
+            }
+        }
+    }
+
+    // Parse semantic memories
+    char* semantic_start = strstr(json, "\"semantic\":");
+    if (semantic_start) {
+        char* array_start = strchr(semantic_start, '[');
+        char* array_end = strchr(semantic_start, ']');
+        if (array_start && array_end) {
+            char* obj = strchr(array_start, '{');
+            while (obj && *obj == '{' && obj < array_end) {
+                char* obj_end = strchr(obj, '}');
+                if (!obj_end || obj_end > array_end) break;
+                size_t obj_len = obj_end - obj + 1;
+                char* obj_str = (char*)malloc(obj_len + 1);
+                strncpy(obj_str, obj, obj_len);
+                obj_str[obj_len] = '\0';
+
+                Fact* fact = (Fact*)malloc(sizeof(Fact));
+                fact->id = json_get_int(obj_str, "id");
+                fact->content = json_get_string(obj_str, "content");
+                fact->confidence = json_get_number(obj_str, "confidence");
+                fact->source = json_get_string(obj_str, "source");
+                fact->next = mem->semantic_head;
+                mem->semantic_head = fact;
+                mem->semantic_count++;
+
+                free(obj_str);
+                obj = strchr(obj_end, '{');
+            }
+        }
+    }
+
+    // Parse beliefs (using proper bracket matching for nested evidence arrays)
+    char* beliefs_start = strstr(json, "\"beliefs\":");
+    if (beliefs_start) {
+        char* array_start = strchr(beliefs_start, '[');
+        char* array_end = array_start ? find_matching_bracket(array_start) : NULL;
+        if (array_start && array_end) {
+            char* obj = strchr(array_start, '{');
+            while (obj && *obj == '{' && obj < array_end) {
+                char* obj_end = find_matching_brace(obj);
+                if (!obj_end || obj_end > array_end) break;
+                size_t obj_len = obj_end - obj + 1;
+                char* obj_str = (char*)malloc(obj_len + 1);
+                strncpy(obj_str, obj, obj_len);
+                obj_str[obj_len] = '\0';
+
+                AnimaBelief* belief = (AnimaBelief*)malloc(sizeof(AnimaBelief));
+                belief->id = json_get_int(obj_str, "id");
+                belief->content = json_get_string(obj_str, "content");
+                belief->confidence = json_get_number(obj_str, "confidence");
+                belief->evidence_json = NULL;  // Simplified for now
+                belief->next = mem->beliefs_head;
+                mem->beliefs_head = belief;
+                mem->beliefs_count++;
+
+                free(obj_str);
+                obj = strchr(obj_end, '{');
+            }
+        }
+    }
+
+    free(json);
+    return (int64_t)mem;
+}
+
+// Check if anima save file exists
+int64_t anima_exists(int64_t path_ptr) {
+    SxString* path = (SxString*)path_ptr;
+    if (!path) return 0;
+    FILE* f = fopen(path->data, "r");
+    if (f) {
+        fclose(f);
+        return 1;
+    }
+    return 0;
+}
+
+// --------------------------------------------------------------------------
+// 29.7 Tool Registry
 // --------------------------------------------------------------------------
 
 typedef struct Tool {
@@ -15419,6 +16454,2984 @@ void tool_registry_close(int64_t reg_ptr) {
     pthread_mutex_unlock(&reg->lock);
     pthread_mutex_destroy(&reg->lock);
     free(reg);
+}
+
+// --------------------------------------------------------------------------
+// 29.7.1 Tool Result Type
+// --------------------------------------------------------------------------
+
+typedef struct ToolResult {
+    int success;      // 1 = success, 0 = error
+    char* output;     // Result or error message
+    int64_t data;     // Optional structured data (e.g., file content)
+} ToolResult;
+
+int64_t tool_result_new(int success, const char* output) {
+    ToolResult* r = (ToolResult*)malloc(sizeof(ToolResult));
+    r->success = success;
+    r->output = output ? strdup(output) : NULL;
+    r->data = 0;
+    return (int64_t)r;
+}
+
+int64_t tool_result_success(ToolResult* r) {
+    return r ? r->success : 0;
+}
+
+int64_t tool_result_output(int64_t res_ptr) {
+    ToolResult* r = (ToolResult*)res_ptr;
+    if (!r || !r->output) return 0;
+    return (int64_t)intrinsic_string_new(r->output);
+}
+
+void tool_result_free(int64_t res_ptr) {
+    ToolResult* r = (ToolResult*)res_ptr;
+    if (!r) return;
+    if (r->output) free(r->output);
+    free(r);
+}
+
+// --------------------------------------------------------------------------
+// 29.7.2 Built-in Tool Handlers
+// --------------------------------------------------------------------------
+
+// Parse simple JSON args - get string value for key
+static char* tool_args_get_string(const char* args, const char* key) {
+    if (!args || !key) return NULL;
+    char pattern[256];
+    snprintf(pattern, sizeof(pattern), "\"%s\":", key);
+    char* pos = strstr(args, pattern);
+    if (!pos) return NULL;
+    pos += strlen(pattern);
+    while (*pos == ' ' || *pos == '\t') pos++;
+    if (*pos != '"') return NULL;
+    pos++;  // Skip opening quote
+    char* end = strchr(pos, '"');
+    if (!end) return NULL;
+    size_t len = end - pos;
+    char* result = (char*)malloc(len + 1);
+    strncpy(result, pos, len);
+    result[len] = '\0';
+    return result;
+}
+
+// Built-in: file_read
+static int64_t builtin_file_read(const char* args) {
+    char* path = tool_args_get_string(args, "path");
+    if (!path) {
+        return tool_result_new(0, "Error: 'path' argument required");
+    }
+
+    FILE* f = fopen(path, "r");
+    if (!f) {
+        char err[512];
+        snprintf(err, sizeof(err), "Error: Cannot open file '%s'", path);
+        free(path);
+        return tool_result_new(0, err);
+    }
+
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    // Limit to 1MB for safety
+    if (size > 1024 * 1024) {
+        fclose(f);
+        free(path);
+        return tool_result_new(0, "Error: File too large (>1MB)");
+    }
+
+    char* content = (char*)malloc(size + 1);
+    fread(content, 1, size, f);
+    content[size] = '\0';
+    fclose(f);
+    free(path);
+
+    int64_t result = tool_result_new(1, content);
+    free(content);
+    return result;
+}
+
+// Built-in: file_write
+static int64_t builtin_file_write(const char* args) {
+    char* path = tool_args_get_string(args, "path");
+    char* content = tool_args_get_string(args, "content");
+
+    if (!path) {
+        if (content) free(content);
+        return tool_result_new(0, "Error: 'path' argument required");
+    }
+    if (!content) {
+        free(path);
+        return tool_result_new(0, "Error: 'content' argument required");
+    }
+
+    FILE* f = fopen(path, "w");
+    if (!f) {
+        char err[512];
+        snprintf(err, sizeof(err), "Error: Cannot write to file '%s'", path);
+        free(path);
+        free(content);
+        return tool_result_new(0, err);
+    }
+
+    fputs(content, f);
+    fclose(f);
+
+    char msg[512];
+    snprintf(msg, sizeof(msg), "Successfully wrote %zu bytes to '%s'", strlen(content), path);
+    free(path);
+    free(content);
+    return tool_result_new(1, msg);
+}
+
+// Built-in: file_append
+static int64_t builtin_file_append(const char* args) {
+    char* path = tool_args_get_string(args, "path");
+    char* content = tool_args_get_string(args, "content");
+
+    if (!path) {
+        if (content) free(content);
+        return tool_result_new(0, "Error: 'path' argument required");
+    }
+    if (!content) {
+        free(path);
+        return tool_result_new(0, "Error: 'content' argument required");
+    }
+
+    FILE* f = fopen(path, "a");
+    if (!f) {
+        char err[512];
+        snprintf(err, sizeof(err), "Error: Cannot append to file '%s'", path);
+        free(path);
+        free(content);
+        return tool_result_new(0, err);
+    }
+
+    fputs(content, f);
+    fclose(f);
+
+    char msg[512];
+    snprintf(msg, sizeof(msg), "Successfully appended %zu bytes to '%s'", strlen(content), path);
+    free(path);
+    free(content);
+    return tool_result_new(1, msg);
+}
+
+// Built-in: list_dir
+static int64_t builtin_list_dir(const char* args) {
+    char* path = tool_args_get_string(args, "path");
+    if (!path) {
+        path = strdup(".");  // Default to current directory
+    }
+
+    DIR* d = opendir(path);
+    if (!d) {
+        char err[512];
+        snprintf(err, sizeof(err), "Error: Cannot open directory '%s'", path);
+        free(path);
+        return tool_result_new(0, err);
+    }
+
+    // Build result as JSON array
+    char* result = (char*)malloc(32768);
+    strcpy(result, "[");
+    int first = 1;
+
+    struct dirent* ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
+            continue;
+        }
+        if (!first) strcat(result, ", ");
+        strcat(result, "\"");
+        strcat(result, ent->d_name);
+        strcat(result, "\"");
+        first = 0;
+    }
+    strcat(result, "]");
+
+    closedir(d);
+    free(path);
+
+    int64_t res = tool_result_new(1, result);
+    free(result);
+    return res;
+}
+
+// Built-in: shell_exec
+static int64_t builtin_shell_exec(const char* args) {
+    char* command = tool_args_get_string(args, "command");
+    if (!command) {
+        return tool_result_new(0, "Error: 'command' argument required");
+    }
+
+    // Open pipe to command
+    FILE* pipe = popen(command, "r");
+    if (!pipe) {
+        char err[512];
+        snprintf(err, sizeof(err), "Error: Cannot execute command '%s'", command);
+        free(command);
+        return tool_result_new(0, err);
+    }
+
+    // Read output
+    char* output = (char*)malloc(65536);
+    output[0] = '\0';
+    size_t total = 0;
+    char buf[4096];
+
+    while (fgets(buf, sizeof(buf), pipe)) {
+        size_t len = strlen(buf);
+        if (total + len < 65536 - 1) {
+            strcat(output, buf);
+            total += len;
+        }
+    }
+
+    int status = pclose(pipe);
+    free(command);
+
+    int success = (status == 0) ? 1 : 0;
+    int64_t res = tool_result_new(success, output);
+    free(output);
+    return res;
+}
+
+// Built-in: file_exists
+static int64_t builtin_file_exists(const char* args) {
+    char* path = tool_args_get_string(args, "path");
+    if (!path) {
+        return tool_result_new(0, "Error: 'path' argument required");
+    }
+
+    FILE* f = fopen(path, "r");
+    if (f) {
+        fclose(f);
+        free(path);
+        return tool_result_new(1, "true");
+    }
+    free(path);
+    return tool_result_new(1, "false");
+}
+
+// Built-in: file_delete
+static int64_t builtin_file_delete(const char* args) {
+    char* path = tool_args_get_string(args, "path");
+    if (!path) {
+        return tool_result_new(0, "Error: 'path' argument required");
+    }
+
+    if (remove(path) == 0) {
+        char msg[512];
+        snprintf(msg, sizeof(msg), "Successfully deleted '%s'", path);
+        free(path);
+        return tool_result_new(1, msg);
+    } else {
+        char err[512];
+        snprintf(err, sizeof(err), "Error: Cannot delete '%s'", path);
+        free(path);
+        return tool_result_new(0, err);
+    }
+}
+
+// --------------------------------------------------------------------------
+// 29.7.3 Tool Execution with Handlers
+// --------------------------------------------------------------------------
+
+// Built-in tool handler type
+typedef int64_t (*BuiltinToolHandler)(const char* args);
+
+// Struct mapping tool names to handlers
+typedef struct BuiltinTool {
+    const char* name;
+    const char* description;
+    const char* schema;
+    BuiltinToolHandler handler;
+} BuiltinTool;
+
+// Table of built-in tools
+static BuiltinTool builtin_tools[] = {
+    {
+        "file_read",
+        "Read contents of a file",
+        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"File path to read\"}},\"required\":[\"path\"]}",
+        builtin_file_read
+    },
+    {
+        "file_write",
+        "Write content to a file (overwrites)",
+        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}",
+        builtin_file_write
+    },
+    {
+        "file_append",
+        "Append content to a file",
+        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}",
+        builtin_file_append
+    },
+    {
+        "file_exists",
+        "Check if a file exists",
+        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}",
+        builtin_file_exists
+    },
+    {
+        "file_delete",
+        "Delete a file",
+        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}",
+        builtin_file_delete
+    },
+    {
+        "list_dir",
+        "List contents of a directory",
+        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Directory path (default: current)\"}}}",
+        builtin_list_dir
+    },
+    {
+        "shell_exec",
+        "Execute a shell command",
+        "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}",
+        builtin_shell_exec
+    },
+    {NULL, NULL, NULL, NULL}  // Terminator
+};
+
+// Find built-in handler
+static BuiltinToolHandler find_builtin_handler(const char* name) {
+    for (int i = 0; builtin_tools[i].name != NULL; i++) {
+        if (strcmp(builtin_tools[i].name, name) == 0) {
+            return builtin_tools[i].handler;
+        }
+    }
+    return NULL;
+}
+
+// Execute tool with real handlers
+int64_t tool_execute(int64_t reg_ptr, int64_t name_ptr, int64_t args_ptr) {
+    ToolRegistry* reg = (ToolRegistry*)reg_ptr;
+    SxString* name = (SxString*)name_ptr;
+    SxString* args = (SxString*)args_ptr;
+
+    if (!name) {
+        return tool_result_new(0, "Error: Tool name required");
+    }
+
+    // First check built-in handlers
+    BuiltinToolHandler handler = find_builtin_handler(name->data);
+    if (handler) {
+        return handler(args ? args->data : "{}");
+    }
+
+    // Check registry for custom tools
+    if (reg) {
+        pthread_mutex_lock(&reg->lock);
+        for (int i = 0; i < reg->count; i++) {
+            if (strcmp(reg->tools[i]->name, name->data) == 0) {
+                Tool* tool = reg->tools[i];
+                pthread_mutex_unlock(&reg->lock);
+                if (tool->handler) {
+                    return tool->handler(args_ptr);
+                }
+                // Tool exists but has no handler
+                char msg[256];
+                snprintf(msg, sizeof(msg), "Tool '%s' registered but has no handler", name->data);
+                return tool_result_new(0, msg);
+            }
+        }
+        pthread_mutex_unlock(&reg->lock);
+    }
+
+    char err[256];
+    snprintf(err, sizeof(err), "Error: Unknown tool '%s'", name->data);
+    return tool_result_new(0, err);
+}
+
+// Register all built-in tools into a registry
+int64_t tool_register_builtins(int64_t reg_ptr) {
+    ToolRegistry* reg = (ToolRegistry*)reg_ptr;
+    if (!reg) return 0;
+
+    int count = 0;
+    for (int i = 0; builtin_tools[i].name != NULL; i++) {
+        SxString* name = intrinsic_string_new(builtin_tools[i].name);
+        SxString* desc = intrinsic_string_new(builtin_tools[i].description);
+        SxString* schema = intrinsic_string_new(builtin_tools[i].schema);
+        tool_register(reg_ptr, (int64_t)name, (int64_t)desc, (int64_t)schema);
+        count++;
+    }
+    return count;
+}
+
+// Get tool schema (for LLM consumption)
+int64_t tool_get_schema(int64_t reg_ptr, int64_t name_ptr) {
+    SxString* name = (SxString*)name_ptr;
+    if (!name) return 0;
+
+    // Check built-ins first
+    for (int i = 0; builtin_tools[i].name != NULL; i++) {
+        if (strcmp(builtin_tools[i].name, name->data) == 0) {
+            return (int64_t)intrinsic_string_new(builtin_tools[i].schema);
+        }
+    }
+
+    // Check registry
+    ToolRegistry* reg = (ToolRegistry*)reg_ptr;
+    if (reg) {
+        pthread_mutex_lock(&reg->lock);
+        for (int i = 0; i < reg->count; i++) {
+            if (strcmp(reg->tools[i]->name, name->data) == 0) {
+                char* schema = reg->tools[i]->schema_json;
+                pthread_mutex_unlock(&reg->lock);
+                return schema ? (int64_t)intrinsic_string_new(schema) : 0;
+            }
+        }
+        pthread_mutex_unlock(&reg->lock);
+    }
+
+    return 0;
+}
+
+// Get all tool schemas as JSON array (for LLM consumption)
+int64_t tool_get_all_schemas(int64_t reg_ptr) {
+    char* result = (char*)malloc(65536);
+    strcpy(result, "[");
+    int first = 1;
+
+    // Add built-in tools
+    for (int i = 0; builtin_tools[i].name != NULL; i++) {
+        if (!first) strcat(result, ",");
+        strcat(result, "\n  {\"name\":\"");
+        strcat(result, builtin_tools[i].name);
+        strcat(result, "\",\"description\":\"");
+        strcat(result, builtin_tools[i].description);
+        strcat(result, "\",\"parameters\":");
+        strcat(result, builtin_tools[i].schema);
+        strcat(result, "}");
+        first = 0;
+    }
+
+    // Add registry tools
+    ToolRegistry* reg = (ToolRegistry*)reg_ptr;
+    if (reg) {
+        pthread_mutex_lock(&reg->lock);
+        for (int i = 0; i < reg->count; i++) {
+            Tool* t = reg->tools[i];
+            // Skip if it's a built-in (already added)
+            if (find_builtin_handler(t->name)) continue;
+
+            if (!first) strcat(result, ",");
+            strcat(result, "\n  {\"name\":\"");
+            strcat(result, t->name);
+            strcat(result, "\",\"description\":\"");
+            strcat(result, t->description);
+            strcat(result, "\",\"parameters\":");
+            strcat(result, t->schema_json ? t->schema_json : "{}");
+            strcat(result, "}");
+            first = 0;
+        }
+        pthread_mutex_unlock(&reg->lock);
+    }
+
+    strcat(result, "\n]");
+    int64_t res = (int64_t)intrinsic_string_new(result);
+    free(result);
+    return res;
+}
+
+// ============================================================================
+// Phase 4: Multi-Actor Orchestration
+// ============================================================================
+
+// --------------------------------------------------------------------------
+// 4.1 AI-Powered Actor Definition
+// --------------------------------------------------------------------------
+
+typedef struct AIActorConfig {
+    char* name;
+    char* role;             // Actor's role/purpose
+    int64_t tools;          // ToolRegistry pointer
+    int64_t memory;         // AnimaMemory pointer
+    int64_t specialist;     // Specialist configuration
+    int timeout_ms;         // Timeout for operations
+    int max_retries;        // Retry count for failures
+} AIActorConfig;
+
+typedef struct AIActor {
+    int64_t id;
+    AIActorConfig config;
+    int64_t mailbox;        // Message queue
+    int64_t history;        // Conversation history (Vec of messages)
+    int status;             // 0=idle, 1=busy, 2=error, 3=stopped
+    pthread_mutex_t lock;
+    pthread_t thread;
+    int64_t parent;         // Parent actor for supervision
+    int64_t last_heartbeat;
+} AIActor;
+
+typedef struct AIActorSystem {
+    AIActor** actors;
+    int count;
+    int capacity;
+    pthread_mutex_t lock;
+    int next_id;
+} AIActorSystem;
+
+// Global actor system
+static AIActorSystem* global_ai_system = NULL;
+
+// Initialize actor system
+int64_t ai_actor_system_new(void) {
+    AIActorSystem* sys = (AIActorSystem*)calloc(1, sizeof(AIActorSystem));
+    sys->capacity = 64;
+    sys->actors = (AIActor**)calloc(sys->capacity, sizeof(AIActor*));
+    sys->count = 0;
+    sys->next_id = 1;
+    pthread_mutex_init(&sys->lock, NULL);
+    global_ai_system = sys;
+    return (int64_t)sys;
+}
+
+// Create AI actor configuration
+int64_t ai_actor_config_new(int64_t name_ptr, int64_t role_ptr) {
+    AIActorConfig* config = (AIActorConfig*)calloc(1, sizeof(AIActorConfig));
+    SxString* name = (SxString*)name_ptr;
+    SxString* role = (SxString*)role_ptr;
+
+    config->name = name ? strdup(name->data) : strdup("unnamed");
+    config->role = role ? strdup(role->data) : strdup("general");
+    config->timeout_ms = 30000;  // 30 second default
+    config->max_retries = 3;
+
+    return (int64_t)config;
+}
+
+// Set tools for actor config
+void ai_actor_config_set_tools(int64_t config_ptr, int64_t tools_ptr) {
+    AIActorConfig* config = (AIActorConfig*)config_ptr;
+    if (config) config->tools = tools_ptr;
+}
+
+// Set memory for actor config
+void ai_actor_config_set_memory(int64_t config_ptr, int64_t memory_ptr) {
+    AIActorConfig* config = (AIActorConfig*)config_ptr;
+    if (config) config->memory = memory_ptr;
+}
+
+// Set specialist for actor config
+void ai_actor_config_set_specialist(int64_t config_ptr, int64_t specialist_ptr) {
+    AIActorConfig* config = (AIActorConfig*)config_ptr;
+    if (config) config->specialist = specialist_ptr;
+}
+
+// Set timeout
+void ai_actor_config_set_timeout(int64_t config_ptr, int64_t timeout_ms) {
+    AIActorConfig* config = (AIActorConfig*)config_ptr;
+    if (config) config->timeout_ms = (int)timeout_ms;
+}
+
+// Spawn AI actor
+int64_t ai_actor_spawn(int64_t sys_ptr, int64_t config_ptr) {
+    AIActorSystem* sys = (AIActorSystem*)sys_ptr;
+    AIActorConfig* config = (AIActorConfig*)config_ptr;
+    if (!sys || !config) return 0;
+
+    pthread_mutex_lock(&sys->lock);
+
+    if (sys->count >= sys->capacity) {
+        sys->capacity *= 2;
+        sys->actors = (AIActor**)realloc(sys->actors, sys->capacity * sizeof(AIActor*));
+    }
+
+    AIActor* actor = (AIActor*)calloc(1, sizeof(AIActor));
+    actor->id = sys->next_id++;
+    actor->config = *config;
+    actor->config.name = strdup(config->name);
+    actor->config.role = strdup(config->role);
+    actor->history = (int64_t)intrinsic_vec_new();
+    actor->status = 0;  // idle
+    actor->last_heartbeat = time(NULL);
+    pthread_mutex_init(&actor->lock, NULL);
+
+    sys->actors[sys->count++] = actor;
+    int64_t id = actor->id;
+
+    pthread_mutex_unlock(&sys->lock);
+    return id;
+}
+
+// Get actor by ID
+static AIActor* get_ai_actor(AIActorSystem* sys, int64_t id) {
+    if (!sys) return NULL;
+    for (int i = 0; i < sys->count; i++) {
+        if (sys->actors[i] && sys->actors[i]->id == id) {
+            return sys->actors[i];
+        }
+    }
+    return NULL;
+}
+
+// Get actor status
+int64_t ai_actor_status(int64_t sys_ptr, int64_t actor_id) {
+    AIActorSystem* sys = (AIActorSystem*)sys_ptr;
+    AIActor* actor = get_ai_actor(sys, actor_id);
+    return actor ? actor->status : -1;
+}
+
+// Get actor name
+int64_t ai_actor_name(int64_t sys_ptr, int64_t actor_id) {
+    AIActorSystem* sys = (AIActorSystem*)sys_ptr;
+    AIActor* actor = get_ai_actor(sys, actor_id);
+    if (!actor) return 0;
+    return (int64_t)intrinsic_string_new(actor->config.name);
+}
+
+// Stop actor
+void ai_actor_stop(int64_t sys_ptr, int64_t actor_id) {
+    AIActorSystem* sys = (AIActorSystem*)sys_ptr;
+    AIActor* actor = get_ai_actor(sys, actor_id);
+    if (actor) {
+        pthread_mutex_lock(&actor->lock);
+        actor->status = 3;  // stopped
+        pthread_mutex_unlock(&actor->lock);
+    }
+}
+
+// --------------------------------------------------------------------------
+// 4.2 Conversation History
+// --------------------------------------------------------------------------
+
+typedef struct ConversationMessage {
+    char* role;     // "user", "assistant", "system"
+    char* content;
+    int64_t timestamp;
+} ConversationMessage;
+
+// Add message to actor's history
+int64_t ai_actor_add_message(int64_t sys_ptr, int64_t actor_id, int64_t role_ptr, int64_t content_ptr) {
+    AIActorSystem* sys = (AIActorSystem*)sys_ptr;
+    AIActor* actor = get_ai_actor(sys, actor_id);
+    if (!actor) return 0;
+
+    SxString* role = (SxString*)role_ptr;
+    SxString* content = (SxString*)content_ptr;
+
+    ConversationMessage* msg = (ConversationMessage*)malloc(sizeof(ConversationMessage));
+    msg->role = role ? strdup(role->data) : strdup("user");
+    msg->content = content ? strdup(content->data) : strdup("");
+    msg->timestamp = time(NULL);
+
+    pthread_mutex_lock(&actor->lock);
+    intrinsic_vec_push((SxVec*)actor->history, (void*)msg);
+    pthread_mutex_unlock(&actor->lock);
+
+    return 1;
+}
+
+// Get conversation history length
+int64_t ai_actor_history_len(int64_t sys_ptr, int64_t actor_id) {
+    AIActorSystem* sys = (AIActorSystem*)sys_ptr;
+    AIActor* actor = get_ai_actor(sys, actor_id);
+    if (!actor) return 0;
+    return intrinsic_vec_len((SxVec*)actor->history);
+}
+
+// Get message from history
+int64_t ai_actor_get_message(int64_t sys_ptr, int64_t actor_id, int64_t index) {
+    AIActorSystem* sys = (AIActorSystem*)sys_ptr;
+    AIActor* actor = get_ai_actor(sys, actor_id);
+    if (!actor) return 0;
+
+    ConversationMessage* msg = (ConversationMessage*)intrinsic_vec_get((SxVec*)actor->history, index);
+    if (!msg) return 0;
+
+    // Return as JSON
+    char* json = (char*)malloc(strlen(msg->content) + 256);
+    sprintf(json, "{\"role\":\"%s\",\"content\":\"%s\",\"timestamp\":%ld}",
+            msg->role, msg->content, (long)msg->timestamp);
+    int64_t result = (int64_t)intrinsic_string_new(json);
+    free(json);
+    return result;
+}
+
+// Clear history
+void ai_actor_clear_history(int64_t sys_ptr, int64_t actor_id) {
+    AIActorSystem* sys = (AIActorSystem*)sys_ptr;
+    AIActor* actor = get_ai_actor(sys, actor_id);
+    if (!actor) return;
+
+    pthread_mutex_lock(&actor->lock);
+    SxVec* history = (SxVec*)actor->history;
+    for (size_t i = 0; i < history->len; i++) {
+        ConversationMessage* msg = (ConversationMessage*)history->items[i];
+        if (msg) {
+            free(msg->role);
+            free(msg->content);
+            free(msg);
+        }
+    }
+    history->len = 0;
+    pthread_mutex_unlock(&actor->lock);
+}
+
+// --------------------------------------------------------------------------
+// 4.3 Communication Patterns: Pipeline
+// --------------------------------------------------------------------------
+
+typedef struct PipelineStage {
+    int64_t actor_id;
+    char* transform_fn;     // Function name to apply
+    struct PipelineStage* next;
+} PipelineStage;
+
+typedef struct Pipeline {
+    char* name;
+    PipelineStage* head;
+    PipelineStage* tail;
+    int stage_count;
+    pthread_mutex_t lock;
+} Pipeline;
+
+// Create pipeline
+int64_t pipeline_new(int64_t name_ptr) {
+    Pipeline* p = (Pipeline*)calloc(1, sizeof(Pipeline));
+    SxString* name = (SxString*)name_ptr;
+    p->name = name ? strdup(name->data) : strdup("pipeline");
+    pthread_mutex_init(&p->lock, NULL);
+    return (int64_t)p;
+}
+
+// Add stage to pipeline
+int64_t pipeline_add_stage(int64_t pipeline_ptr, int64_t actor_id, int64_t transform_ptr) {
+    Pipeline* p = (Pipeline*)pipeline_ptr;
+    if (!p) return 0;
+
+    SxString* transform = (SxString*)transform_ptr;
+
+    PipelineStage* stage = (PipelineStage*)calloc(1, sizeof(PipelineStage));
+    stage->actor_id = actor_id;
+    stage->transform_fn = transform ? strdup(transform->data) : NULL;
+
+    pthread_mutex_lock(&p->lock);
+    if (!p->head) {
+        p->head = p->tail = stage;
+    } else {
+        p->tail->next = stage;
+        p->tail = stage;
+    }
+    p->stage_count++;
+    pthread_mutex_unlock(&p->lock);
+
+    return p->stage_count;
+}
+
+// Execute pipeline
+int64_t pipeline_execute(int64_t sys_ptr, int64_t pipeline_ptr, int64_t input_ptr) {
+    AIActorSystem* sys = (AIActorSystem*)sys_ptr;
+    Pipeline* p = (Pipeline*)pipeline_ptr;
+    SxString* input = (SxString*)input_ptr;
+
+    if (!sys || !p || !input) return 0;
+
+    char* current = strdup(input->data);
+
+    pthread_mutex_lock(&p->lock);
+    PipelineStage* stage = p->head;
+
+    while (stage) {
+        AIActor* actor = get_ai_actor(sys, stage->actor_id);
+        if (!actor) {
+            pthread_mutex_unlock(&p->lock);
+            free(current);
+            return (int64_t)intrinsic_string_new("Error: Actor not found in pipeline");
+        }
+
+        // Add input as message to actor history
+        ai_actor_add_message((int64_t)sys, stage->actor_id,
+                            (int64_t)intrinsic_string_new("user"),
+                            (int64_t)intrinsic_string_new(current));
+
+        // For now, just pass through (real impl would call specialist)
+        // In full implementation: result = specialist_chat(actor->config.specialist, current)
+        char* result = (char*)malloc(strlen(current) + 100);
+        sprintf(result, "[%s processed: %s]", actor->config.name, current);
+
+        free(current);
+        current = result;
+
+        stage = stage->next;
+    }
+
+    pthread_mutex_unlock(&p->lock);
+    int64_t output = (int64_t)intrinsic_string_new(current);
+    free(current);
+    return output;
+}
+
+// Get pipeline stage count
+int64_t pipeline_stage_count(int64_t pipeline_ptr) {
+    Pipeline* p = (Pipeline*)pipeline_ptr;
+    return p ? p->stage_count : 0;
+}
+
+// Close pipeline
+void pipeline_close(int64_t pipeline_ptr) {
+    Pipeline* p = (Pipeline*)pipeline_ptr;
+    if (!p) return;
+
+    PipelineStage* stage = p->head;
+    while (stage) {
+        PipelineStage* next = stage->next;
+        if (stage->transform_fn) free(stage->transform_fn);
+        free(stage);
+        stage = next;
+    }
+
+    free(p->name);
+    pthread_mutex_destroy(&p->lock);
+    free(p);
+}
+
+// --------------------------------------------------------------------------
+// 4.4 Communication Patterns: Parallel (Fan-out)
+// --------------------------------------------------------------------------
+
+typedef struct ParallelResult {
+    int64_t actor_id;
+    char* result;
+    int success;
+    double duration_ms;
+} ParallelResult;
+
+typedef struct ParallelGroup {
+    char* name;
+    int64_t* actor_ids;
+    int actor_count;
+    int capacity;
+    pthread_mutex_t lock;
+} ParallelGroup;
+
+// Create parallel group
+int64_t parallel_group_new(int64_t name_ptr) {
+    ParallelGroup* g = (ParallelGroup*)calloc(1, sizeof(ParallelGroup));
+    SxString* name = (SxString*)name_ptr;
+    g->name = name ? strdup(name->data) : strdup("parallel");
+    g->capacity = 16;
+    g->actor_ids = (int64_t*)calloc(g->capacity, sizeof(int64_t));
+    pthread_mutex_init(&g->lock, NULL);
+    return (int64_t)g;
+}
+
+// Add actor to parallel group
+int64_t parallel_group_add(int64_t group_ptr, int64_t actor_id) {
+    ParallelGroup* g = (ParallelGroup*)group_ptr;
+    if (!g) return 0;
+
+    pthread_mutex_lock(&g->lock);
+    if (g->actor_count >= g->capacity) {
+        g->capacity *= 2;
+        g->actor_ids = (int64_t*)realloc(g->actor_ids, g->capacity * sizeof(int64_t));
+    }
+    g->actor_ids[g->actor_count++] = actor_id;
+    pthread_mutex_unlock(&g->lock);
+
+    return g->actor_count;
+}
+
+// Execute parallel group (fan-out same input to all actors)
+int64_t parallel_group_execute(int64_t sys_ptr, int64_t group_ptr, int64_t input_ptr) {
+    AIActorSystem* sys = (AIActorSystem*)sys_ptr;
+    ParallelGroup* g = (ParallelGroup*)group_ptr;
+    SxString* input = (SxString*)input_ptr;
+
+    if (!sys || !g || !input) return 0;
+
+    // Collect results as JSON array
+    char* results = (char*)malloc(65536);
+    strcpy(results, "[");
+    int first = 1;
+
+    pthread_mutex_lock(&g->lock);
+    for (int i = 0; i < g->actor_count; i++) {
+        AIActor* actor = get_ai_actor(sys, g->actor_ids[i]);
+        if (!actor) continue;
+
+        // Add message to history
+        ai_actor_add_message((int64_t)sys, g->actor_ids[i],
+                            (int64_t)intrinsic_string_new("user"),
+                            (int64_t)intrinsic_string_new(input->data));
+
+        // Mock result (real impl would call specialist in parallel threads)
+        if (!first) strcat(results, ",");
+        char entry[1024];
+        snprintf(entry, sizeof(entry),
+                "\n  {\"actor\":\"%s\",\"actor_id\":%ld,\"result\":\"[processed by %s]\"}",
+                actor->config.name, (long)g->actor_ids[i], actor->config.name);
+        strcat(results, entry);
+        first = 0;
+    }
+    pthread_mutex_unlock(&g->lock);
+
+    strcat(results, "\n]");
+    int64_t output = (int64_t)intrinsic_string_new(results);
+    free(results);
+    return output;
+}
+
+// Get group size
+int64_t parallel_group_size(int64_t group_ptr) {
+    ParallelGroup* g = (ParallelGroup*)group_ptr;
+    return g ? g->actor_count : 0;
+}
+
+// Close parallel group
+void parallel_group_close(int64_t group_ptr) {
+    ParallelGroup* g = (ParallelGroup*)group_ptr;
+    if (!g) return;
+    free(g->name);
+    free(g->actor_ids);
+    pthread_mutex_destroy(&g->lock);
+    free(g);
+}
+
+// --------------------------------------------------------------------------
+// 4.5 Communication Patterns: Consensus (Voting)
+// --------------------------------------------------------------------------
+
+typedef struct ConsensusGroup {
+    char* name;
+    int64_t* actor_ids;
+    int actor_count;
+    int capacity;
+    double threshold;       // Consensus threshold (0.5 = majority)
+    pthread_mutex_t lock;
+} ConsensusGroup;
+
+// Create consensus group (threshold as percentage 0-100, e.g., 50 = 50%)
+int64_t consensus_group_new(int64_t name_ptr, int64_t threshold_pct) {
+    ConsensusGroup* g = (ConsensusGroup*)calloc(1, sizeof(ConsensusGroup));
+    SxString* name = (SxString*)name_ptr;
+    g->name = name ? strdup(name->data) : strdup("consensus");
+    g->threshold = threshold_pct > 0 ? (double)threshold_pct / 100.0 : 0.5;
+    g->capacity = 16;
+    g->actor_ids = (int64_t*)calloc(g->capacity, sizeof(int64_t));
+    pthread_mutex_init(&g->lock, NULL);
+    return (int64_t)g;
+}
+
+// Add actor to consensus group
+int64_t consensus_group_add(int64_t group_ptr, int64_t actor_id) {
+    ConsensusGroup* g = (ConsensusGroup*)group_ptr;
+    if (!g) return 0;
+
+    pthread_mutex_lock(&g->lock);
+    if (g->actor_count >= g->capacity) {
+        g->capacity *= 2;
+        g->actor_ids = (int64_t*)realloc(g->actor_ids, g->capacity * sizeof(int64_t));
+    }
+    g->actor_ids[g->actor_count++] = actor_id;
+    pthread_mutex_unlock(&g->lock);
+
+    return g->actor_count;
+}
+
+// Execute consensus vote
+int64_t consensus_group_vote(int64_t sys_ptr, int64_t group_ptr, int64_t question_ptr) {
+    AIActorSystem* sys = (AIActorSystem*)sys_ptr;
+    ConsensusGroup* g = (ConsensusGroup*)group_ptr;
+    SxString* question = (SxString*)question_ptr;
+
+    if (!sys || !g || !question) return 0;
+
+    // Collect votes (mock implementation - real would call specialists)
+    int yes_votes = 0;
+    int no_votes = 0;
+
+    pthread_mutex_lock(&g->lock);
+    for (int i = 0; i < g->actor_count; i++) {
+        AIActor* actor = get_ai_actor(sys, g->actor_ids[i]);
+        if (!actor) continue;
+
+        // Mock: alternate yes/no based on actor id
+        if (g->actor_ids[i] % 2 == 0) {
+            yes_votes++;
+        } else {
+            no_votes++;
+        }
+    }
+    pthread_mutex_unlock(&g->lock);
+
+    int total = yes_votes + no_votes;
+    double yes_ratio = total > 0 ? (double)yes_votes / total : 0;
+    int consensus_reached = yes_ratio >= g->threshold;
+
+    char* result = (char*)malloc(512);
+    snprintf(result, 512,
+            "{\"question\":\"%s\",\"yes_votes\":%d,\"no_votes\":%d,\"threshold\":%.2f,"
+            "\"yes_ratio\":%.2f,\"consensus\":%s,\"decision\":\"%s\"}",
+            question->data, yes_votes, no_votes, g->threshold,
+            yes_ratio, consensus_reached ? "true" : "false",
+            consensus_reached ? "approved" : "rejected");
+
+    int64_t output = (int64_t)intrinsic_string_new(result);
+    free(result);
+    return output;
+}
+
+// Close consensus group
+void consensus_group_close(int64_t group_ptr) {
+    ConsensusGroup* g = (ConsensusGroup*)group_ptr;
+    if (!g) return;
+    free(g->name);
+    free(g->actor_ids);
+    pthread_mutex_destroy(&g->lock);
+    free(g);
+}
+
+// --------------------------------------------------------------------------
+// 4.6 AI Supervisor Pattern (for AI actor orchestration)
+// --------------------------------------------------------------------------
+
+typedef enum AISupervisorStrategy {
+    AI_SUPERVISOR_ONE_FOR_ONE = 0,    // Restart only failed child
+    AI_SUPERVISOR_ONE_FOR_ALL = 1,    // Restart all children on any failure
+    AI_SUPERVISOR_REST_FOR_ONE = 2    // Restart failed and all started after it
+} AISupervisorStrategy;
+
+typedef struct AISupervisor {
+    int64_t id;
+    char* name;
+    int64_t* child_ids;
+    int child_count;
+    int capacity;
+    AISupervisorStrategy strategy;
+    int max_restarts;
+    int restart_window_ms;
+    int restart_count;
+    int64_t last_restart_time;
+    pthread_mutex_t lock;
+} AISupervisor;
+
+// Create AI supervisor
+int64_t ai_supervisor_new(int64_t name_ptr, int64_t strategy) {
+    AISupervisor* s = (AISupervisor*)calloc(1, sizeof(AISupervisor));
+    SxString* name = (SxString*)name_ptr;
+    s->name = name ? strdup(name->data) : strdup("supervisor");
+    s->strategy = (AISupervisorStrategy)strategy;
+    s->max_restarts = 3;
+    s->restart_window_ms = 5000;
+    s->capacity = 16;
+    s->child_ids = (int64_t*)calloc(s->capacity, sizeof(int64_t));
+    pthread_mutex_init(&s->lock, NULL);
+    return (int64_t)s;
+}
+
+// Add child to AI supervisor
+int64_t ai_supervisor_add_child(int64_t sup_ptr, int64_t actor_id) {
+    AISupervisor* s = (AISupervisor*)sup_ptr;
+    if (!s) return 0;
+
+    pthread_mutex_lock(&s->lock);
+    if (s->child_count >= s->capacity) {
+        s->capacity *= 2;
+        s->child_ids = (int64_t*)realloc(s->child_ids, s->capacity * sizeof(int64_t));
+    }
+    s->child_ids[s->child_count++] = actor_id;
+    pthread_mutex_unlock(&s->lock);
+
+    return s->child_count;
+}
+
+// Check health of all children
+int64_t ai_supervisor_check_health(int64_t sys_ptr, int64_t sup_ptr) {
+    AIActorSystem* sys = (AIActorSystem*)sys_ptr;
+    AISupervisor* s = (AISupervisor*)sup_ptr;
+    if (!sys || !s) return 0;
+
+    int healthy = 0;
+    int unhealthy = 0;
+
+    pthread_mutex_lock(&s->lock);
+    for (int i = 0; i < s->child_count; i++) {
+        AIActor* actor = get_ai_actor(sys, s->child_ids[i]);
+        if (!actor || actor->status == 2 || actor->status == 3) {
+            unhealthy++;
+        } else {
+            healthy++;
+        }
+    }
+    pthread_mutex_unlock(&s->lock);
+
+    char* result = (char*)malloc(256);
+    snprintf(result, 256, "{\"healthy\":%d,\"unhealthy\":%d,\"total\":%d}",
+            healthy, unhealthy, healthy + unhealthy);
+    int64_t output = (int64_t)intrinsic_string_new(result);
+    free(result);
+    return output;
+}
+
+// Get child count
+int64_t ai_supervisor_child_count(int64_t sup_ptr) {
+    AISupervisor* s = (AISupervisor*)sup_ptr;
+    return s ? s->child_count : 0;
+}
+
+// Close AI supervisor
+void ai_supervisor_close(int64_t sup_ptr) {
+    AISupervisor* s = (AISupervisor*)sup_ptr;
+    if (!s) return;
+    free(s->name);
+    free(s->child_ids);
+    pthread_mutex_destroy(&s->lock);
+    free(s);
+}
+
+// --------------------------------------------------------------------------
+// 4.7 Shared Memory Between Actors
+// --------------------------------------------------------------------------
+
+typedef struct SharedMemory {
+    char* name;
+    int64_t memory;         // AnimaMemory pointer
+    int64_t* reader_ids;    // Actors with read access
+    int64_t* writer_ids;    // Actors with write access
+    int reader_count;
+    int writer_count;
+    int capacity;
+    pthread_rwlock_t rwlock;
+} SharedMemory;
+
+// Create shared memory
+int64_t shared_memory_new(int64_t name_ptr, int64_t capacity) {
+    SharedMemory* sm = (SharedMemory*)calloc(1, sizeof(SharedMemory));
+    SxString* name = (SxString*)name_ptr;
+    sm->name = name ? strdup(name->data) : strdup("shared");
+    sm->memory = anima_memory_new(capacity);
+    sm->capacity = 16;
+    sm->reader_ids = (int64_t*)calloc(sm->capacity, sizeof(int64_t));
+    sm->writer_ids = (int64_t*)calloc(sm->capacity, sizeof(int64_t));
+    pthread_rwlock_init(&sm->rwlock, NULL);
+    return (int64_t)sm;
+}
+
+// Grant read access
+int64_t shared_memory_grant_read(int64_t sm_ptr, int64_t actor_id) {
+    SharedMemory* sm = (SharedMemory*)sm_ptr;
+    if (!sm) return 0;
+
+    pthread_rwlock_wrlock(&sm->rwlock);
+    if (sm->reader_count >= sm->capacity) {
+        sm->capacity *= 2;
+        sm->reader_ids = (int64_t*)realloc(sm->reader_ids, sm->capacity * sizeof(int64_t));
+        sm->writer_ids = (int64_t*)realloc(sm->writer_ids, sm->capacity * sizeof(int64_t));
+    }
+    sm->reader_ids[sm->reader_count++] = actor_id;
+    pthread_rwlock_unlock(&sm->rwlock);
+
+    return 1;
+}
+
+// Grant write access
+int64_t shared_memory_grant_write(int64_t sm_ptr, int64_t actor_id) {
+    SharedMemory* sm = (SharedMemory*)sm_ptr;
+    if (!sm) return 0;
+
+    pthread_rwlock_wrlock(&sm->rwlock);
+    if (sm->writer_count >= sm->capacity) {
+        sm->capacity *= 2;
+        sm->reader_ids = (int64_t*)realloc(sm->reader_ids, sm->capacity * sizeof(int64_t));
+        sm->writer_ids = (int64_t*)realloc(sm->writer_ids, sm->capacity * sizeof(int64_t));
+    }
+    sm->writer_ids[sm->writer_count++] = actor_id;
+    pthread_rwlock_unlock(&sm->rwlock);
+
+    return 1;
+}
+
+// Check if actor has read access
+static int has_read_access(SharedMemory* sm, int64_t actor_id) {
+    for (int i = 0; i < sm->reader_count; i++) {
+        if (sm->reader_ids[i] == actor_id) return 1;
+    }
+    for (int i = 0; i < sm->writer_count; i++) {
+        if (sm->writer_ids[i] == actor_id) return 1;  // Writers can read
+    }
+    return 0;
+}
+
+// Check if actor has write access
+static int has_write_access(SharedMemory* sm, int64_t actor_id) {
+    for (int i = 0; i < sm->writer_count; i++) {
+        if (sm->writer_ids[i] == actor_id) return 1;
+    }
+    return 0;
+}
+
+// Read from shared memory (with access check)
+int64_t shared_memory_recall(int64_t sm_ptr, int64_t actor_id, int64_t goal_ptr, int64_t context_ptr) {
+    SharedMemory* sm = (SharedMemory*)sm_ptr;
+    if (!sm) return 0;
+
+    pthread_rwlock_rdlock(&sm->rwlock);
+    if (!has_read_access(sm, actor_id)) {
+        pthread_rwlock_unlock(&sm->rwlock);
+        return (int64_t)intrinsic_string_new("Error: No read access");
+    }
+
+    int64_t result = anima_recall_for_goal(sm->memory, goal_ptr, context_ptr, 10);
+    pthread_rwlock_unlock(&sm->rwlock);
+    return result;
+}
+
+// Write to shared memory (with access check)
+int64_t shared_memory_remember(int64_t sm_ptr, int64_t actor_id, int64_t content_ptr, double importance) {
+    SharedMemory* sm = (SharedMemory*)sm_ptr;
+    if (!sm) return 0;
+
+    pthread_rwlock_wrlock(&sm->rwlock);
+    if (!has_write_access(sm, actor_id)) {
+        pthread_rwlock_unlock(&sm->rwlock);
+        return 0;
+    }
+
+    int64_t result = anima_remember(sm->memory, content_ptr, importance);
+    pthread_rwlock_unlock(&sm->rwlock);
+    return result;
+}
+
+// Get underlying memory
+int64_t shared_memory_get_memory(int64_t sm_ptr) {
+    SharedMemory* sm = (SharedMemory*)sm_ptr;
+    return sm ? sm->memory : 0;
+}
+
+// Close shared memory
+void shared_memory_close(int64_t sm_ptr) {
+    SharedMemory* sm = (SharedMemory*)sm_ptr;
+    if (!sm) return;
+
+    free(sm->name);
+    free(sm->reader_ids);
+    free(sm->writer_ids);
+    anima_memory_close(sm->memory);
+    pthread_rwlock_destroy(&sm->rwlock);
+    free(sm);
+}
+
+// --------------------------------------------------------------------------
+// 4.8 Actor System Utilities
+// --------------------------------------------------------------------------
+
+// Get actor count
+int64_t ai_actor_system_count(int64_t sys_ptr) {
+    AIActorSystem* sys = (AIActorSystem*)sys_ptr;
+    return sys ? sys->count : 0;
+}
+
+// List all actors
+int64_t ai_actor_system_list(int64_t sys_ptr) {
+    AIActorSystem* sys = (AIActorSystem*)sys_ptr;
+    if (!sys) return 0;
+
+    char* result = (char*)malloc(8192);
+    strcpy(result, "[");
+    int first = 1;
+
+    pthread_mutex_lock(&sys->lock);
+    for (int i = 0; i < sys->count; i++) {
+        AIActor* actor = sys->actors[i];
+        if (!actor) continue;
+
+        if (!first) strcat(result, ",");
+        char entry[256];
+        snprintf(entry, sizeof(entry),
+                "\n  {\"id\":%ld,\"name\":\"%s\",\"role\":\"%s\",\"status\":%d}",
+                (long)actor->id, actor->config.name, actor->config.role, actor->status);
+        strcat(result, entry);
+        first = 0;
+    }
+    pthread_mutex_unlock(&sys->lock);
+
+    strcat(result, "\n]");
+    int64_t output = (int64_t)intrinsic_string_new(result);
+    free(result);
+    return output;
+}
+
+// Close actor system
+void ai_actor_system_close(int64_t sys_ptr) {
+    AIActorSystem* sys = (AIActorSystem*)sys_ptr;
+    if (!sys) return;
+
+    pthread_mutex_lock(&sys->lock);
+    for (int i = 0; i < sys->count; i++) {
+        AIActor* actor = sys->actors[i];
+        if (actor) {
+            free(actor->config.name);
+            free(actor->config.role);
+            // Free history
+            ai_actor_clear_history((int64_t)sys, actor->id);
+            pthread_mutex_destroy(&actor->lock);
+            free(actor);
+        }
+    }
+    free(sys->actors);
+    pthread_mutex_unlock(&sys->lock);
+    pthread_mutex_destroy(&sys->lock);
+    free(sys);
+
+    if (global_ai_system == sys) {
+        global_ai_system = NULL;
+    }
+}
+
+// ============================================================================
+// Phase 4.9: Specialist Enhancements - Multi-Provider Support & Reliability
+// ============================================================================
+
+// --------------------------------------------------------------------------
+// 4.9.1 Provider Configuration
+// --------------------------------------------------------------------------
+
+// Re-use existing LLMProvider from Phase 29
+// typedef enum { PROVIDER_MOCK=0, PROVIDER_ANTHROPIC=1, PROVIDER_OPENAI=2, PROVIDER_OLLAMA=3 } LLMProvider;
+
+typedef enum ModelTier {
+    TIER_FAST = 0,      // Fast, cheaper models (haiku, gpt-3.5)
+    TIER_BALANCED = 1,  // Balanced (sonnet, gpt-4)
+    TIER_PREMIUM = 2    // Best quality (opus, o1)
+} ModelTier;
+
+typedef struct ProviderConfig {
+    LLMProvider type;
+    char* name;
+    char* api_key;
+    char* base_url;
+    char* model;
+    ModelTier tier;
+    int max_tokens;
+    double temperature;
+    int timeout_ms;
+    int priority;           // For fallback ordering
+    int enabled;
+    // Cost tracking (per 1M tokens)
+    double input_cost;
+    double output_cost;
+} ProviderConfig;
+
+typedef struct ProviderRegistry {
+    ProviderConfig** providers;
+    int count;
+    int capacity;
+    int default_provider;
+    pthread_mutex_t lock;
+} ProviderRegistry;
+
+// Provider usage stats
+typedef struct ProviderStats {
+    int64_t total_requests;
+    int64_t successful_requests;
+    int64_t failed_requests;
+    int64_t total_input_tokens;
+    int64_t total_output_tokens;
+    double total_cost;
+    double total_latency_ms;
+    int64_t last_request_time;
+    int consecutive_failures;
+} ProviderStats;
+
+// Global stats per provider
+static ProviderStats* provider_stats = NULL;
+static int stats_count = 0;
+
+// Create provider registry
+int64_t provider_registry_new(void) {
+    ProviderRegistry* reg = (ProviderRegistry*)calloc(1, sizeof(ProviderRegistry));
+    reg->capacity = 8;
+    reg->providers = (ProviderConfig**)calloc(reg->capacity, sizeof(ProviderConfig*));
+    pthread_mutex_init(&reg->lock, NULL);
+    return (int64_t)reg;
+}
+
+// Create provider config
+int64_t provider_config_new(int64_t type, int64_t name_ptr) {
+    ProviderConfig* cfg = (ProviderConfig*)calloc(1, sizeof(ProviderConfig));
+    SxString* name = (SxString*)name_ptr;
+
+    cfg->type = (LLMProvider)type;
+    cfg->name = name ? strdup(name->data) : strdup("default");
+    cfg->max_tokens = 4096;
+    cfg->temperature = 0.7;
+    cfg->timeout_ms = 30000;
+    cfg->priority = 0;
+    cfg->enabled = 1;
+
+    // Set defaults based on provider type
+    switch (cfg->type) {
+        case PROVIDER_ANTHROPIC:
+            cfg->base_url = strdup("https://api.anthropic.com");
+            cfg->model = strdup("claude-3-5-sonnet-20241022");
+            cfg->tier = TIER_BALANCED;
+            cfg->input_cost = 3.0;   // $3/1M input tokens
+            cfg->output_cost = 15.0; // $15/1M output tokens
+            break;
+        case PROVIDER_OPENAI:
+            cfg->base_url = strdup("https://api.openai.com");
+            cfg->model = strdup("gpt-4o");
+            cfg->tier = TIER_BALANCED;
+            cfg->input_cost = 5.0;
+            cfg->output_cost = 15.0;
+            break;
+        case PROVIDER_OLLAMA:
+            cfg->base_url = strdup("http://localhost:11434");
+            cfg->model = strdup("llama3.2");
+            cfg->tier = TIER_FAST;
+            cfg->input_cost = 0.0;
+            cfg->output_cost = 0.0;
+            break;
+        default:
+            cfg->base_url = strdup("");
+            cfg->model = strdup("");
+            cfg->tier = TIER_BALANCED;
+            break;
+    }
+
+    return (int64_t)cfg;
+}
+
+// Set API key
+void provider_config_set_key(int64_t cfg_ptr, int64_t key_ptr) {
+    ProviderConfig* cfg = (ProviderConfig*)cfg_ptr;
+    SxString* key = (SxString*)key_ptr;
+    if (cfg && key) {
+        free(cfg->api_key);
+        cfg->api_key = strdup(key->data);
+    }
+}
+
+// Set model
+void provider_config_set_model(int64_t cfg_ptr, int64_t model_ptr) {
+    ProviderConfig* cfg = (ProviderConfig*)cfg_ptr;
+    SxString* model = (SxString*)model_ptr;
+    if (cfg && model) {
+        free(cfg->model);
+        cfg->model = strdup(model->data);
+    }
+}
+
+// Set base URL
+void provider_config_set_url(int64_t cfg_ptr, int64_t url_ptr) {
+    ProviderConfig* cfg = (ProviderConfig*)cfg_ptr;
+    SxString* url = (SxString*)url_ptr;
+    if (cfg && url) {
+        free(cfg->base_url);
+        cfg->base_url = strdup(url->data);
+    }
+}
+
+// Set temperature
+void provider_config_set_temp(int64_t cfg_ptr, double temp) {
+    ProviderConfig* cfg = (ProviderConfig*)cfg_ptr;
+    if (cfg) cfg->temperature = temp;
+}
+
+// Set max tokens
+void provider_config_set_max_tokens(int64_t cfg_ptr, int64_t max_tokens) {
+    ProviderConfig* cfg = (ProviderConfig*)cfg_ptr;
+    if (cfg) cfg->max_tokens = (int)max_tokens;
+}
+
+// Set timeout
+void provider_config_set_timeout(int64_t cfg_ptr, int64_t timeout_ms) {
+    ProviderConfig* cfg = (ProviderConfig*)cfg_ptr;
+    if (cfg) cfg->timeout_ms = (int)timeout_ms;
+}
+
+// Set priority
+void provider_config_set_priority(int64_t cfg_ptr, int64_t priority) {
+    ProviderConfig* cfg = (ProviderConfig*)cfg_ptr;
+    if (cfg) cfg->priority = (int)priority;
+}
+
+// Set cost
+void provider_config_set_cost(int64_t cfg_ptr, double input_cost, double output_cost) {
+    ProviderConfig* cfg = (ProviderConfig*)cfg_ptr;
+    if (cfg) {
+        cfg->input_cost = input_cost;
+        cfg->output_cost = output_cost;
+    }
+}
+
+// Add provider to registry
+int64_t provider_registry_add(int64_t reg_ptr, int64_t cfg_ptr) {
+    ProviderRegistry* reg = (ProviderRegistry*)reg_ptr;
+    ProviderConfig* cfg = (ProviderConfig*)cfg_ptr;
+    if (!reg || !cfg) return -1;
+
+    pthread_mutex_lock(&reg->lock);
+
+    if (reg->count >= reg->capacity) {
+        reg->capacity *= 2;
+        reg->providers = (ProviderConfig**)realloc(reg->providers,
+                                                    reg->capacity * sizeof(ProviderConfig*));
+    }
+
+    int id = reg->count++;
+    reg->providers[id] = cfg;
+
+    // Expand stats if needed
+    if (id >= stats_count) {
+        provider_stats = (ProviderStats*)realloc(provider_stats,
+                                                  (id + 1) * sizeof(ProviderStats));
+        memset(&provider_stats[id], 0, sizeof(ProviderStats));
+        stats_count = id + 1;
+    }
+
+    pthread_mutex_unlock(&reg->lock);
+    return id;
+}
+
+// Get provider by ID
+int64_t provider_registry_get(int64_t reg_ptr, int64_t id) {
+    ProviderRegistry* reg = (ProviderRegistry*)reg_ptr;
+    if (!reg || id < 0 || id >= reg->count) return 0;
+    return (int64_t)reg->providers[id];
+}
+
+// Get provider count
+int64_t provider_registry_count(int64_t reg_ptr) {
+    ProviderRegistry* reg = (ProviderRegistry*)reg_ptr;
+    return reg ? reg->count : 0;
+}
+
+// Set default provider
+void provider_registry_set_default(int64_t reg_ptr, int64_t id) {
+    ProviderRegistry* reg = (ProviderRegistry*)reg_ptr;
+    if (reg && id >= 0 && id < reg->count) {
+        reg->default_provider = (int)id;
+    }
+}
+
+// Get provider by tier
+int64_t provider_get_by_tier(int64_t reg_ptr, int64_t tier) {
+    ProviderRegistry* reg = (ProviderRegistry*)reg_ptr;
+    if (!reg) return -1;
+
+    pthread_mutex_lock(&reg->lock);
+    for (int i = 0; i < reg->count; i++) {
+        if (reg->providers[i]->tier == (ModelTier)tier && reg->providers[i]->enabled) {
+            pthread_mutex_unlock(&reg->lock);
+            return i;
+        }
+    }
+    pthread_mutex_unlock(&reg->lock);
+    return -1;
+}
+
+// List providers
+int64_t provider_registry_list(int64_t reg_ptr) {
+    ProviderRegistry* reg = (ProviderRegistry*)reg_ptr;
+    if (!reg) return 0;
+
+    char* result = (char*)malloc(4096);
+    strcpy(result, "[");
+    int first = 1;
+
+    pthread_mutex_lock(&reg->lock);
+    for (int i = 0; i < reg->count; i++) {
+        ProviderConfig* cfg = reg->providers[i];
+        if (!first) strcat(result, ",");
+        char entry[512];
+        snprintf(entry, sizeof(entry),
+                "\n  {\"id\":%d,\"name\":\"%s\",\"type\":%d,\"model\":\"%s\",\"enabled\":%s,\"priority\":%d}",
+                i, cfg->name, cfg->type, cfg->model,
+                cfg->enabled ? "true" : "false", cfg->priority);
+        strcat(result, entry);
+        first = 0;
+    }
+    pthread_mutex_unlock(&reg->lock);
+
+    strcat(result, "\n]");
+    int64_t output = (int64_t)intrinsic_string_new(result);
+    free(result);
+    return output;
+}
+
+// --------------------------------------------------------------------------
+// 4.9.2 Token Counting & Cost Tracking
+// --------------------------------------------------------------------------
+
+// Simple token counter (approximation: ~4 chars per token)
+int64_t estimate_tokens(int64_t text_ptr) {
+    SxString* text = (SxString*)text_ptr;
+    if (!text) return 0;
+    return (text->len + 3) / 4;  // Approximate
+}
+
+// More accurate tokenizer (uses word boundaries)
+int64_t count_tokens_accurate(int64_t text_ptr) {
+    SxString* text = (SxString*)text_ptr;
+    if (!text || !text->data) return 0;
+
+    int64_t tokens = 0;
+    int in_word = 0;
+
+    for (size_t i = 0; i < text->len; i++) {
+        char c = text->data[i];
+        if (c == ' ' || c == '\n' || c == '\t' || c == '.' || c == ',' ||
+            c == '!' || c == '?' || c == ';' || c == ':') {
+            if (in_word) {
+                tokens++;
+                in_word = 0;
+            }
+            // Punctuation counts as token
+            if (c != ' ' && c != '\n' && c != '\t') tokens++;
+        } else {
+            in_word = 1;
+        }
+    }
+    if (in_word) tokens++;
+
+    return tokens;
+}
+
+// Calculate cost for request
+double calculate_cost(int64_t cfg_ptr, int64_t input_tokens, int64_t output_tokens) {
+    ProviderConfig* cfg = (ProviderConfig*)cfg_ptr;
+    if (!cfg) return 0.0;
+
+    double input_cost = (cfg->input_cost / 1000000.0) * input_tokens;
+    double output_cost = (cfg->output_cost / 1000000.0) * output_tokens;
+    return input_cost + output_cost;
+}
+
+// Get provider stats
+int64_t provider_get_stats(int64_t provider_id) {
+    if (provider_id < 0 || provider_id >= stats_count) return 0;
+
+    ProviderStats* stats = &provider_stats[provider_id];
+    char* result = (char*)malloc(512);
+    snprintf(result, 512,
+            "{\"total_requests\":%ld,\"successful\":%ld,\"failed\":%ld,"
+            "\"input_tokens\":%ld,\"output_tokens\":%ld,"
+            "\"total_cost\":%.6f,\"avg_latency\":%.2f}",
+            (long)stats->total_requests,
+            (long)stats->successful_requests,
+            (long)stats->failed_requests,
+            (long)stats->total_input_tokens,
+            (long)stats->total_output_tokens,
+            stats->total_cost,
+            stats->total_requests > 0 ? stats->total_latency_ms / stats->total_requests : 0.0);
+
+    int64_t output = (int64_t)intrinsic_string_new(result);
+    free(result);
+    return output;
+}
+
+// Record request stats
+void provider_record_request(int64_t provider_id, int success, int64_t input_tokens,
+                            int64_t output_tokens, double cost, double latency_ms) {
+    if (provider_id < 0 || provider_id >= stats_count) return;
+
+    ProviderStats* stats = &provider_stats[provider_id];
+    stats->total_requests++;
+    if (success) {
+        stats->successful_requests++;
+        stats->consecutive_failures = 0;
+    } else {
+        stats->failed_requests++;
+        stats->consecutive_failures++;
+    }
+    stats->total_input_tokens += input_tokens;
+    stats->total_output_tokens += output_tokens;
+    stats->total_cost += cost;
+    stats->total_latency_ms += latency_ms;
+
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    stats->last_request_time = tv.tv_sec * 1000 + tv.tv_usec / 1000;
+}
+
+// Get total cost across all providers
+double provider_total_cost(int64_t reg_ptr) {
+    (void)reg_ptr;
+    double total = 0.0;
+    for (int i = 0; i < stats_count; i++) {
+        total += provider_stats[i].total_cost;
+    }
+    return total;
+}
+
+// --------------------------------------------------------------------------
+// 4.9.3 Retry with Exponential Backoff
+// --------------------------------------------------------------------------
+
+typedef struct RetryConfig {
+    int max_retries;
+    int64_t initial_delay_ms;
+    int64_t max_delay_ms;
+    double backoff_multiplier;
+    int retry_on_timeout;
+    int retry_on_rate_limit;
+    int retry_on_server_error;
+} RetryConfig;
+
+// Create retry config
+int64_t retry_config_new(void) {
+    RetryConfig* cfg = (RetryConfig*)calloc(1, sizeof(RetryConfig));
+    cfg->max_retries = 3;
+    cfg->initial_delay_ms = 1000;
+    cfg->max_delay_ms = 30000;
+    cfg->backoff_multiplier = 2.0;
+    cfg->retry_on_timeout = 1;
+    cfg->retry_on_rate_limit = 1;
+    cfg->retry_on_server_error = 1;
+    return (int64_t)cfg;
+}
+
+// Set max retries
+void retry_config_set_max(int64_t cfg_ptr, int64_t max_retries) {
+    RetryConfig* cfg = (RetryConfig*)cfg_ptr;
+    if (cfg) cfg->max_retries = (int)max_retries;
+}
+
+// Set initial delay
+void retry_config_set_delay(int64_t cfg_ptr, int64_t delay_ms) {
+    RetryConfig* cfg = (RetryConfig*)cfg_ptr;
+    if (cfg) cfg->initial_delay_ms = delay_ms;
+}
+
+// Set backoff multiplier
+void retry_config_set_backoff(int64_t cfg_ptr, double multiplier) {
+    RetryConfig* cfg = (RetryConfig*)cfg_ptr;
+    if (cfg) cfg->backoff_multiplier = multiplier;
+}
+
+// Calculate delay for retry attempt
+int64_t retry_calculate_delay(int64_t cfg_ptr, int64_t attempt) {
+    RetryConfig* cfg = (RetryConfig*)cfg_ptr;
+    if (!cfg) return 1000;
+
+    double delay = cfg->initial_delay_ms * pow(cfg->backoff_multiplier, attempt);
+    if (delay > cfg->max_delay_ms) delay = cfg->max_delay_ms;
+
+    // Add jitter (10% random variation)
+    double jitter = ((double)rand() / RAND_MAX - 0.5) * 0.2 * delay;
+    return (int64_t)(delay + jitter);
+}
+
+// Should retry based on error type
+int64_t retry_should_retry(int64_t cfg_ptr, int64_t error_type, int64_t attempt) {
+    RetryConfig* cfg = (RetryConfig*)cfg_ptr;
+    if (!cfg) return 0;
+    if (attempt >= cfg->max_retries) return 0;
+
+    // Error types: 0=unknown, 1=timeout, 2=rate_limit, 3=server_error, 4=auth_error
+    switch (error_type) {
+        case 1: return cfg->retry_on_timeout;
+        case 2: return cfg->retry_on_rate_limit;
+        case 3: return cfg->retry_on_server_error;
+        case 4: return 0;  // Never retry auth errors
+        default: return 0;
+    }
+}
+
+// Free retry config
+void retry_config_close(int64_t cfg_ptr) {
+    free((RetryConfig*)cfg_ptr);
+}
+
+// --------------------------------------------------------------------------
+// 4.9.4 Fallback Provider Chain
+// --------------------------------------------------------------------------
+
+typedef struct FallbackChain {
+    int64_t* provider_ids;
+    int count;
+    int capacity;
+    pthread_mutex_t lock;
+} FallbackChain;
+
+// Create fallback chain
+int64_t fallback_chain_new(void) {
+    FallbackChain* chain = (FallbackChain*)calloc(1, sizeof(FallbackChain));
+    chain->capacity = 8;
+    chain->provider_ids = (int64_t*)calloc(chain->capacity, sizeof(int64_t));
+    pthread_mutex_init(&chain->lock, NULL);
+    return (int64_t)chain;
+}
+
+// Add provider to chain
+int64_t fallback_chain_add(int64_t chain_ptr, int64_t provider_id) {
+    FallbackChain* chain = (FallbackChain*)chain_ptr;
+    if (!chain) return -1;
+
+    pthread_mutex_lock(&chain->lock);
+    if (chain->count >= chain->capacity) {
+        chain->capacity *= 2;
+        chain->provider_ids = (int64_t*)realloc(chain->provider_ids,
+                                                 chain->capacity * sizeof(int64_t));
+    }
+    chain->provider_ids[chain->count++] = provider_id;
+    pthread_mutex_unlock(&chain->lock);
+
+    return chain->count - 1;
+}
+
+// Get next provider in chain
+int64_t fallback_chain_next(int64_t chain_ptr, int64_t current_index) {
+    FallbackChain* chain = (FallbackChain*)chain_ptr;
+    if (!chain) return -1;
+
+    int64_t next = current_index + 1;
+    if (next >= chain->count) return -1;
+    return chain->provider_ids[next];
+}
+
+// Get provider by index
+int64_t fallback_chain_get(int64_t chain_ptr, int64_t index) {
+    FallbackChain* chain = (FallbackChain*)chain_ptr;
+    if (!chain || index < 0 || index >= chain->count) return -1;
+    return chain->provider_ids[index];
+}
+
+// Get chain size
+int64_t fallback_chain_size(int64_t chain_ptr) {
+    FallbackChain* chain = (FallbackChain*)chain_ptr;
+    return chain ? chain->count : 0;
+}
+
+// Close fallback chain
+void fallback_chain_close(int64_t chain_ptr) {
+    FallbackChain* chain = (FallbackChain*)chain_ptr;
+    if (!chain) return;
+    free(chain->provider_ids);
+    pthread_mutex_destroy(&chain->lock);
+    free(chain);
+}
+
+// --------------------------------------------------------------------------
+// 4.9.5 Streaming Support
+// --------------------------------------------------------------------------
+
+typedef void (*StreamCallback)(int64_t chunk_ptr, int64_t user_data);
+
+typedef struct StreamContext {
+    StreamCallback callback;
+    int64_t user_data;
+    int64_t total_tokens;
+    int64_t bytes_received;
+    int is_complete;
+    int had_error;
+    char* error_message;
+    char* accumulated;
+    size_t accumulated_len;
+    size_t accumulated_cap;
+    pthread_mutex_t lock;
+} StreamContext;
+
+// Create stream context
+int64_t stream_context_new(int64_t callback_ptr, int64_t user_data) {
+    StreamContext* ctx = (StreamContext*)calloc(1, sizeof(StreamContext));
+    ctx->callback = (StreamCallback)callback_ptr;
+    ctx->user_data = user_data;
+    ctx->accumulated_cap = 4096;
+    ctx->accumulated = (char*)malloc(ctx->accumulated_cap);
+    ctx->accumulated[0] = '\0';
+    pthread_mutex_init(&ctx->lock, NULL);
+    return (int64_t)ctx;
+}
+
+// Process stream chunk
+void stream_process_chunk(int64_t ctx_ptr, int64_t chunk_ptr) {
+    StreamContext* ctx = (StreamContext*)ctx_ptr;
+    SxString* chunk = (SxString*)chunk_ptr;
+    if (!ctx || !chunk) return;
+
+    pthread_mutex_lock(&ctx->lock);
+
+    // Accumulate chunk
+    size_t new_len = ctx->accumulated_len + chunk->len;
+    if (new_len >= ctx->accumulated_cap) {
+        ctx->accumulated_cap = new_len * 2;
+        ctx->accumulated = (char*)realloc(ctx->accumulated, ctx->accumulated_cap);
+    }
+    memcpy(ctx->accumulated + ctx->accumulated_len, chunk->data, chunk->len);
+    ctx->accumulated_len = new_len;
+    ctx->accumulated[new_len] = '\0';
+
+    ctx->bytes_received += chunk->len;
+    ctx->total_tokens += (chunk->len + 3) / 4;  // Estimate tokens
+
+    pthread_mutex_unlock(&ctx->lock);
+
+    // Call callback if set
+    if (ctx->callback) {
+        ctx->callback(chunk_ptr, ctx->user_data);
+    }
+}
+
+// Mark stream complete
+void stream_complete(int64_t ctx_ptr) {
+    StreamContext* ctx = (StreamContext*)ctx_ptr;
+    if (ctx) ctx->is_complete = 1;
+}
+
+// Mark stream error
+void stream_error(int64_t ctx_ptr, int64_t error_ptr) {
+    StreamContext* ctx = (StreamContext*)ctx_ptr;
+    SxString* error = (SxString*)error_ptr;
+    if (!ctx) return;
+
+    ctx->had_error = 1;
+    if (error) {
+        free(ctx->error_message);
+        ctx->error_message = strdup(error->data);
+    }
+}
+
+// Get accumulated content
+int64_t stream_get_content(int64_t ctx_ptr) {
+    StreamContext* ctx = (StreamContext*)ctx_ptr;
+    if (!ctx) return 0;
+    return (int64_t)intrinsic_string_new(ctx->accumulated);
+}
+
+// Check if complete
+int64_t stream_is_complete(int64_t ctx_ptr) {
+    StreamContext* ctx = (StreamContext*)ctx_ptr;
+    return ctx ? ctx->is_complete : 0;
+}
+
+// Check for error
+int64_t stream_has_error(int64_t ctx_ptr) {
+    StreamContext* ctx = (StreamContext*)ctx_ptr;
+    return ctx ? ctx->had_error : 0;
+}
+
+// Get error message
+int64_t stream_get_error(int64_t ctx_ptr) {
+    StreamContext* ctx = (StreamContext*)ctx_ptr;
+    if (!ctx || !ctx->error_message) return 0;
+    return (int64_t)intrinsic_string_new(ctx->error_message);
+}
+
+// Get token count
+int64_t stream_token_count(int64_t ctx_ptr) {
+    StreamContext* ctx = (StreamContext*)ctx_ptr;
+    return ctx ? ctx->total_tokens : 0;
+}
+
+// Close stream context
+void stream_context_close(int64_t ctx_ptr) {
+    StreamContext* ctx = (StreamContext*)ctx_ptr;
+    if (!ctx) return;
+    free(ctx->accumulated);
+    free(ctx->error_message);
+    pthread_mutex_destroy(&ctx->lock);
+    free(ctx);
+}
+
+// --------------------------------------------------------------------------
+// 4.9.6 Structured Output (JSON Schema Validation)
+// --------------------------------------------------------------------------
+
+typedef struct OutputSchema {
+    char* name;
+    char* json_schema;
+    int strict;
+} OutputSchema;
+
+// Create output schema
+int64_t output_schema_new(int64_t name_ptr, int64_t schema_ptr) {
+    OutputSchema* schema = (OutputSchema*)calloc(1, sizeof(OutputSchema));
+    SxString* name = (SxString*)name_ptr;
+    SxString* json = (SxString*)schema_ptr;
+
+    schema->name = name ? strdup(name->data) : strdup("output");
+    schema->json_schema = json ? strdup(json->data) : strdup("{}");
+    schema->strict = 1;
+
+    return (int64_t)schema;
+}
+
+// Set strict mode
+void output_schema_set_strict(int64_t schema_ptr, int64_t strict) {
+    OutputSchema* schema = (OutputSchema*)schema_ptr;
+    if (schema) schema->strict = (int)strict;
+}
+
+// Get schema JSON
+int64_t output_schema_get_json(int64_t schema_ptr) {
+    OutputSchema* schema = (OutputSchema*)schema_ptr;
+    if (!schema) return 0;
+    return (int64_t)intrinsic_string_new(schema->json_schema);
+}
+
+// Simple JSON validation (checks basic structure)
+int64_t validate_json_output(int64_t output_ptr, int64_t schema_ptr) {
+    SxString* output = (SxString*)output_ptr;
+    OutputSchema* schema = (OutputSchema*)schema_ptr;
+    (void)schema;  // Full validation would check against schema
+
+    if (!output || !output->data) return 0;
+
+    // Basic JSON structure check
+    char* data = output->data;
+    int len = (int)output->len;
+
+    // Skip whitespace
+    int i = 0;
+    while (i < len && (data[i] == ' ' || data[i] == '\n' || data[i] == '\t')) i++;
+
+    if (i >= len) return 0;
+
+    // Must start with { or [
+    if (data[i] != '{' && data[i] != '[') return 0;
+
+    // Find matching end
+    char start = data[i];
+    char end = (start == '{') ? '}' : ']';
+    int depth = 1;
+    int in_string = 0;
+    i++;
+
+    while (i < len && depth > 0) {
+        if (data[i] == '"' && (i == 0 || data[i-1] != '\\')) {
+            in_string = !in_string;
+        } else if (!in_string) {
+            if (data[i] == start || data[i] == '{' || data[i] == '[') depth++;
+            else if (data[i] == end || data[i] == '}' || data[i] == ']') depth--;
+        }
+        i++;
+    }
+
+    return depth == 0 ? 1 : 0;
+}
+
+// Close output schema
+void output_schema_close(int64_t schema_ptr) {
+    OutputSchema* schema = (OutputSchema*)schema_ptr;
+    if (!schema) return;
+    free(schema->name);
+    free(schema->json_schema);
+    free(schema);
+}
+
+// --------------------------------------------------------------------------
+// 4.9.7 Request Builder
+// --------------------------------------------------------------------------
+
+typedef struct LLMRequest {
+    int64_t provider_id;
+    char* system_prompt;
+    char* user_prompt;
+    char* model_override;
+    int max_tokens;
+    double temperature;
+    int64_t output_schema;    // OutputSchema pointer
+    int stream;
+    int64_t stream_context;   // StreamContext pointer
+    int64_t tools;            // Tool registry pointer
+    int64_t retry_config;     // RetryConfig pointer
+} LLMRequest;
+
+// Create request
+int64_t llm_request_new(int64_t provider_id) {
+    LLMRequest* req = (LLMRequest*)calloc(1, sizeof(LLMRequest));
+    req->provider_id = provider_id;
+    req->max_tokens = 4096;
+    req->temperature = 0.7;
+    return (int64_t)req;
+}
+
+// Set system prompt
+void llm_request_set_system(int64_t req_ptr, int64_t prompt_ptr) {
+    LLMRequest* req = (LLMRequest*)req_ptr;
+    SxString* prompt = (SxString*)prompt_ptr;
+    if (req && prompt) {
+        free(req->system_prompt);
+        req->system_prompt = strdup(prompt->data);
+    }
+}
+
+// Set user prompt
+void llm_request_set_prompt(int64_t req_ptr, int64_t prompt_ptr) {
+    LLMRequest* req = (LLMRequest*)req_ptr;
+    SxString* prompt = (SxString*)prompt_ptr;
+    if (req && prompt) {
+        free(req->user_prompt);
+        req->user_prompt = strdup(prompt->data);
+    }
+}
+
+// Set model override
+void llm_request_set_model(int64_t req_ptr, int64_t model_ptr) {
+    LLMRequest* req = (LLMRequest*)req_ptr;
+    SxString* model = (SxString*)model_ptr;
+    if (req && model) {
+        free(req->model_override);
+        req->model_override = strdup(model->data);
+    }
+}
+
+// Set max tokens
+void llm_request_set_max_tokens(int64_t req_ptr, int64_t max_tokens) {
+    LLMRequest* req = (LLMRequest*)req_ptr;
+    if (req) req->max_tokens = (int)max_tokens;
+}
+
+// Set temperature
+void llm_request_set_temperature(int64_t req_ptr, double temperature) {
+    LLMRequest* req = (LLMRequest*)req_ptr;
+    if (req) req->temperature = temperature;
+}
+
+// Set output schema
+void llm_request_set_schema(int64_t req_ptr, int64_t schema_ptr) {
+    LLMRequest* req = (LLMRequest*)req_ptr;
+    if (req) req->output_schema = schema_ptr;
+}
+
+// Enable streaming
+void llm_request_enable_stream(int64_t req_ptr, int64_t stream_ctx_ptr) {
+    LLMRequest* req = (LLMRequest*)req_ptr;
+    if (req) {
+        req->stream = 1;
+        req->stream_context = stream_ctx_ptr;
+    }
+}
+
+// Set tools
+void llm_request_set_tools(int64_t req_ptr, int64_t tools_ptr) {
+    LLMRequest* req = (LLMRequest*)req_ptr;
+    if (req) req->tools = tools_ptr;
+}
+
+// Set retry config
+void llm_request_set_retry(int64_t req_ptr, int64_t retry_ptr) {
+    LLMRequest* req = (LLMRequest*)req_ptr;
+    if (req) req->retry_config = retry_ptr;
+}
+
+// Build request JSON
+int64_t llm_request_to_json(int64_t req_ptr, int64_t reg_ptr) {
+    LLMRequest* req = (LLMRequest*)req_ptr;
+    ProviderRegistry* reg = (ProviderRegistry*)reg_ptr;
+    if (!req || !reg) return 0;
+
+    ProviderConfig* cfg = (ProviderConfig*)provider_registry_get(reg_ptr, req->provider_id);
+    if (!cfg) return 0;
+
+    char* json = (char*)malloc(16384);
+    char* model = req->model_override ? req->model_override : cfg->model;
+
+    // Build based on provider type
+    if (cfg->type == PROVIDER_ANTHROPIC) {
+        snprintf(json, 16384,
+                "{\"model\":\"%s\",\"max_tokens\":%d,\"temperature\":%.2f,"
+                "\"system\":\"%s\",\"messages\":[{\"role\":\"user\",\"content\":\"%s\"}]}",
+                model, req->max_tokens, req->temperature,
+                req->system_prompt ? req->system_prompt : "",
+                req->user_prompt ? req->user_prompt : "");
+    } else if (cfg->type == PROVIDER_OPENAI) {
+        snprintf(json, 16384,
+                "{\"model\":\"%s\",\"max_tokens\":%d,\"temperature\":%.2f,"
+                "\"messages\":[{\"role\":\"system\",\"content\":\"%s\"},"
+                "{\"role\":\"user\",\"content\":\"%s\"}]}",
+                model, req->max_tokens, req->temperature,
+                req->system_prompt ? req->system_prompt : "",
+                req->user_prompt ? req->user_prompt : "");
+    } else {
+        // Generic format
+        snprintf(json, 16384,
+                "{\"model\":\"%s\",\"prompt\":\"%s\",\"max_tokens\":%d}",
+                model, req->user_prompt ? req->user_prompt : "", req->max_tokens);
+    }
+
+    int64_t output = (int64_t)intrinsic_string_new(json);
+    free(json);
+    return output;
+}
+
+// Free request
+void llm_request_close(int64_t req_ptr) {
+    LLMRequest* req = (LLMRequest*)req_ptr;
+    if (!req) return;
+    free(req->system_prompt);
+    free(req->user_prompt);
+    free(req->model_override);
+    free(req);
+}
+
+// --------------------------------------------------------------------------
+// 4.9.8 Response Handler
+// --------------------------------------------------------------------------
+
+typedef struct LLMResponse {
+    int success;
+    char* content;
+    char* error;
+    int64_t input_tokens;
+    int64_t output_tokens;
+    double cost;
+    double latency_ms;
+    int64_t provider_id;
+    char* model_used;
+    char* finish_reason;
+    int64_t tool_calls;  // Vector of tool call structs
+} LLMResponse;
+
+// Create response
+int64_t llm_response_new(void) {
+    LLMResponse* resp = (LLMResponse*)calloc(1, sizeof(LLMResponse));
+    return (int64_t)resp;
+}
+
+// Set success
+void llm_response_set_success(int64_t resp_ptr, int64_t success) {
+    LLMResponse* resp = (LLMResponse*)resp_ptr;
+    if (resp) resp->success = (int)success;
+}
+
+// Set content
+void llm_response_set_content(int64_t resp_ptr, int64_t content_ptr) {
+    LLMResponse* resp = (LLMResponse*)resp_ptr;
+    SxString* content = (SxString*)content_ptr;
+    if (resp && content) {
+        free(resp->content);
+        resp->content = strdup(content->data);
+    }
+}
+
+// Set error
+void llm_response_set_error(int64_t resp_ptr, int64_t error_ptr) {
+    LLMResponse* resp = (LLMResponse*)resp_ptr;
+    SxString* error = (SxString*)error_ptr;
+    if (resp && error) {
+        free(resp->error);
+        resp->error = strdup(error->data);
+    }
+}
+
+// Set token counts
+void llm_response_set_tokens(int64_t resp_ptr, int64_t input, int64_t output) {
+    LLMResponse* resp = (LLMResponse*)resp_ptr;
+    if (resp) {
+        resp->input_tokens = input;
+        resp->output_tokens = output;
+    }
+}
+
+// Set cost
+void llm_response_set_cost(int64_t resp_ptr, double cost) {
+    LLMResponse* resp = (LLMResponse*)resp_ptr;
+    if (resp) resp->cost = cost;
+}
+
+// Set latency
+void llm_response_set_latency(int64_t resp_ptr, double latency_ms) {
+    LLMResponse* resp = (LLMResponse*)resp_ptr;
+    if (resp) resp->latency_ms = latency_ms;
+}
+
+// Get success
+int64_t llm_response_is_success(int64_t resp_ptr) {
+    LLMResponse* resp = (LLMResponse*)resp_ptr;
+    return resp ? resp->success : 0;
+}
+
+// Get content
+int64_t llm_response_get_content(int64_t resp_ptr) {
+    LLMResponse* resp = (LLMResponse*)resp_ptr;
+    if (!resp || !resp->content) return 0;
+    return (int64_t)intrinsic_string_new(resp->content);
+}
+
+// Get error
+int64_t llm_response_get_error(int64_t resp_ptr) {
+    LLMResponse* resp = (LLMResponse*)resp_ptr;
+    if (!resp || !resp->error) return 0;
+    return (int64_t)intrinsic_string_new(resp->error);
+}
+
+// Get input tokens
+int64_t llm_response_input_tokens(int64_t resp_ptr) {
+    LLMResponse* resp = (LLMResponse*)resp_ptr;
+    return resp ? resp->input_tokens : 0;
+}
+
+// Get output tokens
+int64_t llm_response_output_tokens(int64_t resp_ptr) {
+    LLMResponse* resp = (LLMResponse*)resp_ptr;
+    return resp ? resp->output_tokens : 0;
+}
+
+// Get cost
+double llm_response_get_cost(int64_t resp_ptr) {
+    LLMResponse* resp = (LLMResponse*)resp_ptr;
+    return resp ? resp->cost : 0.0;
+}
+
+// Get latency
+double llm_response_get_latency(int64_t resp_ptr) {
+    LLMResponse* resp = (LLMResponse*)resp_ptr;
+    return resp ? resp->latency_ms : 0.0;
+}
+
+// To JSON
+int64_t llm_response_to_json(int64_t resp_ptr) {
+    LLMResponse* resp = (LLMResponse*)resp_ptr;
+    if (!resp) return 0;
+
+    char* json = (char*)malloc(8192);
+    snprintf(json, 8192,
+            "{\"success\":%s,\"content\":\"%s\",\"error\":\"%s\","
+            "\"input_tokens\":%ld,\"output_tokens\":%ld,"
+            "\"cost\":%.6f,\"latency_ms\":%.2f}",
+            resp->success ? "true" : "false",
+            resp->content ? resp->content : "",
+            resp->error ? resp->error : "",
+            (long)resp->input_tokens, (long)resp->output_tokens,
+            resp->cost, resp->latency_ms);
+
+    int64_t output = (int64_t)intrinsic_string_new(json);
+    free(json);
+    return output;
+}
+
+// Free response
+void llm_response_close(int64_t resp_ptr) {
+    LLMResponse* resp = (LLMResponse*)resp_ptr;
+    if (!resp) return;
+    free(resp->content);
+    free(resp->error);
+    free(resp->model_used);
+    free(resp->finish_reason);
+    free(resp);
+}
+
+// Close provider registry
+void provider_registry_close(int64_t reg_ptr) {
+    ProviderRegistry* reg = (ProviderRegistry*)reg_ptr;
+    if (!reg) return;
+
+    pthread_mutex_lock(&reg->lock);
+    for (int i = 0; i < reg->count; i++) {
+        ProviderConfig* cfg = reg->providers[i];
+        if (cfg) {
+            free(cfg->name);
+            free(cfg->api_key);
+            free(cfg->base_url);
+            free(cfg->model);
+            free(cfg);
+        }
+    }
+    free(reg->providers);
+    pthread_mutex_unlock(&reg->lock);
+    pthread_mutex_destroy(&reg->lock);
+    free(reg);
+}
+
+// ============================================================================
+// Phase 4.10: Actor-Anima Integration
+// ============================================================================
+
+// --------------------------------------------------------------------------
+// 4.10.1 Cognitive Actor (Actor with Anima Memory)
+// --------------------------------------------------------------------------
+
+typedef struct CognitiveActor {
+    int64_t actor_id;           // AI Actor ID from the actor system
+    int64_t anima;              // AnimaMemory pointer
+    char* name;
+    char* personality;          // System prompt / personality description
+    int64_t tools;              // Tool registry pointer
+    int64_t provider;           // Provider ID
+    int auto_learn;             // Automatically learn from interactions
+    int auto_remember;          // Automatically remember conversations
+    double importance_threshold; // Minimum importance for auto-remember
+    pthread_mutex_t lock;
+} CognitiveActor;
+
+typedef struct CognitiveActorRegistry {
+    CognitiveActor** actors;
+    int count;
+    int capacity;
+    pthread_mutex_t lock;
+} CognitiveActorRegistry;
+
+static CognitiveActorRegistry* global_cognitive_registry = NULL;
+
+// Initialize global registry
+static void ensure_cognitive_registry(void) {
+    if (!global_cognitive_registry) {
+        global_cognitive_registry = (CognitiveActorRegistry*)calloc(1, sizeof(CognitiveActorRegistry));
+        global_cognitive_registry->capacity = 16;
+        global_cognitive_registry->actors = (CognitiveActor**)calloc(16, sizeof(CognitiveActor*));
+        pthread_mutex_init(&global_cognitive_registry->lock, NULL);
+    }
+}
+
+// Create cognitive actor
+int64_t cognitive_actor_new(int64_t actor_id, int64_t name_ptr, int64_t personality_ptr) {
+    ensure_cognitive_registry();
+
+    CognitiveActor* ca = (CognitiveActor*)calloc(1, sizeof(CognitiveActor));
+    SxString* name = (SxString*)name_ptr;
+    SxString* personality = (SxString*)personality_ptr;
+
+    ca->actor_id = actor_id;
+    ca->anima = anima_memory_new(100);  // Default capacity
+    ca->name = name ? strdup(name->data) : strdup("cognitive");
+    ca->personality = personality ? strdup(personality->data) : strdup("You are a helpful AI assistant.");
+    ca->auto_learn = 1;
+    ca->auto_remember = 1;
+    ca->importance_threshold = 0.5;
+    pthread_mutex_init(&ca->lock, NULL);
+
+    // Add to registry
+    pthread_mutex_lock(&global_cognitive_registry->lock);
+    if (global_cognitive_registry->count >= global_cognitive_registry->capacity) {
+        global_cognitive_registry->capacity *= 2;
+        global_cognitive_registry->actors = (CognitiveActor**)realloc(
+            global_cognitive_registry->actors,
+            global_cognitive_registry->capacity * sizeof(CognitiveActor*));
+    }
+    int id = global_cognitive_registry->count++;
+    global_cognitive_registry->actors[id] = ca;
+    pthread_mutex_unlock(&global_cognitive_registry->lock);
+
+    return (int64_t)ca;
+}
+
+// Get anima memory from cognitive actor
+int64_t cognitive_actor_get_anima(int64_t ca_ptr) {
+    CognitiveActor* ca = (CognitiveActor*)ca_ptr;
+    return ca ? ca->anima : 0;
+}
+
+// Set tools for cognitive actor
+void cognitive_actor_set_tools(int64_t ca_ptr, int64_t tools_ptr) {
+    CognitiveActor* ca = (CognitiveActor*)ca_ptr;
+    if (ca) ca->tools = tools_ptr;
+}
+
+// Set provider for cognitive actor
+void cognitive_actor_set_provider(int64_t ca_ptr, int64_t provider_id) {
+    CognitiveActor* ca = (CognitiveActor*)ca_ptr;
+    if (ca) ca->provider = provider_id;
+}
+
+// Enable/disable auto learning
+void cognitive_actor_set_auto_learn(int64_t ca_ptr, int64_t enabled) {
+    CognitiveActor* ca = (CognitiveActor*)ca_ptr;
+    if (ca) ca->auto_learn = (int)enabled;
+}
+
+// Enable/disable auto remember
+void cognitive_actor_set_auto_remember(int64_t ca_ptr, int64_t enabled) {
+    CognitiveActor* ca = (CognitiveActor*)ca_ptr;
+    if (ca) ca->auto_remember = (int)enabled;
+}
+
+// Set importance threshold
+void cognitive_actor_set_threshold(int64_t ca_ptr, double threshold) {
+    CognitiveActor* ca = (CognitiveActor*)ca_ptr;
+    if (ca) ca->importance_threshold = threshold;
+}
+
+// Get personality/system prompt
+int64_t cognitive_actor_get_personality(int64_t ca_ptr) {
+    CognitiveActor* ca = (CognitiveActor*)ca_ptr;
+    if (!ca || !ca->personality) return 0;
+    return (int64_t)intrinsic_string_new(ca->personality);
+}
+
+// Set personality/system prompt
+void cognitive_actor_set_personality(int64_t ca_ptr, int64_t personality_ptr) {
+    CognitiveActor* ca = (CognitiveActor*)ca_ptr;
+    SxString* personality = (SxString*)personality_ptr;
+    if (ca && personality) {
+        free(ca->personality);
+        ca->personality = strdup(personality->data);
+    }
+}
+
+// --------------------------------------------------------------------------
+// 4.10.2 Cognitive Actor Operations
+// --------------------------------------------------------------------------
+
+// Remember an interaction with importance calculation
+int64_t cognitive_actor_remember(int64_t ca_ptr, int64_t content_ptr, double importance) {
+    CognitiveActor* ca = (CognitiveActor*)ca_ptr;
+    if (!ca) return 0;
+
+    pthread_mutex_lock(&ca->lock);
+    int64_t result = anima_remember(ca->anima, content_ptr, importance);
+    pthread_mutex_unlock(&ca->lock);
+
+    return result;
+}
+
+// Learn a fact
+int64_t cognitive_actor_learn(int64_t ca_ptr, int64_t content_ptr, double confidence, int64_t source_ptr) {
+    CognitiveActor* ca = (CognitiveActor*)ca_ptr;
+    if (!ca) return 0;
+
+    pthread_mutex_lock(&ca->lock);
+    int64_t result = anima_learn(ca->anima, content_ptr, confidence, source_ptr);
+    pthread_mutex_unlock(&ca->lock);
+
+    return result;
+}
+
+// Form a belief
+int64_t cognitive_actor_believe(int64_t ca_ptr, int64_t content_ptr, double confidence, int64_t evidence_ptr) {
+    CognitiveActor* ca = (CognitiveActor*)ca_ptr;
+    if (!ca) return 0;
+
+    pthread_mutex_lock(&ca->lock);
+    int64_t result = anima_believe(ca->anima, content_ptr, confidence, evidence_ptr);
+    pthread_mutex_unlock(&ca->lock);
+
+    return result;
+}
+
+// Recall relevant memories for a goal (returns JSON string)
+int64_t cognitive_actor_recall(int64_t ca_ptr, int64_t goal_ptr, int64_t context_ptr) {
+    CognitiveActor* ca = (CognitiveActor*)ca_ptr;
+    if (!ca) return 0;
+
+    pthread_mutex_lock(&ca->lock);
+    int64_t vec_ptr = anima_recall_for_goal(ca->anima, goal_ptr, context_ptr, 10);
+    pthread_mutex_unlock(&ca->lock);
+
+    if (!vec_ptr) return (int64_t)intrinsic_string_new("[]");
+
+    // Convert vector to JSON array
+    SxVec* vec = (SxVec*)vec_ptr;
+    char* result = (char*)malloc(8192);
+    strcpy(result, "[");
+    int first = 1;
+
+    for (size_t i = 0; i < vec->len; i++) {
+        SxString* s = (SxString*)vec->items[i];
+        if (s && s->data) {
+            if (!first) strcat(result, ",");
+            strcat(result, "\n  \"");
+            // Escape special chars in JSON
+            char* p = s->data;
+            char* end = result + strlen(result);
+            while (*p && end - result < 8000) {
+                if (*p == '"' || *p == '\\') {
+                    *end++ = '\\';
+                }
+                *end++ = *p++;
+            }
+            *end = '\0';
+            strcat(result, "\"");
+            first = 0;
+        }
+    }
+
+    if (!first) strcat(result, "\n");
+    strcat(result, "]");
+
+    int64_t output = (int64_t)intrinsic_string_new(result);
+    free(result);
+    return output;
+}
+
+// Process an interaction and optionally auto-learn/remember
+int64_t cognitive_actor_process_interaction(int64_t ca_ptr, int64_t user_msg_ptr, int64_t assistant_msg_ptr, double importance) {
+    CognitiveActor* ca = (CognitiveActor*)ca_ptr;
+    if (!ca) return 0;
+
+    pthread_mutex_lock(&ca->lock);
+
+    // Auto-remember if enabled and importance meets threshold
+    if (ca->auto_remember && importance >= ca->importance_threshold) {
+        // Remember user message
+        anima_remember(ca->anima, user_msg_ptr, importance);
+        // Remember assistant response
+        anima_remember(ca->anima, assistant_msg_ptr, importance * 0.8);  // Slightly lower for own responses
+    }
+
+    pthread_mutex_unlock(&ca->lock);
+
+    return 1;
+}
+
+// Get cognitive context (relevant memories, beliefs, facts for a query)
+int64_t cognitive_actor_get_context(int64_t ca_ptr, int64_t query_ptr) {
+    CognitiveActor* ca = (CognitiveActor*)ca_ptr;
+    if (!ca) return 0;
+
+    char* result = (char*)malloc(8192);
+    strcpy(result, "{");
+
+    pthread_mutex_lock(&ca->lock);
+
+    // Get relevant episodic memories
+    int64_t episodic = anima_recall_for_goal(ca->anima, query_ptr, 0, 5);
+    if (episodic) {
+        SxString* ep_str = (SxString*)episodic;
+        strcat(result, "\"episodic_memories\":");
+        if (ep_str->data) strcat(result, ep_str->data);
+        else strcat(result, "[]");
+        strcat(result, ",");
+    } else {
+        strcat(result, "\"episodic_memories\":[],");
+    }
+
+    // Get semantic knowledge count
+    char buf[64];
+    snprintf(buf, sizeof(buf), "\"semantic_count\":%ld,", (long)anima_semantic_count(ca->anima));
+    strcat(result, buf);
+
+    // Get beliefs count
+    snprintf(buf, sizeof(buf), "\"beliefs_count\":%ld", (long)anima_beliefs_count(ca->anima));
+    strcat(result, buf);
+
+    pthread_mutex_unlock(&ca->lock);
+
+    strcat(result, "}");
+
+    int64_t output = (int64_t)intrinsic_string_new(result);
+    free(result);
+    return output;
+}
+
+// Build enhanced prompt with cognitive context
+int64_t cognitive_actor_build_prompt(int64_t ca_ptr, int64_t user_query_ptr) {
+    CognitiveActor* ca = (CognitiveActor*)ca_ptr;
+    if (!ca) return 0;
+
+    SxString* query = (SxString*)user_query_ptr;
+    if (!query) return 0;
+
+    pthread_mutex_lock(&ca->lock);
+
+    // Get relevant memories (returns vector)
+    int64_t vec_ptr = anima_recall_for_goal(ca->anima, user_query_ptr, 0, 3);
+
+    // Format memories as text
+    char memories_text[4096];
+    memories_text[0] = '\0';
+
+    if (vec_ptr) {
+        SxVec* vec = (SxVec*)vec_ptr;
+        for (size_t i = 0; i < vec->len && strlen(memories_text) < 3800; i++) {
+            SxString* s = (SxString*)vec->items[i];
+            if (s && s->data) {
+                strcat(memories_text, "- ");
+                strncat(memories_text, s->data, 500);
+                strcat(memories_text, "\n");
+            }
+        }
+    }
+
+    if (strlen(memories_text) == 0) {
+        strcpy(memories_text, "No relevant memories found.");
+    }
+
+    // Build prompt
+    char* prompt = (char*)malloc(16384);
+    snprintf(prompt, 16384,
+            "%s\n\n"
+            "## Relevant Context\n"
+            "Based on your memory, you recall:\n%s\n"
+            "## User Query\n%s",
+            ca->personality,
+            memories_text,
+            query->data);
+
+    pthread_mutex_unlock(&ca->lock);
+
+    int64_t output = (int64_t)intrinsic_string_new(prompt);
+    free(prompt);
+    return output;
+}
+
+// --------------------------------------------------------------------------
+// 4.10.3 Cognitive Actor Team
+// --------------------------------------------------------------------------
+
+typedef struct CognitiveTeam {
+    char* name;
+    int64_t* actor_ptrs;        // CognitiveActor pointers
+    int count;
+    int capacity;
+    int64_t shared_memory;      // SharedMemory for team knowledge
+    pthread_mutex_t lock;
+} CognitiveTeam;
+
+// Create cognitive team
+int64_t cognitive_team_new(int64_t name_ptr) {
+    CognitiveTeam* team = (CognitiveTeam*)calloc(1, sizeof(CognitiveTeam));
+    SxString* name = (SxString*)name_ptr;
+
+    team->name = name ? strdup(name->data) : strdup("team");
+    team->capacity = 8;
+    team->actor_ptrs = (int64_t*)calloc(team->capacity, sizeof(int64_t));
+    team->shared_memory = shared_memory_new((int64_t)intrinsic_string_new("team_memory"), 100);
+    pthread_mutex_init(&team->lock, NULL);
+
+    return (int64_t)team;
+}
+
+// Add actor to team
+int64_t cognitive_team_add(int64_t team_ptr, int64_t ca_ptr) {
+    CognitiveTeam* team = (CognitiveTeam*)team_ptr;
+    CognitiveActor* ca = (CognitiveActor*)ca_ptr;
+    if (!team || !ca) return -1;
+
+    pthread_mutex_lock(&team->lock);
+
+    if (team->count >= team->capacity) {
+        team->capacity *= 2;
+        team->actor_ptrs = (int64_t*)realloc(team->actor_ptrs, team->capacity * sizeof(int64_t));
+    }
+
+    int idx = team->count++;
+    team->actor_ptrs[idx] = ca_ptr;
+
+    // Grant read/write access to shared memory
+    shared_memory_grant_read(team->shared_memory, ca->actor_id);
+    shared_memory_grant_write(team->shared_memory, ca->actor_id);
+
+    pthread_mutex_unlock(&team->lock);
+
+    return idx;
+}
+
+// Share knowledge with team
+int64_t cognitive_team_share(int64_t team_ptr, int64_t ca_ptr, int64_t knowledge_ptr, double importance) {
+    CognitiveTeam* team = (CognitiveTeam*)team_ptr;
+    CognitiveActor* ca = (CognitiveActor*)ca_ptr;
+    if (!team || !ca) return 0;
+
+    // Store in shared memory
+    return shared_memory_remember(team->shared_memory, ca->actor_id, knowledge_ptr, importance);
+}
+
+// Get team size
+int64_t cognitive_team_size(int64_t team_ptr) {
+    CognitiveTeam* team = (CognitiveTeam*)team_ptr;
+    return team ? team->count : 0;
+}
+
+// Get shared memory
+int64_t cognitive_team_get_shared(int64_t team_ptr) {
+    CognitiveTeam* team = (CognitiveTeam*)team_ptr;
+    return team ? team->shared_memory : 0;
+}
+
+// Recall from team shared memory
+int64_t cognitive_team_recall(int64_t team_ptr, int64_t ca_ptr, int64_t goal_ptr) {
+    CognitiveTeam* team = (CognitiveTeam*)team_ptr;
+    CognitiveActor* ca = (CognitiveActor*)ca_ptr;
+    if (!team || !ca) return 0;
+
+    return shared_memory_recall(team->shared_memory, ca->actor_id, goal_ptr, 0);
+}
+
+// Close cognitive team
+void cognitive_team_close(int64_t team_ptr) {
+    CognitiveTeam* team = (CognitiveTeam*)team_ptr;
+    if (!team) return;
+
+    free(team->name);
+    free(team->actor_ptrs);
+    shared_memory_close(team->shared_memory);
+    pthread_mutex_destroy(&team->lock);
+    free(team);
+}
+
+// --------------------------------------------------------------------------
+// 4.10.4 Cognitive Actor Persistence
+// --------------------------------------------------------------------------
+
+// Save cognitive actor state (includes anima memory)
+int64_t cognitive_actor_save(int64_t ca_ptr, int64_t path_ptr) {
+    CognitiveActor* ca = (CognitiveActor*)ca_ptr;
+    SxString* path = (SxString*)path_ptr;
+    if (!ca || !path) return 0;
+
+    // Build path for anima memory
+    char anima_path[512];
+    snprintf(anima_path, sizeof(anima_path), "%s.anima", path->data);
+
+    // Save anima memory
+    int64_t anima_path_str = (int64_t)intrinsic_string_new(anima_path);
+    if (!anima_save(ca->anima, anima_path_str)) {
+        return 0;
+    }
+
+    // Save actor metadata
+    FILE* f = fopen(path->data, "w");
+    if (!f) return 0;
+
+    fprintf(f, "{\n");
+    fprintf(f, "  \"actor_id\": %ld,\n", (long)ca->actor_id);
+    fprintf(f, "  \"name\": \"%s\",\n", ca->name);
+    fprintf(f, "  \"personality\": \"%s\",\n", ca->personality);
+    fprintf(f, "  \"auto_learn\": %d,\n", ca->auto_learn);
+    fprintf(f, "  \"auto_remember\": %d,\n", ca->auto_remember);
+    fprintf(f, "  \"importance_threshold\": %.2f\n", ca->importance_threshold);
+    fprintf(f, "}\n");
+    fclose(f);
+
+    return 1;
+}
+
+// Load cognitive actor state
+int64_t cognitive_actor_load(int64_t path_ptr) {
+    SxString* path = (SxString*)path_ptr;
+    if (!path) return 0;
+
+    FILE* f = fopen(path->data, "r");
+    if (!f) return 0;
+
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    char* content = (char*)malloc(len + 1);
+    if (fread(content, 1, len, f) != (size_t)len) {
+        free(content);
+        fclose(f);
+        return 0;
+    }
+    content[len] = '\0';
+    fclose(f);
+
+    // Parse metadata (simple parsing)
+    ensure_cognitive_registry();
+
+    CognitiveActor* ca = (CognitiveActor*)calloc(1, sizeof(CognitiveActor));
+    pthread_mutex_init(&ca->lock, NULL);
+
+    // Parse actor_id
+    char* actor_id_pos = strstr(content, "\"actor_id\":");
+    if (actor_id_pos) {
+        ca->actor_id = atol(actor_id_pos + 12);
+    }
+
+    // Parse name
+    char* name_pos = strstr(content, "\"name\": \"");
+    if (name_pos) {
+        name_pos += 9;
+        char* end = strchr(name_pos, '"');
+        if (end) {
+            int name_len = (int)(end - name_pos);
+            ca->name = (char*)malloc(name_len + 1);
+            memcpy(ca->name, name_pos, name_len);
+            ca->name[name_len] = '\0';
+        }
+    }
+    if (!ca->name) ca->name = strdup("cognitive");
+
+    // Parse personality
+    char* pers_pos = strstr(content, "\"personality\": \"");
+    if (pers_pos) {
+        pers_pos += 16;
+        char* end = strchr(pers_pos, '"');
+        if (end) {
+            int pers_len = (int)(end - pers_pos);
+            ca->personality = (char*)malloc(pers_len + 1);
+            memcpy(ca->personality, pers_pos, pers_len);
+            ca->personality[pers_len] = '\0';
+        }
+    }
+    if (!ca->personality) ca->personality = strdup("You are a helpful AI assistant.");
+
+    // Parse auto_learn
+    char* auto_learn_pos = strstr(content, "\"auto_learn\":");
+    if (auto_learn_pos) {
+        ca->auto_learn = atoi(auto_learn_pos + 13);
+    } else {
+        ca->auto_learn = 1;
+    }
+
+    // Parse auto_remember
+    char* auto_rem_pos = strstr(content, "\"auto_remember\":");
+    if (auto_rem_pos) {
+        ca->auto_remember = atoi(auto_rem_pos + 16);
+    } else {
+        ca->auto_remember = 1;
+    }
+
+    // Parse importance_threshold
+    char* thresh_pos = strstr(content, "\"importance_threshold\":");
+    if (thresh_pos) {
+        ca->importance_threshold = atof(thresh_pos + 23);
+    } else {
+        ca->importance_threshold = 0.5;
+    }
+
+    free(content);
+
+    // Load anima memory
+    char anima_path[512];
+    snprintf(anima_path, sizeof(anima_path), "%s.anima", path->data);
+    int64_t anima_path_str = (int64_t)intrinsic_string_new(anima_path);
+    ca->anima = anima_load(anima_path_str);
+
+    if (!ca->anima) {
+        ca->anima = anima_memory_new(100);  // Create new if load failed
+    }
+
+    // Add to registry
+    pthread_mutex_lock(&global_cognitive_registry->lock);
+    if (global_cognitive_registry->count >= global_cognitive_registry->capacity) {
+        global_cognitive_registry->capacity *= 2;
+        global_cognitive_registry->actors = (CognitiveActor**)realloc(
+            global_cognitive_registry->actors,
+            global_cognitive_registry->capacity * sizeof(CognitiveActor*));
+    }
+    global_cognitive_registry->actors[global_cognitive_registry->count++] = ca;
+    pthread_mutex_unlock(&global_cognitive_registry->lock);
+
+    return (int64_t)ca;
+}
+
+// Close cognitive actor
+void cognitive_actor_close(int64_t ca_ptr) {
+    CognitiveActor* ca = (CognitiveActor*)ca_ptr;
+    if (!ca) return;
+
+    free(ca->name);
+    free(ca->personality);
+    anima_memory_close(ca->anima);
+    pthread_mutex_destroy(&ca->lock);
+    free(ca);
+}
+
+// Get cognitive actor info as JSON
+int64_t cognitive_actor_info(int64_t ca_ptr) {
+    CognitiveActor* ca = (CognitiveActor*)ca_ptr;
+    if (!ca) return 0;
+
+    char* result = (char*)malloc(1024);
+    pthread_mutex_lock(&ca->lock);
+    snprintf(result, 1024,
+            "{\"name\":\"%s\",\"actor_id\":%ld,"
+            "\"episodic_count\":%ld,\"semantic_count\":%ld,\"beliefs_count\":%ld,"
+            "\"auto_learn\":%s,\"auto_remember\":%s,\"importance_threshold\":%.2f}",
+            ca->name, (long)ca->actor_id,
+            (long)anima_episodic_count(ca->anima),
+            (long)anima_semantic_count(ca->anima),
+            (long)anima_beliefs_count(ca->anima),
+            ca->auto_learn ? "true" : "false",
+            ca->auto_remember ? "true" : "false",
+            ca->importance_threshold);
+    pthread_mutex_unlock(&ca->lock);
+
+    int64_t output = (int64_t)intrinsic_string_new(result);
+    free(result);
+    return output;
 }
 
 // ============================================================================
@@ -20036,4 +24049,1224 @@ int8_t int_hashset_is_subset(int64_t set_a_ptr, int64_t set_b_ptr) {
     }
     int_hashset_iter_free(iter);
     return 1;
+}
+
+// =============================================================================
+// Phase 4.11: Observability - Metrics, Tracing, and Logging
+// =============================================================================
+
+// Log levels
+typedef enum {
+    LOG_DEBUG = 0,
+    LOG_INFO = 1,
+    LOG_WARN = 2,
+    LOG_ERROR = 3,
+    LOG_FATAL = 4
+} LogLevel;
+
+// Metric types
+typedef enum {
+    METRIC_COUNTER = 0,
+    METRIC_GAUGE = 1,
+    METRIC_HISTOGRAM = 2
+} MetricType;
+
+// Span status
+typedef enum {
+    SPAN_STATUS_UNSET = 0,
+    SPAN_STATUS_OK = 1,
+    SPAN_STATUS_ERROR = 2
+} SpanStatus;
+
+// Label pair for metrics
+typedef struct MetricLabel {
+    char* key;
+    char* value;
+    struct MetricLabel* next;
+} MetricLabel;
+
+// Counter metric
+typedef struct {
+    char* name;
+    char* description;
+    double value;
+    MetricLabel* labels;
+    pthread_mutex_t lock;
+} Counter;
+
+// Gauge metric
+typedef struct {
+    char* name;
+    char* description;
+    double value;
+    MetricLabel* labels;
+    pthread_mutex_t lock;
+} Gauge;
+
+// Histogram bucket
+typedef struct {
+    double upper_bound;
+    int64_t count;
+} HistogramBucket;
+
+// Histogram metric
+typedef struct {
+    char* name;
+    char* description;
+    double sum;
+    int64_t count;
+    double min;
+    double max;
+    HistogramBucket* buckets;
+    size_t bucket_count;
+    MetricLabel* labels;
+    pthread_mutex_t lock;
+} Histogram;
+
+// Metrics registry
+typedef struct MetricEntry {
+    char* name;
+    MetricType type;
+    void* metric;
+    struct MetricEntry* next;
+} MetricEntry;
+
+typedef struct {
+    MetricEntry* metrics;
+    size_t count;
+    pthread_mutex_t lock;
+} MetricsRegistry;
+
+// Global metrics registry
+static MetricsRegistry* global_metrics_registry = NULL;
+
+// Span event
+typedef struct SpanEvent {
+    char* name;
+    int64_t timestamp;
+    MetricLabel* attributes;
+    struct SpanEvent* next;
+} SpanEvent;
+
+// Span
+typedef struct {
+    char* trace_id;
+    char* span_id;
+    char* parent_span_id;
+    char* name;
+    int64_t start_time;
+    int64_t end_time;
+    SpanStatus status;
+    char* status_message;
+    MetricLabel* attributes;
+    SpanEvent* events;
+    int ended;
+    pthread_mutex_t lock;
+} Span;
+
+// Trace context
+typedef struct {
+    char* trace_id;
+    char* span_id;
+} TraceContext;
+
+// Tracer
+typedef struct {
+    char* service_name;
+    Span** active_spans;
+    size_t span_count;
+    size_t span_cap;
+    pthread_mutex_t lock;
+} Tracer;
+
+// Log context field
+typedef struct LogField {
+    char* key;
+    char* value;
+    struct LogField* next;
+} LogField;
+
+// Logger
+typedef struct {
+    char* name;
+    LogLevel min_level;
+    int console_output;
+    int json_output;
+    FILE* file_output;
+    LogField* context;
+    pthread_mutex_t lock;
+} Logger;
+
+// Global logger
+static Logger* global_logger = NULL;
+
+// ==================== Metrics Functions ====================
+
+// Initialize metrics registry
+int64_t metrics_registry_new(void) {
+    MetricsRegistry* reg = malloc(sizeof(MetricsRegistry));
+    reg->metrics = NULL;
+    reg->count = 0;
+    pthread_mutex_init(&reg->lock, NULL);
+    global_metrics_registry = reg;
+    return (int64_t)reg;
+}
+
+// Get global metrics registry
+int64_t metrics_registry_global(void) {
+    if (!global_metrics_registry) {
+        return metrics_registry_new();
+    }
+    return (int64_t)global_metrics_registry;
+}
+
+// Create a counter
+int64_t counter_new(int64_t name_ptr, int64_t desc_ptr) {
+    Counter* c = malloc(sizeof(Counter));
+    SxString* name = (SxString*)name_ptr;
+    SxString* desc = (SxString*)desc_ptr;
+
+    c->name = strdup(name ? name->data : "unnamed");
+    c->description = strdup(desc ? desc->data : "");
+    c->value = 0;
+    c->labels = NULL;
+    pthread_mutex_init(&c->lock, NULL);
+
+    // Register with global registry
+    if (global_metrics_registry) {
+        pthread_mutex_lock(&global_metrics_registry->lock);
+        MetricEntry* entry = malloc(sizeof(MetricEntry));
+        entry->name = strdup(c->name);
+        entry->type = METRIC_COUNTER;
+        entry->metric = c;
+        entry->next = global_metrics_registry->metrics;
+        global_metrics_registry->metrics = entry;
+        global_metrics_registry->count++;
+        pthread_mutex_unlock(&global_metrics_registry->lock);
+    }
+
+    return (int64_t)c;
+}
+
+// Increment counter
+void counter_inc(int64_t counter_ptr) {
+    Counter* c = (Counter*)counter_ptr;
+    if (!c) return;
+    pthread_mutex_lock(&c->lock);
+    c->value += 1;
+    pthread_mutex_unlock(&c->lock);
+}
+
+// Add to counter
+void counter_add(int64_t counter_ptr, double value) {
+    Counter* c = (Counter*)counter_ptr;
+    if (!c || value < 0) return;  // Counters only increase
+    pthread_mutex_lock(&c->lock);
+    c->value += value;
+    pthread_mutex_unlock(&c->lock);
+}
+
+// Get counter value
+double counter_value(int64_t counter_ptr) {
+    Counter* c = (Counter*)counter_ptr;
+    if (!c) return 0;
+    pthread_mutex_lock(&c->lock);
+    double v = c->value;
+    pthread_mutex_unlock(&c->lock);
+    return v;
+}
+
+// Add label to counter
+void counter_add_label(int64_t counter_ptr, int64_t key_ptr, int64_t value_ptr) {
+    Counter* c = (Counter*)counter_ptr;
+    if (!c) return;
+    SxString* key = (SxString*)key_ptr;
+    SxString* value = (SxString*)value_ptr;
+
+    MetricLabel* label = malloc(sizeof(MetricLabel));
+    label->key = strdup(key ? key->data : "");
+    label->value = strdup(value ? value->data : "");
+
+    pthread_mutex_lock(&c->lock);
+    label->next = c->labels;
+    c->labels = label;
+    pthread_mutex_unlock(&c->lock);
+}
+
+// Create a gauge
+int64_t gauge_new(int64_t name_ptr, int64_t desc_ptr) {
+    Gauge* g = malloc(sizeof(Gauge));
+    SxString* name = (SxString*)name_ptr;
+    SxString* desc = (SxString*)desc_ptr;
+
+    g->name = strdup(name ? name->data : "unnamed");
+    g->description = strdup(desc ? desc->data : "");
+    g->value = 0;
+    g->labels = NULL;
+    pthread_mutex_init(&g->lock, NULL);
+
+    // Register with global registry
+    if (global_metrics_registry) {
+        pthread_mutex_lock(&global_metrics_registry->lock);
+        MetricEntry* entry = malloc(sizeof(MetricEntry));
+        entry->name = strdup(g->name);
+        entry->type = METRIC_GAUGE;
+        entry->metric = g;
+        entry->next = global_metrics_registry->metrics;
+        global_metrics_registry->metrics = entry;
+        global_metrics_registry->count++;
+        pthread_mutex_unlock(&global_metrics_registry->lock);
+    }
+
+    return (int64_t)g;
+}
+
+// Set gauge value
+void gauge_set(int64_t gauge_ptr, double value) {
+    Gauge* g = (Gauge*)gauge_ptr;
+    if (!g) return;
+    pthread_mutex_lock(&g->lock);
+    g->value = value;
+    pthread_mutex_unlock(&g->lock);
+}
+
+// Increment gauge
+void gauge_inc(int64_t gauge_ptr) {
+    Gauge* g = (Gauge*)gauge_ptr;
+    if (!g) return;
+    pthread_mutex_lock(&g->lock);
+    g->value += 1;
+    pthread_mutex_unlock(&g->lock);
+}
+
+// Decrement gauge
+void gauge_dec(int64_t gauge_ptr) {
+    Gauge* g = (Gauge*)gauge_ptr;
+    if (!g) return;
+    pthread_mutex_lock(&g->lock);
+    g->value -= 1;
+    pthread_mutex_unlock(&g->lock);
+}
+
+// Add to gauge
+void gauge_add(int64_t gauge_ptr, double value) {
+    Gauge* g = (Gauge*)gauge_ptr;
+    if (!g) return;
+    pthread_mutex_lock(&g->lock);
+    g->value += value;
+    pthread_mutex_unlock(&g->lock);
+}
+
+// Get gauge value
+double gauge_value(int64_t gauge_ptr) {
+    Gauge* g = (Gauge*)gauge_ptr;
+    if (!g) return 0;
+    pthread_mutex_lock(&g->lock);
+    double v = g->value;
+    pthread_mutex_unlock(&g->lock);
+    return v;
+}
+
+// Create a histogram with default buckets
+int64_t histogram_new(int64_t name_ptr, int64_t desc_ptr) {
+    Histogram* h = malloc(sizeof(Histogram));
+    SxString* name = (SxString*)name_ptr;
+    SxString* desc = (SxString*)desc_ptr;
+
+    h->name = strdup(name ? name->data : "unnamed");
+    h->description = strdup(desc ? desc->data : "");
+    h->sum = 0;
+    h->count = 0;
+    h->min = 0;
+    h->max = 0;
+    h->labels = NULL;
+    pthread_mutex_init(&h->lock, NULL);
+
+    // Default buckets: 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000 ms
+    double default_bounds[] = {5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000};
+    h->bucket_count = 11;
+    h->buckets = malloc(sizeof(HistogramBucket) * h->bucket_count);
+    for (size_t i = 0; i < h->bucket_count; i++) {
+        h->buckets[i].upper_bound = default_bounds[i];
+        h->buckets[i].count = 0;
+    }
+
+    // Register with global registry
+    if (global_metrics_registry) {
+        pthread_mutex_lock(&global_metrics_registry->lock);
+        MetricEntry* entry = malloc(sizeof(MetricEntry));
+        entry->name = strdup(h->name);
+        entry->type = METRIC_HISTOGRAM;
+        entry->metric = h;
+        entry->next = global_metrics_registry->metrics;
+        global_metrics_registry->metrics = entry;
+        global_metrics_registry->count++;
+        pthread_mutex_unlock(&global_metrics_registry->lock);
+    }
+
+    return (int64_t)h;
+}
+
+// Create histogram with custom buckets
+int64_t histogram_new_with_buckets(int64_t name_ptr, int64_t desc_ptr, int64_t buckets_ptr) {
+    Histogram* h = malloc(sizeof(Histogram));
+    SxString* name = (SxString*)name_ptr;
+    SxString* desc = (SxString*)desc_ptr;
+    SxVec* buckets = (SxVec*)buckets_ptr;
+
+    h->name = strdup(name ? name->data : "unnamed");
+    h->description = strdup(desc ? desc->data : "");
+    h->sum = 0;
+    h->count = 0;
+    h->min = 0;
+    h->max = 0;
+    h->labels = NULL;
+    pthread_mutex_init(&h->lock, NULL);
+
+    if (buckets && buckets->len > 0) {
+        h->bucket_count = buckets->len;
+        h->buckets = malloc(sizeof(HistogramBucket) * h->bucket_count);
+        for (size_t i = 0; i < h->bucket_count; i++) {
+            h->buckets[i].upper_bound = *(double*)buckets->items[i];
+            h->buckets[i].count = 0;
+        }
+    } else {
+        h->bucket_count = 0;
+        h->buckets = NULL;
+    }
+
+    return (int64_t)h;
+}
+
+// Observe a value in histogram
+void histogram_observe(int64_t histogram_ptr, double value) {
+    Histogram* h = (Histogram*)histogram_ptr;
+    if (!h) return;
+
+    pthread_mutex_lock(&h->lock);
+    h->sum += value;
+    h->count++;
+
+    if (h->count == 1) {
+        h->min = value;
+        h->max = value;
+    } else {
+        if (value < h->min) h->min = value;
+        if (value > h->max) h->max = value;
+    }
+
+    // Update buckets
+    for (size_t i = 0; i < h->bucket_count; i++) {
+        if (value <= h->buckets[i].upper_bound) {
+            h->buckets[i].count++;
+        }
+    }
+    pthread_mutex_unlock(&h->lock);
+}
+
+// Get histogram sum
+double histogram_sum(int64_t histogram_ptr) {
+    Histogram* h = (Histogram*)histogram_ptr;
+    if (!h) return 0;
+    return h->sum;
+}
+
+// Get histogram count
+int64_t histogram_count(int64_t histogram_ptr) {
+    Histogram* h = (Histogram*)histogram_ptr;
+    if (!h) return 0;
+    return h->count;
+}
+
+// Get histogram mean
+double histogram_mean(int64_t histogram_ptr) {
+    Histogram* h = (Histogram*)histogram_ptr;
+    if (!h || h->count == 0) return 0;
+    return h->sum / h->count;
+}
+
+// Get histogram min
+double histogram_min(int64_t histogram_ptr) {
+    Histogram* h = (Histogram*)histogram_ptr;
+    if (!h) return 0;
+    return h->min;
+}
+
+// Get histogram max
+double histogram_max(int64_t histogram_ptr) {
+    Histogram* h = (Histogram*)histogram_ptr;
+    if (!h) return 0;
+    return h->max;
+}
+
+// Get histogram as JSON
+int64_t histogram_to_json(int64_t histogram_ptr) {
+    Histogram* h = (Histogram*)histogram_ptr;
+    if (!h) return (int64_t)intrinsic_string_new("{}");
+
+    char buf[4096];
+    int offset = 0;
+
+    offset += snprintf(buf + offset, sizeof(buf) - offset,
+        "{\"name\":\"%s\",\"count\":%lld,\"sum\":%.2f,\"mean\":%.2f,\"min\":%.2f,\"max\":%.2f,\"buckets\":[",
+        h->name, (long long)h->count, h->sum,
+        h->count > 0 ? h->sum / h->count : 0, h->min, h->max);
+
+    for (size_t i = 0; i < h->bucket_count && offset < sizeof(buf) - 100; i++) {
+        if (i > 0) offset += snprintf(buf + offset, sizeof(buf) - offset, ",");
+        offset += snprintf(buf + offset, sizeof(buf) - offset,
+            "{\"le\":%.0f,\"count\":%lld}",
+            h->buckets[i].upper_bound, (long long)h->buckets[i].count);
+    }
+
+    offset += snprintf(buf + offset, sizeof(buf) - offset, "]}");
+    return (int64_t)intrinsic_string_new(buf);
+}
+
+// Get metrics count in registry
+int64_t metrics_registry_count(int64_t reg_ptr) {
+    MetricsRegistry* reg = (MetricsRegistry*)reg_ptr;
+    if (!reg) return 0;
+    return reg->count;
+}
+
+// Export all metrics as JSON
+int64_t metrics_export_json(int64_t reg_ptr) {
+    MetricsRegistry* reg = (MetricsRegistry*)reg_ptr;
+    if (!reg) return (int64_t)intrinsic_string_new("[]");
+
+    char* buf = malloc(65536);
+    int offset = 0;
+
+    offset += snprintf(buf + offset, 65536 - offset, "[");
+
+    pthread_mutex_lock(&reg->lock);
+    int first = 1;
+    for (MetricEntry* entry = reg->metrics; entry; entry = entry->next) {
+        if (!first) offset += snprintf(buf + offset, 65536 - offset, ",");
+        first = 0;
+
+        if (entry->type == METRIC_COUNTER) {
+            Counter* c = (Counter*)entry->metric;
+            offset += snprintf(buf + offset, 65536 - offset,
+                "{\"name\":\"%s\",\"type\":\"counter\",\"value\":%.2f}",
+                c->name, c->value);
+        } else if (entry->type == METRIC_GAUGE) {
+            Gauge* g = (Gauge*)entry->metric;
+            offset += snprintf(buf + offset, 65536 - offset,
+                "{\"name\":\"%s\",\"type\":\"gauge\",\"value\":%.2f}",
+                g->name, g->value);
+        } else if (entry->type == METRIC_HISTOGRAM) {
+            Histogram* h = (Histogram*)entry->metric;
+            offset += snprintf(buf + offset, 65536 - offset,
+                "{\"name\":\"%s\",\"type\":\"histogram\",\"count\":%lld,\"sum\":%.2f,\"mean\":%.2f}",
+                h->name, (long long)h->count, h->sum, h->count > 0 ? h->sum / h->count : 0);
+        }
+    }
+    pthread_mutex_unlock(&reg->lock);
+
+    offset += snprintf(buf + offset, 65536 - offset, "]");
+
+    SxString* result = intrinsic_string_new(buf);
+    free(buf);
+    return (int64_t)result;
+}
+
+// Export metrics in Prometheus format
+int64_t metrics_export_prometheus(int64_t reg_ptr) {
+    MetricsRegistry* reg = (MetricsRegistry*)reg_ptr;
+    if (!reg) return (int64_t)intrinsic_string_new("");
+
+    char* buf = malloc(65536);
+    int offset = 0;
+
+    pthread_mutex_lock(&reg->lock);
+    for (MetricEntry* entry = reg->metrics; entry; entry = entry->next) {
+        if (entry->type == METRIC_COUNTER) {
+            Counter* c = (Counter*)entry->metric;
+            offset += snprintf(buf + offset, 65536 - offset,
+                "# HELP %s %s\n# TYPE %s counter\n%s %.2f\n",
+                c->name, c->description, c->name, c->name, c->value);
+        } else if (entry->type == METRIC_GAUGE) {
+            Gauge* g = (Gauge*)entry->metric;
+            offset += snprintf(buf + offset, 65536 - offset,
+                "# HELP %s %s\n# TYPE %s gauge\n%s %.2f\n",
+                g->name, g->description, g->name, g->name, g->value);
+        } else if (entry->type == METRIC_HISTOGRAM) {
+            Histogram* h = (Histogram*)entry->metric;
+            offset += snprintf(buf + offset, 65536 - offset,
+                "# HELP %s %s\n# TYPE %s histogram\n",
+                h->name, h->description, h->name);
+            for (size_t i = 0; i < h->bucket_count; i++) {
+                offset += snprintf(buf + offset, 65536 - offset,
+                    "%s_bucket{le=\"%.0f\"} %lld\n",
+                    h->name, h->buckets[i].upper_bound, (long long)h->buckets[i].count);
+            }
+            offset += snprintf(buf + offset, 65536 - offset,
+                "%s_bucket{le=\"+Inf\"} %lld\n%s_sum %.2f\n%s_count %lld\n",
+                h->name, (long long)h->count, h->name, h->sum, h->name, (long long)h->count);
+        }
+    }
+    pthread_mutex_unlock(&reg->lock);
+
+    SxString* result = intrinsic_string_new(buf);
+    free(buf);
+    return (int64_t)result;
+}
+
+// Close metrics registry
+void metrics_registry_close(int64_t reg_ptr) {
+    MetricsRegistry* reg = (MetricsRegistry*)reg_ptr;
+    if (!reg) return;
+
+    pthread_mutex_lock(&reg->lock);
+    MetricEntry* entry = reg->metrics;
+    while (entry) {
+        MetricEntry* next = entry->next;
+        free(entry->name);
+        // Note: Individual metrics are not freed as they may still be in use
+        free(entry);
+        entry = next;
+    }
+    pthread_mutex_unlock(&reg->lock);
+    pthread_mutex_destroy(&reg->lock);
+
+    if (global_metrics_registry == reg) {
+        global_metrics_registry = NULL;
+    }
+    free(reg);
+}
+
+// ==================== Tracing Functions ====================
+
+// Generate a random trace/span ID (simple version)
+static char* generate_trace_id(void) {
+    char* id = malloc(33);
+    for (int i = 0; i < 32; i++) {
+        id[i] = "0123456789abcdef"[rand() % 16];
+    }
+    id[32] = '\0';
+    return id;
+}
+
+static char* generate_span_id(void) {
+    char* id = malloc(17);
+    for (int i = 0; i < 16; i++) {
+        id[i] = "0123456789abcdef"[rand() % 16];
+    }
+    id[16] = '\0';
+    return id;
+}
+
+// Create a new tracer
+int64_t tracer_new(int64_t service_name_ptr) {
+    Tracer* t = malloc(sizeof(Tracer));
+    SxString* name = (SxString*)service_name_ptr;
+
+    t->service_name = strdup(name ? name->data : "unknown");
+    t->span_count = 0;
+    t->span_cap = 16;
+    t->active_spans = malloc(sizeof(Span*) * t->span_cap);
+    pthread_mutex_init(&t->lock, NULL);
+
+    return (int64_t)t;
+}
+
+// Start a new span
+int64_t span_start(int64_t tracer_ptr, int64_t name_ptr) {
+    Tracer* t = (Tracer*)tracer_ptr;
+    SxString* name = (SxString*)name_ptr;
+
+    Span* span = malloc(sizeof(Span));
+    span->trace_id = generate_trace_id();
+    span->span_id = generate_span_id();
+    span->parent_span_id = NULL;
+    span->name = strdup(name ? name->data : "span");
+
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    span->start_time = tv.tv_sec * 1000000LL + tv.tv_usec;
+    span->end_time = 0;
+    span->status = SPAN_STATUS_UNSET;
+    span->status_message = NULL;
+    span->attributes = NULL;
+    span->events = NULL;
+    span->ended = 0;
+    pthread_mutex_init(&span->lock, NULL);
+
+    // Add to tracer's active spans
+    if (t) {
+        pthread_mutex_lock(&t->lock);
+        if (t->span_count >= t->span_cap) {
+            t->span_cap *= 2;
+            t->active_spans = realloc(t->active_spans, sizeof(Span*) * t->span_cap);
+        }
+        t->active_spans[t->span_count++] = span;
+        pthread_mutex_unlock(&t->lock);
+    }
+
+    return (int64_t)span;
+}
+
+// Start a child span
+int64_t span_start_child(int64_t tracer_ptr, int64_t parent_ptr, int64_t name_ptr) {
+    Span* parent = (Span*)parent_ptr;
+    SxString* name = (SxString*)name_ptr;
+
+    Span* span = malloc(sizeof(Span));
+    span->trace_id = parent ? strdup(parent->trace_id) : generate_trace_id();
+    span->span_id = generate_span_id();
+    span->parent_span_id = parent ? strdup(parent->span_id) : NULL;
+    span->name = strdup(name ? name->data : "span");
+
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    span->start_time = tv.tv_sec * 1000000LL + tv.tv_usec;
+    span->end_time = 0;
+    span->status = SPAN_STATUS_UNSET;
+    span->status_message = NULL;
+    span->attributes = NULL;
+    span->events = NULL;
+    span->ended = 0;
+    pthread_mutex_init(&span->lock, NULL);
+
+    // Add to tracer's active spans
+    Tracer* t = (Tracer*)tracer_ptr;
+    if (t) {
+        pthread_mutex_lock(&t->lock);
+        if (t->span_count >= t->span_cap) {
+            t->span_cap *= 2;
+            t->active_spans = realloc(t->active_spans, sizeof(Span*) * t->span_cap);
+        }
+        t->active_spans[t->span_count++] = span;
+        pthread_mutex_unlock(&t->lock);
+    }
+
+    return (int64_t)span;
+}
+
+// End a span
+void span_end(int64_t span_ptr) {
+    Span* span = (Span*)span_ptr;
+    if (!span || span->ended) return;
+
+    pthread_mutex_lock(&span->lock);
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    span->end_time = tv.tv_sec * 1000000LL + tv.tv_usec;
+    span->ended = 1;
+
+    if (span->status == SPAN_STATUS_UNSET) {
+        span->status = SPAN_STATUS_OK;
+    }
+    pthread_mutex_unlock(&span->lock);
+}
+
+// Set span status
+void span_set_status(int64_t span_ptr, int64_t status, int64_t message_ptr) {
+    Span* span = (Span*)span_ptr;
+    if (!span) return;
+
+    SxString* msg = (SxString*)message_ptr;
+
+    pthread_mutex_lock(&span->lock);
+    span->status = (SpanStatus)status;
+    if (span->status_message) free(span->status_message);
+    span->status_message = msg ? strdup(msg->data) : NULL;
+    pthread_mutex_unlock(&span->lock);
+}
+
+// Add attribute to span
+void span_set_attribute(int64_t span_ptr, int64_t key_ptr, int64_t value_ptr) {
+    Span* span = (Span*)span_ptr;
+    if (!span) return;
+
+    SxString* key = (SxString*)key_ptr;
+    SxString* value = (SxString*)value_ptr;
+
+    MetricLabel* attr = malloc(sizeof(MetricLabel));
+    attr->key = strdup(key ? key->data : "");
+    attr->value = strdup(value ? value->data : "");
+
+    pthread_mutex_lock(&span->lock);
+    attr->next = span->attributes;
+    span->attributes = attr;
+    pthread_mutex_unlock(&span->lock);
+}
+
+// Add event to span
+void span_add_event(int64_t span_ptr, int64_t name_ptr) {
+    Span* span = (Span*)span_ptr;
+    if (!span) return;
+
+    SxString* name = (SxString*)name_ptr;
+
+    SpanEvent* event = malloc(sizeof(SpanEvent));
+    event->name = strdup(name ? name->data : "event");
+
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    event->timestamp = tv.tv_sec * 1000000LL + tv.tv_usec;
+    event->attributes = NULL;
+
+    pthread_mutex_lock(&span->lock);
+    event->next = span->events;
+    span->events = event;
+    pthread_mutex_unlock(&span->lock);
+}
+
+// Get span duration in microseconds
+int64_t span_duration_us(int64_t span_ptr) {
+    Span* span = (Span*)span_ptr;
+    if (!span) return 0;
+
+    if (span->ended) {
+        return span->end_time - span->start_time;
+    } else {
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        int64_t now = tv.tv_sec * 1000000LL + tv.tv_usec;
+        return now - span->start_time;
+    }
+}
+
+// Get span trace ID
+int64_t span_trace_id(int64_t span_ptr) {
+    Span* span = (Span*)span_ptr;
+    if (!span) return (int64_t)intrinsic_string_new("");
+    return (int64_t)intrinsic_string_new(span->trace_id);
+}
+
+// Get span ID
+int64_t span_id(int64_t span_ptr) {
+    Span* span = (Span*)span_ptr;
+    if (!span) return (int64_t)intrinsic_string_new("");
+    return (int64_t)intrinsic_string_new(span->span_id);
+}
+
+// Export span as JSON
+int64_t span_to_json(int64_t span_ptr) {
+    Span* span = (Span*)span_ptr;
+    if (!span) return (int64_t)intrinsic_string_new("{}");
+
+    char buf[4096];
+    int offset = 0;
+
+    offset += snprintf(buf + offset, sizeof(buf) - offset,
+        "{\"trace_id\":\"%s\",\"span_id\":\"%s\",\"name\":\"%s\",\"start_time\":%lld,\"end_time\":%lld,\"duration_us\":%lld,\"status\":%d",
+        span->trace_id, span->span_id, span->name,
+        (long long)span->start_time, (long long)span->end_time,
+        (long long)(span->ended ? span->end_time - span->start_time : 0),
+        span->status);
+
+    if (span->parent_span_id) {
+        offset += snprintf(buf + offset, sizeof(buf) - offset,
+            ",\"parent_span_id\":\"%s\"", span->parent_span_id);
+    }
+
+    // Add attributes
+    offset += snprintf(buf + offset, sizeof(buf) - offset, ",\"attributes\":{");
+    int first = 1;
+    for (MetricLabel* attr = span->attributes; attr && offset < sizeof(buf) - 100; attr = attr->next) {
+        if (!first) offset += snprintf(buf + offset, sizeof(buf) - offset, ",");
+        first = 0;
+        offset += snprintf(buf + offset, sizeof(buf) - offset,
+            "\"%s\":\"%s\"", attr->key, attr->value);
+    }
+    offset += snprintf(buf + offset, sizeof(buf) - offset, "}");
+
+    // Add events
+    offset += snprintf(buf + offset, sizeof(buf) - offset, ",\"events\":[");
+    first = 1;
+    for (SpanEvent* event = span->events; event && offset < sizeof(buf) - 100; event = event->next) {
+        if (!first) offset += snprintf(buf + offset, sizeof(buf) - offset, ",");
+        first = 0;
+        offset += snprintf(buf + offset, sizeof(buf) - offset,
+            "{\"name\":\"%s\",\"timestamp\":%lld}", event->name, (long long)event->timestamp);
+    }
+    offset += snprintf(buf + offset, sizeof(buf) - offset, "]}");
+
+    return (int64_t)intrinsic_string_new(buf);
+}
+
+// Get active span count
+int64_t tracer_active_spans(int64_t tracer_ptr) {
+    Tracer* t = (Tracer*)tracer_ptr;
+    if (!t) return 0;
+
+    pthread_mutex_lock(&t->lock);
+    int64_t count = 0;
+    for (size_t i = 0; i < t->span_count; i++) {
+        if (!t->active_spans[i]->ended) count++;
+    }
+    pthread_mutex_unlock(&t->lock);
+
+    return count;
+}
+
+// Close span
+void span_close(int64_t span_ptr) {
+    Span* span = (Span*)span_ptr;
+    if (!span) return;
+
+    if (!span->ended) span_end(span_ptr);
+
+    free(span->trace_id);
+    free(span->span_id);
+    if (span->parent_span_id) free(span->parent_span_id);
+    free(span->name);
+    if (span->status_message) free(span->status_message);
+
+    // Free attributes
+    MetricLabel* attr = span->attributes;
+    while (attr) {
+        MetricLabel* next = attr->next;
+        free(attr->key);
+        free(attr->value);
+        free(attr);
+        attr = next;
+    }
+
+    // Free events
+    SpanEvent* event = span->events;
+    while (event) {
+        SpanEvent* next = event->next;
+        free(event->name);
+        free(event);
+        event = next;
+    }
+
+    pthread_mutex_destroy(&span->lock);
+    free(span);
+}
+
+// Close tracer
+void tracer_close(int64_t tracer_ptr) {
+    Tracer* t = (Tracer*)tracer_ptr;
+    if (!t) return;
+
+    free(t->service_name);
+    free(t->active_spans);  // Individual spans should be closed separately
+    pthread_mutex_destroy(&t->lock);
+    free(t);
+}
+
+// ==================== Logging Functions ====================
+
+// Get current timestamp string
+static char* get_timestamp(void) {
+    time_t now = time(NULL);
+    struct tm* tm_info = localtime(&now);
+    char* buf = malloc(32);
+    strftime(buf, 32, "%Y-%m-%dT%H:%M:%S", tm_info);
+    return buf;
+}
+
+// Get log level name
+static const char* log_level_name(LogLevel level) {
+    switch (level) {
+        case LOG_DEBUG: return "DEBUG";
+        case LOG_INFO: return "INFO";
+        case LOG_WARN: return "WARN";
+        case LOG_ERROR: return "ERROR";
+        case LOG_FATAL: return "FATAL";
+        default: return "UNKNOWN";
+    }
+}
+
+// Create a new logger
+int64_t logger_new(int64_t name_ptr) {
+    Logger* l = malloc(sizeof(Logger));
+    SxString* name = (SxString*)name_ptr;
+
+    l->name = strdup(name ? name->data : "app");
+    l->min_level = LOG_INFO;
+    l->console_output = 1;
+    l->json_output = 0;
+    l->file_output = NULL;
+    l->context = NULL;
+    pthread_mutex_init(&l->lock, NULL);
+
+    return (int64_t)l;
+}
+
+// Get or create global logger
+int64_t logger_global(void) {
+    if (!global_logger) {
+        global_logger = (Logger*)logger_new((int64_t)intrinsic_string_new("global"));
+    }
+    return (int64_t)global_logger;
+}
+
+// Set minimum log level
+void logger_set_level(int64_t logger_ptr, int64_t level) {
+    Logger* l = (Logger*)logger_ptr;
+    if (!l) return;
+    l->min_level = (LogLevel)level;
+}
+
+// Enable/disable console output
+void logger_set_console(int64_t logger_ptr, int64_t enabled) {
+    Logger* l = (Logger*)logger_ptr;
+    if (!l) return;
+    l->console_output = enabled ? 1 : 0;
+}
+
+// Enable/disable JSON output
+void logger_set_json(int64_t logger_ptr, int64_t enabled) {
+    Logger* l = (Logger*)logger_ptr;
+    if (!l) return;
+    l->json_output = enabled ? 1 : 0;
+}
+
+// Set file output
+void logger_set_file(int64_t logger_ptr, int64_t path_ptr) {
+    Logger* l = (Logger*)logger_ptr;
+    if (!l) return;
+
+    SxString* path = (SxString*)path_ptr;
+    if (l->file_output) {
+        fclose(l->file_output);
+    }
+    l->file_output = path ? fopen(path->data, "a") : NULL;
+}
+
+// Add context field to logger
+void logger_add_context(int64_t logger_ptr, int64_t key_ptr, int64_t value_ptr) {
+    Logger* l = (Logger*)logger_ptr;
+    if (!l) return;
+
+    SxString* key = (SxString*)key_ptr;
+    SxString* value = (SxString*)value_ptr;
+
+    LogField* field = malloc(sizeof(LogField));
+    field->key = strdup(key ? key->data : "");
+    field->value = strdup(value ? value->data : "");
+
+    pthread_mutex_lock(&l->lock);
+    field->next = l->context;
+    l->context = field;
+    pthread_mutex_unlock(&l->lock);
+}
+
+// Internal log function
+static void log_message(Logger* l, LogLevel level, const char* message, LogField* extra_fields) {
+    if (!l || level < l->min_level) return;
+
+    pthread_mutex_lock(&l->lock);
+
+    char* timestamp = get_timestamp();
+
+    if (l->json_output) {
+        // JSON format
+        char buf[4096];
+        int offset = 0;
+
+        offset += snprintf(buf + offset, sizeof(buf) - offset,
+            "{\"timestamp\":\"%s\",\"level\":\"%s\",\"logger\":\"%s\",\"message\":\"%s\"",
+            timestamp, log_level_name(level), l->name, message);
+
+        // Add context fields
+        for (LogField* f = l->context; f && offset < sizeof(buf) - 100; f = f->next) {
+            offset += snprintf(buf + offset, sizeof(buf) - offset,
+                ",\"%s\":\"%s\"", f->key, f->value);
+        }
+
+        // Add extra fields
+        for (LogField* f = extra_fields; f && offset < sizeof(buf) - 100; f = f->next) {
+            offset += snprintf(buf + offset, sizeof(buf) - offset,
+                ",\"%s\":\"%s\"", f->key, f->value);
+        }
+
+        offset += snprintf(buf + offset, sizeof(buf) - offset, "}");
+
+        if (l->console_output) {
+            printf("%s\n", buf);
+        }
+        if (l->file_output) {
+            fprintf(l->file_output, "%s\n", buf);
+            fflush(l->file_output);
+        }
+    } else {
+        // Text format
+        char buf[4096];
+        int offset = 0;
+
+        offset += snprintf(buf + offset, sizeof(buf) - offset,
+            "%s [%s] %s: %s", timestamp, log_level_name(level), l->name, message);
+
+        // Add extra fields
+        for (LogField* f = extra_fields; f && offset < sizeof(buf) - 100; f = f->next) {
+            offset += snprintf(buf + offset, sizeof(buf) - offset,
+                " %s=%s", f->key, f->value);
+        }
+
+        if (l->console_output) {
+            printf("%s\n", buf);
+        }
+        if (l->file_output) {
+            fprintf(l->file_output, "%s\n", buf);
+            fflush(l->file_output);
+        }
+    }
+
+    free(timestamp);
+    pthread_mutex_unlock(&l->lock);
+}
+
+// Log at debug level
+void log_debug(int64_t logger_ptr, int64_t message_ptr) {
+    Logger* l = (Logger*)logger_ptr;
+    SxString* msg = (SxString*)message_ptr;
+    log_message(l, LOG_DEBUG, msg ? msg->data : "", NULL);
+}
+
+// Log at info level
+void log_info(int64_t logger_ptr, int64_t message_ptr) {
+    Logger* l = (Logger*)logger_ptr;
+    SxString* msg = (SxString*)message_ptr;
+    log_message(l, LOG_INFO, msg ? msg->data : "", NULL);
+}
+
+// Log at warn level
+void log_warn(int64_t logger_ptr, int64_t message_ptr) {
+    Logger* l = (Logger*)logger_ptr;
+    SxString* msg = (SxString*)message_ptr;
+    log_message(l, LOG_WARN, msg ? msg->data : "", NULL);
+}
+
+// Log at error level
+void log_error(int64_t logger_ptr, int64_t message_ptr) {
+    Logger* l = (Logger*)logger_ptr;
+    SxString* msg = (SxString*)message_ptr;
+    log_message(l, LOG_ERROR, msg ? msg->data : "", NULL);
+}
+
+// Log at fatal level
+void log_fatal(int64_t logger_ptr, int64_t message_ptr) {
+    Logger* l = (Logger*)logger_ptr;
+    SxString* msg = (SxString*)message_ptr;
+    log_message(l, LOG_FATAL, msg ? msg->data : "", NULL);
+}
+
+// Log with extra field
+void log_with_field(int64_t logger_ptr, int64_t level, int64_t message_ptr, int64_t key_ptr, int64_t value_ptr) {
+    Logger* l = (Logger*)logger_ptr;
+    SxString* msg = (SxString*)message_ptr;
+    SxString* key = (SxString*)key_ptr;
+    SxString* value = (SxString*)value_ptr;
+
+    LogField field;
+    field.key = key ? key->data : "";
+    field.value = value ? value->data : "";
+    field.next = NULL;
+
+    log_message(l, (LogLevel)level, msg ? msg->data : "", &field);
+}
+
+// Log with span context
+void log_with_span(int64_t logger_ptr, int64_t level, int64_t message_ptr, int64_t span_ptr) {
+    Logger* l = (Logger*)logger_ptr;
+    SxString* msg = (SxString*)message_ptr;
+    Span* span = (Span*)span_ptr;
+
+    if (!span) {
+        log_message(l, (LogLevel)level, msg ? msg->data : "", NULL);
+        return;
+    }
+
+    LogField trace_field;
+    trace_field.key = "trace_id";
+    trace_field.value = span->trace_id;
+
+    LogField span_field;
+    span_field.key = "span_id";
+    span_field.value = span->span_id;
+    span_field.next = NULL;
+
+    trace_field.next = &span_field;
+
+    log_message(l, (LogLevel)level, msg ? msg->data : "", &trace_field);
+}
+
+// Close logger
+void logger_close(int64_t logger_ptr) {
+    Logger* l = (Logger*)logger_ptr;
+    if (!l) return;
+
+    if (l->file_output) {
+        fclose(l->file_output);
+    }
+
+    // Free context fields
+    LogField* field = l->context;
+    while (field) {
+        LogField* next = field->next;
+        free(field->key);
+        free(field->value);
+        free(field);
+        field = next;
+    }
+
+    free(l->name);
+    pthread_mutex_destroy(&l->lock);
+
+    if (global_logger == l) {
+        global_logger = NULL;
+    }
+    free(l);
+}
+
+// ==================== Convenience Functions ====================
+
+// Quick timer for measuring execution time
+typedef struct {
+    int64_t start_time;
+    char* name;
+} Timer;
+
+int64_t timer_start(int64_t name_ptr) {
+    Timer* t = malloc(sizeof(Timer));
+    SxString* name = (SxString*)name_ptr;
+
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    t->start_time = tv.tv_sec * 1000000LL + tv.tv_usec;
+    t->name = strdup(name ? name->data : "timer");
+
+    return (int64_t)t;
+}
+
+int64_t timer_elapsed_us(int64_t timer_ptr) {
+    Timer* t = (Timer*)timer_ptr;
+    if (!t) return 0;
+
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    int64_t now = tv.tv_sec * 1000000LL + tv.tv_usec;
+    return now - t->start_time;
+}
+
+int64_t timer_elapsed_ms(int64_t timer_ptr) {
+    return timer_elapsed_us(timer_ptr) / 1000;
+}
+
+double timer_elapsed_s(int64_t timer_ptr) {
+    return timer_elapsed_us(timer_ptr) / 1000000.0;
+}
+
+void timer_close(int64_t timer_ptr) {
+    Timer* t = (Timer*)timer_ptr;
+    if (!t) return;
+    free(t->name);
+    free(t);
+}
+
+// Record timer value to histogram
+void timer_record_to(int64_t timer_ptr, int64_t histogram_ptr) {
+    Timer* t = (Timer*)timer_ptr;
+    if (!t) return;
+
+    double elapsed_ms = timer_elapsed_us(timer_ptr) / 1000.0;
+    histogram_observe(histogram_ptr, elapsed_ms);
 }

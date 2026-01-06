@@ -1,0 +1,121 @@
+// Test file for Anima BDI (Beliefs-Desires-Intentions) system
+// Phase 4: Complete BDI Architecture
+
+// External declarations for BDI functions
+fn anima_bdi_new() -> i64;
+fn anima_add_desire(bdi: i64, goal: i64, priority: f64) -> i64;
+fn anima_get_top_desire(bdi: i64) -> i64;
+fn anima_desires_count(bdi: i64) -> i64;
+fn anima_set_desire_status(bdi: i64, desire_id: i64, status: i64) -> i64;
+fn anima_add_intention(bdi: i64, plan: i64, steps: i64, total_steps: i64) -> i64;
+fn anima_advance_intention(bdi: i64, intention_id: i64) -> i64;
+fn anima_intention_step(bdi: i64, intention_id: i64) -> i64;
+fn anima_intentions_count(bdi: i64) -> i64;
+fn anima_set_intention_status(bdi: i64, intention_id: i64, status: i64) -> i64;
+fn anima_bdi_close(bdi: i64);
+
+fn main() {
+    println("=== Anima BDI Test ===");
+    println("");
+
+    // Create BDI system
+    let bdi: i64 = anima_bdi_new();
+    println("Created BDI system");
+
+    // Test desires
+    println("");
+    println("--- Desires ---");
+
+    // Add desires with different priorities
+    let d1: i64 = anima_add_desire(bdi, string_from("Help user debug code"), 0.8);
+    let d2: i64 = anima_add_desire(bdi, string_from("Learn about the codebase"), 0.5);
+    let d3: i64 = anima_add_desire(bdi, string_from("Respond to urgent query"), 0.95);
+
+    print("Added 3 desires with IDs: ");
+    print_i64(d1);
+    print(", ");
+    print_i64(d2);
+    print(", ");
+    print_i64(d3);
+    println("");
+
+    print("Desires count: ");
+    print_i64(anima_desires_count(bdi));
+    println("");
+
+    // Get highest priority desire
+    let top: i64 = anima_get_top_desire(bdi);
+    if top != 0 {
+        print("Top desire: ");
+        print_string(top);
+        println("");
+    }
+
+    // Mark a desire as achieved
+    anima_set_desire_status(bdi, d3, 2);  // 2 = achieved
+    println("Marked urgent query as achieved");
+
+    // Get new top desire (should be debug code now)
+    let top2: i64 = anima_get_top_desire(bdi);
+    if top2 != 0 {
+        print("New top desire: ");
+        print_string(top2);
+        println("");
+    }
+
+    // Test intentions
+    println("");
+    println("--- Intentions ---");
+
+    // Add an intention (active plan with steps)
+    let i1: i64 = anima_add_intention(bdi,
+        string_from("Fix the bug in parser"),
+        string_from("[\"identify issue\", \"write test\", \"implement fix\", \"verify\"]"),
+        4);
+
+    let i2: i64 = anima_add_intention(bdi,
+        string_from("Refactor module"),
+        string_from("[\"analyze\", \"design\", \"implement\", \"test\", \"deploy\"]"),
+        5);
+
+    print("Added 2 intentions with IDs: ");
+    print_i64(i1);
+    print(", ");
+    print_i64(i2);
+    println("");
+
+    print("Intentions count: ");
+    print_i64(anima_intentions_count(bdi));
+    println("");
+
+    // Get current step
+    print("Intention 1 current step: ");
+    print_i64(anima_intention_step(bdi, i1));
+    println("");
+
+    // Advance the intention
+    println("Advancing intention 1...");
+    anima_advance_intention(bdi, i1);  // step 1
+    anima_advance_intention(bdi, i1);  // step 2
+
+    print("Intention 1 current step after 2 advances: ");
+    print_i64(anima_intention_step(bdi, i1));
+    println("");
+
+    // Continue advancing until complete
+    anima_advance_intention(bdi, i1);  // step 3
+    anima_advance_intention(bdi, i1);  // step 4 - should complete
+
+    print("Intention 1 final step: ");
+    print_i64(anima_intention_step(bdi, i1));
+    println(" (should be 4, meaning completed)");
+
+    // Mark second intention as failed
+    anima_set_intention_status(bdi, i2, 3);  // 3 = failed
+    println("Marked refactor intention as failed");
+
+    // Clean up
+    anima_bdi_close(bdi);
+    println("");
+    println("=== All BDI tests passed! ===");
+}

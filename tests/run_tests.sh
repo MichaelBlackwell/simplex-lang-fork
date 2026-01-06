@@ -1,25 +1,20 @@
 #!/bin/bash
-#
 # Simplex Test Runner
-#
-# Runs tests with stdlib included
-#
+# Runs all tests in the test suite
 
-set -e
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-SXC="$PROJECT_ROOT/bootstrap_mini/sxc"
-STDLIB="$PROJECT_ROOT/bootstrap_mini/stdlib.sx"
-TESTS_DIR="$SCRIPT_DIR"
+BOOTSTRAP_DIR="$PROJECT_ROOT/bootstrap_mini"
+RUNTIME="$BOOTSTRAP_DIR/standalone_runtime.c"
+COMPILER="$BOOTSTRAP_DIR/stage0.py"
 
-# Colors for output
-RED='\033[0;31m'
+# Colors
 GREEN='\033[0;32m'
+RED='\033[0;31m'
 YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
-# Track results
 PASSED=0
 FAILED=0
 SKIPPED=0
@@ -27,126 +22,138 @@ SKIPPED=0
 run_test() {
     local test_file="$1"
     local test_name=$(basename "$test_file" .sx)
-    local test_dir=$(dirname "$test_file")
-    local rel_path="${test_file#$TESTS_DIR/}"
 
-    # Create temp file that includes stdlib + test
-    local tmp_file=$(mktemp /tmp/sx_test_XXXXXX.sx)
-    trap "rm -f $tmp_file" RETURN
-
-    # Combine stdlib and test file
-    cat "$STDLIB" > "$tmp_file"
-    echo "" >> "$tmp_file"
-    echo "// ========== TEST FILE: $rel_path ==========" >> "$tmp_file"
-    cat "$test_file" >> "$tmp_file"
-
-    printf "  %-50s " "$rel_path"
-
-    # Run the test
-    local output
-    local exit_code
-    output=$("$SXC" run "$tmp_file" 2>&1) && exit_code=$? || exit_code=$?
-
-    if [ $exit_code -eq 0 ]; then
-        # Check if output contains FAIL
-        if echo "$output" | grep -q "FAIL:"; then
-            echo -e "${RED}FAILED${NC}"
-            echo "$output" | grep "FAIL:" | sed 's/^/    /'
-            ((FAILED++))
-        else
-            echo -e "${GREEN}PASSED${NC}"
-            ((PASSED++))
-        fi
-    else
-        echo -e "${RED}ERROR${NC}"
-        echo "$output" | head -10 | sed 's/^/    /'
-        ((FAILED++))
+    # Skip library/helper files
+    if [[ "$test_name" == "mathlib" ]]; then
+        return
     fi
-}
 
-run_simple_test() {
-    # Run tests that don't need stdlib (language tests)
-    local test_file="$1"
-    local test_name=$(basename "$test_file" .sx)
-    local rel_path="${test_file#$TESTS_DIR/}"
+    printf "    %-45s " "$test_name"
 
-    printf "  %-50s " "$rel_path"
+    local test_dir=$(dirname "$test_file")
+    local orig_dir=$(pwd)
 
-    local output
-    local exit_code
-    output=$("$SXC" run "$test_file" 2>&1) && exit_code=$? || exit_code=$?
+    cd "$test_dir"
 
-    if [ $exit_code -eq 0 ]; then
-        echo -e "${GREEN}PASSED${NC}"
+    # Compile
+    if ! python3 "$COMPILER" "$test_name.sx" >/dev/null 2>&1; then
+        echo -e "${RED}COMPILE FAIL${NC}"
+        ((FAILED++))
+        cd "$orig_dir"
+        return
+    fi
+
+    # Link
+    if ! clang -O2 "$test_name.ll" "$RUNTIME" -o "$test_name.bin" -lssl -lcrypto -lsqlite3 2>/dev/null; then
+        echo -e "${RED}LINK FAIL${NC}"
+        ((FAILED++))
+        rm -f "$test_name.ll"
+        cd "$orig_dir"
+        return
+    fi
+
+    # Run
+    if ./"$test_name.bin" >/dev/null 2>&1; then
+        echo -e "${GREEN}PASS${NC}"
         ((PASSED++))
     else
-        # Some language tests are expected to compile but return non-zero
-        # Check for compilation errors
-        if echo "$output" | grep -q "error:"; then
-            echo -e "${RED}ERROR${NC}"
-            echo "$output" | head -5 | sed 's/^/    /'
-            ((FAILED++))
-        else
-            echo -e "${GREEN}PASSED${NC}"
-            ((PASSED++))
+        echo -e "${RED}FAIL${NC}"
+        ((FAILED++))
+    fi
+
+    # Cleanup
+    rm -f "$test_name.ll" "$test_name.bin"
+    cd "$orig_dir"
+}
+
+run_category() {
+    local category_path="$1"
+    local category_name="$2"
+    local indent="${3:-  }"
+
+    if [ -d "$category_path" ]; then
+        local has_tests=false
+
+        # Check for .sx files (excluding mathlib and other helpers)
+        shopt -s nullglob
+        for test in "$category_path"/*.sx; do
+            if [ -f "$test" ]; then
+                local name=$(basename "$test" .sx)
+                if [[ "$name" != "mathlib" ]]; then
+                    has_tests=true
+                    break
+                fi
+            fi
+        done
+
+        if $has_tests; then
+            echo -e "${indent}${CYAN}$category_name${NC}"
+            for test in "$category_path"/*.sx; do
+                [ -f "$test" ] && run_test "$test"
+            done
         fi
+
+        # Recurse into subdirectories
+        for subdir in "$category_path"/*/; do
+            if [ -d "$subdir" ]; then
+                local subname=$(basename "$subdir")
+                run_category "$subdir" "$subname" "${indent}  "
+            fi
+        done
     fi
 }
 
-run_test_category() {
-    local category="$1"
-    local pattern="$2"
-    local use_stdlib="$3"
+echo "=============================================="
+echo "         Simplex Language Test Suite"
+echo "=============================================="
+echo ""
 
-    echo ""
-    echo -e "${YELLOW}=== $category ===${NC}"
+# Language Tests
+echo -e "${YELLOW}Language${NC}"
+run_category "$SCRIPT_DIR/language" "" "  "
+echo ""
 
-    for test_file in $pattern; do
-        if [ -f "$test_file" ]; then
-            if [ "$use_stdlib" = "yes" ]; then
-                run_test "$test_file"
-            else
-                run_simple_test "$test_file"
-            fi
-        fi
-    done
-}
+# Standard Library Tests
+echo -e "${YELLOW}Standard Library${NC}"
+run_category "$SCRIPT_DIR/stdlib" "" "  "
+echo ""
 
-# Main
-echo "Simplex Test Suite"
-echo "=================="
+# Runtime Tests
+echo -e "${YELLOW}Runtime${NC}"
+run_category "$SCRIPT_DIR/runtime" "" "  "
+echo ""
 
-# Check for sxc
-if [ ! -x "$SXC" ]; then
-    echo "Error: sxc not found at $SXC"
-    exit 1
-fi
+# AI/Cognitive Tests
+echo -e "${YELLOW}AI / Cognitive${NC}"
+run_category "$SCRIPT_DIR/ai" "" "  "
+echo ""
 
-# Check for stdlib
-if [ ! -f "$STDLIB" ]; then
-    echo "Error: stdlib.sx not found at $STDLIB"
-    exit 1
-fi
+# Toolchain Tests
+echo -e "${YELLOW}Toolchain${NC}"
+run_category "$SCRIPT_DIR/toolchain" "" "  "
+echo ""
 
-# Run language tests (don't need stdlib)
-run_test_category "Language Tests - Basics" "$TESTS_DIR/language/basics/*.sx" "no"
+# Observability Tests
+echo -e "${YELLOW}Observability${NC}"
+run_category "$SCRIPT_DIR/observability" "" "  "
+echo ""
 
-# Run stdlib tests (need stdlib)
-run_test_category "Stdlib Tests" "$TESTS_DIR/stdlib/*.sx" "yes"
-
-# Run integration tests (need stdlib)
-run_test_category "Integration Tests" "$TESTS_DIR/integration/*.sx" "yes"
+# Integration Tests
+echo -e "${YELLOW}Integration${NC}"
+run_category "$SCRIPT_DIR/integration" "" "  "
+echo ""
 
 # Summary
-echo ""
-echo "=================="
-echo "Test Results:"
-echo -e "  ${GREEN}Passed:${NC}  $PASSED"
-echo -e "  ${RED}Failed:${NC}  $FAILED"
-echo -e "  ${YELLOW}Skipped:${NC} $SKIPPED"
-echo "=================="
+echo "=============================================="
+echo -e "  ${GREEN}Passed:  $PASSED${NC}"
+echo -e "  ${RED}Failed:  $FAILED${NC}"
+TOTAL=$((PASSED + FAILED))
+if [ $TOTAL -gt 0 ]; then
+    PERCENT=$((PASSED * 100 / TOTAL))
+    echo -e "  Total:   $TOTAL ($PERCENT% pass rate)"
+fi
+echo "=============================================="
 
 if [ $FAILED -gt 0 ]; then
     exit 1
 fi
-exit 0

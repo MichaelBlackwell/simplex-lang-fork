@@ -1,0 +1,148 @@
+// Test file for anima cognitive memory system
+// Phase 4: Cognitive Memory Architecture
+
+// External declarations for the anima memory functions
+fn anima_memory_new(capacity: i64) -> i64;
+fn anima_remember(mem: i64, content: i64, importance: f64) -> i64;
+fn anima_learn(mem: i64, content: i64, confidence: f64, source: i64) -> i64;
+fn anima_store_procedure(mem: i64, name: i64, steps: i64) -> i64;
+fn anima_believe(mem: i64, content: i64, confidence: f64, evidence: i64) -> i64;
+fn anima_revise_belief(mem: i64, belief_id: i64, confidence: f64, evidence: i64) -> i64;
+fn anima_working_push(mem: i64, item: i64) -> i64;
+fn anima_working_pop(mem: i64) -> i64;
+fn anima_working_context(mem: i64) -> i64;
+fn anima_recall_for_goal(mem: i64, goal: i64, context: i64, max: i64) -> i64;
+fn anima_episodic_count(mem: i64) -> i64;
+fn anima_semantic_count(mem: i64) -> i64;
+fn anima_beliefs_count(mem: i64) -> i64;
+fn anima_working_count(mem: i64) -> i64;
+fn anima_consolidate(mem: i64) -> i64;
+fn anima_memory_close(mem: i64) -> i64;
+
+fn main() {
+    println("=== Anima Cognitive Memory Test ===");
+    println("");
+
+    // Create anima memory with working memory capacity of 5
+    let mem: i64 = anima_memory_new(5);
+    println("Created anima memory system");
+
+    // Test episodic memory (remember experiences)
+    println("");
+    println("--- Episodic Memory ---");
+    let exp1: i64 = anima_remember(mem, string_from("User asked about error handling"), 0.8);
+    let exp2: i64 = anima_remember(mem, string_from("Debugged a null pointer issue"), 0.9);
+    let exp3: i64 = anima_remember(mem, string_from("Low priority log message"), 0.2);
+    print("Stored 3 experiences, IDs: ");
+    print_i64(exp1);
+    print(", ");
+    print_i64(exp2);
+    print(", ");
+    print_i64(exp3);
+    println("");
+    print("Episodic count: ");
+    print_i64(anima_episodic_count(mem));
+    println("");
+
+    // Test semantic memory (learn facts)
+    println("");
+    println("--- Semantic Memory ---");
+    let fact1: i64 = anima_learn(mem, string_from("Simplex uses actors for concurrency"), 0.95, string_from("documentation"));
+    let fact2: i64 = anima_learn(mem, string_from("Error handling uses Result type"), 0.9, string_from("code analysis"));
+    let fact3: i64 = anima_learn(mem, string_from("Low confidence speculation"), 0.3, 0);
+    print("Stored 3 facts, IDs: ");
+    print_i64(fact1);
+    print(", ");
+    print_i64(fact2);
+    print(", ");
+    print_i64(fact3);
+    println("");
+    print("Semantic count: ");
+    print_i64(anima_semantic_count(mem));
+    println("");
+
+    // Test procedural memory (store skills)
+    println("");
+    println("--- Procedural Memory ---");
+    let proc1: i64 = anima_store_procedure(mem, string_from("handle_api_error"), string_from("[\"check status\", \"log error\", \"retry\"]"));
+    print("Stored procedure, ID: ");
+    print_i64(proc1);
+    println("");
+
+    // Test belief system
+    println("");
+    println("--- Belief System ---");
+    let belief1: i64 = anima_believe(mem, string_from("User prefers verbose output"), 0.7, string_from("[\"user said 'show details'\"]"));
+    print("Stored belief, ID: ");
+    print_i64(belief1);
+    println("");
+    print("Beliefs count: ");
+    print_i64(anima_beliefs_count(mem));
+    println("");
+
+    // Revise belief with new evidence
+    anima_revise_belief(mem, belief1, 0.3, string_from("[\"user said 'too much output'\"]"));
+    println("Revised belief confidence to 0.3");
+
+    // Test working memory
+    println("");
+    println("--- Working Memory ---");
+    anima_working_push(mem, string_from("Current task: review code"));
+    anima_working_push(mem, string_from("User context: debugging"));
+    anima_working_push(mem, string_from("Last message: help me fix this"));
+    print("Working memory count: ");
+    print_i64(anima_working_count(mem));
+    println("");
+
+    // Test working memory overflow
+    anima_working_push(mem, string_from("Item 4"));
+    anima_working_push(mem, string_from("Item 5"));
+    anima_working_push(mem, string_from("Item 6 - should push out oldest"));
+    print("After overflow, working count: ");
+    print_i64(anima_working_count(mem));
+    println("");
+
+    // Pop from working memory
+    let popped: i64 = anima_working_pop(mem);
+    println("Popped item from working memory");
+    print("Working count after pop: ");
+    print_i64(anima_working_count(mem));
+    println("");
+
+    // Test goal-directed recall
+    println("");
+    println("--- Goal-Directed Recall ---");
+    let goal: i64 = string_from("error");
+    let results: i64 = anima_recall_for_goal(mem, goal, 0, 10);
+    let result_count: i64 = vec_len(results);
+    print("Recalled ");
+    print_i64(result_count);
+    println(" memories related to 'error'");
+
+    // Test memory consolidation
+    println("");
+    println("--- Memory Consolidation ---");
+    println("Before consolidation:");
+    print("  Episodic: ");
+    print_i64(anima_episodic_count(mem));
+    println("");
+    print("  Semantic: ");
+    print_i64(anima_semantic_count(mem));
+    println("");
+    let pruned: i64 = anima_consolidate(mem);
+    print("Pruned ");
+    print_i64(pruned);
+    println(" low-importance memories");
+    println("After consolidation:");
+    print("  Episodic: ");
+    print_i64(anima_episodic_count(mem));
+    println("");
+    print("  Semantic: ");
+    print_i64(anima_semantic_count(mem));
+    println("");
+
+    // Clean up
+    anima_memory_close(mem);
+    println("");
+    println("=== All cognitive memory tests passed! ===");
+}

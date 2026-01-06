@@ -1,6 +1,6 @@
 # Simplex Language Syntax
 
-**Version 0.1.0**
+**Version 0.4.0**
 
 Complete syntax reference for the Simplex programming language.
 
@@ -25,14 +25,14 @@ var buffer: List<u8> = []
 ### Struct Definitions
 
 ```simplex
-// Use `type` keyword (not `struct`)
-type Point {
+// Use `struct` keyword
+struct Point {
     x: f64,
     y: f64
 }
 
-// Generic types use angle brackets
-type Container<T> {
+// Generic structs use angle brackets
+struct Container<T> {
     value: T,
     count: i64
 }
@@ -178,7 +178,7 @@ let normalized = normalize(embedding)
 
 ```simplex
 // Basic struct
-type User {
+struct User {
     id: UserId,
     name: String,
     email: String,
@@ -186,13 +186,13 @@ type User {
 }
 
 // Generic struct
-type Pair<A, B> {
+struct Pair<A, B> {
     first: A,
     second: B
 }
 
 // Struct with optional fields
-type Config {
+struct Config {
     host: String,
     port: u16,
     timeout: Option<Duration>
@@ -683,8 +683,8 @@ pub type PublicType { }
 fn private_function() { }
 type PrivateType { }
 
-// Pub(crate) - accessible within crate
-pub(crate) fn internal_function() { }
+// Pub(modulus) - accessible within modulus only
+pub(modulus) fn internal_function() { }
 ```
 
 ---
