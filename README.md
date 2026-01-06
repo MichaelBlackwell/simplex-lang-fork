@@ -238,15 +238,23 @@ simplex-lang/
 
 | Tool | Description | Status |
 |------|-------------|--------|
-| `sxc` | Simplex compiler (self-hosted native binary) | v0.3.1 |
-| `cursus` | Build tool and bytecode VM | v0.1.0 |
-| `sxdoc` | Documentation generator | v0.1.0 |
-| `sxlsp` | Language server for IDE support | v0.1.0 |
+| `sxc` | Simplex compiler (self-hosted native binary) | v0.3.3 |
+| `cursus` | Build tool and bytecode VM | v0.1.2 |
+| `sxdoc` | Documentation generator | v0.1.2 |
+| `sxlsp` | Language server for IDE support | v0.1.2 |
+
+**v0.3.3 Changes:**
+- Fixed github test suite failure log
+
+**v0.3.2 Changes:**
+- Added Linux epoll support for async I/O (was macOS kqueue only)
+- Fixed OpenSSL/SQLite include paths in CI workflow
+- Platform-compatible standalone runtime
 
 **v0.3.1 Changes:**
-- Fixed critical `lookup_variant()` bug in codegen.sx that caused all identifiers to be incorrectly treated as `Option::None` variants
-- Compiler now uses fully self-hosted native binary (`sxc-compile`) instead of Python bootstrap
-- All toolchain binaries now compiled: cursus, sxdoc, sxlsp
+- Fixed critical `lookup_variant()` bug in codegen.sx
+- Compiler now uses fully self-hosted native binary (`sxc-compile`)
+- All toolchain binaries compiled: cursus, sxdoc, sxlsp
 
 ### sxc Commands
 
