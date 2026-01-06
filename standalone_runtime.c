@@ -6072,6 +6072,19 @@ void executor_run(int64_t main_future) {
     }
 }
 
+// block_on - polls a future until ready and returns the result value
+int64_t block_on(int64_t future_ptr) {
+    if (future_ptr == 0) return 0;
+
+    while (1) {
+        int64_t result = future_poll(future_ptr);
+        if (ASYNC_IS_READY(result)) {
+            // Extract value from ASYNC_READY encoding (value << 1 | 1)
+            return result >> 1;
+        }
+    }
+}
+
 // ============================================================================
 // Phase 22.2: Async Combinators
 // ============================================================================

@@ -1,6 +1,6 @@
 # Simplex Language Documentation
 
-**Version 0.3.1**
+**Version 0.3.4**
 
 Simplex (Latin for "simple") is a programming language designed for the AI era. It combines the fault-tolerance of Erlang, the memory safety of Rust, the distributed computing model of Ray, and the content-addressable code of Unison into a cohesive system built for intelligent, distributed workloads.
 
@@ -107,6 +107,7 @@ Simplex draws from:
 | 0.3.1 | 2026-01 | Complete toolchain: sxc, cursus, sxdoc, sxlsp all compiled |
 | 0.3.2 | 2026-01 | Added Linux epoll support for async I/O (was macOS kqueue only) |
 | 0.3.3 | 2026-01 | Fixed github test suite failure log |
+| 0.3.4 | 2026-01 | Added Rust-style closures, block_on runtime, phase36 tests pass |
 
 ---
 
