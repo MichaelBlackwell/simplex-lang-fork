@@ -1,0 +1,301 @@
+// Test file for HashSet operations
+// Tests: hashset_new, hashset_insert, hashset_contains, hashset_remove, set operations
+
+fn test_hashset_create() -> i64 {
+    let s: i64 = hashset_new();
+
+    if hashset_len(s) != 0 {
+        println("FAIL: new hashset should be empty");
+        return 1;
+    }
+
+    if hashset_is_empty(s) == false {
+        println("FAIL: new hashset is_empty should be true");
+        return 1;
+    }
+
+    println("PASS: test_hashset_create");
+    0
+}
+
+fn test_hashset_insert_contains() -> i64 {
+    let s: i64 = hashset_new();
+
+    hashset_insert(s, "apple");
+    hashset_insert(s, "banana");
+    hashset_insert(s, "cherry");
+
+    if hashset_len(s) != 3 {
+        println("FAIL: hashset should have 3 elements");
+        return 1;
+    }
+
+    if hashset_contains(s, "apple") == false {
+        println("FAIL: should contain 'apple'");
+        return 1;
+    }
+    if hashset_contains(s, "banana") == false {
+        println("FAIL: should contain 'banana'");
+        return 1;
+    }
+    if hashset_contains(s, "cherry") == false {
+        println("FAIL: should contain 'cherry'");
+        return 1;
+    }
+    if hashset_contains(s, "date") == true {
+        println("FAIL: should not contain 'date'");
+        return 1;
+    }
+
+    println("PASS: test_hashset_insert_contains");
+    0
+}
+
+fn test_hashset_remove() -> i64 {
+    let s: i64 = hashset_new();
+    hashset_insert(s, "one");
+    hashset_insert(s, "two");
+    hashset_insert(s, "three");
+
+    let removed: i64 = hashset_remove(s, "two");
+    if removed == false {
+        println("FAIL: remove should return true");
+        return 1;
+    }
+
+    if hashset_len(s) != 2 {
+        println("FAIL: should have 2 elements after remove");
+        return 1;
+    }
+
+    if hashset_contains(s, "two") == true {
+        println("FAIL: should not contain 'two' after remove");
+        return 1;
+    }
+
+    // Remove non-existent
+    let removed2: i64 = hashset_remove(s, "missing");
+    if removed2 == true {
+        println("FAIL: remove missing should return false");
+        return 1;
+    }
+
+    println("PASS: test_hashset_remove");
+    0
+}
+
+fn test_hashset_duplicates() -> i64 {
+    let s: i64 = hashset_new();
+
+    hashset_insert(s, "same");
+    hashset_insert(s, "same");
+    hashset_insert(s, "same");
+
+    if hashset_len(s) != 1 {
+        println("FAIL: duplicates should not increase size");
+        return 1;
+    }
+
+    println("PASS: test_hashset_duplicates");
+    0
+}
+
+fn test_hashset_clear() -> i64 {
+    let s: i64 = hashset_new();
+    hashset_insert(s, "a");
+    hashset_insert(s, "b");
+    hashset_insert(s, "c");
+
+    hashset_clear(s);
+
+    if hashset_len(s) != 0 {
+        println("FAIL: should be empty after clear");
+        return 1;
+    }
+
+    if hashset_is_empty(s) == false {
+        println("FAIL: is_empty should be true after clear");
+        return 1;
+    }
+
+    println("PASS: test_hashset_clear");
+    0
+}
+
+fn test_hashset_union() -> i64 {
+    let a: i64 = hashset_new();
+    hashset_insert(a, "1");
+    hashset_insert(a, "2");
+    hashset_insert(a, "3");
+
+    let b: i64 = hashset_new();
+    hashset_insert(b, "3");
+    hashset_insert(b, "4");
+    hashset_insert(b, "5");
+
+    let u: i64 = hashset_union(a, b);
+
+    if hashset_len(u) != 5 {
+        println("FAIL: union should have 5 elements");
+        return 1;
+    }
+
+    if hashset_contains(u, "1") == false {
+        println("FAIL: union should contain '1'");
+        return 1;
+    }
+    if hashset_contains(u, "5") == false {
+        println("FAIL: union should contain '5'");
+        return 1;
+    }
+
+    println("PASS: test_hashset_union");
+    0
+}
+
+fn test_hashset_intersection() -> i64 {
+    let a: i64 = hashset_new();
+    hashset_insert(a, "1");
+    hashset_insert(a, "2");
+    hashset_insert(a, "3");
+
+    let b: i64 = hashset_new();
+    hashset_insert(b, "2");
+    hashset_insert(b, "3");
+    hashset_insert(b, "4");
+
+    let inter: i64 = hashset_intersection(a, b);
+
+    if hashset_len(inter) != 2 {
+        println("FAIL: intersection should have 2 elements");
+        return 1;
+    }
+
+    if hashset_contains(inter, "2") == false {
+        println("FAIL: intersection should contain '2'");
+        return 1;
+    }
+    if hashset_contains(inter, "3") == false {
+        println("FAIL: intersection should contain '3'");
+        return 1;
+    }
+    if hashset_contains(inter, "1") == true {
+        println("FAIL: intersection should not contain '1'");
+        return 1;
+    }
+
+    println("PASS: test_hashset_intersection");
+    0
+}
+
+fn test_hashset_difference() -> i64 {
+    let a: i64 = hashset_new();
+    hashset_insert(a, "1");
+    hashset_insert(a, "2");
+    hashset_insert(a, "3");
+
+    let b: i64 = hashset_new();
+    hashset_insert(b, "2");
+    hashset_insert(b, "4");
+
+    let diff: i64 = hashset_difference(a, b);
+
+    if hashset_len(diff) != 2 {
+        println("FAIL: difference should have 2 elements");
+        return 1;
+    }
+
+    if hashset_contains(diff, "1") == false {
+        println("FAIL: difference should contain '1'");
+        return 1;
+    }
+    if hashset_contains(diff, "3") == false {
+        println("FAIL: difference should contain '3'");
+        return 1;
+    }
+    if hashset_contains(diff, "2") == true {
+        println("FAIL: difference should not contain '2'");
+        return 1;
+    }
+
+    println("PASS: test_hashset_difference");
+    0
+}
+
+fn test_hashset_subset() -> i64 {
+    let a: i64 = hashset_new();
+    hashset_insert(a, "1");
+    hashset_insert(a, "2");
+
+    let b: i64 = hashset_new();
+    hashset_insert(b, "1");
+    hashset_insert(b, "2");
+    hashset_insert(b, "3");
+
+    if hashset_is_subset(a, b) == false {
+        println("FAIL: {1,2} should be subset of {1,2,3}");
+        return 1;
+    }
+
+    if hashset_is_subset(b, a) == true {
+        println("FAIL: {1,2,3} should not be subset of {1,2}");
+        return 1;
+    }
+
+    println("PASS: test_hashset_subset");
+    0
+}
+
+fn test_int_hashset() -> i64 {
+    let s: i64 = int_hashset_new();
+
+    int_hashset_insert(s, 10);
+    int_hashset_insert(s, 20);
+    int_hashset_insert(s, 30);
+
+    if int_hashset_len(s) != 3 {
+        println("FAIL: int hashset should have 3 elements");
+        return 1;
+    }
+
+    if int_hashset_contains(s, 20) == false {
+        println("FAIL: should contain 20");
+        return 1;
+    }
+
+    if int_hashset_contains(s, 99) == true {
+        println("FAIL: should not contain 99");
+        return 1;
+    }
+
+    println("PASS: test_int_hashset");
+    0
+}
+
+fn main() -> i64 {
+    println("=== HashSet Tests ===");
+    println("");
+
+    var failures: i64 = 0;
+
+    failures = failures + test_hashset_create();
+    failures = failures + test_hashset_insert_contains();
+    failures = failures + test_hashset_remove();
+    failures = failures + test_hashset_duplicates();
+    failures = failures + test_hashset_clear();
+    failures = failures + test_hashset_union();
+    failures = failures + test_hashset_intersection();
+    failures = failures + test_hashset_difference();
+    failures = failures + test_hashset_subset();
+    failures = failures + test_int_hashset();
+
+    println("");
+    if failures == 0 {
+        println("All HashSet tests passed!");
+    } else {
+        print("HashSet tests failed: ");
+        println(int_to_string(failures));
+    }
+
+    failures
+}

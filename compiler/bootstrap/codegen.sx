@@ -50,7 +50,6 @@ fn EXPR_YIELD() -> i64 { 19 }
 fn EXPR_SPAWN() -> i64 { 20 }
 fn EXPR_ARRAY() -> i64 { 21 }
 fn EXPR_FLOAT() -> i64 { 22 }
-fn EXPR_CLOSURE() -> i64 { 23 }
 
 // Binary operators - must match parser.sx
 fn OP_ADD() -> i64 { 0 }
@@ -78,7 +77,7 @@ fn OP_NOT() -> i64 { 101 }
 fn codegen_new() -> i64 {
     // Allocate codegen: output_sb(0), temp_counter(1), label_counter(2), enums(3), locals(4), strings(5), terminated(6), structs(7), var_types(8), loop_stack(9), loop_depth(10), pre_alloca_queue(11), module_name(12), generic_fns(13), instantiated(14), pending_instantiations(15), assoc_types(16), current_impl_type(17), const_params(18), type_params(19), generic_struct_templates(20), trait_impls(21), is_async_fn(22), async_state_counter(23), async_await_points(24), async_fn_name(25), default_methods(26), trait_defs(27), vtables(28)
     // Note: slot 0 is now a StringBuilder for O(n) instead of O(n²) string building
-    let cg: i64 = malloc(248);
+    let cg: i64 = malloc(232);
     store_ptr(cg, 0, sb_new_cap(65536));
     store_i64(cg, 1, 0);
     store_i64(cg, 2, 0);
@@ -108,8 +107,6 @@ fn codegen_new() -> i64 {
     store_ptr(cg, 26, vec_new()); // default_methods: vec of (trait::method, fn_def) pairs
     store_ptr(cg, 27, vec_new()); // trait_defs: vec of (trait_name, method_sigs) for vtable layout
     store_ptr(cg, 28, vec_new()); // vtables: vec of (type_name, trait_name, vtable_global) pairs
-    store_ptr(cg, 29, vec_new()); // pending_closures: vec of closure code strings
-    store_i64(cg, 30, 0);         // closure_counter: unique ID for closures
     cg
 }
 
@@ -167,60 +164,6 @@ fn cg_module_name(cg: i64) -> i64 {
 
 fn cg_set_module_name(cg: i64, name: i64) -> i64 {
     store_ptr(cg, 12, name);
-    0
-}
-
-// Closure accessors
-fn cg_pending_closures(cg: i64) -> i64 {
-    load_ptr(cg, 29)
-}
-
-fn cg_add_closure(cg: i64, closure_code: i64) -> i64 {
-    let closures: i64 = cg_pending_closures(cg);
-    vec_push(closures, closure_code);
-    0
-}
-
-fn cg_next_closure_id(cg: i64) -> i64 {
-    let id: i64 = load_i64(cg, 30);
-    store_i64(cg, 30, id + 1);
-    id
-}
-
-// State management for closure generation
-fn cg_get_output(cg: i64) -> i64 {
-    load_ptr(cg, 0)
-}
-
-fn cg_set_output(cg: i64, sb: i64) -> i64 {
-    store_ptr(cg, 0, sb);
-    0
-}
-
-fn cg_get_locals(cg: i64) -> i64 {
-    load_ptr(cg, 4)
-}
-
-fn cg_set_locals(cg: i64, locals: i64) -> i64 {
-    store_ptr(cg, 4, locals);
-    0
-}
-
-fn cg_get_temp_counter(cg: i64) -> i64 {
-    load_i64(cg, 1)
-}
-
-fn cg_set_temp_counter(cg: i64, val: i64) -> i64 {
-    store_i64(cg, 1, val);
-    0
-}
-
-fn cg_get_local_id(cg: i64) -> i64 {
-    load_i64(cg, 2)
-}
-
-fn cg_set_local_id(cg: i64, val: i64) -> i64 {
-    store_i64(cg, 2, val);
     0
 }
 
@@ -1144,7 +1087,7 @@ fn lookup_variant(cg: i64, enum_name: i64, var_name: i64) -> i64 {
         }
         i = i + 1;
     }
-    -1
+    0 - 1  // Return -1 when not found
 }
 
 // Register builtin enums (Option, Result) for enum construction without explicit enum definition
@@ -1888,6 +1831,10 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
         if string_eq(callee_name, "process_output") {
             return emit_intrinsic_ptr_ptr(cg, "intrinsic_process_output", vec_get(arg_values, 0));
         }
+        if string_eq(callee_name, "exit") {
+            emit_intrinsic_void_i64(cg, "intrinsic_exit", vec_get(arg_values, 0));
+            return string_from("0");
+        }
 
         // Phase 20: REPL/I/O intrinsics
         if string_eq(callee_name, "read_line") {
@@ -1928,6 +1875,204 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
         }
         if string_eq(callee_name, "get_home_dir") {
             return emit_intrinsic_ptr_void(cg, "intrinsic_get_home_dir");
+        }
+
+        // Phase 1 Stdlib: HashMap
+        if string_eq(callee_name, "hashmap_new") {
+            return emit_intrinsic_i64_void(cg, "hashmap_new");
+        }
+        if string_eq(callee_name, "hashmap_insert") {
+            return emit_call_i64_3args(cg, "hashmap_insert", vec_get(arg_values, 0), vec_get(arg_values, 1), vec_get(arg_values, 2));
+        }
+        if string_eq(callee_name, "hashmap_get") {
+            return emit_call_i64_2args(cg, "hashmap_get", vec_get(arg_values, 0), vec_get(arg_values, 1));
+        }
+        if string_eq(callee_name, "hashmap_remove") {
+            return emit_call_i64_2args(cg, "hashmap_remove", vec_get(arg_values, 0), vec_get(arg_values, 1));
+        }
+        if string_eq(callee_name, "hashmap_contains") {
+            return emit_call_i64_2args(cg, "hashmap_contains", vec_get(arg_values, 0), vec_get(arg_values, 1));
+        }
+        if string_eq(callee_name, "hashmap_len") {
+            return emit_call_i64_1arg(cg, "hashmap_len", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "hashmap_clear") {
+            emit_call_void_1arg(cg, "hashmap_clear", vec_get(arg_values, 0));
+            return string_from("0");
+        }
+        if string_eq(callee_name, "hashmap_keys") {
+            return emit_call_i64_1arg(cg, "hashmap_keys", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "hashmap_values") {
+            return emit_call_i64_1arg(cg, "hashmap_values", vec_get(arg_values, 0));
+        }
+
+        // Phase 1 Stdlib: HashSet
+        if string_eq(callee_name, "hashset_new") {
+            return emit_intrinsic_i64_void(cg, "hashset_new");
+        }
+        if string_eq(callee_name, "hashset_insert") {
+            return emit_call_i64_2args(cg, "hashset_insert", vec_get(arg_values, 0), vec_get(arg_values, 1));
+        }
+        if string_eq(callee_name, "hashset_remove") {
+            return emit_call_i64_2args(cg, "hashset_remove", vec_get(arg_values, 0), vec_get(arg_values, 1));
+        }
+        if string_eq(callee_name, "hashset_contains") {
+            return emit_call_i64_2args(cg, "hashset_contains", vec_get(arg_values, 0), vec_get(arg_values, 1));
+        }
+        if string_eq(callee_name, "hashset_len") {
+            return emit_call_i64_1arg(cg, "hashset_len", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "hashset_clear") {
+            emit_call_void_1arg(cg, "hashset_clear", vec_get(arg_values, 0));
+            return string_from("0");
+        }
+
+        // Phase 1 Stdlib: Option
+        if string_eq(callee_name, "option_some") {
+            return emit_call_i64_1arg(cg, "option_some", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "option_none") {
+            return emit_intrinsic_i64_void(cg, "option_none");
+        }
+        if string_eq(callee_name, "option_is_some") {
+            return emit_call_i64_1arg(cg, "option_is_some", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "option_is_none") {
+            return emit_call_i64_1arg(cg, "option_is_none", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "option_unwrap") {
+            return emit_call_i64_1arg(cg, "option_unwrap", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "option_expect") {
+            return emit_call_i64_2args(cg, "option_expect", vec_get(arg_values, 0), vec_get(arg_values, 1));
+        }
+        if string_eq(callee_name, "option_unwrap_or") {
+            return emit_call_i64_2args(cg, "option_unwrap_or", vec_get(arg_values, 0), vec_get(arg_values, 1));
+        }
+
+        // Phase 1 Stdlib: Result
+        if string_eq(callee_name, "result_ok") {
+            return emit_call_i64_1arg(cg, "result_ok", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "result_err") {
+            return emit_call_i64_1arg(cg, "result_err", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "result_is_ok") {
+            return emit_call_i64_1arg(cg, "result_is_ok", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "result_is_err") {
+            return emit_call_i64_1arg(cg, "result_is_err", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "result_unwrap") {
+            return emit_call_i64_1arg(cg, "result_unwrap", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "result_unwrap_err") {
+            return emit_call_i64_1arg(cg, "result_unwrap_err", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "result_unwrap_or") {
+            return emit_call_i64_2args(cg, "result_unwrap_or", vec_get(arg_values, 0), vec_get(arg_values, 1));
+        }
+
+        // Phase 1 Stdlib: Vec extensions
+        if string_eq(callee_name, "vec_sum") {
+            return emit_call_i64_1arg(cg, "vec_sum", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "vec_find") {
+            return emit_call_i64_2args(cg, "vec_find", vec_get(arg_values, 0), vec_get(arg_values, 1));
+        }
+        if string_eq(callee_name, "vec_contains") {
+            return emit_call_i64_2args(cg, "vec_contains", vec_get(arg_values, 0), vec_get(arg_values, 1));
+        }
+        if string_eq(callee_name, "vec_reverse") {
+            return emit_call_i64_1arg(cg, "vec_reverse", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "vec_clone") {
+            return emit_call_i64_1arg(cg, "vec_clone", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "vec_first") {
+            return emit_call_i64_1arg(cg, "vec_first", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "vec_last") {
+            return emit_call_i64_1arg(cg, "vec_last", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "vec_pop") {
+            return emit_intrinsic_ptr_ptr(cg, "intrinsic_vec_pop", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "vec_set") {
+            emit_intrinsic_void_ptr_i64_ptr(cg, "intrinsic_vec_set", vec_get(arg_values, 0), vec_get(arg_values, 1), vec_get(arg_values, 2));
+            return string_from("0");
+        }
+        if string_eq(callee_name, "vec_clear") {
+            emit_intrinsic_void_ptr(cg, "intrinsic_vec_clear", vec_get(arg_values, 0));
+            return string_from("0");
+        }
+        if string_eq(callee_name, "vec_remove") {
+            emit_intrinsic_void_ptr_i64(cg, "intrinsic_vec_remove", vec_get(arg_values, 0), vec_get(arg_values, 1));
+            return string_from("0");
+        }
+
+        // Phase 1 Stdlib: String extensions (map to intrinsics)
+        if string_eq(callee_name, "string_to_lower") {
+            return emit_intrinsic_ptr_ptr(cg, "intrinsic_string_to_lowercase", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "string_to_upper") {
+            return emit_intrinsic_ptr_ptr(cg, "intrinsic_string_to_uppercase", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "string_compare") {
+            return emit_intrinsic_i64_ptr_ptr(cg, "intrinsic_string_compare", vec_get(arg_values, 0), vec_get(arg_values, 1));
+        }
+        if string_eq(callee_name, "string_lines") {
+            return emit_intrinsic_ptr_ptr(cg, "intrinsic_string_lines", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "string_join") {
+            return emit_intrinsic_ptr_ptr_ptr(cg, "intrinsic_string_join", vec_get(arg_values, 0), vec_get(arg_values, 1));
+        }
+
+        // Phase 1 Stdlib: JSON
+        if string_eq(callee_name, "json_parse") {
+            return emit_call_i64_1arg(cg, "json_parse_simple", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "json_stringify") {
+            return emit_call_i64_1arg(cg, "json_stringify", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "json_get") {
+            return emit_call_i64_2args(cg, "json_get_sx", vec_get(arg_values, 0), vec_get(arg_values, 1));
+        }
+        if string_eq(callee_name, "json_keys") {
+            return emit_call_i64_1arg(cg, "json_keys", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "json_is_string") {
+            return emit_call_i64_1arg(cg, "json_is_string", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "json_is_object") {
+            return emit_call_i64_1arg(cg, "json_is_object", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "json_is_array") {
+            return emit_call_i64_1arg(cg, "json_is_array", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "json_as_string") {
+            return emit_call_i64_1arg(cg, "json_as_string", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "json_as_array") {
+            return emit_call_i64_1arg(cg, "json_as_array", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "json_object_new") {
+            return emit_intrinsic_i64_void(cg, "json_object_new");
+        }
+        if string_eq(callee_name, "json_array_new") {
+            return emit_intrinsic_i64_void(cg, "json_array_new");
+        }
+        if string_eq(callee_name, "json_object_set") {
+            emit_call_void_3args(cg, "json_object_set", vec_get(arg_values, 0), vec_get(arg_values, 1), vec_get(arg_values, 2));
+            return string_from("0");
+        }
+        if string_eq(callee_name, "json_array_push") {
+            emit_call_void_2args(cg, "json_array_push", vec_get(arg_values, 0), vec_get(arg_values, 1));
+            return string_from("0");
+        }
+        if string_eq(callee_name, "json_string") {
+            return emit_call_i64_1arg(cg, "json_string", vec_get(arg_values, 0));
         }
 
         // Check if this is a generic function call
@@ -2924,98 +3069,6 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
         emit(cg, int_to_string(vec_t));
         emit_line(cg, " to i64");
         return string_concat("%t", int_to_string(result_t));
-    }
-
-    // EXPR_CLOSURE - lambda/closure expression
-    if tag == EXPR_CLOSURE() {
-        let params: i64 = load_ptr(expr, 1);
-        let body: i64 = load_ptr(expr, 2);
-
-        // Generate a unique closure function name
-        let closure_id: i64 = cg_next_closure_id(cg);
-        let closure_name: i64 = string_concat("__closure_", int_to_string(closure_id));
-
-        // For now, generate a simple non-capturing closure
-        // The closure is a function pointer that can be called via call1/call2
-
-        // Generate the closure function as a pending function
-        // We'll emit it after the current function
-        let saved_output: i64 = cg_get_output(cg);
-        let saved_locals: i64 = cg_get_locals(cg);
-        let saved_temp: i64 = cg_get_temp_counter(cg);
-        let saved_local_id: i64 = cg_get_local_id(cg);
-
-        // Create new output buffer for closure (StringBuilder)
-        cg_set_output(cg, sb_new());
-        cg_set_locals(cg, vec_new());
-        cg_set_temp_counter(cg, 0);
-        cg_set_local_id(cg, 0);
-
-        // Generate closure function header
-        emit(cg, "define i64 @\"");
-        emit(cg, closure_name);
-        emit(cg, "\"(");
-
-        // Generate parameter list
-        let num_params: i64 = vec_len(params);
-        let i: i64 = 0;
-        while i < num_params {
-            if i > 0 {
-                emit(cg, ", ");
-            }
-            let param: i64 = vec_get(params, i);
-            let p_name: i64 = load_ptr(param, 0);
-            emit(cg, "i64 %param.");
-            emit(cg, p_name);
-            i = i + 1;
-        }
-        emit_line(cg, ") {");
-        emit_line(cg, "entry:");
-
-        // Allocate locals for params
-        i = 0;
-        while i < num_params {
-            let param: i64 = vec_get(params, i);
-            let p_name: i64 = load_ptr(param, 0);
-            let local_name: i64 = string_concat(p_name, ".0");
-            emit(cg, "  %local.");
-            emit(cg, local_name);
-            emit_line(cg, " = alloca i64");
-            emit(cg, "  store i64 %param.");
-            emit(cg, p_name);
-            emit(cg, ", ptr %local.");
-            emit_line(cg, local_name);
-            // Add to locals
-            add_local(cg, p_name, local_name);
-            i = i + 1;
-        }
-
-        // Generate body expression
-        let body_val: i64 = gen_expr(cg, body);
-        emit(cg, "  ret i64 ");
-        emit_line(cg, body_val);
-        emit_line(cg, "}");
-        emit_line(cg, "");
-
-        // Get closure code and restore state
-        let closure_sb: i64 = cg_get_output(cg);
-        let closure_code: i64 = sb_to_string(closure_sb);
-        cg_set_output(cg, saved_output);
-        cg_set_locals(cg, saved_locals);
-        cg_set_temp_counter(cg, saved_temp);
-        cg_set_local_id(cg, saved_local_id);
-
-        // Add closure code to pending closures
-        cg_add_closure(cg, closure_code);
-
-        // Return function pointer as i64
-        let fn_ptr_t: i64 = cg_next_temp(cg);
-        emit(cg, "  %t");
-        emit(cg, int_to_string(fn_ptr_t));
-        emit(cg, " = ptrtoint ptr @\"");
-        emit(cg, closure_name);
-        emit_line(cg, "\" to i64");
-        return string_concat("%t", int_to_string(fn_ptr_t));
     }
 
     string_from("0")
@@ -4342,6 +4395,10 @@ fn gen_header(cg: i64) -> i64 {
     emit_line(cg, "declare void @intrinsic_vec_push(ptr, ptr)");
     emit_line(cg, "declare ptr @intrinsic_vec_get(ptr, i64)");
     emit_line(cg, "declare i64 @intrinsic_vec_len(ptr)");
+    emit_line(cg, "declare void @intrinsic_vec_set(ptr, i64, ptr)");
+    emit_line(cg, "declare ptr @intrinsic_vec_pop(ptr)");
+    emit_line(cg, "declare void @intrinsic_vec_clear(ptr)");
+    emit_line(cg, "declare void @intrinsic_vec_remove(ptr, i64)");
     emit_line(cg, "declare ptr @intrinsic_get_args()");
     emit_line(cg, "declare ptr @intrinsic_read_file(ptr)");
     emit_line(cg, "declare void @intrinsic_write_file(ptr, ptr)");
@@ -4401,6 +4458,11 @@ fn gen_header(cg: i64) -> i64 {
     emit_line(cg, "declare i64 @intrinsic_string_ends_with(ptr, ptr)");
     emit_line(cg, "declare i64 @intrinsic_string_contains(ptr, ptr)");
     emit_line(cg, "declare ptr @intrinsic_string_replace(ptr, ptr, ptr)");
+    emit_line(cg, "declare ptr @intrinsic_string_lines(ptr)");
+    emit_line(cg, "declare ptr @intrinsic_string_join(ptr, ptr)");
+    emit_line(cg, "declare ptr @intrinsic_string_to_lowercase(ptr)");
+    emit_line(cg, "declare ptr @intrinsic_string_to_uppercase(ptr)");
+    emit_line(cg, "declare i64 @intrinsic_string_compare(ptr, ptr)");
     emit_line(cg, "declare i64 @intrinsic_copy_file(ptr, ptr)");
     emit_line(cg, "declare ptr @intrinsic_get_home_dir()");
     // Float parsing
@@ -4560,6 +4622,82 @@ fn gen_header(cg: i64) -> i64 {
     emit_line(cg, "declare i64 @flow_mode_drop()");
     emit_line(cg, "declare i64 @flow_mode_block()");
     emit_line(cg, "declare i64 @flow_mode_signal()");
+    emit_line(cg, "declare void @intrinsic_exit(i64)");
+
+    // Phase 1 Stdlib: Option<T>
+    emit_line(cg, "; Phase 1 Stdlib: Option");
+    emit_line(cg, "declare ptr @\"option_some\"(i64)");
+    emit_line(cg, "declare ptr @\"option_none\"()");
+    emit_line(cg, "declare i8 @\"option_is_some\"(i64)");
+    emit_line(cg, "declare i8 @\"option_is_none\"(i64)");
+    emit_line(cg, "declare i64 @\"option_unwrap\"(i64)");
+    emit_line(cg, "declare i64 @\"option_expect\"(i64, i64)");
+    emit_line(cg, "declare i64 @\"option_unwrap_or\"(i64, i64)");
+    emit_line(cg, "declare i64 @\"option_map\"(i64, i64)");
+
+    // Phase 1 Stdlib: Result<T, E>
+    emit_line(cg, "; Phase 1 Stdlib: Result");
+    emit_line(cg, "declare ptr @\"result_ok\"(i64)");
+    emit_line(cg, "declare ptr @\"result_err\"(i64)");
+    emit_line(cg, "declare i8 @\"result_is_ok\"(i64)");
+    emit_line(cg, "declare i8 @\"result_is_err\"(i64)");
+    emit_line(cg, "declare i64 @\"result_unwrap\"(i64)");
+    emit_line(cg, "declare i64 @\"result_unwrap_err\"(i64)");
+    emit_line(cg, "declare i64 @\"result_unwrap_or\"(i64, i64)");
+    emit_line(cg, "declare i64 @\"result_ok_or\"(i64, i64)");
+
+    // Phase 1 Stdlib: Vec extensions
+    emit_line(cg, "; Phase 1 Stdlib: Vec extensions");
+    emit_line(cg, "declare i64 @\"vec_sum\"(i64)");
+    emit_line(cg, "declare i64 @\"vec_find\"(i64, i64)");
+    emit_line(cg, "declare i8 @\"vec_contains\"(i64, i64)");
+    emit_line(cg, "declare i64 @\"vec_reverse\"(i64)");
+    emit_line(cg, "declare i64 @\"vec_clone\"(i64)");
+    emit_line(cg, "declare i64 @\"vec_first\"(i64)");
+    emit_line(cg, "declare i64 @\"vec_last\"(i64)");
+    emit_line(cg, "declare i64 @\"vec_pop\"(i64)");
+    emit_line(cg, "declare void @\"vec_set\"(i64, i64, i64)");
+    emit_line(cg, "declare void @\"vec_clear\"(i64)");
+    emit_line(cg, "declare void @\"vec_remove\"(i64, i64)");
+
+    // Phase 1 Stdlib: HashMap (string keys)
+    emit_line(cg, "; Phase 1 Stdlib: HashMap");
+    emit_line(cg, "declare i64 @\"hashmap_new\"()");
+    emit_line(cg, "declare i64 @\"hashmap_insert\"(i64, i64, i64)");
+    emit_line(cg, "declare i64 @\"hashmap_get\"(i64, i64)");
+    emit_line(cg, "declare i64 @\"hashmap_remove\"(i64, i64)");
+    emit_line(cg, "declare i8 @\"hashmap_contains\"(i64, i64)");
+    emit_line(cg, "declare i64 @\"hashmap_len\"(i64)");
+    emit_line(cg, "declare void @\"hashmap_clear\"(i64)");
+    emit_line(cg, "declare i64 @\"hashmap_keys\"(i64)");
+    emit_line(cg, "declare i64 @\"hashmap_values\"(i64)");
+
+    // Phase 1 Stdlib: HashSet (string values)
+    emit_line(cg, "; Phase 1 Stdlib: HashSet");
+    emit_line(cg, "declare i64 @\"hashset_new\"()");
+    emit_line(cg, "declare i8 @\"hashset_insert\"(i64, i64)");
+    emit_line(cg, "declare i8 @\"hashset_remove\"(i64, i64)");
+    emit_line(cg, "declare i8 @\"hashset_contains\"(i64, i64)");
+    emit_line(cg, "declare i64 @\"hashset_len\"(i64)");
+    emit_line(cg, "declare void @\"hashset_clear\"(i64)");
+
+    // Phase 1 Stdlib: JSON
+    emit_line(cg, "; Phase 1 Stdlib: JSON");
+    emit_line(cg, "declare i64 @\"json_parse_simple\"(i64)");
+    emit_line(cg, "declare i64 @\"json_stringify\"(i64)");
+    emit_line(cg, "declare i64 @\"json_get_sx\"(i64, i64)");
+    emit_line(cg, "declare i64 @\"json_keys\"(i64)");
+    emit_line(cg, "declare i8 @\"json_is_string\"(i64)");
+    emit_line(cg, "declare i8 @\"json_is_object\"(i64)");
+    emit_line(cg, "declare i8 @\"json_is_array\"(i64)");
+    emit_line(cg, "declare i64 @\"json_as_string\"(i64)");
+    emit_line(cg, "declare i64 @\"json_as_array\"(i64)");
+    emit_line(cg, "declare i64 @\"json_object_new\"()");
+    emit_line(cg, "declare i64 @\"json_array_new\"()");
+    emit_line(cg, "declare void @\"json_object_set\"(i64, i64, i64)");
+    emit_line(cg, "declare void @\"json_array_push\"(i64, i64)");
+    emit_line(cg, "declare i64 @\"json_string\"(i64)");
+
     emit_line(cg, "");
     0
 }
@@ -4674,20 +4812,6 @@ fn gen_program_with_module(items: i64, module_name: i64) -> i64 {
         while i < str_count {
             let value: i64 = vec_get(strings, i);
             emit_string_constant(cg, i, value);
-            i = i + 1;
-        }
-    }
-
-    // Emit pending closures
-    let closures: i64 = cg_pending_closures(cg);
-    let closure_count: i64 = vec_len(closures);
-    if closure_count > 0 {
-        emit_line(cg, "");
-        emit_line(cg, "; Closure functions");
-        i = 0;
-        while i < closure_count {
-            let closure_code: i64 = vec_get(closures, i);
-            emit(cg, closure_code);
             i = i + 1;
         }
     }
@@ -4946,6 +5070,16 @@ fn emit_intrinsic_void_void(cg: i64, name: i64) -> i64 {
     0
 }
 
+// void intrinsic(i64) - i64 arg, no return
+fn emit_intrinsic_void_i64(cg: i64, name: i64, arg1: i64) -> i64 {
+    emit(cg, "  call void @");
+    emit(cg, name);
+    emit(cg, "(i64 ");
+    emit(cg, arg1);
+    emit_line(cg, ")");
+    0
+}
+
 // void intrinsic(ptr, i64) - ptr arg and i64 arg, no return
 fn emit_intrinsic_void_ptr_i64(cg: i64, name: i64, arg1: i64, arg2: i64) -> i64 {
     let ptr1: i64 = emit_i64_to_ptr(cg, arg1);
@@ -5016,4 +5150,108 @@ fn emit_intrinsic_ptr_ptr_ptr_ptr(cg: i64, name: i64, arg1: i64, arg2: i64, arg3
     emit(cg, ptr3);
     emit_line(cg, ")");
     emit_ptr_to_i64(cg, temp)
+}
+
+// ============================================================================
+// Phase 1 Stdlib call helpers - emit calls with i64 args directly
+// ============================================================================
+
+// i64 call(i64) - one i64 arg, returns i64
+fn emit_call_i64_1arg(cg: i64, name: i64, arg1: i64) -> i64 {
+    let t: i64 = cg_next_temp(cg);
+    let temp: i64 = string_concat("%t", int_to_string(t));
+    emit(cg, "  ");
+    emit(cg, temp);
+    emit(cg, " = call i64 @\"");
+    emit(cg, name);
+    emit(cg, "\"(i64 ");
+    emit(cg, arg1);
+    emit_line(cg, ")");
+    temp
+}
+
+// i64 call(i64, i64) - two i64 args, returns i64
+fn emit_call_i64_2args(cg: i64, name: i64, arg1: i64, arg2: i64) -> i64 {
+    let t: i64 = cg_next_temp(cg);
+    let temp: i64 = string_concat("%t", int_to_string(t));
+    emit(cg, "  ");
+    emit(cg, temp);
+    emit(cg, " = call i64 @\"");
+    emit(cg, name);
+    emit(cg, "\"(i64 ");
+    emit(cg, arg1);
+    emit(cg, ", i64 ");
+    emit(cg, arg2);
+    emit_line(cg, ")");
+    temp
+}
+
+// i64 call(i64, i64, i64) - three i64 args, returns i64
+fn emit_call_i64_3args(cg: i64, name: i64, arg1: i64, arg2: i64, arg3: i64) -> i64 {
+    let t: i64 = cg_next_temp(cg);
+    let temp: i64 = string_concat("%t", int_to_string(t));
+    emit(cg, "  ");
+    emit(cg, temp);
+    emit(cg, " = call i64 @\"");
+    emit(cg, name);
+    emit(cg, "\"(i64 ");
+    emit(cg, arg1);
+    emit(cg, ", i64 ");
+    emit(cg, arg2);
+    emit(cg, ", i64 ");
+    emit(cg, arg3);
+    emit_line(cg, ")");
+    temp
+}
+
+// void call(i64) - one i64 arg, no return
+fn emit_call_void_1arg(cg: i64, name: i64, arg1: i64) -> i64 {
+    emit(cg, "  call void @\"");
+    emit(cg, name);
+    emit(cg, "\"(i64 ");
+    emit(cg, arg1);
+    emit_line(cg, ")");
+    0
+}
+
+// void call(i64, i64) - two i64 args, no return
+fn emit_call_void_2args(cg: i64, name: i64, arg1: i64, arg2: i64) -> i64 {
+    emit(cg, "  call void @\"");
+    emit(cg, name);
+    emit(cg, "\"(i64 ");
+    emit(cg, arg1);
+    emit(cg, ", i64 ");
+    emit(cg, arg2);
+    emit_line(cg, ")");
+    0
+}
+
+// void call(i64, i64, i64) - three i64 args, no return
+fn emit_call_void_3args(cg: i64, name: i64, arg1: i64, arg2: i64, arg3: i64) -> i64 {
+    emit(cg, "  call void @\"");
+    emit(cg, name);
+    emit(cg, "\"(i64 ");
+    emit(cg, arg1);
+    emit(cg, ", i64 ");
+    emit(cg, arg2);
+    emit(cg, ", i64 ");
+    emit(cg, arg3);
+    emit_line(cg, ")");
+    0
+}
+
+// void intrinsic(ptr, i64, ptr) - for vec_set(vec, index, item)
+fn emit_intrinsic_void_ptr_i64_ptr(cg: i64, name: i64, arg1: i64, arg2: i64, arg3: i64) -> i64 {
+    let ptr1: i64 = emit_i64_to_ptr(cg, arg1);
+    let ptr3: i64 = emit_i64_to_ptr(cg, arg3);
+    emit(cg, "  call void @");
+    emit(cg, name);
+    emit(cg, "(ptr ");
+    emit(cg, ptr1);
+    emit(cg, ", i64 ");
+    emit(cg, arg2);
+    emit(cg, ", ptr ");
+    emit(cg, ptr3);
+    emit_line(cg, ")");
+    0
 }

@@ -1,0 +1,492 @@
+// Test file for JSON Serialization/Deserialization
+// Tests: json_parse, json_stringify, json_get, json_type, etc.
+
+fn test_json_null() -> i64 {
+    let val: i64 = json_null();
+
+    if json_is_null(val) == false {
+        println("FAIL: json_null should be null");
+        return 1;
+    }
+
+    let str: i64 = json_stringify(val);
+    if string_eq(str, "null") == false {
+        println("FAIL: null should stringify to 'null'");
+        return 1;
+    }
+
+    println("PASS: test_json_null");
+    0
+}
+
+fn test_json_bool() -> i64 {
+    let t: i64 = json_bool(true);
+    let f: i64 = json_bool(false);
+
+    if json_is_bool(t) == false {
+        println("FAIL: json_bool(true) should be bool");
+        return 1;
+    }
+    if json_as_bool(t) != true {
+        println("FAIL: json_as_bool should return true");
+        return 1;
+    }
+    if json_as_bool(f) != false {
+        println("FAIL: json_as_bool should return false");
+        return 1;
+    }
+
+    let str_t: i64 = json_stringify(t);
+    if string_eq(str_t, "true") == false {
+        println("FAIL: true should stringify to 'true'");
+        return 1;
+    }
+
+    let str_f: i64 = json_stringify(f);
+    if string_eq(str_f, "false") == false {
+        println("FAIL: false should stringify to 'false'");
+        return 1;
+    }
+
+    println("PASS: test_json_bool");
+    0
+}
+
+fn test_json_number() -> i64 {
+    let n: i64 = json_number_i64(42);
+
+    if json_is_number(n) == false {
+        println("FAIL: json_number should be number");
+        return 1;
+    }
+    if json_as_i64(n) != 42 {
+        println("FAIL: json_as_i64 should return 42");
+        return 1;
+    }
+
+    let str: i64 = json_stringify(n);
+    if string_eq(str, "42") == false {
+        println("FAIL: 42 should stringify to '42'");
+        return 1;
+    }
+
+    println("PASS: test_json_number");
+    0
+}
+
+fn test_json_string() -> i64 {
+    let s: i64 = json_string("hello");
+
+    if json_is_string(s) == false {
+        println("FAIL: json_string should be string");
+        return 1;
+    }
+
+    let val: i64 = json_as_string(s);
+    if string_eq(val, "hello") == false {
+        println("FAIL: json_as_string should return 'hello'");
+        return 1;
+    }
+
+    let str: i64 = json_stringify(s);
+    if string_eq(str, "\"hello\"") == false {
+        println("FAIL: string should stringify with quotes");
+        return 1;
+    }
+
+    println("PASS: test_json_string");
+    0
+}
+
+fn test_json_array() -> i64 {
+    let arr: i64 = json_array();
+
+    if json_is_array(arr) == false {
+        println("FAIL: json_array should be array");
+        return 1;
+    }
+
+    json_array_push(arr, json_number_i64(1));
+    json_array_push(arr, json_number_i64(2));
+    json_array_push(arr, json_number_i64(3));
+
+    if json_array_len(arr) != 3 {
+        println("FAIL: array should have 3 elements");
+        return 1;
+    }
+
+    let elem: i64 = json_get_index(arr, 1);
+    if json_as_i64(elem) != 2 {
+        println("FAIL: arr[1] should be 2");
+        return 1;
+    }
+
+    let str: i64 = json_stringify(arr);
+    if string_eq(str, "[1,2,3]") == false {
+        println("FAIL: array should stringify to '[1,2,3]'");
+        return 1;
+    }
+
+    println("PASS: test_json_array");
+    0
+}
+
+fn test_json_object() -> i64 {
+    let obj: i64 = json_object();
+
+    if json_is_object(obj) == false {
+        println("FAIL: json_object should be object");
+        return 1;
+    }
+
+    json_object_set(obj, "name", json_string("Alice"));
+    json_object_set(obj, "age", json_number_i64(30));
+
+    if json_object_len(obj) != 2 {
+        println("FAIL: object should have 2 fields");
+        return 1;
+    }
+
+    if json_object_has(obj, "name") == false {
+        println("FAIL: object should have 'name' field");
+        return 1;
+    }
+
+    let name: i64 = json_get(obj, "name");
+    if string_eq(json_as_string(name), "Alice") == false {
+        println("FAIL: name should be 'Alice'");
+        return 1;
+    }
+
+    let age: i64 = json_get(obj, "age");
+    if json_as_i64(age) != 30 {
+        println("FAIL: age should be 30");
+        return 1;
+    }
+
+    println("PASS: test_json_object");
+    0
+}
+
+fn test_json_parse_null() -> i64 {
+    let result: i64 = json_parse("null");
+
+    if result_is_err(result) {
+        println("FAIL: parse 'null' should succeed");
+        return 1;
+    }
+
+    let val: i64 = result_unwrap(result);
+    if json_is_null(val) == false {
+        println("FAIL: parsed value should be null");
+        return 1;
+    }
+
+    println("PASS: test_json_parse_null");
+    0
+}
+
+fn test_json_parse_bool() -> i64 {
+    let result_t: i64 = json_parse("true");
+    let result_f: i64 = json_parse("false");
+
+    if result_is_err(result_t) {
+        println("FAIL: parse 'true' should succeed");
+        return 1;
+    }
+    if result_is_err(result_f) {
+        println("FAIL: parse 'false' should succeed");
+        return 1;
+    }
+
+    let val_t: i64 = result_unwrap(result_t);
+    let val_f: i64 = result_unwrap(result_f);
+
+    if json_as_bool(val_t) != true {
+        println("FAIL: parsed true should be true");
+        return 1;
+    }
+    if json_as_bool(val_f) != false {
+        println("FAIL: parsed false should be false");
+        return 1;
+    }
+
+    println("PASS: test_json_parse_bool");
+    0
+}
+
+fn test_json_parse_number() -> i64 {
+    let result: i64 = json_parse("12345");
+
+    if result_is_err(result) {
+        println("FAIL: parse '12345' should succeed");
+        return 1;
+    }
+
+    let val: i64 = result_unwrap(result);
+    if json_as_i64(val) != 12345 {
+        println("FAIL: parsed number should be 12345");
+        return 1;
+    }
+
+    println("PASS: test_json_parse_number");
+    0
+}
+
+fn test_json_parse_string() -> i64 {
+    let result: i64 = json_parse("\"hello world\"");
+
+    if result_is_err(result) {
+        println("FAIL: parse string should succeed");
+        return 1;
+    }
+
+    let val: i64 = result_unwrap(result);
+    if string_eq(json_as_string(val), "hello world") == false {
+        println("FAIL: parsed string should be 'hello world'");
+        return 1;
+    }
+
+    println("PASS: test_json_parse_string");
+    0
+}
+
+fn test_json_parse_array() -> i64 {
+    let result: i64 = json_parse("[1, 2, 3]");
+
+    if result_is_err(result) {
+        println("FAIL: parse array should succeed");
+        return 1;
+    }
+
+    let val: i64 = result_unwrap(result);
+    if json_is_array(val) == false {
+        println("FAIL: parsed value should be array");
+        return 1;
+    }
+
+    if json_array_len(val) != 3 {
+        println("FAIL: array should have 3 elements");
+        return 1;
+    }
+
+    let elem0: i64 = json_get_index(val, 0);
+    if json_as_i64(elem0) != 1 {
+        println("FAIL: arr[0] should be 1");
+        return 1;
+    }
+
+    println("PASS: test_json_parse_array");
+    0
+}
+
+fn test_json_parse_object() -> i64 {
+    let result: i64 = json_parse("{\"x\": 10, \"y\": 20}");
+
+    if result_is_err(result) {
+        println("FAIL: parse object should succeed");
+        return 1;
+    }
+
+    let val: i64 = result_unwrap(result);
+    if json_is_object(val) == false {
+        println("FAIL: parsed value should be object");
+        return 1;
+    }
+
+    let x: i64 = json_get(val, "x");
+    if json_as_i64(x) != 10 {
+        println("FAIL: x should be 10");
+        return 1;
+    }
+
+    let y: i64 = json_get(val, "y");
+    if json_as_i64(y) != 20 {
+        println("FAIL: y should be 20");
+        return 1;
+    }
+
+    println("PASS: test_json_parse_object");
+    0
+}
+
+fn test_json_parse_nested() -> i64 {
+    let json: i64 = "{\"person\": {\"name\": \"Bob\", \"scores\": [85, 90, 95]}}";
+    let result: i64 = json_parse(json);
+
+    if result_is_err(result) {
+        println("FAIL: parse nested should succeed");
+        return 1;
+    }
+
+    let val: i64 = result_unwrap(result);
+    let person: i64 = json_get(val, "person");
+    let name: i64 = json_get(person, "name");
+
+    if string_eq(json_as_string(name), "Bob") == false {
+        println("FAIL: name should be 'Bob'");
+        return 1;
+    }
+
+    let scores: i64 = json_get(person, "scores");
+    if json_array_len(scores) != 3 {
+        println("FAIL: scores should have 3 elements");
+        return 1;
+    }
+
+    let score1: i64 = json_get_index(scores, 1);
+    if json_as_i64(score1) != 90 {
+        println("FAIL: scores[1] should be 90");
+        return 1;
+    }
+
+    println("PASS: test_json_parse_nested");
+    0
+}
+
+fn test_json_roundtrip() -> i64 {
+    let obj: i64 = json_object();
+    json_object_set(obj, "count", json_number_i64(42));
+    json_object_set(obj, "active", json_bool(true));
+    json_object_set(obj, "label", json_string("test"));
+
+    let str: i64 = json_stringify(obj);
+    let result: i64 = json_parse(str);
+
+    if result_is_err(result) {
+        println("FAIL: roundtrip parse should succeed");
+        return 1;
+    }
+
+    let parsed: i64 = result_unwrap(result);
+    let count: i64 = json_get(parsed, "count");
+    if json_as_i64(count) != 42 {
+        println("FAIL: roundtrip count should be 42");
+        return 1;
+    }
+
+    let active: i64 = json_get(parsed, "active");
+    if json_as_bool(active) != true {
+        println("FAIL: roundtrip active should be true");
+        return 1;
+    }
+
+    let label: i64 = json_get(parsed, "label");
+    if string_eq(json_as_string(label), "test") == false {
+        println("FAIL: roundtrip label should be 'test'");
+        return 1;
+    }
+
+    println("PASS: test_json_roundtrip");
+    0
+}
+
+fn test_json_parse_error() -> i64 {
+    let result: i64 = json_parse("{invalid json}");
+
+    if result_is_ok(result) {
+        println("FAIL: invalid json should fail to parse");
+        return 1;
+    }
+
+    println("PASS: test_json_parse_error");
+    0
+}
+
+fn test_json_escape_sequences() -> i64 {
+    let s: i64 = json_string("line1\nline2\ttab");
+    let str: i64 = json_stringify(s);
+
+    // The stringified version should have escaped newline and tab
+    if string_contains(str, "\\n") == false {
+        println("FAIL: newline should be escaped");
+        return 1;
+    }
+    if string_contains(str, "\\t") == false {
+        println("FAIL: tab should be escaped");
+        return 1;
+    }
+
+    println("PASS: test_json_escape_sequences");
+    0
+}
+
+fn test_json_clone() -> i64 {
+    let obj: i64 = json_object();
+    json_object_set(obj, "value", json_number_i64(100));
+
+    let cloned: i64 = json_clone(obj);
+
+    // Modify original
+    json_object_set(obj, "value", json_number_i64(999));
+
+    // Clone should be unaffected
+    let val: i64 = json_get(cloned, "value");
+    if json_as_i64(val) != 100 {
+        println("FAIL: cloned value should remain 100");
+        return 1;
+    }
+
+    println("PASS: test_json_clone");
+    0
+}
+
+fn test_json_equals() -> i64 {
+    let a: i64 = json_object();
+    json_object_set(a, "x", json_number_i64(10));
+
+    let b: i64 = json_object();
+    json_object_set(b, "x", json_number_i64(10));
+
+    let c: i64 = json_object();
+    json_object_set(c, "x", json_number_i64(20));
+
+    if json_equals(a, b) == false {
+        println("FAIL: a and b should be equal");
+        return 1;
+    }
+
+    if json_equals(a, c) == true {
+        println("FAIL: a and c should not be equal");
+        return 1;
+    }
+
+    println("PASS: test_json_equals");
+    0
+}
+
+fn main() -> i64 {
+    println("=== JSON Tests ===");
+    println("");
+
+    var failures: i64 = 0;
+
+    failures = failures + test_json_null();
+    failures = failures + test_json_bool();
+    failures = failures + test_json_number();
+    failures = failures + test_json_string();
+    failures = failures + test_json_array();
+    failures = failures + test_json_object();
+    failures = failures + test_json_parse_null();
+    failures = failures + test_json_parse_bool();
+    failures = failures + test_json_parse_number();
+    failures = failures + test_json_parse_string();
+    failures = failures + test_json_parse_array();
+    failures = failures + test_json_parse_object();
+    failures = failures + test_json_parse_nested();
+    failures = failures + test_json_roundtrip();
+    failures = failures + test_json_parse_error();
+    failures = failures + test_json_escape_sequences();
+    failures = failures + test_json_clone();
+    failures = failures + test_json_equals();
+
+    println("");
+    if failures == 0 {
+        println("All JSON tests passed!");
+    } else {
+        print("JSON tests failed: ");
+        println(int_to_string(failures));
+    }
+
+    failures
+}

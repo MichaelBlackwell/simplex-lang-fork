@@ -1,0 +1,233 @@
+// Tests for Package Manifest parsing
+// Part of Phase 2: Package Ecosystem
+
+var tests_passed: i64 = 0;
+var tests_failed: i64 = 0;
+
+fn assert_eq_str(expected: i64, actual: i64, msg: i64) {
+    if string_eq(expected, actual) {
+        tests_passed = tests_passed + 1;
+    } else {
+        tests_failed = tests_failed + 1;
+        print("FAIL: ");
+        print(msg);
+        print(" - expected '");
+        print(expected);
+        print("', got '");
+        print(actual);
+        println("'");
+    }
+}
+
+fn assert_eq_i64(expected: i64, actual: i64, msg: i64) {
+    if expected == actual {
+        tests_passed = tests_passed + 1;
+    } else {
+        tests_failed = tests_failed + 1;
+        print("FAIL: ");
+        print(msg);
+        print(" - expected ");
+        print(int_to_string(expected));
+        print(", got ");
+        println(int_to_string(actual));
+    }
+}
+
+fn assert_true(cond: bool, msg: i64) {
+    if cond {
+        tests_passed = tests_passed + 1;
+    } else {
+        tests_failed = tests_failed + 1;
+        print("FAIL: ");
+        println(msg);
+    }
+}
+
+fn test_manifest_parse_simple() {
+    let json_str: i64 = "{\"name\": \"test-pkg\", \"version\": \"1.0.0\"}";
+    let m: i64 = manifest_parse(json_str);
+
+    assert_true(m != 0, "manifest_parse returns non-null");
+    assert_eq_str("test-pkg", manifest_name(m), "manifest name");
+    assert_eq_str("1.0.0", manifest_version(m), "manifest version");
+}
+
+fn test_manifest_parse_full() {
+    let json_str: i64 = "{
+        \"name\": \"my-package\",
+        \"version\": \"0.2.0\",
+        \"description\": \"A test package\",
+        \"license\": \"MIT\",
+        \"repository\": \"https://github.com/user/repo\",
+        \"build\": {
+            \"entry\": \"src/lib.sx\"
+        }
+    }";
+
+    let m: i64 = manifest_parse(json_str);
+
+    assert_true(m != 0, "manifest_parse full returns non-null");
+    assert_eq_str("my-package", manifest_name(m), "manifest name full");
+    assert_eq_str("0.2.0", manifest_version(m), "manifest version full");
+    assert_eq_str("A test package", manifest_description(m), "manifest description");
+    assert_eq_str("MIT", manifest_license(m), "manifest license");
+    assert_eq_str("https://github.com/user/repo", manifest_repository(m), "manifest repo");
+    assert_eq_str("src/lib.sx", manifest_entry(m), "manifest entry");
+}
+
+fn test_manifest_parse_authors() {
+    let json_str: i64 = "{
+        \"name\": \"pkg\",
+        \"version\": \"1.0.0\",
+        \"authors\": [\"Alice\", \"Bob\"]
+    }";
+
+    let m: i64 = manifest_parse(json_str);
+    let authors: i64 = manifest_authors(m);
+
+    assert_eq_i64(2, vec_len(authors), "manifest authors count");
+    assert_eq_str("Alice", vec_get(authors, 0), "first author");
+    assert_eq_str("Bob", vec_get(authors, 1), "second author");
+}
+
+fn test_manifest_parse_dependencies() {
+    let json_str: i64 = "{
+        \"name\": \"pkg\",
+        \"version\": \"1.0.0\",
+        \"dependencies\": {
+            \"simple-dep\": \"1.0.0\",
+            \"path-dep\": {\"path\": \"../local\"},
+            \"git-dep\": {\"git\": \"https://github.com/user/repo\"},
+            \"complex-dep\": {\"version\": \"2.0.0\", \"features\": [\"async\"]}
+        }
+    }";
+
+    let m: i64 = manifest_parse(json_str);
+    let deps: i64 = manifest_dependencies(m);
+
+    assert_eq_i64(4, vec_len(deps), "manifest deps count");
+
+    // Find simple-dep
+    var found_simple: bool = false;
+    var found_path: bool = false;
+    var found_git: bool = false;
+    var found_complex: bool = false;
+
+    var i: i64 = 0;
+    while i < vec_len(deps) {
+        let dep: i64 = vec_get(deps, i);
+        let name: i64 = dep_name(dep);
+
+        if string_eq(name, "simple-dep") {
+            found_simple = true;
+            assert_eq_str("1.0.0", dep_version(dep), "simple-dep version");
+            assert_true(dep_is_registry(dep), "simple-dep is registry");
+        } else if string_eq(name, "path-dep") {
+            found_path = true;
+            assert_eq_str("../local", dep_path(dep), "path-dep path");
+            assert_true(dep_is_path(dep), "path-dep is path");
+        } else if string_eq(name, "git-dep") {
+            found_git = true;
+            assert_eq_str("https://github.com/user/repo", dep_git(dep), "git-dep git");
+            assert_true(dep_is_git(dep), "git-dep is git");
+        } else if string_eq(name, "complex-dep") {
+            found_complex = true;
+            assert_eq_str("2.0.0", dep_version(dep), "complex-dep version");
+            assert_eq_i64(1, vec_len(dep_features(dep)), "complex-dep features count");
+            assert_eq_str("async", vec_get(dep_features(dep), 0), "complex-dep feature");
+        }
+        i = i + 1;
+    }
+
+    assert_true(found_simple, "found simple-dep");
+    assert_true(found_path, "found path-dep");
+    assert_true(found_git, "found git-dep");
+    assert_true(found_complex, "found complex-dep");
+}
+
+fn test_manifest_validate_valid() {
+    let json_str: i64 = "{\"name\": \"valid-pkg\", \"version\": \"1.0.0\"}";
+    let m: i64 = manifest_parse(json_str);
+    let errors: i64 = manifest_validate(m);
+
+    assert_eq_i64(0, vec_len(errors), "valid manifest has no errors");
+}
+
+fn test_manifest_validate_missing_name() {
+    let m: i64 = manifest_new();
+    // Don't set name
+    manifest_set_version(m, "1.0.0");
+
+    let errors: i64 = manifest_validate(m);
+    assert_true(vec_len(errors) > 0, "missing name has errors");
+}
+
+fn test_manifest_to_json() {
+    let m: i64 = manifest_new();
+    manifest_set_name(m, "test-pkg");
+    manifest_set_version(m, "2.0.0");
+    manifest_set_description(m, "Test description");
+    manifest_set_license(m, "Apache-2.0");
+
+    let json_str: i64 = manifest_to_json(m);
+    assert_true(string_len(json_str) > 0, "manifest_to_json produces output");
+
+    // Parse it back
+    let m2: i64 = manifest_parse(json_str);
+    assert_eq_str("test-pkg", manifest_name(m2), "roundtrip name");
+    assert_eq_str("2.0.0", manifest_version(m2), "roundtrip version");
+}
+
+fn test_dependency_new() {
+    let d: i64 = dependency_new("my-dep");
+
+    assert_eq_str("my-dep", dep_name(d), "dependency name");
+    assert_eq_str("", dep_version(d), "dependency default version");
+    assert_eq_str("", dep_path(d), "dependency default path");
+    assert_eq_str("", dep_git(d), "dependency default git");
+}
+
+fn test_dependency_types() {
+    let d1: i64 = dependency_new("reg");
+    dep_set_version(d1, "1.0.0");
+
+    let d2: i64 = dependency_new("path");
+    dep_set_path(d2, "../local");
+
+    let d3: i64 = dependency_new("git");
+    dep_set_git(d3, "https://github.com/user/repo");
+
+    assert_true(dep_is_registry(d1), "d1 is registry");
+    assert_true(dep_is_registry(d2) == false, "d2 is not registry");
+
+    assert_true(dep_is_path(d2), "d2 is path");
+    assert_true(dep_is_path(d1) == false, "d1 is not path");
+
+    assert_true(dep_is_git(d3), "d3 is git");
+    assert_true(dep_is_git(d1) == false, "d1 is not git");
+}
+
+fn main() {
+    println("Running manifest tests...");
+    println("");
+
+    test_manifest_parse_simple();
+    test_manifest_parse_full();
+    test_manifest_parse_authors();
+    test_manifest_parse_dependencies();
+    test_manifest_validate_valid();
+    test_manifest_validate_missing_name();
+    test_manifest_to_json();
+    test_dependency_new();
+    test_dependency_types();
+
+    println("");
+    print("Tests passed: ");
+    println(int_to_string(tests_passed));
+    print("Tests failed: ");
+    println(int_to_string(tests_failed));
+
+    if tests_failed > 0 {
+        exit(1);
+    }
+}

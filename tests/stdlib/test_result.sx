@@ -1,0 +1,152 @@
+// Test file for Result<T, E> implementation
+// Tests: result_ok, result_err, result_is_ok, result_is_err, result_unwrap, result_unwrap_or
+
+fn test_result_ok() -> i64 {
+    let res: i64 = result_ok(42);
+    if result_is_ok(res) == false {
+        println("FAIL: result_ok should be Ok");
+        return 1;
+    }
+    if result_is_err(res) == true {
+        println("FAIL: result_ok should not be Err");
+        return 1;
+    }
+    let val: i64 = result_unwrap(res);
+    if val != 42 {
+        println("FAIL: unwrapped Ok value should be 42");
+        return 1;
+    }
+    println("PASS: test_result_ok");
+    0
+}
+
+fn test_result_err() -> i64 {
+    let res: i64 = result_err(404);
+    if result_is_err(res) == false {
+        println("FAIL: result_err should be Err");
+        return 1;
+    }
+    if result_is_ok(res) == true {
+        println("FAIL: result_err should not be Ok");
+        return 1;
+    }
+    let err: i64 = result_unwrap_err(res);
+    if err != 404 {
+        println("FAIL: unwrapped Err value should be 404");
+        return 1;
+    }
+    println("PASS: test_result_err");
+    0
+}
+
+fn test_result_unwrap_or() -> i64 {
+    let ok: i64 = result_ok(100);
+    let err: i64 = result_err(500);
+
+    let val1: i64 = result_unwrap_or(ok, 0);
+    if val1 != 100 {
+        println("FAIL: unwrap_or Ok should return inner value");
+        return 1;
+    }
+
+    let val2: i64 = result_unwrap_or(err, 999);
+    if val2 != 999 {
+        println("FAIL: unwrap_or Err should return default");
+        return 1;
+    }
+
+    println("PASS: test_result_unwrap_or");
+    0
+}
+
+fn test_result_ok_or() -> i64 {
+    // Convert Option to Result
+    let some: i64 = option_some(42);
+    let none: i64 = option_none();
+
+    let res1: i64 = result_ok_or(some, 0 - 1);
+    if result_is_ok(res1) == false {
+        println("FAIL: Some should convert to Ok");
+        return 1;
+    }
+    let val1: i64 = result_unwrap(res1);
+    if val1 != 42 {
+        println("FAIL: converted Ok value should be 42");
+        return 1;
+    }
+
+    let res2: i64 = result_ok_or(none, 0 - 1);
+    if result_is_err(res2) == false {
+        println("FAIL: None should convert to Err");
+        return 1;
+    }
+    let err: i64 = result_unwrap_err(res2);
+    if err != 0 - 1 {
+        println("FAIL: converted Err value should be -1");
+        return 1;
+    }
+
+    println("PASS: test_result_ok_or");
+    0
+}
+
+fn test_result_chaining() -> i64 {
+    // Simulate result chaining pattern
+    let res: i64 = result_ok(10);
+
+    if result_is_ok(res) {
+        let val: i64 = result_unwrap(res);
+        let next: i64 = result_ok(val * 2);
+        if result_is_ok(next) {
+            let final_val: i64 = result_unwrap(next);
+            if final_val != 20 {
+                println("FAIL: chained result should be 20");
+                return 1;
+            }
+        }
+    }
+
+    println("PASS: test_result_chaining");
+    0
+}
+
+fn test_result_error_propagation() -> i64 {
+    // Simulate error propagation pattern
+    let err: i64 = result_err(500);
+
+    // When we have an error, we should propagate it
+    if result_is_err(err) {
+        let error_code: i64 = result_unwrap_err(err);
+        if error_code != 500 {
+            println("FAIL: error code should propagate");
+            return 1;
+        }
+    }
+
+    println("PASS: test_result_error_propagation");
+    0
+}
+
+fn main() -> i64 {
+    println("=== Result Tests ===");
+    println("");
+
+    var failures: i64 = 0;
+
+    failures = failures + test_result_ok();
+    failures = failures + test_result_err();
+    failures = failures + test_result_unwrap_or();
+    failures = failures + test_result_ok_or();
+    failures = failures + test_result_chaining();
+    failures = failures + test_result_error_propagation();
+
+    println("");
+    if failures == 0 {
+        println("All Result tests passed!");
+    } else {
+        print("Result tests failed: ");
+        println(int_to_string(failures));
+    }
+
+    failures
+}

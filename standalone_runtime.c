@@ -176,6 +176,35 @@ int64_t intrinsic_vec_len(SxVec* vec) {
     return vec ? vec->len : 0;
 }
 
+// Set item at index
+void intrinsic_vec_set(SxVec* vec, int64_t index, void* item) {
+    if (!vec || index < 0 || (size_t)index >= vec->len) {
+        return;
+    }
+    vec->items[index] = item;
+}
+
+// Pop last item (returns NULL if empty)
+void* intrinsic_vec_pop(SxVec* vec) {
+    if (!vec || vec->len == 0) return NULL;
+    return vec->items[--vec->len];
+}
+
+// Clear all items
+void intrinsic_vec_clear(SxVec* vec) {
+    if (!vec) return;
+    vec->len = 0;
+}
+
+// Remove item at index (shifts remaining elements)
+void intrinsic_vec_remove(SxVec* vec, int64_t index) {
+    if (!vec || index < 0 || (size_t)index >= vec->len) return;
+    for (size_t i = (size_t)index; i < vec->len - 1; i++) {
+        vec->items[i] = vec->items[i + 1];
+    }
+    vec->len--;
+}
+
 // Iterator type for Vec iteration
 typedef struct {
     SxVec* vec;
@@ -4613,6 +4642,11 @@ int64_t intrinsic_process_run(void* cmd_ptr) {
     return system(cmd->data);
 }
 
+// Exit program with status code
+void intrinsic_exit(int64_t status) {
+    exit((int)status);
+}
+
 // Process spawn with output capture
 void* intrinsic_process_output(void* cmd_ptr) {
     SxString* cmd = (SxString*)cmd_ptr;
@@ -5957,6 +5991,2607 @@ SxString* intrinsic_string_replace(SxString* str, SxString* from, SxString* to) 
 
     return intrinsic_sb_to_string(sb);
 }
+
+// ============================================================================
+// Additional String Operations (Phase 1)
+// ============================================================================
+
+// Find last occurrence of substring (rfind)
+int64_t intrinsic_string_rfind(SxString* haystack, SxString* needle) {
+    if (!haystack || !needle || !haystack->data || !needle->data) return -1;
+    if (needle->len == 0) return haystack->len;
+    if (needle->len > haystack->len) return -1;
+
+    // Search backwards
+    for (int64_t i = (int64_t)(haystack->len - needle->len); i >= 0; i--) {
+        if (memcmp(haystack->data + i, needle->data, needle->len) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// Count occurrences of substring
+int64_t intrinsic_string_count(SxString* str, SxString* substr) {
+    if (!str || !substr || !str->data || !substr->data) return 0;
+    if (substr->len == 0 || substr->len > str->len) return 0;
+
+    int64_t count = 0;
+    size_t pos = 0;
+    while (pos <= str->len - substr->len) {
+        int64_t found = intrinsic_string_find(str, substr, pos);
+        if (found < 0) break;
+        count++;
+        pos = found + 1;  // Move forward by 1 to allow overlapping matches
+    }
+    return count;
+}
+
+// Split string into at most n parts
+SxVec* intrinsic_string_split_n(SxString* str, SxString* delim, int64_t n) {
+    SxVec* result = intrinsic_vec_new();
+    if (!str || !str->data || str->len == 0 || n <= 0) return result;
+    if (!delim || !delim->data || delim->len == 0 || n == 1) {
+        intrinsic_vec_push(result, str);
+        return result;
+    }
+
+    size_t start = 0;
+    int64_t parts = 0;
+    while (start < str->len && parts < n - 1) {
+        char* found = strstr(str->data + start, delim->data);
+        if (!found) break;
+        size_t end = found - str->data;
+        intrinsic_vec_push(result, intrinsic_string_slice(str, start, end));
+        start = end + delim->len;
+        parts++;
+    }
+    // Add remainder as final part
+    if (start <= str->len) {
+        intrinsic_vec_push(result, intrinsic_string_slice(str, start, str->len));
+    }
+
+    return result;
+}
+
+// Split by whitespace
+SxVec* intrinsic_string_split_whitespace(SxString* str) {
+    SxVec* result = intrinsic_vec_new();
+    if (!str || !str->data || str->len == 0) return result;
+
+    size_t i = 0;
+    while (i < str->len) {
+        // Skip leading whitespace
+        while (i < str->len && (str->data[i] == ' ' || str->data[i] == '\t' ||
+               str->data[i] == '\n' || str->data[i] == '\r')) {
+            i++;
+        }
+        if (i >= str->len) break;
+
+        // Find end of word
+        size_t start = i;
+        while (i < str->len && str->data[i] != ' ' && str->data[i] != '\t' &&
+               str->data[i] != '\n' && str->data[i] != '\r') {
+            i++;
+        }
+        intrinsic_vec_push(result, intrinsic_string_slice(str, start, i));
+    }
+
+    return result;
+}
+
+// Split by newlines
+SxVec* intrinsic_string_lines(SxString* str) {
+    SxVec* result = intrinsic_vec_new();
+    if (!str || !str->data || str->len == 0) return result;
+
+    size_t start = 0;
+    for (size_t i = 0; i < str->len; i++) {
+        if (str->data[i] == '\n') {
+            // Handle \r\n
+            size_t end = i;
+            if (end > start && str->data[end - 1] == '\r') {
+                end--;
+            }
+            intrinsic_vec_push(result, intrinsic_string_slice(str, start, end));
+            start = i + 1;
+        }
+    }
+    // Add final line if exists
+    if (start < str->len) {
+        size_t end = str->len;
+        if (end > start && str->data[end - 1] == '\r') {
+            end--;
+        }
+        intrinsic_vec_push(result, intrinsic_string_slice(str, start, end));
+    }
+
+    return result;
+}
+
+// Join strings with separator
+SxString* intrinsic_string_join(SxVec* parts, SxString* sep) {
+    if (!parts || parts->len == 0) return intrinsic_string_new("");
+
+    StringBuilder* sb = intrinsic_sb_new();
+    for (size_t i = 0; i < parts->len; i++) {
+        if (i > 0 && sep && sep->data) {
+            intrinsic_sb_append(sb, sep);
+        }
+        SxString* part = (SxString*)parts->items[i];
+        if (part) {
+            intrinsic_sb_append(sb, part);
+        }
+    }
+
+    return intrinsic_sb_to_string(sb);
+}
+
+// Replace first n occurrences
+SxString* intrinsic_string_replace_n(SxString* str, SxString* from, SxString* to, int64_t n) {
+    if (!str || !from || !to || str->len == 0 || from->len == 0 || n <= 0) {
+        return str ? str : intrinsic_string_new("");
+    }
+
+    StringBuilder* sb = intrinsic_sb_new();
+    size_t pos = 0;
+    int64_t replaced = 0;
+
+    while (pos < str->len && replaced < n) {
+        int64_t found = intrinsic_string_find(str, from, pos);
+        if (found < 0) {
+            intrinsic_sb_append(sb, intrinsic_string_slice(str, pos, str->len));
+            pos = str->len;
+            break;
+        }
+        intrinsic_sb_append(sb, intrinsic_string_slice(str, pos, found));
+        intrinsic_sb_append(sb, to);
+        pos = found + from->len;
+        replaced++;
+    }
+
+    // Append remainder
+    if (pos < str->len) {
+        intrinsic_sb_append(sb, intrinsic_string_slice(str, pos, str->len));
+    }
+
+    return intrinsic_sb_to_string(sb);
+}
+
+// Convert to lowercase
+SxString* intrinsic_string_to_lowercase(SxString* str) {
+    if (!str || !str->data || str->len == 0) return intrinsic_string_new("");
+
+    char* buf = (char*)malloc(str->len + 1);
+    for (size_t i = 0; i < str->len; i++) {
+        unsigned char c = (unsigned char)str->data[i];
+        if (c >= 'A' && c <= 'Z') {
+            buf[i] = c + 32;
+        } else {
+            buf[i] = c;
+        }
+    }
+    buf[str->len] = '\0';
+
+    SxString* result = intrinsic_string_new(buf);
+    free(buf);
+    return result;
+}
+
+// Convert to uppercase
+SxString* intrinsic_string_to_uppercase(SxString* str) {
+    if (!str || !str->data || str->len == 0) return intrinsic_string_new("");
+
+    char* buf = (char*)malloc(str->len + 1);
+    for (size_t i = 0; i < str->len; i++) {
+        unsigned char c = (unsigned char)str->data[i];
+        if (c >= 'a' && c <= 'z') {
+            buf[i] = c - 32;
+        } else {
+            buf[i] = c;
+        }
+    }
+    buf[str->len] = '\0';
+
+    SxString* result = intrinsic_string_new(buf);
+    free(buf);
+    return result;
+}
+
+// Reverse string
+SxString* intrinsic_string_reverse(SxString* str) {
+    if (!str || !str->data || str->len == 0) return intrinsic_string_new("");
+
+    char* buf = (char*)malloc(str->len + 1);
+    for (size_t i = 0; i < str->len; i++) {
+        buf[i] = str->data[str->len - 1 - i];
+    }
+    buf[str->len] = '\0';
+
+    SxString* result = intrinsic_string_new(buf);
+    free(buf);
+    return result;
+}
+
+// Trim leading whitespace only
+SxString* intrinsic_string_trim_start(SxString* str) {
+    if (!str || !str->data || str->len == 0) return intrinsic_string_new("");
+
+    size_t start = 0;
+    while (start < str->len && (str->data[start] == ' ' || str->data[start] == '\t' ||
+           str->data[start] == '\n' || str->data[start] == '\r')) {
+        start++;
+    }
+
+    if (start >= str->len) return intrinsic_string_new("");
+    return intrinsic_string_slice(str, start, str->len);
+}
+
+// Trim trailing whitespace only
+SxString* intrinsic_string_trim_end(SxString* str) {
+    if (!str || !str->data || str->len == 0) return intrinsic_string_new("");
+
+    size_t end = str->len;
+    while (end > 0 && (str->data[end-1] == ' ' || str->data[end-1] == '\t' ||
+           str->data[end-1] == '\n' || str->data[end-1] == '\r')) {
+        end--;
+    }
+
+    if (end == 0) return intrinsic_string_new("");
+    return intrinsic_string_slice(str, 0, end);
+}
+
+// Left pad string to specified length
+SxString* intrinsic_string_pad_left(SxString* str, int64_t len, int64_t pad_char) {
+    if (!str || len <= 0) return str ? str : intrinsic_string_new("");
+    if ((size_t)len <= str->len) return str;
+
+    size_t pad_count = len - str->len;
+    char* buf = (char*)malloc(len + 1);
+
+    char c = (char)(pad_char > 0 && pad_char < 128 ? pad_char : ' ');
+    memset(buf, c, pad_count);
+    if (str->data) {
+        memcpy(buf + pad_count, str->data, str->len);
+    }
+    buf[len] = '\0';
+
+    SxString* result = intrinsic_string_new(buf);
+    free(buf);
+    return result;
+}
+
+// Right pad string to specified length
+SxString* intrinsic_string_pad_right(SxString* str, int64_t len, int64_t pad_char) {
+    if (!str || len <= 0) return str ? str : intrinsic_string_new("");
+    if ((size_t)len <= str->len) return str;
+
+    size_t pad_count = len - str->len;
+    char* buf = (char*)malloc(len + 1);
+
+    if (str->data) {
+        memcpy(buf, str->data, str->len);
+    }
+    char c = (char)(pad_char > 0 && pad_char < 128 ? pad_char : ' ');
+    memset(buf + str->len, c, pad_count);
+    buf[len] = '\0';
+
+    SxString* result = intrinsic_string_new(buf);
+    free(buf);
+    return result;
+}
+
+// Character classification functions
+int8_t intrinsic_char_is_digit(int64_t c) {
+    return (c >= '0' && c <= '9') ? 1 : 0;
+}
+
+int8_t intrinsic_char_is_alpha(int64_t c) {
+    return ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) ? 1 : 0;
+}
+
+int8_t intrinsic_char_is_alphanumeric(int64_t c) {
+    return (intrinsic_char_is_alpha(c) || intrinsic_char_is_digit(c)) ? 1 : 0;
+}
+
+int8_t intrinsic_char_is_whitespace(int64_t c) {
+    return (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f') ? 1 : 0;
+}
+
+// ============================================================================
+// Iterator Combinators (Phase 1)
+// ============================================================================
+
+// Forward declarations for functions used by collect_hashmap/hashset
+int64_t hashmap_new(void);
+int64_t hashmap_insert(int64_t map_ptr, int64_t key_ptr, int64_t value);
+int64_t hashset_new(void);
+int8_t hashset_insert(int64_t set_ptr, int64_t value_ptr);
+// Integer versions
+int64_t int_hashmap_new(void);
+int64_t int_hashmap_insert(int64_t map_ptr, int64_t key, int64_t value);
+int64_t int_hashset_new(void);
+int8_t int_hashset_insert(int64_t set_ptr, int64_t value);
+
+// Iterator type enum
+typedef enum {
+    SXITER_VEC,
+    SXITER_MAP,
+    SXITER_FILTER,
+    SXITER_FILTER_MAP,
+    SXITER_ENUMERATE,
+    SXITER_SKIP,
+    SXITER_TAKE,
+    SXITER_CHAIN,
+    SXITER_ZIP,
+    SXITER_RANGE
+} SxIterType;
+
+// Function pointer types
+typedef int64_t (*SxMapFn)(int64_t);
+typedef int8_t (*SxPredicateFn)(int64_t);
+typedef int64_t (*SxFilterMapFn)(int64_t, int8_t*);  // Returns value and sets valid flag
+typedef int64_t (*SxFoldFn)(int64_t, int64_t);  // (acc, elem) -> acc
+
+// Forward declaration
+struct SxIter;
+
+// Iterator struct
+typedef struct SxIter {
+    SxIterType type;
+    union {
+        struct { SxVec* vec; size_t index; } vec;
+        struct { struct SxIter* source; SxMapFn fn; } map;
+        struct { struct SxIter* source; SxPredicateFn fn; } filter;
+        struct { struct SxIter* source; SxFilterMapFn fn; } filter_map;
+        struct { struct SxIter* source; size_t index; } enumerate;
+        struct { struct SxIter* source; size_t remaining; } skip;
+        struct { struct SxIter* source; size_t remaining; } take;
+        struct { struct SxIter* first; struct SxIter* second; int8_t on_second; } chain;
+        struct { struct SxIter* a; struct SxIter* b; } zip;
+        struct { int64_t current; int64_t end; int64_t step; } range;
+    } data;
+} SxIter;
+
+// Option-like return for iterator next
+typedef struct {
+    int64_t value;
+    int8_t has_value;
+} SxIterOption;
+
+// Enumerate pair
+typedef struct {
+    size_t index;
+    int64_t value;
+} SxEnumeratePair;
+
+// Zip pair
+typedef struct {
+    int64_t first;
+    int64_t second;
+} SxZipPair;
+
+// Create iterator from Vec
+SxIter* sxiter_from_vec(SxVec* vec) {
+    SxIter* iter = (SxIter*)malloc(sizeof(SxIter));
+    iter->type = SXITER_VEC;
+    iter->data.vec.vec = vec;
+    iter->data.vec.index = 0;
+    return iter;
+}
+
+// Create range iterator
+SxIter* sxiter_range(int64_t start, int64_t end) {
+    SxIter* iter = (SxIter*)malloc(sizeof(SxIter));
+    iter->type = SXITER_RANGE;
+    iter->data.range.current = start;
+    iter->data.range.end = end;
+    iter->data.range.step = start <= end ? 1 : -1;
+    return iter;
+}
+
+SxIter* sxiter_range_step(int64_t start, int64_t end, int64_t step) {
+    SxIter* iter = (SxIter*)malloc(sizeof(SxIter));
+    iter->type = SXITER_RANGE;
+    iter->data.range.current = start;
+    iter->data.range.end = end;
+    iter->data.range.step = step != 0 ? step : 1;
+    return iter;
+}
+
+// Forward declaration of sxiter_next
+SxIterOption sxiter_next(SxIter* iter);
+
+// Map combinator
+SxIter* sxiter_map(SxIter* source, SxMapFn fn) {
+    SxIter* iter = (SxIter*)malloc(sizeof(SxIter));
+    iter->type = SXITER_MAP;
+    iter->data.map.source = source;
+    iter->data.map.fn = fn;
+    return iter;
+}
+
+// Filter combinator
+SxIter* sxiter_filter(SxIter* source, SxPredicateFn fn) {
+    SxIter* iter = (SxIter*)malloc(sizeof(SxIter));
+    iter->type = SXITER_FILTER;
+    iter->data.filter.source = source;
+    iter->data.filter.fn = fn;
+    return iter;
+}
+
+// Filter-map combinator
+SxIter* sxiter_filter_map(SxIter* source, SxFilterMapFn fn) {
+    SxIter* iter = (SxIter*)malloc(sizeof(SxIter));
+    iter->type = SXITER_FILTER_MAP;
+    iter->data.filter_map.source = source;
+    iter->data.filter_map.fn = fn;
+    return iter;
+}
+
+// Enumerate combinator
+SxIter* sxiter_enumerate(SxIter* source) {
+    SxIter* iter = (SxIter*)malloc(sizeof(SxIter));
+    iter->type = SXITER_ENUMERATE;
+    iter->data.enumerate.source = source;
+    iter->data.enumerate.index = 0;
+    return iter;
+}
+
+// Skip combinator
+SxIter* sxiter_skip(SxIter* source, int64_t n) {
+    SxIter* iter = (SxIter*)malloc(sizeof(SxIter));
+    iter->type = SXITER_SKIP;
+    iter->data.skip.source = source;
+    iter->data.skip.remaining = n > 0 ? (size_t)n : 0;
+    return iter;
+}
+
+// Take combinator
+SxIter* sxiter_take(SxIter* source, int64_t n) {
+    SxIter* iter = (SxIter*)malloc(sizeof(SxIter));
+    iter->type = SXITER_TAKE;
+    iter->data.take.source = source;
+    iter->data.take.remaining = n > 0 ? (size_t)n : 0;
+    return iter;
+}
+
+// Chain combinator
+SxIter* sxiter_chain(SxIter* first, SxIter* second) {
+    SxIter* iter = (SxIter*)malloc(sizeof(SxIter));
+    iter->type = SXITER_CHAIN;
+    iter->data.chain.first = first;
+    iter->data.chain.second = second;
+    iter->data.chain.on_second = 0;
+    return iter;
+}
+
+// Zip combinator
+SxIter* sxiter_zip(SxIter* a, SxIter* b) {
+    SxIter* iter = (SxIter*)malloc(sizeof(SxIter));
+    iter->type = SXITER_ZIP;
+    iter->data.zip.a = a;
+    iter->data.zip.b = b;
+    return iter;
+}
+
+// Core next function
+SxIterOption sxiter_next(SxIter* iter) {
+    SxIterOption result = {0, 0};
+    if (!iter) return result;
+
+    switch (iter->type) {
+        case SXITER_VEC: {
+            if (iter->data.vec.index < iter->data.vec.vec->len) {
+                result.value = (int64_t)iter->data.vec.vec->items[iter->data.vec.index++];
+                result.has_value = 1;
+            }
+            break;
+        }
+        case SXITER_RANGE: {
+            if ((iter->data.range.step > 0 && iter->data.range.current < iter->data.range.end) ||
+                (iter->data.range.step < 0 && iter->data.range.current > iter->data.range.end)) {
+                result.value = iter->data.range.current;
+                result.has_value = 1;
+                iter->data.range.current += iter->data.range.step;
+            }
+            break;
+        }
+        case SXITER_MAP: {
+            SxIterOption src = sxiter_next(iter->data.map.source);
+            if (src.has_value) {
+                result.value = iter->data.map.fn(src.value);
+                result.has_value = 1;
+            }
+            break;
+        }
+        case SXITER_FILTER: {
+            while (1) {
+                SxIterOption src = sxiter_next(iter->data.filter.source);
+                if (!src.has_value) break;
+                if (iter->data.filter.fn(src.value)) {
+                    result = src;
+                    break;
+                }
+            }
+            break;
+        }
+        case SXITER_FILTER_MAP: {
+            while (1) {
+                SxIterOption src = sxiter_next(iter->data.filter_map.source);
+                if (!src.has_value) break;
+                int8_t valid = 0;
+                int64_t mapped = iter->data.filter_map.fn(src.value, &valid);
+                if (valid) {
+                    result.value = mapped;
+                    result.has_value = 1;
+                    break;
+                }
+            }
+            break;
+        }
+        case SXITER_ENUMERATE: {
+            SxIterOption src = sxiter_next(iter->data.enumerate.source);
+            if (src.has_value) {
+                // Pack index and value into a heap-allocated pair
+                SxEnumeratePair* pair = (SxEnumeratePair*)malloc(sizeof(SxEnumeratePair));
+                pair->index = iter->data.enumerate.index++;
+                pair->value = src.value;
+                result.value = (int64_t)pair;
+                result.has_value = 1;
+            }
+            break;
+        }
+        case SXITER_SKIP: {
+            // Skip remaining elements first
+            while (iter->data.skip.remaining > 0) {
+                SxIterOption src = sxiter_next(iter->data.skip.source);
+                if (!src.has_value) return result;
+                iter->data.skip.remaining--;
+            }
+            result = sxiter_next(iter->data.skip.source);
+            break;
+        }
+        case SXITER_TAKE: {
+            if (iter->data.take.remaining > 0) {
+                SxIterOption src = sxiter_next(iter->data.take.source);
+                if (src.has_value) {
+                    iter->data.take.remaining--;
+                    result = src;
+                }
+            }
+            break;
+        }
+        case SXITER_CHAIN: {
+            if (!iter->data.chain.on_second) {
+                result = sxiter_next(iter->data.chain.first);
+                if (!result.has_value) {
+                    iter->data.chain.on_second = 1;
+                    result = sxiter_next(iter->data.chain.second);
+                }
+            } else {
+                result = sxiter_next(iter->data.chain.second);
+            }
+            break;
+        }
+        case SXITER_ZIP: {
+            SxIterOption a = sxiter_next(iter->data.zip.a);
+            SxIterOption b = sxiter_next(iter->data.zip.b);
+            if (a.has_value && b.has_value) {
+                SxZipPair* pair = (SxZipPair*)malloc(sizeof(SxZipPair));
+                pair->first = a.value;
+                pair->second = b.value;
+                result.value = (int64_t)pair;
+                result.has_value = 1;
+            }
+            break;
+        }
+    }
+    return result;
+}
+
+// Free iterator (recursively frees sources)
+void sxiter_free(SxIter* iter) {
+    if (!iter) return;
+    switch (iter->type) {
+        case SXITER_MAP:
+            sxiter_free(iter->data.map.source);
+            break;
+        case SXITER_FILTER:
+            sxiter_free(iter->data.filter.source);
+            break;
+        case SXITER_FILTER_MAP:
+            sxiter_free(iter->data.filter_map.source);
+            break;
+        case SXITER_ENUMERATE:
+            sxiter_free(iter->data.enumerate.source);
+            break;
+        case SXITER_SKIP:
+            sxiter_free(iter->data.skip.source);
+            break;
+        case SXITER_TAKE:
+            sxiter_free(iter->data.take.source);
+            break;
+        case SXITER_CHAIN:
+            sxiter_free(iter->data.chain.first);
+            sxiter_free(iter->data.chain.second);
+            break;
+        case SXITER_ZIP:
+            sxiter_free(iter->data.zip.a);
+            sxiter_free(iter->data.zip.b);
+            break;
+        default:
+            break;
+    }
+    free(iter);
+}
+
+// ============================================================================
+// Consuming Combinators
+// ============================================================================
+
+// Collect iterator into Vec
+SxVec* sxiter_collect_vec(SxIter* iter) {
+    SxVec* result = intrinsic_vec_new();
+    while (1) {
+        SxIterOption opt = sxiter_next(iter);
+        if (!opt.has_value) break;
+        intrinsic_vec_push(result, (void*)opt.value);
+    }
+    return result;
+}
+
+// Fold with initial value and accumulator function
+int64_t sxiter_fold(SxIter* iter, int64_t init, SxFoldFn fn) {
+    int64_t acc = init;
+    while (1) {
+        SxIterOption opt = sxiter_next(iter);
+        if (!opt.has_value) break;
+        acc = fn(acc, opt.value);
+    }
+    return acc;
+}
+
+// Reduce (fold without initial value, uses first element)
+SxIterOption sxiter_reduce(SxIter* iter, SxFoldFn fn) {
+    SxIterOption result = {0, 0};
+    SxIterOption first = sxiter_next(iter);
+    if (!first.has_value) return result;
+
+    int64_t acc = first.value;
+    while (1) {
+        SxIterOption opt = sxiter_next(iter);
+        if (!opt.has_value) break;
+        acc = fn(acc, opt.value);
+    }
+    result.value = acc;
+    result.has_value = 1;
+    return result;
+}
+
+// Helper function for sum
+static int64_t sxiter_sum_fn(int64_t acc, int64_t elem) {
+    return acc + elem;
+}
+
+// Sum all elements
+int64_t sxiter_sum(SxIter* iter) {
+    return sxiter_fold(iter, 0, sxiter_sum_fn);
+}
+
+// Helper function for product
+static int64_t sxiter_product_fn(int64_t acc, int64_t elem) {
+    return acc * elem;
+}
+
+// Product of all elements
+int64_t sxiter_product(SxIter* iter) {
+    return sxiter_fold(iter, 1, sxiter_product_fn);
+}
+
+// Count elements
+int64_t sxiter_count(SxIter* iter) {
+    int64_t count = 0;
+    while (1) {
+        SxIterOption opt = sxiter_next(iter);
+        if (!opt.has_value) break;
+        count++;
+    }
+    return count;
+}
+
+// Execute function for each element
+void sxiter_for_each(SxIter* iter, SxMapFn fn) {
+    while (1) {
+        SxIterOption opt = sxiter_next(iter);
+        if (!opt.has_value) break;
+        fn(opt.value);
+    }
+}
+
+// Find first element matching predicate
+SxIterOption sxiter_find(SxIter* iter, SxPredicateFn predicate) {
+    while (1) {
+        SxIterOption opt = sxiter_next(iter);
+        if (!opt.has_value) return opt;
+        if (predicate(opt.value)) return opt;
+    }
+}
+
+// Find position of first element matching predicate
+int64_t sxiter_position(SxIter* iter, SxPredicateFn predicate) {
+    int64_t pos = 0;
+    while (1) {
+        SxIterOption opt = sxiter_next(iter);
+        if (!opt.has_value) return -1;
+        if (predicate(opt.value)) return pos;
+        pos++;
+    }
+}
+
+// Check if any element matches predicate
+int8_t sxiter_any(SxIter* iter, SxPredicateFn predicate) {
+    while (1) {
+        SxIterOption opt = sxiter_next(iter);
+        if (!opt.has_value) return 0;
+        if (predicate(opt.value)) return 1;
+    }
+}
+
+// Check if all elements match predicate
+int8_t sxiter_all(SxIter* iter, SxPredicateFn predicate) {
+    while (1) {
+        SxIterOption opt = sxiter_next(iter);
+        if (!opt.has_value) return 1;
+        if (!predicate(opt.value)) return 0;
+    }
+}
+
+// Find minimum element
+SxIterOption sxiter_min(SxIter* iter) {
+    SxIterOption result = {0, 0};
+    SxIterOption first = sxiter_next(iter);
+    if (!first.has_value) return result;
+
+    int64_t min = first.value;
+    while (1) {
+        SxIterOption opt = sxiter_next(iter);
+        if (!opt.has_value) break;
+        if (opt.value < min) min = opt.value;
+    }
+    result.value = min;
+    result.has_value = 1;
+    return result;
+}
+
+// Find maximum element
+SxIterOption sxiter_max(SxIter* iter) {
+    SxIterOption result = {0, 0};
+    SxIterOption first = sxiter_next(iter);
+    if (!first.has_value) return result;
+
+    int64_t max = first.value;
+    while (1) {
+        SxIterOption opt = sxiter_next(iter);
+        if (!opt.has_value) break;
+        if (opt.value > max) max = opt.value;
+    }
+    result.value = max;
+    result.has_value = 1;
+    return result;
+}
+
+// Get nth element
+SxIterOption sxiter_nth(SxIter* iter, int64_t n) {
+    SxIterOption result = {0, 0};
+    if (n < 0) return result;
+
+    for (int64_t i = 0; i <= n; i++) {
+        result = sxiter_next(iter);
+        if (!result.has_value) return result;
+    }
+    return result;
+}
+
+// Get last element
+SxIterOption sxiter_last(SxIter* iter) {
+    SxIterOption result = {0, 0};
+    while (1) {
+        SxIterOption opt = sxiter_next(iter);
+        if (!opt.has_value) break;
+        result = opt;
+    }
+    return result;
+}
+
+// Collect into HashMap (assumes elements are key-value pairs with SxString* keys)
+int64_t sxiter_collect_hashmap(SxIter* iter) {
+    int64_t map = hashmap_new();
+    while (1) {
+        SxIterOption opt = sxiter_next(iter);
+        if (!opt.has_value) break;
+        SxZipPair* pair = (SxZipPair*)opt.value;
+        hashmap_insert(map, pair->first, pair->second);
+    }
+    return map;
+}
+
+// Collect into Integer HashMap (for int key-value pairs)
+int64_t sxiter_collect_int_hashmap(SxIter* iter) {
+    int64_t map = int_hashmap_new();
+    while (1) {
+        SxIterOption opt = sxiter_next(iter);
+        if (!opt.has_value) break;
+        SxZipPair* pair = (SxZipPair*)opt.value;
+        int_hashmap_insert(map, pair->first, pair->second);
+    }
+    return map;
+}
+
+// Collect into HashSet (for SxString* values)
+int64_t sxiter_collect_hashset(SxIter* iter) {
+    int64_t set = hashset_new();
+    while (1) {
+        SxIterOption opt = sxiter_next(iter);
+        if (!opt.has_value) break;
+        hashset_insert(set, opt.value);
+    }
+    return set;
+}
+
+// Collect into Integer HashSet (for int64_t values)
+int64_t sxiter_collect_int_hashset(SxIter* iter) {
+    int64_t set = int_hashset_new();
+    while (1) {
+        SxIterOption opt = sxiter_next(iter);
+        if (!opt.has_value) break;
+        int_hashset_insert(set, opt.value);
+    }
+    return set;
+}
+
+// ============================================================================
+// Convenience functions for common patterns
+// ============================================================================
+
+// Create iterator from Vec (alias)
+int64_t sxiter_vec(int64_t vec_ptr) {
+    return (int64_t)sxiter_from_vec((SxVec*)vec_ptr);
+}
+
+// Get next value from iterator (returns 0 if exhausted)
+int64_t sxiter_next_value(int64_t iter_ptr) {
+    SxIterOption opt = sxiter_next((SxIter*)iter_ptr);
+    return opt.has_value ? opt.value : 0;
+}
+
+// Get SxEnumeratePair fields
+int64_t sxiter_enumerate_pair_index(int64_t pair_ptr) {
+    SxEnumeratePair* pair = (SxEnumeratePair*)pair_ptr;
+    return pair ? (int64_t)pair->index : 0;
+}
+
+int64_t sxiter_enumerate_pair_value(int64_t pair_ptr) {
+    SxEnumeratePair* pair = (SxEnumeratePair*)pair_ptr;
+    return pair ? pair->value : 0;
+}
+
+void sxiter_enumerate_pair_free(int64_t pair_ptr) {
+    free((void*)pair_ptr);
+}
+
+// Get SxZipPair fields
+int64_t sxiter_zip_pair_first(int64_t pair_ptr) {
+    SxZipPair* pair = (SxZipPair*)pair_ptr;
+    return pair ? pair->first : 0;
+}
+
+int64_t sxiter_zip_pair_second(int64_t pair_ptr) {
+    SxZipPair* pair = (SxZipPair*)pair_ptr;
+    return pair ? pair->second : 0;
+}
+
+void sxiter_zip_pair_free(int64_t pair_ptr) {
+    free((void*)pair_ptr);
+}
+
+// ============================================================================
+// Option<T> Implementation
+// ============================================================================
+
+// Option is represented as a struct: { tag, value }
+// tag: 0 = None, 1 = Some
+// value: the contained value (only valid when tag = 1)
+
+typedef struct {
+    int8_t tag;     // 0 = None, 1 = Some
+    int64_t value;  // The contained value
+} SxOption;
+
+// Create Some(value)
+SxOption* option_some(int64_t value) {
+    SxOption* opt = (SxOption*)malloc(sizeof(SxOption));
+    opt->tag = 1;
+    opt->value = value;
+    return opt;
+}
+
+// Create None
+SxOption* option_none(void) {
+    SxOption* opt = (SxOption*)malloc(sizeof(SxOption));
+    opt->tag = 0;
+    opt->value = 0;
+    return opt;
+}
+
+// Free an Option
+void option_free(int64_t opt_ptr) {
+    if (opt_ptr) free((void*)opt_ptr);
+}
+
+// Check if Some
+int8_t option_is_some(int64_t opt_ptr) {
+    SxOption* opt = (SxOption*)opt_ptr;
+    return opt && opt->tag == 1;
+}
+
+// Check if None
+int8_t option_is_none(int64_t opt_ptr) {
+    SxOption* opt = (SxOption*)opt_ptr;
+    return !opt || opt->tag == 0;
+}
+
+// unwrap() - Get value or panic
+int64_t option_unwrap(int64_t opt_ptr) {
+    SxOption* opt = (SxOption*)opt_ptr;
+    if (!opt || opt->tag == 0) {
+        fprintf(stderr, "PANIC: called unwrap() on a None value\n");
+        exit(1);
+    }
+    return opt->value;
+}
+
+// expect(msg) - Get value or panic with message
+int64_t option_expect(int64_t opt_ptr, int64_t msg_ptr) {
+    SxOption* opt = (SxOption*)opt_ptr;
+    if (!opt || opt->tag == 0) {
+        SxString* msg = (SxString*)msg_ptr;
+        if (msg && msg->data) {
+            fprintf(stderr, "PANIC: %s\n", msg->data);
+        } else {
+            fprintf(stderr, "PANIC: called expect() on a None value\n");
+        }
+        exit(1);
+    }
+    return opt->value;
+}
+
+// unwrap_or(default) - Get value or default
+int64_t option_unwrap_or(int64_t opt_ptr, int64_t default_val) {
+    SxOption* opt = (SxOption*)opt_ptr;
+    if (!opt || opt->tag == 0) {
+        return default_val;
+    }
+    return opt->value;
+}
+
+// unwrap_or_else(fn) - Get value or compute default
+typedef int64_t (*OptionDefaultFn)(void);
+int64_t option_unwrap_or_else(int64_t opt_ptr, OptionDefaultFn fn) {
+    SxOption* opt = (SxOption*)opt_ptr;
+    if (!opt || opt->tag == 0) {
+        return fn ? fn() : 0;
+    }
+    return opt->value;
+}
+
+// map(fn) - Transform inner value
+int64_t option_map(int64_t opt_ptr, SxMapFn fn) {
+    SxOption* opt = (SxOption*)opt_ptr;
+    if (!opt || opt->tag == 0 || !fn) {
+        return (int64_t)option_none();
+    }
+    return (int64_t)option_some(fn(opt->value));
+}
+
+// map_or(default, fn) - Map or return default
+int64_t option_map_or(int64_t opt_ptr, int64_t default_val, SxMapFn fn) {
+    SxOption* opt = (SxOption*)opt_ptr;
+    if (!opt || opt->tag == 0) {
+        return default_val;
+    }
+    return fn ? fn(opt->value) : opt->value;
+}
+
+// map_or_else(default_fn, fn) - Map or compute default
+int64_t option_map_or_else(int64_t opt_ptr, OptionDefaultFn default_fn, SxMapFn fn) {
+    SxOption* opt = (SxOption*)opt_ptr;
+    if (!opt || opt->tag == 0) {
+        return default_fn ? default_fn() : 0;
+    }
+    return fn ? fn(opt->value) : opt->value;
+}
+
+// and(other) - Return other if Some, else None
+int64_t option_and(int64_t opt_ptr, int64_t other_ptr) {
+    SxOption* opt = (SxOption*)opt_ptr;
+    if (!opt || opt->tag == 0) {
+        return (int64_t)option_none();
+    }
+    // If Some, return other (clone it to be safe)
+    SxOption* other = (SxOption*)other_ptr;
+    if (!other) return (int64_t)option_none();
+    if (other->tag == 0) return (int64_t)option_none();
+    return (int64_t)option_some(other->value);
+}
+
+// and_then(fn) - Flatmap: returns Option from fn
+typedef int64_t (*OptionAndThenFn)(int64_t);  // Returns Option ptr
+int64_t option_and_then(int64_t opt_ptr, OptionAndThenFn fn) {
+    SxOption* opt = (SxOption*)opt_ptr;
+    if (!opt || opt->tag == 0 || !fn) {
+        return (int64_t)option_none();
+    }
+    return fn(opt->value);
+}
+
+// or(other) - Return self if Some, else other
+int64_t option_or(int64_t opt_ptr, int64_t other_ptr) {
+    SxOption* opt = (SxOption*)opt_ptr;
+    if (opt && opt->tag == 1) {
+        return (int64_t)option_some(opt->value);
+    }
+    SxOption* other = (SxOption*)other_ptr;
+    if (!other) return (int64_t)option_none();
+    if (other->tag == 0) return (int64_t)option_none();
+    return (int64_t)option_some(other->value);
+}
+
+// or_else(fn) - Return self if Some, else compute
+typedef int64_t (*OptionOrElseFn)(void);  // Returns Option ptr
+int64_t option_or_else(int64_t opt_ptr, OptionOrElseFn fn) {
+    SxOption* opt = (SxOption*)opt_ptr;
+    if (opt && opt->tag == 1) {
+        return (int64_t)option_some(opt->value);
+    }
+    return fn ? fn() : (int64_t)option_none();
+}
+
+// filter(predicate) - Keep if predicate true
+int64_t option_filter(int64_t opt_ptr, SxPredicateFn predicate) {
+    SxOption* opt = (SxOption*)opt_ptr;
+    if (!opt || opt->tag == 0 || !predicate) {
+        return (int64_t)option_none();
+    }
+    if (predicate(opt->value)) {
+        return (int64_t)option_some(opt->value);
+    }
+    return (int64_t)option_none();
+}
+
+// Get value (unchecked - for internal use)
+int64_t option_get_value(int64_t opt_ptr) {
+    SxOption* opt = (SxOption*)opt_ptr;
+    return opt ? opt->value : 0;
+}
+
+// Get tag
+int8_t option_get_tag(int64_t opt_ptr) {
+    SxOption* opt = (SxOption*)opt_ptr;
+    return opt ? opt->tag : 0;
+}
+
+// Clone an Option
+int64_t option_clone(int64_t opt_ptr) {
+    SxOption* opt = (SxOption*)opt_ptr;
+    if (!opt) return (int64_t)option_none();
+    if (opt->tag == 0) return (int64_t)option_none();
+    return (int64_t)option_some(opt->value);
+}
+
+// ============================================================================
+// Result<T, E> Implementation
+// ============================================================================
+
+// Result is represented as a struct: { tag, value, error }
+// tag: 0 = Err, 1 = Ok
+// value: the success value (only valid when tag = 1)
+// error: the error value (only valid when tag = 0)
+
+typedef struct {
+    int8_t tag;     // 0 = Err, 1 = Ok
+    int64_t value;  // The success value
+    int64_t error;  // The error value
+} SxResult;
+
+// Create Ok(value)
+SxResult* result_ok(int64_t value) {
+    SxResult* res = (SxResult*)malloc(sizeof(SxResult));
+    res->tag = 1;
+    res->value = value;
+    res->error = 0;
+    return res;
+}
+
+// Create Err(error)
+SxResult* result_err(int64_t error) {
+    SxResult* res = (SxResult*)malloc(sizeof(SxResult));
+    res->tag = 0;
+    res->value = 0;
+    res->error = error;
+    return res;
+}
+
+// Free a Result
+void result_free(int64_t res_ptr) {
+    if (res_ptr) free((void*)res_ptr);
+}
+
+// Check if Ok
+int8_t result_is_ok(int64_t res_ptr) {
+    SxResult* res = (SxResult*)res_ptr;
+    return res && res->tag == 1;
+}
+
+// Check if Err
+int8_t result_is_err(int64_t res_ptr) {
+    SxResult* res = (SxResult*)res_ptr;
+    return !res || res->tag == 0;
+}
+
+// ok() - Convert to Option<T>
+int64_t result_ok_option(int64_t res_ptr) {
+    SxResult* res = (SxResult*)res_ptr;
+    if (!res || res->tag == 0) {
+        return (int64_t)option_none();
+    }
+    return (int64_t)option_some(res->value);
+}
+
+// err() - Convert to Option<E>
+int64_t result_err_option(int64_t res_ptr) {
+    SxResult* res = (SxResult*)res_ptr;
+    if (!res || res->tag == 1) {
+        return (int64_t)option_none();
+    }
+    return (int64_t)option_some(res->error);
+}
+
+// unwrap() - Get value or panic
+int64_t result_unwrap(int64_t res_ptr) {
+    SxResult* res = (SxResult*)res_ptr;
+    if (!res || res->tag == 0) {
+        if (res) {
+            // Try to print error if it's a string
+            SxString* err_str = (SxString*)res->error;
+            if (err_str && err_str->data) {
+                fprintf(stderr, "PANIC: called unwrap() on an Err value: %s\n", err_str->data);
+            } else {
+                fprintf(stderr, "PANIC: called unwrap() on an Err value: %lld\n", (long long)res->error);
+            }
+        } else {
+            fprintf(stderr, "PANIC: called unwrap() on a null Result\n");
+        }
+        exit(1);
+    }
+    return res->value;
+}
+
+// unwrap_err() - Get error or panic
+int64_t result_unwrap_err(int64_t res_ptr) {
+    SxResult* res = (SxResult*)res_ptr;
+    if (!res || res->tag == 1) {
+        fprintf(stderr, "PANIC: called unwrap_err() on an Ok value\n");
+        exit(1);
+    }
+    return res->error;
+}
+
+// expect(msg) - Get value or panic with message
+int64_t result_expect(int64_t res_ptr, int64_t msg_ptr) {
+    SxResult* res = (SxResult*)res_ptr;
+    if (!res || res->tag == 0) {
+        SxString* msg = (SxString*)msg_ptr;
+        if (msg && msg->data) {
+            fprintf(stderr, "PANIC: %s\n", msg->data);
+        } else {
+            fprintf(stderr, "PANIC: called expect() on an Err value\n");
+        }
+        exit(1);
+    }
+    return res->value;
+}
+
+// expect_err(msg) - Get error or panic with message
+int64_t result_expect_err(int64_t res_ptr, int64_t msg_ptr) {
+    SxResult* res = (SxResult*)res_ptr;
+    if (!res || res->tag == 1) {
+        SxString* msg = (SxString*)msg_ptr;
+        if (msg && msg->data) {
+            fprintf(stderr, "PANIC: %s\n", msg->data);
+        } else {
+            fprintf(stderr, "PANIC: called expect_err() on an Ok value\n");
+        }
+        exit(1);
+    }
+    return res->error;
+}
+
+// unwrap_or(default) - Get value or default
+int64_t result_unwrap_or(int64_t res_ptr, int64_t default_val) {
+    SxResult* res = (SxResult*)res_ptr;
+    if (!res || res->tag == 0) {
+        return default_val;
+    }
+    return res->value;
+}
+
+// unwrap_or_else(fn) - Get value or compute from error
+typedef int64_t (*ResultErrFn)(int64_t);  // Takes error, returns value
+int64_t result_unwrap_or_else(int64_t res_ptr, ResultErrFn fn) {
+    SxResult* res = (SxResult*)res_ptr;
+    if (!res || res->tag == 0) {
+        return fn ? fn(res ? res->error : 0) : 0;
+    }
+    return res->value;
+}
+
+// map(fn) - Transform Ok value
+int64_t result_map(int64_t res_ptr, SxMapFn fn) {
+    SxResult* res = (SxResult*)res_ptr;
+    if (!res || res->tag == 0) {
+        return (int64_t)result_err(res ? res->error : 0);
+    }
+    return (int64_t)result_ok(fn ? fn(res->value) : res->value);
+}
+
+// map_err(fn) - Transform Err value
+int64_t result_map_err(int64_t res_ptr, SxMapFn fn) {
+    SxResult* res = (SxResult*)res_ptr;
+    if (!res || res->tag == 0) {
+        return (int64_t)result_err(fn && res ? fn(res->error) : (res ? res->error : 0));
+    }
+    return (int64_t)result_ok(res->value);
+}
+
+// and(other) - Return other if Ok, else propagate Err
+int64_t result_and(int64_t res_ptr, int64_t other_ptr) {
+    SxResult* res = (SxResult*)res_ptr;
+    if (!res || res->tag == 0) {
+        return (int64_t)result_err(res ? res->error : 0);
+    }
+    // If Ok, return other (clone it)
+    SxResult* other = (SxResult*)other_ptr;
+    if (!other) return (int64_t)result_err(0);
+    if (other->tag == 0) return (int64_t)result_err(other->error);
+    return (int64_t)result_ok(other->value);
+}
+
+// and_then(fn) - Flatmap Ok: fn returns Result
+typedef int64_t (*ResultAndThenFn)(int64_t);  // Returns Result ptr
+int64_t result_and_then(int64_t res_ptr, ResultAndThenFn fn) {
+    SxResult* res = (SxResult*)res_ptr;
+    if (!res || res->tag == 0 || !fn) {
+        return (int64_t)result_err(res ? res->error : 0);
+    }
+    return fn(res->value);
+}
+
+// or(other) - Return self if Ok, else other
+int64_t result_or(int64_t res_ptr, int64_t other_ptr) {
+    SxResult* res = (SxResult*)res_ptr;
+    if (res && res->tag == 1) {
+        return (int64_t)result_ok(res->value);
+    }
+    SxResult* other = (SxResult*)other_ptr;
+    if (!other) return (int64_t)result_err(res ? res->error : 0);
+    if (other->tag == 0) return (int64_t)result_err(other->error);
+    return (int64_t)result_ok(other->value);
+}
+
+// or_else(fn) - Return self if Ok, else compute
+typedef int64_t (*ResultOrElseFn)(int64_t);  // Takes error, returns Result
+int64_t result_or_else(int64_t res_ptr, ResultOrElseFn fn) {
+    SxResult* res = (SxResult*)res_ptr;
+    if (res && res->tag == 1) {
+        return (int64_t)result_ok(res->value);
+    }
+    return fn ? fn(res ? res->error : 0) : (int64_t)result_err(res ? res->error : 0);
+}
+
+// Get value (unchecked - for internal use)
+int64_t result_get_value(int64_t res_ptr) {
+    SxResult* res = (SxResult*)res_ptr;
+    return res ? res->value : 0;
+}
+
+// Get error (unchecked - for internal use)
+int64_t result_get_error(int64_t res_ptr) {
+    SxResult* res = (SxResult*)res_ptr;
+    return res ? res->error : 0;
+}
+
+// Get tag
+int8_t result_get_tag(int64_t res_ptr) {
+    SxResult* res = (SxResult*)res_ptr;
+    return res ? res->tag : 0;
+}
+
+// Clone a Result
+int64_t result_clone(int64_t res_ptr) {
+    SxResult* res = (SxResult*)res_ptr;
+    if (!res) return (int64_t)result_err(0);
+    if (res->tag == 0) return (int64_t)result_err(res->error);
+    return (int64_t)result_ok(res->value);
+}
+
+// ============================================================================
+// Option/Result Conversion Functions
+// ============================================================================
+
+// ok_or(err) - Convert Option to Result
+int64_t option_ok_or(int64_t opt_ptr, int64_t err_val) {
+    SxOption* opt = (SxOption*)opt_ptr;
+    if (!opt || opt->tag == 0) {
+        return (int64_t)result_err(err_val);
+    }
+    return (int64_t)result_ok(opt->value);
+}
+
+// ok_or_else(fn) - Convert Option to Result with computed error
+typedef int64_t (*OptionErrorFn)(void);  // Returns error value
+int64_t option_ok_or_else(int64_t opt_ptr, OptionErrorFn fn) {
+    SxOption* opt = (SxOption*)opt_ptr;
+    if (!opt || opt->tag == 0) {
+        return (int64_t)result_err(fn ? fn() : 0);
+    }
+    return (int64_t)result_ok(opt->value);
+}
+
+// transpose - Convert Option<Result<T,E>> to Result<Option<T>, E>
+// Input: Option containing a Result
+// Output: Result containing an Option
+int64_t option_transpose(int64_t opt_ptr) {
+    SxOption* opt = (SxOption*)opt_ptr;
+    if (!opt || opt->tag == 0) {
+        // None -> Ok(None)
+        return (int64_t)result_ok((int64_t)option_none());
+    }
+    // Some(result)
+    SxResult* inner = (SxResult*)opt->value;
+    if (!inner) {
+        return (int64_t)result_ok((int64_t)option_none());
+    }
+    if (inner->tag == 0) {
+        // Some(Err(e)) -> Err(e)
+        return (int64_t)result_err(inner->error);
+    }
+    // Some(Ok(v)) -> Ok(Some(v))
+    return (int64_t)result_ok((int64_t)option_some(inner->value));
+}
+
+// transpose - Convert Result<Option<T>, E> to Option<Result<T, E>>
+// Input: Result containing an Option
+// Output: Option containing a Result
+int64_t result_transpose(int64_t res_ptr) {
+    SxResult* res = (SxResult*)res_ptr;
+    if (!res || res->tag == 0) {
+        // Err(e) -> Some(Err(e))
+        return (int64_t)option_some((int64_t)result_err(res ? res->error : 0));
+    }
+    // Ok(option)
+    SxOption* inner = (SxOption*)res->value;
+    if (!inner || inner->tag == 0) {
+        // Ok(None) -> None
+        return (int64_t)option_none();
+    }
+    // Ok(Some(v)) -> Some(Ok(v))
+    return (int64_t)option_some((int64_t)result_ok(inner->value));
+}
+
+// flatten - Convert Option<Option<T>> to Option<T>
+int64_t option_flatten(int64_t opt_ptr) {
+    SxOption* opt = (SxOption*)opt_ptr;
+    if (!opt || opt->tag == 0) {
+        return (int64_t)option_none();
+    }
+    SxOption* inner = (SxOption*)opt->value;
+    if (!inner || inner->tag == 0) {
+        return (int64_t)option_none();
+    }
+    return (int64_t)option_some(inner->value);
+}
+
+// flatten - Convert Result<Result<T,E>, E> to Result<T, E>
+int64_t result_flatten(int64_t res_ptr) {
+    SxResult* res = (SxResult*)res_ptr;
+    if (!res || res->tag == 0) {
+        return (int64_t)result_err(res ? res->error : 0);
+    }
+    SxResult* inner = (SxResult*)res->value;
+    if (!inner || inner->tag == 0) {
+        return (int64_t)result_err(inner ? inner->error : 0);
+    }
+    return (int64_t)result_ok(inner->value);
+}
+
+// ============================================================================
+// Convenience wrapper functions (int64_t interface)
+// ============================================================================
+
+int64_t option_some_i64(int64_t value) {
+    return (int64_t)option_some(value);
+}
+
+int64_t option_none_i64(void) {
+    return (int64_t)option_none();
+}
+
+int64_t result_ok_i64(int64_t value) {
+    return (int64_t)result_ok(value);
+}
+
+int64_t result_err_i64(int64_t error) {
+    return (int64_t)result_err(error);
+}
+
+// Create Err with string message
+int64_t result_err_msg(const char* msg) {
+    SxString* s = intrinsic_string_new(msg);
+    return (int64_t)result_err((int64_t)s);
+}
+
+// ============================================================================
+// JSON Value Type Implementation
+// ============================================================================
+
+// JSON Value types
+typedef enum {
+    JSON_NULL = 0,
+    JSON_BOOL = 1,
+    JSON_NUMBER = 2,
+    JSON_STRING = 3,
+    JSON_ARRAY = 4,
+    JSON_OBJECT = 5
+} JsonType;
+
+// Forward declarations
+typedef struct JsonValue JsonValue;
+typedef struct JsonArray JsonArray;
+typedef struct JsonObject JsonObject;
+typedef struct JsonObjectEntry JsonObjectEntry;
+
+// JSON Array - dynamic array of JsonValue pointers
+struct JsonArray {
+    JsonValue** items;
+    size_t len;
+    size_t cap;
+};
+
+// JSON Object entry (key-value pair)
+struct JsonObjectEntry {
+    char* key;
+    JsonValue* value;
+};
+
+// JSON Object - array of key-value pairs
+struct JsonObject {
+    JsonObjectEntry* entries;
+    size_t len;
+    size_t cap;
+};
+
+// JSON Value - tagged union
+struct JsonValue {
+    JsonType type;
+    union {
+        int8_t bool_val;
+        double number_val;
+        char* string_val;
+        JsonArray* array_val;
+        JsonObject* object_val;
+    } data;
+};
+
+// ============================================================================
+// JSON Value Constructors
+// ============================================================================
+
+JsonValue* json_null(void) {
+    JsonValue* val = (JsonValue*)malloc(sizeof(JsonValue));
+    val->type = JSON_NULL;
+    return val;
+}
+
+JsonValue* json_bool(int8_t b) {
+    JsonValue* val = (JsonValue*)malloc(sizeof(JsonValue));
+    val->type = JSON_BOOL;
+    val->data.bool_val = b ? 1 : 0;
+    return val;
+}
+
+JsonValue* json_number(double n) {
+    JsonValue* val = (JsonValue*)malloc(sizeof(JsonValue));
+    val->type = JSON_NUMBER;
+    val->data.number_val = n;
+    return val;
+}
+
+JsonValue* json_number_i64(int64_t n) {
+    return json_number((double)n);
+}
+
+JsonValue* json_string(const char* s) {
+    JsonValue* val = (JsonValue*)malloc(sizeof(JsonValue));
+    val->type = JSON_STRING;
+    val->data.string_val = s ? strdup(s) : strdup("");
+    return val;
+}
+
+JsonValue* json_string_sx(int64_t sx_str_ptr) {
+    SxString* s = (SxString*)sx_str_ptr;
+    if (!s || !s->data) {
+        return json_string("");
+    }
+    return json_string(s->data);
+}
+
+JsonValue* json_array(void) {
+    JsonValue* val = (JsonValue*)malloc(sizeof(JsonValue));
+    val->type = JSON_ARRAY;
+    val->data.array_val = (JsonArray*)malloc(sizeof(JsonArray));
+    val->data.array_val->items = NULL;
+    val->data.array_val->len = 0;
+    val->data.array_val->cap = 0;
+    return val;
+}
+
+JsonValue* json_object(void) {
+    JsonValue* val = (JsonValue*)malloc(sizeof(JsonValue));
+    val->type = JSON_OBJECT;
+    val->data.object_val = (JsonObject*)malloc(sizeof(JsonObject));
+    val->data.object_val->entries = NULL;
+    val->data.object_val->len = 0;
+    val->data.object_val->cap = 0;
+    return val;
+}
+
+// ============================================================================
+// JSON Value Type Checks
+// ============================================================================
+
+int8_t json_is_null(int64_t val_ptr) {
+    JsonValue* val = (JsonValue*)val_ptr;
+    return val && val->type == JSON_NULL;
+}
+
+int8_t json_is_bool(int64_t val_ptr) {
+    JsonValue* val = (JsonValue*)val_ptr;
+    return val && val->type == JSON_BOOL;
+}
+
+int8_t json_is_number(int64_t val_ptr) {
+    JsonValue* val = (JsonValue*)val_ptr;
+    return val && val->type == JSON_NUMBER;
+}
+
+int8_t json_is_string(int64_t val_ptr) {
+    JsonValue* val = (JsonValue*)val_ptr;
+    return val && val->type == JSON_STRING;
+}
+
+int8_t json_is_array(int64_t val_ptr) {
+    JsonValue* val = (JsonValue*)val_ptr;
+    return val && val->type == JSON_ARRAY;
+}
+
+int8_t json_is_object(int64_t val_ptr) {
+    JsonValue* val = (JsonValue*)val_ptr;
+    return val && val->type == JSON_OBJECT;
+}
+
+int64_t json_type(int64_t val_ptr) {
+    JsonValue* val = (JsonValue*)val_ptr;
+    return val ? (int64_t)val->type : -1;
+}
+
+// ============================================================================
+// JSON Value Accessors
+// ============================================================================
+
+int8_t json_as_bool(int64_t val_ptr) {
+    JsonValue* val = (JsonValue*)val_ptr;
+    if (!val) return 0;
+    switch (val->type) {
+        case JSON_BOOL: return val->data.bool_val;
+        case JSON_NUMBER: return val->data.number_val != 0.0;
+        case JSON_NULL: return 0;
+        default: return 1;  // Non-null values are truthy
+    }
+}
+
+double json_as_f64(int64_t val_ptr) {
+    JsonValue* val = (JsonValue*)val_ptr;
+    if (!val) return 0.0;
+    switch (val->type) {
+        case JSON_NUMBER: return val->data.number_val;
+        case JSON_BOOL: return val->data.bool_val ? 1.0 : 0.0;
+        case JSON_STRING: return atof(val->data.string_val);
+        default: return 0.0;
+    }
+}
+
+int64_t json_as_i64(int64_t val_ptr) {
+    return (int64_t)json_as_f64(val_ptr);
+}
+
+int64_t json_as_string(int64_t val_ptr) {
+    JsonValue* val = (JsonValue*)val_ptr;
+    if (!val) return (int64_t)intrinsic_string_new("");
+    switch (val->type) {
+        case JSON_STRING:
+            return (int64_t)intrinsic_string_new(val->data.string_val);
+        case JSON_NULL:
+            return (int64_t)intrinsic_string_new("null");
+        case JSON_BOOL:
+            return (int64_t)intrinsic_string_new(val->data.bool_val ? "true" : "false");
+        case JSON_NUMBER: {
+            char buf[64];
+            double n = val->data.number_val;
+            if (n == (int64_t)n) {
+                snprintf(buf, sizeof(buf), "%lld", (long long)(int64_t)n);
+            } else {
+                snprintf(buf, sizeof(buf), "%g", n);
+            }
+            return (int64_t)intrinsic_string_new(buf);
+        }
+        default:
+            return (int64_t)intrinsic_string_new("");
+    }
+}
+
+// Get raw C string (internal use)
+const char* json_get_string_raw(int64_t val_ptr) {
+    JsonValue* val = (JsonValue*)val_ptr;
+    if (!val || val->type != JSON_STRING) return NULL;
+    return val->data.string_val;
+}
+
+// ============================================================================
+// JSON Array Operations
+// ============================================================================
+
+void json_array_push(int64_t arr_ptr, int64_t val_ptr) {
+    JsonValue* arr = (JsonValue*)arr_ptr;
+    JsonValue* val = (JsonValue*)val_ptr;
+    if (!arr || arr->type != JSON_ARRAY || !val) return;
+
+    JsonArray* array = arr->data.array_val;
+    if (array->len >= array->cap) {
+        size_t new_cap = array->cap == 0 ? 8 : array->cap * 2;
+        array->items = (JsonValue**)realloc(array->items, new_cap * sizeof(JsonValue*));
+        array->cap = new_cap;
+    }
+    array->items[array->len++] = val;
+}
+
+int64_t json_get_index(int64_t arr_ptr, int64_t index) {
+    JsonValue* arr = (JsonValue*)arr_ptr;
+    if (!arr || arr->type != JSON_ARRAY) return 0;
+
+    JsonArray* array = arr->data.array_val;
+    if (index < 0 || (size_t)index >= array->len) return 0;
+    return (int64_t)array->items[index];
+}
+
+int64_t json_array_len(int64_t arr_ptr) {
+    JsonValue* arr = (JsonValue*)arr_ptr;
+    if (!arr || arr->type != JSON_ARRAY) return 0;
+    return (int64_t)arr->data.array_val->len;
+}
+
+// ============================================================================
+// JSON Object Operations
+// ============================================================================
+
+void json_object_set(int64_t obj_ptr, const char* key, int64_t val_ptr) {
+    JsonValue* obj = (JsonValue*)obj_ptr;
+    JsonValue* val = (JsonValue*)val_ptr;
+    if (!obj || obj->type != JSON_OBJECT || !key || !val) return;
+
+    JsonObject* object = obj->data.object_val;
+
+    // Check if key exists
+    for (size_t i = 0; i < object->len; i++) {
+        if (strcmp(object->entries[i].key, key) == 0) {
+            // Replace existing value (note: old value is not freed, caller should manage)
+            object->entries[i].value = val;
+            return;
+        }
+    }
+
+    // Add new entry
+    if (object->len >= object->cap) {
+        size_t new_cap = object->cap == 0 ? 8 : object->cap * 2;
+        object->entries = (JsonObjectEntry*)realloc(object->entries, new_cap * sizeof(JsonObjectEntry));
+        object->cap = new_cap;
+    }
+    object->entries[object->len].key = strdup(key);
+    object->entries[object->len].value = val;
+    object->len++;
+}
+
+void json_object_set_sx(int64_t obj_ptr, int64_t key_ptr, int64_t val_ptr) {
+    SxString* key = (SxString*)key_ptr;
+    if (!key || !key->data) return;
+    json_object_set(obj_ptr, key->data, val_ptr);
+}
+
+int64_t json_get(int64_t obj_ptr, const char* key) {
+    JsonValue* obj = (JsonValue*)obj_ptr;
+    if (!obj || obj->type != JSON_OBJECT || !key) return 0;
+
+    JsonObject* object = obj->data.object_val;
+    for (size_t i = 0; i < object->len; i++) {
+        if (strcmp(object->entries[i].key, key) == 0) {
+            return (int64_t)object->entries[i].value;
+        }
+    }
+    return 0;
+}
+
+int64_t json_get_sx(int64_t obj_ptr, int64_t key_ptr) {
+    SxString* key = (SxString*)key_ptr;
+    if (!key || !key->data) return 0;
+    return json_get(obj_ptr, key->data);
+}
+
+int64_t json_object_len(int64_t obj_ptr) {
+    JsonValue* obj = (JsonValue*)obj_ptr;
+    if (!obj || obj->type != JSON_OBJECT) return 0;
+    return (int64_t)obj->data.object_val->len;
+}
+
+int8_t json_object_has(int64_t obj_ptr, const char* key) {
+    return json_get(obj_ptr, key) != 0;
+}
+
+// Get key at index (for iteration)
+int64_t json_object_key_at(int64_t obj_ptr, int64_t index) {
+    JsonValue* obj = (JsonValue*)obj_ptr;
+    if (!obj || obj->type != JSON_OBJECT) return 0;
+    JsonObject* object = obj->data.object_val;
+    if (index < 0 || (size_t)index >= object->len) return 0;
+    return (int64_t)intrinsic_string_new(object->entries[index].key);
+}
+
+// Get value at index (for iteration)
+int64_t json_object_value_at(int64_t obj_ptr, int64_t index) {
+    JsonValue* obj = (JsonValue*)obj_ptr;
+    if (!obj || obj->type != JSON_OBJECT) return 0;
+    JsonObject* object = obj->data.object_val;
+    if (index < 0 || (size_t)index >= object->len) return 0;
+    return (int64_t)object->entries[index].value;
+}
+
+// Create a new empty JSON object (returns i64 pointer)
+int64_t json_object_new(void) {
+    return (int64_t)json_object();
+}
+
+// Create a new empty JSON array (returns i64 pointer)
+int64_t json_array_new(void) {
+    return (int64_t)json_array();
+}
+
+// Get all keys of a JSON object as a Vec of strings
+int64_t json_keys(int64_t obj_ptr) {
+    SxVec* keys = intrinsic_vec_new();
+    JsonValue* obj = (JsonValue*)obj_ptr;
+    if (!obj || obj->type != JSON_OBJECT) return (int64_t)keys;
+
+    JsonObject* object = obj->data.object_val;
+    for (size_t i = 0; i < object->len; i++) {
+        SxString* key = intrinsic_string_new(object->entries[i].key);
+        intrinsic_vec_push(keys, key);
+    }
+    return (int64_t)keys;
+}
+
+// ============================================================================
+// JSON Free
+// ============================================================================
+
+void json_free(int64_t val_ptr) {
+    JsonValue* val = (JsonValue*)val_ptr;
+    if (!val) return;
+
+    switch (val->type) {
+        case JSON_STRING:
+            if (val->data.string_val) free(val->data.string_val);
+            break;
+        case JSON_ARRAY: {
+            JsonArray* arr = val->data.array_val;
+            if (arr) {
+                for (size_t i = 0; i < arr->len; i++) {
+                    json_free((int64_t)arr->items[i]);
+                }
+                if (arr->items) free(arr->items);
+                free(arr);
+            }
+            break;
+        }
+        case JSON_OBJECT: {
+            JsonObject* obj = val->data.object_val;
+            if (obj) {
+                for (size_t i = 0; i < obj->len; i++) {
+                    if (obj->entries[i].key) free(obj->entries[i].key);
+                    json_free((int64_t)obj->entries[i].value);
+                }
+                if (obj->entries) free(obj->entries);
+                free(obj);
+            }
+            break;
+        }
+        default:
+            break;
+    }
+    free(val);
+}
+
+// ============================================================================
+// JSON Serialization (Stringify)
+// ============================================================================
+
+// Forward declaration
+static void json_stringify_value(JsonValue* val, char** buf, size_t* len, size_t* cap);
+
+static void json_buf_append(char** buf, size_t* len, size_t* cap, const char* str) {
+    size_t slen = strlen(str);
+    while (*len + slen + 1 > *cap) {
+        *cap = *cap == 0 ? 256 : *cap * 2;
+        *buf = (char*)realloc(*buf, *cap);
+    }
+    memcpy(*buf + *len, str, slen);
+    *len += slen;
+    (*buf)[*len] = '\0';
+}
+
+static void json_buf_append_char(char** buf, size_t* len, size_t* cap, char c) {
+    if (*len + 2 > *cap) {
+        *cap = *cap == 0 ? 256 : *cap * 2;
+        *buf = (char*)realloc(*buf, *cap);
+    }
+    (*buf)[(*len)++] = c;
+    (*buf)[*len] = '\0';
+}
+
+static void json_stringify_string(const char* str, char** buf, size_t* len, size_t* cap) {
+    json_buf_append_char(buf, len, cap, '"');
+    for (const char* p = str; *p; p++) {
+        switch (*p) {
+            case '"':  json_buf_append(buf, len, cap, "\\\""); break;
+            case '\\': json_buf_append(buf, len, cap, "\\\\"); break;
+            case '\b': json_buf_append(buf, len, cap, "\\b"); break;
+            case '\f': json_buf_append(buf, len, cap, "\\f"); break;
+            case '\n': json_buf_append(buf, len, cap, "\\n"); break;
+            case '\r': json_buf_append(buf, len, cap, "\\r"); break;
+            case '\t': json_buf_append(buf, len, cap, "\\t"); break;
+            default:
+                if ((unsigned char)*p < 0x20) {
+                    char esc[8];
+                    snprintf(esc, sizeof(esc), "\\u%04x", (unsigned char)*p);
+                    json_buf_append(buf, len, cap, esc);
+                } else {
+                    json_buf_append_char(buf, len, cap, *p);
+                }
+                break;
+        }
+    }
+    json_buf_append_char(buf, len, cap, '"');
+}
+
+static void json_stringify_value(JsonValue* val, char** buf, size_t* len, size_t* cap) {
+    if (!val) {
+        json_buf_append(buf, len, cap, "null");
+        return;
+    }
+
+    switch (val->type) {
+        case JSON_NULL:
+            json_buf_append(buf, len, cap, "null");
+            break;
+
+        case JSON_BOOL:
+            json_buf_append(buf, len, cap, val->data.bool_val ? "true" : "false");
+            break;
+
+        case JSON_NUMBER: {
+            char num[64];
+            double n = val->data.number_val;
+            if (n == (int64_t)n && n >= -9007199254740992.0 && n <= 9007199254740992.0) {
+                snprintf(num, sizeof(num), "%lld", (long long)(int64_t)n);
+            } else {
+                snprintf(num, sizeof(num), "%.17g", n);
+            }
+            json_buf_append(buf, len, cap, num);
+            break;
+        }
+
+        case JSON_STRING:
+            json_stringify_string(val->data.string_val ? val->data.string_val : "", buf, len, cap);
+            break;
+
+        case JSON_ARRAY: {
+            json_buf_append_char(buf, len, cap, '[');
+            JsonArray* arr = val->data.array_val;
+            for (size_t i = 0; i < arr->len; i++) {
+                if (i > 0) json_buf_append_char(buf, len, cap, ',');
+                json_stringify_value(arr->items[i], buf, len, cap);
+            }
+            json_buf_append_char(buf, len, cap, ']');
+            break;
+        }
+
+        case JSON_OBJECT: {
+            json_buf_append_char(buf, len, cap, '{');
+            JsonObject* obj = val->data.object_val;
+            for (size_t i = 0; i < obj->len; i++) {
+                if (i > 0) json_buf_append_char(buf, len, cap, ',');
+                json_stringify_string(obj->entries[i].key, buf, len, cap);
+                json_buf_append_char(buf, len, cap, ':');
+                json_stringify_value(obj->entries[i].value, buf, len, cap);
+            }
+            json_buf_append_char(buf, len, cap, '}');
+            break;
+        }
+    }
+}
+
+int64_t json_stringify(int64_t val_ptr) {
+    char* buf = NULL;
+    size_t len = 0, cap = 0;
+    json_stringify_value((JsonValue*)val_ptr, &buf, &len, &cap);
+    SxString* result = intrinsic_string_new(buf ? buf : "null");
+    if (buf) free(buf);
+    return (int64_t)result;
+}
+
+// ============================================================================
+// JSON Pretty Print
+// ============================================================================
+
+static void json_stringify_pretty_value(JsonValue* val, char** buf, size_t* len, size_t* cap, int indent, int depth);
+
+static void json_append_indent(char** buf, size_t* len, size_t* cap, int indent, int depth) {
+    for (int i = 0; i < indent * depth; i++) {
+        json_buf_append_char(buf, len, cap, ' ');
+    }
+}
+
+static void json_stringify_pretty_value(JsonValue* val, char** buf, size_t* len, size_t* cap, int indent, int depth) {
+    if (!val) {
+        json_buf_append(buf, len, cap, "null");
+        return;
+    }
+
+    switch (val->type) {
+        case JSON_NULL:
+            json_buf_append(buf, len, cap, "null");
+            break;
+
+        case JSON_BOOL:
+            json_buf_append(buf, len, cap, val->data.bool_val ? "true" : "false");
+            break;
+
+        case JSON_NUMBER: {
+            char num[64];
+            double n = val->data.number_val;
+            if (n == (int64_t)n && n >= -9007199254740992.0 && n <= 9007199254740992.0) {
+                snprintf(num, sizeof(num), "%lld", (long long)(int64_t)n);
+            } else {
+                snprintf(num, sizeof(num), "%.17g", n);
+            }
+            json_buf_append(buf, len, cap, num);
+            break;
+        }
+
+        case JSON_STRING:
+            json_stringify_string(val->data.string_val ? val->data.string_val : "", buf, len, cap);
+            break;
+
+        case JSON_ARRAY: {
+            JsonArray* arr = val->data.array_val;
+            if (arr->len == 0) {
+                json_buf_append(buf, len, cap, "[]");
+            } else {
+                json_buf_append(buf, len, cap, "[\n");
+                for (size_t i = 0; i < arr->len; i++) {
+                    json_append_indent(buf, len, cap, indent, depth + 1);
+                    json_stringify_pretty_value(arr->items[i], buf, len, cap, indent, depth + 1);
+                    if (i < arr->len - 1) json_buf_append_char(buf, len, cap, ',');
+                    json_buf_append_char(buf, len, cap, '\n');
+                }
+                json_append_indent(buf, len, cap, indent, depth);
+                json_buf_append_char(buf, len, cap, ']');
+            }
+            break;
+        }
+
+        case JSON_OBJECT: {
+            JsonObject* obj = val->data.object_val;
+            if (obj->len == 0) {
+                json_buf_append(buf, len, cap, "{}");
+            } else {
+                json_buf_append(buf, len, cap, "{\n");
+                for (size_t i = 0; i < obj->len; i++) {
+                    json_append_indent(buf, len, cap, indent, depth + 1);
+                    json_stringify_string(obj->entries[i].key, buf, len, cap);
+                    json_buf_append(buf, len, cap, ": ");
+                    json_stringify_pretty_value(obj->entries[i].value, buf, len, cap, indent, depth + 1);
+                    if (i < obj->len - 1) json_buf_append_char(buf, len, cap, ',');
+                    json_buf_append_char(buf, len, cap, '\n');
+                }
+                json_append_indent(buf, len, cap, indent, depth);
+                json_buf_append_char(buf, len, cap, '}');
+            }
+            break;
+        }
+    }
+}
+
+int64_t json_stringify_pretty(int64_t val_ptr, int64_t indent) {
+    char* buf = NULL;
+    size_t len = 0, cap = 0;
+    json_stringify_pretty_value((JsonValue*)val_ptr, &buf, &len, &cap, (int)indent, 0);
+    SxString* result = intrinsic_string_new(buf ? buf : "null");
+    if (buf) free(buf);
+    return (int64_t)result;
+}
+
+// ============================================================================
+// JSON Parsing
+// ============================================================================
+
+typedef struct {
+    const char* str;
+    size_t pos;
+    size_t len;
+    char* error;
+} JsonParser;
+
+static void json_parser_skip_ws(JsonParser* p) {
+    while (p->pos < p->len) {
+        char c = p->str[p->pos];
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+            p->pos++;
+        } else {
+            break;
+        }
+    }
+}
+
+static void json_parser_error(JsonParser* p, const char* msg) {
+    if (!p->error) {
+        size_t elen = strlen(msg) + 64;
+        p->error = (char*)malloc(elen);
+        snprintf(p->error, elen, "%s at position %zu", msg, p->pos);
+    }
+}
+
+static JsonValue* json_parse_value(JsonParser* p);
+
+static JsonValue* json_parse_string(JsonParser* p) {
+    if (p->str[p->pos] != '"') {
+        json_parser_error(p, "Expected '\"'");
+        return NULL;
+    }
+    p->pos++;  // Skip opening quote
+
+    size_t start = p->pos;
+    size_t cap = 64;
+    char* str = (char*)malloc(cap);
+    size_t len = 0;
+
+    while (p->pos < p->len && p->str[p->pos] != '"') {
+        char c = p->str[p->pos];
+        if (c == '\\') {
+            p->pos++;
+            if (p->pos >= p->len) {
+                free(str);
+                json_parser_error(p, "Unexpected end of string");
+                return NULL;
+            }
+            char esc = p->str[p->pos];
+            char decoded;
+            switch (esc) {
+                case '"': decoded = '"'; break;
+                case '\\': decoded = '\\'; break;
+                case '/': decoded = '/'; break;
+                case 'b': decoded = '\b'; break;
+                case 'f': decoded = '\f'; break;
+                case 'n': decoded = '\n'; break;
+                case 'r': decoded = '\r'; break;
+                case 't': decoded = '\t'; break;
+                case 'u': {
+                    // Parse \uXXXX
+                    if (p->pos + 4 >= p->len) {
+                        free(str);
+                        json_parser_error(p, "Invalid unicode escape");
+                        return NULL;
+                    }
+                    char hex[5] = {p->str[p->pos+1], p->str[p->pos+2], p->str[p->pos+3], p->str[p->pos+4], 0};
+                    unsigned int code;
+                    if (sscanf(hex, "%x", &code) != 1) {
+                        free(str);
+                        json_parser_error(p, "Invalid unicode escape");
+                        return NULL;
+                    }
+                    p->pos += 4;
+                    // Simple UTF-8 encoding for BMP characters
+                    if (code < 0x80) {
+                        decoded = (char)code;
+                    } else if (code < 0x800) {
+                        if (len + 2 >= cap) { cap *= 2; str = (char*)realloc(str, cap); }
+                        str[len++] = (char)(0xC0 | (code >> 6));
+                        decoded = (char)(0x80 | (code & 0x3F));
+                    } else {
+                        if (len + 3 >= cap) { cap *= 2; str = (char*)realloc(str, cap); }
+                        str[len++] = (char)(0xE0 | (code >> 12));
+                        str[len++] = (char)(0x80 | ((code >> 6) & 0x3F));
+                        decoded = (char)(0x80 | (code & 0x3F));
+                    }
+                    break;
+                }
+                default:
+                    free(str);
+                    json_parser_error(p, "Invalid escape sequence");
+                    return NULL;
+            }
+            if (len + 1 >= cap) { cap *= 2; str = (char*)realloc(str, cap); }
+            str[len++] = decoded;
+            p->pos++;
+        } else if ((unsigned char)c < 0x20) {
+            free(str);
+            json_parser_error(p, "Invalid control character in string");
+            return NULL;
+        } else {
+            if (len + 1 >= cap) { cap *= 2; str = (char*)realloc(str, cap); }
+            str[len++] = c;
+            p->pos++;
+        }
+    }
+
+    if (p->pos >= p->len) {
+        free(str);
+        json_parser_error(p, "Unterminated string");
+        return NULL;
+    }
+
+    p->pos++;  // Skip closing quote
+    str[len] = '\0';
+
+    JsonValue* val = (JsonValue*)malloc(sizeof(JsonValue));
+    val->type = JSON_STRING;
+    val->data.string_val = str;
+    return val;
+}
+
+static JsonValue* json_parse_number(JsonParser* p) {
+    size_t start = p->pos;
+
+    // Optional minus
+    if (p->pos < p->len && p->str[p->pos] == '-') p->pos++;
+
+    // Integer part
+    if (p->pos < p->len && p->str[p->pos] == '0') {
+        p->pos++;
+    } else if (p->pos < p->len && p->str[p->pos] >= '1' && p->str[p->pos] <= '9') {
+        while (p->pos < p->len && p->str[p->pos] >= '0' && p->str[p->pos] <= '9') p->pos++;
+    } else {
+        json_parser_error(p, "Invalid number");
+        return NULL;
+    }
+
+    // Fractional part
+    if (p->pos < p->len && p->str[p->pos] == '.') {
+        p->pos++;
+        if (p->pos >= p->len || p->str[p->pos] < '0' || p->str[p->pos] > '9') {
+            json_parser_error(p, "Invalid number");
+            return NULL;
+        }
+        while (p->pos < p->len && p->str[p->pos] >= '0' && p->str[p->pos] <= '9') p->pos++;
+    }
+
+    // Exponent part
+    if (p->pos < p->len && (p->str[p->pos] == 'e' || p->str[p->pos] == 'E')) {
+        p->pos++;
+        if (p->pos < p->len && (p->str[p->pos] == '+' || p->str[p->pos] == '-')) p->pos++;
+        if (p->pos >= p->len || p->str[p->pos] < '0' || p->str[p->pos] > '9') {
+            json_parser_error(p, "Invalid number");
+            return NULL;
+        }
+        while (p->pos < p->len && p->str[p->pos] >= '0' && p->str[p->pos] <= '9') p->pos++;
+    }
+
+    // Parse the number
+    size_t num_len = p->pos - start;
+    char* num_str = (char*)malloc(num_len + 1);
+    memcpy(num_str, p->str + start, num_len);
+    num_str[num_len] = '\0';
+
+    double num = atof(num_str);
+    free(num_str);
+
+    return json_number(num);
+}
+
+static JsonValue* json_parse_array(JsonParser* p) {
+    p->pos++;  // Skip '['
+    json_parser_skip_ws(p);
+
+    JsonValue* arr = json_array();
+
+    if (p->pos < p->len && p->str[p->pos] == ']') {
+        p->pos++;
+        return arr;
+    }
+
+    while (1) {
+        json_parser_skip_ws(p);
+        JsonValue* item = json_parse_value(p);
+        if (!item) {
+            json_free((int64_t)arr);
+            return NULL;
+        }
+        json_array_push((int64_t)arr, (int64_t)item);
+
+        json_parser_skip_ws(p);
+        if (p->pos >= p->len) {
+            json_free((int64_t)arr);
+            json_parser_error(p, "Unterminated array");
+            return NULL;
+        }
+
+        if (p->str[p->pos] == ']') {
+            p->pos++;
+            return arr;
+        }
+
+        if (p->str[p->pos] != ',') {
+            json_free((int64_t)arr);
+            json_parser_error(p, "Expected ',' or ']'");
+            return NULL;
+        }
+        p->pos++;
+    }
+}
+
+static JsonValue* json_parse_object(JsonParser* p) {
+    p->pos++;  // Skip '{'
+    json_parser_skip_ws(p);
+
+    JsonValue* obj = json_object();
+
+    if (p->pos < p->len && p->str[p->pos] == '}') {
+        p->pos++;
+        return obj;
+    }
+
+    while (1) {
+        json_parser_skip_ws(p);
+
+        // Parse key
+        if (p->pos >= p->len || p->str[p->pos] != '"') {
+            json_free((int64_t)obj);
+            json_parser_error(p, "Expected string key");
+            return NULL;
+        }
+
+        JsonValue* key_val = json_parse_string(p);
+        if (!key_val) {
+            json_free((int64_t)obj);
+            return NULL;
+        }
+        char* key = strdup(key_val->data.string_val);
+        json_free((int64_t)key_val);
+
+        json_parser_skip_ws(p);
+
+        // Expect ':'
+        if (p->pos >= p->len || p->str[p->pos] != ':') {
+            free(key);
+            json_free((int64_t)obj);
+            json_parser_error(p, "Expected ':'");
+            return NULL;
+        }
+        p->pos++;
+
+        json_parser_skip_ws(p);
+
+        // Parse value
+        JsonValue* val = json_parse_value(p);
+        if (!val) {
+            free(key);
+            json_free((int64_t)obj);
+            return NULL;
+        }
+
+        json_object_set((int64_t)obj, key, (int64_t)val);
+        free(key);
+
+        json_parser_skip_ws(p);
+
+        if (p->pos >= p->len) {
+            json_free((int64_t)obj);
+            json_parser_error(p, "Unterminated object");
+            return NULL;
+        }
+
+        if (p->str[p->pos] == '}') {
+            p->pos++;
+            return obj;
+        }
+
+        if (p->str[p->pos] != ',') {
+            json_free((int64_t)obj);
+            json_parser_error(p, "Expected ',' or '}'");
+            return NULL;
+        }
+        p->pos++;
+    }
+}
+
+static JsonValue* json_parse_value(JsonParser* p) {
+    json_parser_skip_ws(p);
+
+    if (p->pos >= p->len) {
+        json_parser_error(p, "Unexpected end of input");
+        return NULL;
+    }
+
+    char c = p->str[p->pos];
+
+    // null
+    if (c == 'n') {
+        if (p->pos + 4 <= p->len && strncmp(p->str + p->pos, "null", 4) == 0) {
+            p->pos += 4;
+            return json_null();
+        }
+        json_parser_error(p, "Invalid value");
+        return NULL;
+    }
+
+    // true
+    if (c == 't') {
+        if (p->pos + 4 <= p->len && strncmp(p->str + p->pos, "true", 4) == 0) {
+            p->pos += 4;
+            return json_bool(1);
+        }
+        json_parser_error(p, "Invalid value");
+        return NULL;
+    }
+
+    // false
+    if (c == 'f') {
+        if (p->pos + 5 <= p->len && strncmp(p->str + p->pos, "false", 5) == 0) {
+            p->pos += 5;
+            return json_bool(0);
+        }
+        json_parser_error(p, "Invalid value");
+        return NULL;
+    }
+
+    // string
+    if (c == '"') {
+        return json_parse_string(p);
+    }
+
+    // number
+    if (c == '-' || (c >= '0' && c <= '9')) {
+        return json_parse_number(p);
+    }
+
+    // array
+    if (c == '[') {
+        return json_parse_array(p);
+    }
+
+    // object
+    if (c == '{') {
+        return json_parse_object(p);
+    }
+
+    json_parser_error(p, "Invalid value");
+    return NULL;
+}
+
+// Parse JSON string to JsonValue
+// Returns Result: Ok(JsonValue*) or Err(error_string)
+int64_t json_parse(int64_t str_ptr) {
+    SxString* str = (SxString*)str_ptr;
+    if (!str || !str->data) {
+        return (int64_t)result_err_msg("null input");
+    }
+
+    JsonParser parser = {
+        .str = str->data,
+        .pos = 0,
+        .len = str->len,
+        .error = NULL
+    };
+
+    JsonValue* val = json_parse_value(&parser);
+
+    if (parser.error) {
+        SxString* err_str = intrinsic_string_new(parser.error);
+        free(parser.error);
+        return (int64_t)result_err((int64_t)err_str);
+    }
+
+    if (!val) {
+        return (int64_t)result_err_msg("parse failed");
+    }
+
+    // Check for trailing content
+    json_parser_skip_ws(&parser);
+    if (parser.pos < parser.len) {
+        json_free((int64_t)val);
+        return (int64_t)result_err_msg("trailing content after JSON value");
+    }
+
+    return (int64_t)result_ok((int64_t)val);
+}
+
+// Parse JSON from C string (convenience)
+int64_t json_parse_cstr(const char* str) {
+    if (!str) {
+        return (int64_t)result_err_msg("null input");
+    }
+    SxString* s = intrinsic_string_new(str);
+    int64_t result = json_parse((int64_t)s);
+    // Note: s is not freed as it might be needed for error messages
+    return result;
+}
+
+// Simple json_parse that returns value directly (0 on error)
+// This is the version used by Simplex code
+int64_t json_parse_simple(int64_t str_ptr) {
+    int64_t result = json_parse(str_ptr);
+    if (!result) return 0;
+    SxResult* res = (SxResult*)result;
+    if (res->tag == 0) {
+        // Error - return 0
+        return 0;
+    }
+    // Ok - return the value
+    return res->value;
+}
+
+// ============================================================================
+// JSON Convenience Functions
+// ============================================================================
+
+// Clone a JSON value (deep copy)
+int64_t json_clone(int64_t val_ptr) {
+    JsonValue* val = (JsonValue*)val_ptr;
+    if (!val) return (int64_t)json_null();
+
+    switch (val->type) {
+        case JSON_NULL:
+            return (int64_t)json_null();
+
+        case JSON_BOOL:
+            return (int64_t)json_bool(val->data.bool_val);
+
+        case JSON_NUMBER:
+            return (int64_t)json_number(val->data.number_val);
+
+        case JSON_STRING:
+            return (int64_t)json_string(val->data.string_val);
+
+        case JSON_ARRAY: {
+            JsonValue* arr = json_array();
+            JsonArray* src = val->data.array_val;
+            for (size_t i = 0; i < src->len; i++) {
+                json_array_push((int64_t)arr, json_clone((int64_t)src->items[i]));
+            }
+            return (int64_t)arr;
+        }
+
+        case JSON_OBJECT: {
+            JsonValue* obj = json_object();
+            JsonObject* src = val->data.object_val;
+            for (size_t i = 0; i < src->len; i++) {
+                json_object_set((int64_t)obj, src->entries[i].key,
+                               json_clone((int64_t)src->entries[i].value));
+            }
+            return (int64_t)obj;
+        }
+    }
+
+    return (int64_t)json_null();
+}
+
+// Compare two JSON values for equality
+int8_t json_equals(int64_t a_ptr, int64_t b_ptr) {
+    JsonValue* a = (JsonValue*)a_ptr;
+    JsonValue* b = (JsonValue*)b_ptr;
+
+    if (!a && !b) return 1;
+    if (!a || !b) return 0;
+    if (a->type != b->type) return 0;
+
+    switch (a->type) {
+        case JSON_NULL:
+            return 1;
+
+        case JSON_BOOL:
+            return a->data.bool_val == b->data.bool_val;
+
+        case JSON_NUMBER:
+            return a->data.number_val == b->data.number_val;
+
+        case JSON_STRING:
+            return strcmp(a->data.string_val ? a->data.string_val : "",
+                         b->data.string_val ? b->data.string_val : "") == 0;
+
+        case JSON_ARRAY: {
+            JsonArray* arr_a = a->data.array_val;
+            JsonArray* arr_b = b->data.array_val;
+            if (arr_a->len != arr_b->len) return 0;
+            for (size_t i = 0; i < arr_a->len; i++) {
+                if (!json_equals((int64_t)arr_a->items[i], (int64_t)arr_b->items[i])) {
+                    return 0;
+                }
+            }
+            return 1;
+        }
+
+        case JSON_OBJECT: {
+            JsonObject* obj_a = a->data.object_val;
+            JsonObject* obj_b = b->data.object_val;
+            if (obj_a->len != obj_b->len) return 0;
+            for (size_t i = 0; i < obj_a->len; i++) {
+                int64_t val_b = json_get((int64_t)b, obj_a->entries[i].key);
+                if (!val_b) return 0;
+                if (!json_equals((int64_t)obj_a->entries[i].value, val_b)) {
+                    return 0;
+                }
+            }
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+// int64_t wrappers for constructors
+int64_t json_null_i64(void) {
+    return (int64_t)json_null();
+}
+
+int64_t json_bool_i64(int8_t b) {
+    return (int64_t)json_bool(b);
+}
+
+int64_t json_number_f64(double n) {
+    return (int64_t)json_number(n);
+}
+
+int64_t json_string_i64(const char* s) {
+    return (int64_t)json_string(s);
+}
+
+int64_t json_array_i64(void) {
+    return (int64_t)json_array();
+}
+
+int64_t json_object_i64(void) {
+    return (int64_t)json_object();
+}
+
+// ============================================================================
 
 // Copy file
 int64_t intrinsic_copy_file(SxString* src, SxString* dst) {
@@ -16166,4 +18801,1239 @@ void evolution_population_free(int64_t pop_ptr) {
     }
     if (pop->genes) free(pop->genes);
     free(pop);
+}
+
+// ============================================================================
+// HASHMAP IMPLEMENTATION - Phase 1 Core
+// ============================================================================
+//
+// A complete HashMap implementation with string keys and i64 values.
+// Uses separate chaining for collision resolution.
+// Automatically resizes when load factor exceeds 0.75.
+//
+// Keys: SxString* (ownership transferred to map on insert)
+// Values: int64_t (can store integers or pointers)
+// ============================================================================
+
+#define HASHMAP_INITIAL_CAPACITY 16
+#define HASHMAP_LOAD_FACTOR 0.75
+
+// Entry in a hash bucket (linked list node)
+typedef struct HashMapEntry {
+    SxString* key;
+    int64_t value;
+    struct HashMapEntry* next;
+} HashMapEntry;
+
+// HashMap structure
+typedef struct {
+    HashMapEntry** buckets;  // Array of bucket heads
+    size_t capacity;         // Number of buckets
+    size_t size;             // Number of entries
+} HashMap;
+
+// Iterator for HashMap
+typedef struct {
+    HashMap* map;
+    size_t bucket_index;
+    HashMapEntry* current_entry;
+    int iter_type;  // 0=keys, 1=values, 2=entries
+} HashMapIterator;
+
+// Key-value pair for entry iteration
+typedef struct {
+    SxString* key;
+    int64_t value;
+} HashMapKV;
+
+// Forward declarations
+static void hashmap_resize(HashMap* map, size_t new_capacity);
+static size_t hashmap_bucket_index(HashMap* map, SxString* key);
+
+// Hash function for strings (FNV-1a)
+static uint64_t hash_string(SxString* str) {
+    if (!str || !str->data) return 0;
+    uint64_t hash = 14695981039346656037ULL;
+    for (size_t i = 0; i < str->len; i++) {
+        hash ^= (unsigned char)str->data[i];
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+// Compare two strings for equality
+static int string_equals(SxString* a, SxString* b) {
+    if (!a || !b) return a == b;
+    if (a->len != b->len) return 0;
+    return memcmp(a->data, b->data, a->len) == 0;
+}
+
+// Duplicate a string (for storing keys)
+static SxString* string_dup(SxString* str) {
+    if (!str) return NULL;
+    SxString* copy = malloc(sizeof(SxString));
+    copy->len = str->len;
+    copy->cap = str->len + 1;
+    copy->data = malloc(copy->cap);
+    memcpy(copy->data, str->data, str->len);
+    copy->data[str->len] = '\0';
+    return copy;
+}
+
+// Get bucket index for a key
+static size_t hashmap_bucket_index(HashMap* map, SxString* key) {
+    return hash_string(key) % map->capacity;
+}
+
+// Create a new empty HashMap
+int64_t hashmap_new(void) {
+    HashMap* map = malloc(sizeof(HashMap));
+    if (!map) return 0;
+
+    map->capacity = HASHMAP_INITIAL_CAPACITY;
+    map->size = 0;
+    map->buckets = calloc(map->capacity, sizeof(HashMapEntry*));
+    if (!map->buckets) {
+        free(map);
+        return 0;
+    }
+
+    return (int64_t)map;
+}
+
+// Create a HashMap with specified initial capacity
+int64_t hashmap_with_capacity(int64_t capacity) {
+    if (capacity <= 0) capacity = HASHMAP_INITIAL_CAPACITY;
+
+    HashMap* map = malloc(sizeof(HashMap));
+    if (!map) return 0;
+
+    map->capacity = (size_t)capacity;
+    map->size = 0;
+    map->buckets = calloc(map->capacity, sizeof(HashMapEntry*));
+    if (!map->buckets) {
+        free(map);
+        return 0;
+    }
+
+    return (int64_t)map;
+}
+
+// Resize the HashMap when load factor is exceeded
+static void hashmap_resize(HashMap* map, size_t new_capacity) {
+    HashMapEntry** old_buckets = map->buckets;
+    size_t old_capacity = map->capacity;
+
+    // Allocate new bucket array
+    map->buckets = calloc(new_capacity, sizeof(HashMapEntry*));
+    if (!map->buckets) {
+        map->buckets = old_buckets;
+        return;  // Failed to resize, keep old buckets
+    }
+    map->capacity = new_capacity;
+
+    // Rehash all entries
+    for (size_t i = 0; i < old_capacity; i++) {
+        HashMapEntry* entry = old_buckets[i];
+        while (entry) {
+            HashMapEntry* next = entry->next;
+
+            // Compute new bucket index
+            size_t new_index = hashmap_bucket_index(map, entry->key);
+
+            // Insert at head of new bucket
+            entry->next = map->buckets[new_index];
+            map->buckets[new_index] = entry;
+
+            entry = next;
+        }
+    }
+
+    free(old_buckets);
+}
+
+// Insert a key-value pair (returns previous value if key existed, or 0)
+int64_t hashmap_insert(int64_t map_ptr, int64_t key_ptr, int64_t value) {
+    HashMap* map = (HashMap*)map_ptr;
+    SxString* key = (SxString*)key_ptr;
+    if (!map || !key) return 0;
+
+    // Check if resize is needed
+    if ((double)(map->size + 1) / map->capacity > HASHMAP_LOAD_FACTOR) {
+        hashmap_resize(map, map->capacity * 2);
+    }
+
+    size_t index = hashmap_bucket_index(map, key);
+
+    // Check if key already exists
+    HashMapEntry* entry = map->buckets[index];
+    while (entry) {
+        if (string_equals(entry->key, key)) {
+            // Key exists, update value and return old value
+            int64_t old_value = entry->value;
+            entry->value = value;
+            return old_value;
+        }
+        entry = entry->next;
+    }
+
+    // Key doesn't exist, create new entry
+    HashMapEntry* new_entry = malloc(sizeof(HashMapEntry));
+    if (!new_entry) return 0;
+
+    new_entry->key = string_dup(key);  // Store a copy of the key
+    new_entry->value = value;
+    new_entry->next = map->buckets[index];
+    map->buckets[index] = new_entry;
+    map->size++;
+
+    return 0;  // No previous value
+}
+
+// Get value by key (returns Option: 0 = None, otherwise value | with high bit check)
+// Actually, we return a struct-like encoding: low bit = found, rest = value
+// For simplicity: returns value if found, 0 if not found (caller should use contains first)
+// Better approach: return pointer to a result struct
+int64_t hashmap_get(int64_t map_ptr, int64_t key_ptr) {
+    HashMap* map = (HashMap*)map_ptr;
+    SxString* key = (SxString*)key_ptr;
+    if (!map || !key) return 0;
+
+    size_t index = hashmap_bucket_index(map, key);
+    HashMapEntry* entry = map->buckets[index];
+
+    while (entry) {
+        if (string_equals(entry->key, key)) {
+            return entry->value;
+        }
+        entry = entry->next;
+    }
+
+    return 0;  // Not found
+}
+
+// Get value with Option return (returns pointer to value, or 0 if not found)
+// This is safer - returns the address of the value or NULL
+int64_t hashmap_get_ptr(int64_t map_ptr, int64_t key_ptr) {
+    HashMap* map = (HashMap*)map_ptr;
+    SxString* key = (SxString*)key_ptr;
+    if (!map || !key) return 0;
+
+    size_t index = hashmap_bucket_index(map, key);
+    HashMapEntry* entry = map->buckets[index];
+
+    while (entry) {
+        if (string_equals(entry->key, key)) {
+            return (int64_t)&entry->value;
+        }
+        entry = entry->next;
+    }
+
+    return 0;  // Not found
+}
+
+// Remove entry by key (returns removed value, or 0 if not found)
+int64_t hashmap_remove(int64_t map_ptr, int64_t key_ptr) {
+    HashMap* map = (HashMap*)map_ptr;
+    SxString* key = (SxString*)key_ptr;
+    if (!map || !key) return 0;
+
+    size_t index = hashmap_bucket_index(map, key);
+    HashMapEntry* entry = map->buckets[index];
+    HashMapEntry* prev = NULL;
+
+    while (entry) {
+        if (string_equals(entry->key, key)) {
+            // Found - remove from chain
+            if (prev) {
+                prev->next = entry->next;
+            } else {
+                map->buckets[index] = entry->next;
+            }
+
+            int64_t value = entry->value;
+
+            // Free the entry
+            if (entry->key) {
+                if (entry->key->data) free(entry->key->data);
+                free(entry->key);
+            }
+            free(entry);
+
+            map->size--;
+            return value;
+        }
+        prev = entry;
+        entry = entry->next;
+    }
+
+    return 0;  // Not found
+}
+
+// Check if key exists in map
+int8_t hashmap_contains(int64_t map_ptr, int64_t key_ptr) {
+    HashMap* map = (HashMap*)map_ptr;
+    SxString* key = (SxString*)key_ptr;
+    if (!map || !key) return 0;
+
+    size_t index = hashmap_bucket_index(map, key);
+    HashMapEntry* entry = map->buckets[index];
+
+    while (entry) {
+        if (string_equals(entry->key, key)) {
+            return 1;  // Found
+        }
+        entry = entry->next;
+    }
+
+    return 0;  // Not found
+}
+
+// Get number of entries in map
+int64_t hashmap_len(int64_t map_ptr) {
+    HashMap* map = (HashMap*)map_ptr;
+    return map ? (int64_t)map->size : 0;
+}
+
+// Check if map is empty
+int8_t hashmap_is_empty(int64_t map_ptr) {
+    HashMap* map = (HashMap*)map_ptr;
+    return !map || map->size == 0;
+}
+
+// Get capacity of map
+int64_t hashmap_capacity(int64_t map_ptr) {
+    HashMap* map = (HashMap*)map_ptr;
+    return map ? (int64_t)map->capacity : 0;
+}
+
+// Clear all entries from map (keep capacity)
+void hashmap_clear(int64_t map_ptr) {
+    HashMap* map = (HashMap*)map_ptr;
+    if (!map) return;
+
+    for (size_t i = 0; i < map->capacity; i++) {
+        HashMapEntry* entry = map->buckets[i];
+        while (entry) {
+            HashMapEntry* next = entry->next;
+
+            // Free key
+            if (entry->key) {
+                if (entry->key->data) free(entry->key->data);
+                free(entry->key);
+            }
+            free(entry);
+
+            entry = next;
+        }
+        map->buckets[i] = NULL;
+    }
+
+    map->size = 0;
+}
+
+// Free the entire map
+void hashmap_free(int64_t map_ptr) {
+    HashMap* map = (HashMap*)map_ptr;
+    if (!map) return;
+
+    // Clear all entries
+    hashmap_clear(map_ptr);
+
+    // Free buckets array and map
+    free(map->buckets);
+    free(map);
+}
+
+// ============================================================================
+// HASHMAP ITERATORS
+// ============================================================================
+
+// Helper to advance iterator to next valid entry
+static void hashmap_iter_advance(HashMapIterator* iter) {
+    if (!iter || !iter->map) return;
+
+    // If we have a current entry, try its next
+    if (iter->current_entry) {
+        iter->current_entry = iter->current_entry->next;
+        if (iter->current_entry) return;  // Found next in same bucket
+        iter->bucket_index++;  // Move to next bucket
+    }
+
+    // Find next non-empty bucket
+    while (iter->bucket_index < iter->map->capacity) {
+        if (iter->map->buckets[iter->bucket_index]) {
+            iter->current_entry = iter->map->buckets[iter->bucket_index];
+            return;
+        }
+        iter->bucket_index++;
+    }
+
+    // No more entries
+    iter->current_entry = NULL;
+}
+
+// Create iterator over keys
+int64_t hashmap_keys(int64_t map_ptr) {
+    HashMap* map = (HashMap*)map_ptr;
+    if (!map) return 0;
+
+    HashMapIterator* iter = malloc(sizeof(HashMapIterator));
+    if (!iter) return 0;
+
+    iter->map = map;
+    iter->bucket_index = 0;
+    iter->current_entry = NULL;
+    iter->iter_type = 0;  // keys
+
+    // Find first entry
+    hashmap_iter_advance(iter);
+
+    return (int64_t)iter;
+}
+
+// Create iterator over values
+int64_t hashmap_values(int64_t map_ptr) {
+    HashMap* map = (HashMap*)map_ptr;
+    if (!map) return 0;
+
+    HashMapIterator* iter = malloc(sizeof(HashMapIterator));
+    if (!iter) return 0;
+
+    iter->map = map;
+    iter->bucket_index = 0;
+    iter->current_entry = NULL;
+    iter->iter_type = 1;  // values
+
+    // Find first entry
+    hashmap_iter_advance(iter);
+
+    return (int64_t)iter;
+}
+
+// Create iterator over entries (key-value pairs)
+int64_t hashmap_iter(int64_t map_ptr) {
+    HashMap* map = (HashMap*)map_ptr;
+    if (!map) return 0;
+
+    HashMapIterator* iter = malloc(sizeof(HashMapIterator));
+    if (!iter) return 0;
+
+    iter->map = map;
+    iter->bucket_index = 0;
+    iter->current_entry = NULL;
+    iter->iter_type = 2;  // entries
+
+    // Find first entry
+    hashmap_iter_advance(iter);
+
+    return (int64_t)iter;
+}
+
+// Get next key from keys iterator (returns 0 when done)
+int64_t hashmap_keys_next(int64_t iter_ptr) {
+    HashMapIterator* iter = (HashMapIterator*)iter_ptr;
+    if (!iter || !iter->current_entry) return 0;
+
+    SxString* key = iter->current_entry->key;
+    hashmap_iter_advance(iter);
+
+    return (int64_t)key;
+}
+
+// Get next value from values iterator (returns 0 when done - ambiguous with actual 0 value)
+int64_t hashmap_values_next(int64_t iter_ptr) {
+    HashMapIterator* iter = (HashMapIterator*)iter_ptr;
+    if (!iter || !iter->current_entry) return 0;
+
+    int64_t value = iter->current_entry->value;
+    hashmap_iter_advance(iter);
+
+    return value;
+}
+
+// Get next entry from entries iterator (returns pointer to KV pair, or 0 when done)
+int64_t hashmap_iter_next(int64_t iter_ptr) {
+    HashMapIterator* iter = (HashMapIterator*)iter_ptr;
+    if (!iter || !iter->current_entry) return 0;
+
+    // Allocate a KV pair to return
+    HashMapKV* kv = malloc(sizeof(HashMapKV));
+    if (!kv) return 0;
+
+    kv->key = iter->current_entry->key;
+    kv->value = iter->current_entry->value;
+
+    hashmap_iter_advance(iter);
+
+    return (int64_t)kv;
+}
+
+// Check if iterator has more elements
+int8_t hashmap_iter_has_next(int64_t iter_ptr) {
+    HashMapIterator* iter = (HashMapIterator*)iter_ptr;
+    return iter && iter->current_entry != NULL;
+}
+
+// Free iterator
+void hashmap_iter_free(int64_t iter_ptr) {
+    HashMapIterator* iter = (HashMapIterator*)iter_ptr;
+    if (iter) free(iter);
+}
+
+// Free KV pair from entry iteration
+void hashmap_kv_free(int64_t kv_ptr) {
+    HashMapKV* kv = (HashMapKV*)kv_ptr;
+    if (kv) free(kv);
+}
+
+// Get key from KV pair
+int64_t hashmap_kv_key(int64_t kv_ptr) {
+    HashMapKV* kv = (HashMapKV*)kv_ptr;
+    return kv ? (int64_t)kv->key : 0;
+}
+
+// Get value from KV pair
+int64_t hashmap_kv_value(int64_t kv_ptr) {
+    HashMapKV* kv = (HashMapKV*)kv_ptr;
+    return kv ? kv->value : 0;
+}
+
+// ============================================================================
+// HASHMAP CONVENIENCE FUNCTIONS
+// ============================================================================
+
+// Insert with C string key (convenience)
+int64_t hashmap_insert_cstr(int64_t map_ptr, const char* key, int64_t value) {
+    SxString* key_str = intrinsic_string_new(key);
+    int64_t result = hashmap_insert(map_ptr, (int64_t)key_str, value);
+    // Note: key is copied in hashmap_insert, so we can free this
+    if (key_str->data) free(key_str->data);
+    free(key_str);
+    return result;
+}
+
+// Get with C string key (convenience)
+int64_t hashmap_get_cstr(int64_t map_ptr, const char* key) {
+    SxString* key_str = intrinsic_string_new(key);
+    int64_t result = hashmap_get(map_ptr, (int64_t)key_str);
+    if (key_str->data) free(key_str->data);
+    free(key_str);
+    return result;
+}
+
+// Contains with C string key (convenience)
+int8_t hashmap_contains_cstr(int64_t map_ptr, const char* key) {
+    SxString* key_str = intrinsic_string_new(key);
+    int8_t result = hashmap_contains(map_ptr, (int64_t)key_str);
+    if (key_str->data) free(key_str->data);
+    free(key_str);
+    return result;
+}
+
+// Remove with C string key (convenience)
+int64_t hashmap_remove_cstr(int64_t map_ptr, const char* key) {
+    SxString* key_str = intrinsic_string_new(key);
+    int64_t result = hashmap_remove(map_ptr, (int64_t)key_str);
+    if (key_str->data) free(key_str->data);
+    free(key_str);
+    return result;
+}
+
+// ============================================================================
+// INTEGER-KEYED HASHMAP (for when keys are i64)
+// ============================================================================
+
+typedef struct IntHashMapEntry {
+    int64_t key;
+    int64_t value;
+    struct IntHashMapEntry* next;
+    int8_t occupied;  // For distinguishing 0 keys
+} IntHashMapEntry;
+
+typedef struct {
+    IntHashMapEntry** buckets;
+    size_t capacity;
+    size_t size;
+} IntHashMap;
+
+typedef struct {
+    IntHashMap* map;
+    size_t bucket_index;
+    IntHashMapEntry* current_entry;
+} IntHashMapIterator;
+
+// Hash function for integers
+static uint64_t hash_int(int64_t key) {
+    // Mixing function for better distribution
+    uint64_t x = (uint64_t)key;
+    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+    x = x ^ (x >> 31);
+    return x;
+}
+
+// Create new integer-keyed HashMap
+int64_t int_hashmap_new(void) {
+    IntHashMap* map = malloc(sizeof(IntHashMap));
+    if (!map) return 0;
+
+    map->capacity = HASHMAP_INITIAL_CAPACITY;
+    map->size = 0;
+    map->buckets = calloc(map->capacity, sizeof(IntHashMapEntry*));
+    if (!map->buckets) {
+        free(map);
+        return 0;
+    }
+
+    return (int64_t)map;
+}
+
+// Resize integer HashMap
+static void int_hashmap_resize(IntHashMap* map, size_t new_capacity) {
+    IntHashMapEntry** old_buckets = map->buckets;
+    size_t old_capacity = map->capacity;
+
+    map->buckets = calloc(new_capacity, sizeof(IntHashMapEntry*));
+    if (!map->buckets) {
+        map->buckets = old_buckets;
+        return;
+    }
+    map->capacity = new_capacity;
+
+    for (size_t i = 0; i < old_capacity; i++) {
+        IntHashMapEntry* entry = old_buckets[i];
+        while (entry) {
+            IntHashMapEntry* next = entry->next;
+            size_t new_index = hash_int(entry->key) % new_capacity;
+            entry->next = map->buckets[new_index];
+            map->buckets[new_index] = entry;
+            entry = next;
+        }
+    }
+
+    free(old_buckets);
+}
+
+// Insert into integer HashMap
+int64_t int_hashmap_insert(int64_t map_ptr, int64_t key, int64_t value) {
+    IntHashMap* map = (IntHashMap*)map_ptr;
+    if (!map) return 0;
+
+    if ((double)(map->size + 1) / map->capacity > HASHMAP_LOAD_FACTOR) {
+        int_hashmap_resize(map, map->capacity * 2);
+    }
+
+    size_t index = hash_int(key) % map->capacity;
+
+    // Check if key exists
+    IntHashMapEntry* entry = map->buckets[index];
+    while (entry) {
+        if (entry->key == key) {
+            int64_t old_value = entry->value;
+            entry->value = value;
+            return old_value;
+        }
+        entry = entry->next;
+    }
+
+    // Create new entry
+    IntHashMapEntry* new_entry = malloc(sizeof(IntHashMapEntry));
+    if (!new_entry) return 0;
+
+    new_entry->key = key;
+    new_entry->value = value;
+    new_entry->occupied = 1;
+    new_entry->next = map->buckets[index];
+    map->buckets[index] = new_entry;
+    map->size++;
+
+    return 0;
+}
+
+// Get from integer HashMap
+int64_t int_hashmap_get(int64_t map_ptr, int64_t key) {
+    IntHashMap* map = (IntHashMap*)map_ptr;
+    if (!map) return 0;
+
+    size_t index = hash_int(key) % map->capacity;
+    IntHashMapEntry* entry = map->buckets[index];
+
+    while (entry) {
+        if (entry->key == key) {
+            return entry->value;
+        }
+        entry = entry->next;
+    }
+
+    return 0;
+}
+
+// Contains for integer HashMap
+int8_t int_hashmap_contains(int64_t map_ptr, int64_t key) {
+    IntHashMap* map = (IntHashMap*)map_ptr;
+    if (!map) return 0;
+
+    size_t index = hash_int(key) % map->capacity;
+    IntHashMapEntry* entry = map->buckets[index];
+
+    while (entry) {
+        if (entry->key == key) {
+            return 1;
+        }
+        entry = entry->next;
+    }
+
+    return 0;
+}
+
+// Remove from integer HashMap
+int64_t int_hashmap_remove(int64_t map_ptr, int64_t key) {
+    IntHashMap* map = (IntHashMap*)map_ptr;
+    if (!map) return 0;
+
+    size_t index = hash_int(key) % map->capacity;
+    IntHashMapEntry* entry = map->buckets[index];
+    IntHashMapEntry* prev = NULL;
+
+    while (entry) {
+        if (entry->key == key) {
+            if (prev) {
+                prev->next = entry->next;
+            } else {
+                map->buckets[index] = entry->next;
+            }
+
+            int64_t value = entry->value;
+            free(entry);
+            map->size--;
+            return value;
+        }
+        prev = entry;
+        entry = entry->next;
+    }
+
+    return 0;
+}
+
+// Get length of integer HashMap
+int64_t int_hashmap_len(int64_t map_ptr) {
+    IntHashMap* map = (IntHashMap*)map_ptr;
+    return map ? (int64_t)map->size : 0;
+}
+
+// Clear integer HashMap
+void int_hashmap_clear(int64_t map_ptr) {
+    IntHashMap* map = (IntHashMap*)map_ptr;
+    if (!map) return;
+
+    for (size_t i = 0; i < map->capacity; i++) {
+        IntHashMapEntry* entry = map->buckets[i];
+        while (entry) {
+            IntHashMapEntry* next = entry->next;
+            free(entry);
+            entry = next;
+        }
+        map->buckets[i] = NULL;
+    }
+
+    map->size = 0;
+}
+
+// Free integer HashMap
+void int_hashmap_free(int64_t map_ptr) {
+    IntHashMap* map = (IntHashMap*)map_ptr;
+    if (!map) return;
+
+    int_hashmap_clear(map_ptr);
+    free(map->buckets);
+    free(map);
+}
+
+// Iterator for integer HashMap
+int64_t int_hashmap_iter(int64_t map_ptr) {
+    IntHashMap* map = (IntHashMap*)map_ptr;
+    if (!map) return 0;
+
+    IntHashMapIterator* iter = malloc(sizeof(IntHashMapIterator));
+    if (!iter) return 0;
+
+    iter->map = map;
+    iter->bucket_index = 0;
+    iter->current_entry = NULL;
+
+    // Find first entry
+    while (iter->bucket_index < map->capacity) {
+        if (map->buckets[iter->bucket_index]) {
+            iter->current_entry = map->buckets[iter->bucket_index];
+            break;
+        }
+        iter->bucket_index++;
+    }
+
+    return (int64_t)iter;
+}
+
+// Advance integer HashMap iterator
+static void int_hashmap_iter_advance(IntHashMapIterator* iter) {
+    if (!iter || !iter->map) return;
+
+    if (iter->current_entry) {
+        iter->current_entry = iter->current_entry->next;
+        if (iter->current_entry) return;
+        iter->bucket_index++;
+    }
+
+    while (iter->bucket_index < iter->map->capacity) {
+        if (iter->map->buckets[iter->bucket_index]) {
+            iter->current_entry = iter->map->buckets[iter->bucket_index];
+            return;
+        }
+        iter->bucket_index++;
+    }
+
+    iter->current_entry = NULL;
+}
+
+// Get next key from integer HashMap iterator
+int64_t int_hashmap_iter_next_key(int64_t iter_ptr) {
+    IntHashMapIterator* iter = (IntHashMapIterator*)iter_ptr;
+    if (!iter || !iter->current_entry) return 0;
+
+    int64_t key = iter->current_entry->key;
+    int_hashmap_iter_advance(iter);
+    return key;
+}
+
+// Check if integer HashMap iterator has next
+int8_t int_hashmap_iter_has_next(int64_t iter_ptr) {
+    IntHashMapIterator* iter = (IntHashMapIterator*)iter_ptr;
+    return iter && iter->current_entry != NULL;
+}
+
+// Free integer HashMap iterator
+void int_hashmap_iter_free(int64_t iter_ptr) {
+    IntHashMapIterator* iter = (IntHashMapIterator*)iter_ptr;
+    if (iter) free(iter);
+}
+
+// ============================================================================
+// HASHSET IMPLEMENTATION - Phase 1 Core
+// ============================================================================
+//
+// A complete HashSet implementation with string elements.
+// Implemented as a wrapper around HashMap (value is always 1).
+// ============================================================================
+
+// HashSet is just a HashMap where we only care about keys
+// We use the value field to indicate presence (1 = present)
+
+// Create a new empty HashSet
+int64_t hashset_new(void) {
+    return hashmap_new();
+}
+
+// Create a HashSet with specified initial capacity
+int64_t hashset_with_capacity(int64_t capacity) {
+    return hashmap_with_capacity(capacity);
+}
+
+// Insert a value into the set (returns 1 if newly inserted, 0 if already existed)
+int8_t hashset_insert(int64_t set_ptr, int64_t value_ptr) {
+    if (!hashmap_contains(set_ptr, value_ptr)) {
+        hashmap_insert(set_ptr, value_ptr, 1);
+        return 1;  // Newly inserted
+    }
+    return 0;  // Already existed
+}
+
+// Remove a value from the set (returns 1 if removed, 0 if not found)
+int8_t hashset_remove(int64_t set_ptr, int64_t value_ptr) {
+    if (hashmap_contains(set_ptr, value_ptr)) {
+        hashmap_remove(set_ptr, value_ptr);
+        return 1;  // Removed
+    }
+    return 0;  // Not found
+}
+
+// Check if value exists in set
+int8_t hashset_contains(int64_t set_ptr, int64_t value_ptr) {
+    return hashmap_contains(set_ptr, value_ptr);
+}
+
+// Get number of elements in set
+int64_t hashset_len(int64_t set_ptr) {
+    return hashmap_len(set_ptr);
+}
+
+// Check if set is empty
+int8_t hashset_is_empty(int64_t set_ptr) {
+    return hashmap_is_empty(set_ptr);
+}
+
+// Clear all elements from set
+void hashset_clear(int64_t set_ptr) {
+    hashmap_clear(set_ptr);
+}
+
+// Free the set
+void hashset_free(int64_t set_ptr) {
+    hashmap_free(set_ptr);
+}
+
+// Create iterator over set elements
+int64_t hashset_iter(int64_t set_ptr) {
+    return hashmap_keys(set_ptr);
+}
+
+// Get next element from iterator (returns 0 when done)
+int64_t hashset_iter_next(int64_t iter_ptr) {
+    return hashmap_keys_next(iter_ptr);
+}
+
+// Check if iterator has more elements
+int8_t hashset_iter_has_next(int64_t iter_ptr) {
+    return hashmap_iter_has_next(iter_ptr);
+}
+
+// Free iterator
+void hashset_iter_free(int64_t iter_ptr) {
+    hashmap_iter_free(iter_ptr);
+}
+
+// ============================================================================
+// HASHSET OPERATIONS (Set Algebra)
+// ============================================================================
+
+// Union of two sets (returns new set containing elements in either a or b)
+int64_t hashset_union(int64_t set_a_ptr, int64_t set_b_ptr) {
+    int64_t result = hashset_new();
+
+    // Add all from set a
+    int64_t iter_a = hashset_iter(set_a_ptr);
+    while (hashset_iter_has_next(iter_a)) {
+        int64_t elem = hashset_iter_next(iter_a);
+        // Need to duplicate the string key
+        SxString* key = (SxString*)elem;
+        SxString* copy = malloc(sizeof(SxString));
+        copy->len = key->len;
+        copy->cap = key->len + 1;
+        copy->data = malloc(copy->cap);
+        memcpy(copy->data, key->data, key->len);
+        copy->data[key->len] = '\0';
+        hashset_insert(result, (int64_t)copy);
+    }
+    hashset_iter_free(iter_a);
+
+    // Add all from set b (duplicates ignored due to set semantics)
+    int64_t iter_b = hashset_iter(set_b_ptr);
+    while (hashset_iter_has_next(iter_b)) {
+        int64_t elem = hashset_iter_next(iter_b);
+        SxString* key = (SxString*)elem;
+        SxString* copy = malloc(sizeof(SxString));
+        copy->len = key->len;
+        copy->cap = key->len + 1;
+        copy->data = malloc(copy->cap);
+        memcpy(copy->data, key->data, key->len);
+        copy->data[key->len] = '\0';
+        hashset_insert(result, (int64_t)copy);
+    }
+    hashset_iter_free(iter_b);
+
+    return result;
+}
+
+// Intersection of two sets (returns new set containing elements in both a and b)
+int64_t hashset_intersection(int64_t set_a_ptr, int64_t set_b_ptr) {
+    int64_t result = hashset_new();
+
+    // Iterate over smaller set for efficiency
+    int64_t smaller = hashset_len(set_a_ptr) <= hashset_len(set_b_ptr) ? set_a_ptr : set_b_ptr;
+    int64_t larger = smaller == set_a_ptr ? set_b_ptr : set_a_ptr;
+
+    int64_t iter = hashset_iter(smaller);
+    while (hashset_iter_has_next(iter)) {
+        int64_t elem = hashset_iter_next(iter);
+        if (hashset_contains(larger, elem)) {
+            SxString* key = (SxString*)elem;
+            SxString* copy = malloc(sizeof(SxString));
+            copy->len = key->len;
+            copy->cap = key->len + 1;
+            copy->data = malloc(copy->cap);
+            memcpy(copy->data, key->data, key->len);
+            copy->data[key->len] = '\0';
+            hashset_insert(result, (int64_t)copy);
+        }
+    }
+    hashset_iter_free(iter);
+
+    return result;
+}
+
+// Difference of two sets (returns new set containing elements in a but not in b)
+int64_t hashset_difference(int64_t set_a_ptr, int64_t set_b_ptr) {
+    int64_t result = hashset_new();
+
+    int64_t iter = hashset_iter(set_a_ptr);
+    while (hashset_iter_has_next(iter)) {
+        int64_t elem = hashset_iter_next(iter);
+        if (!hashset_contains(set_b_ptr, elem)) {
+            SxString* key = (SxString*)elem;
+            SxString* copy = malloc(sizeof(SxString));
+            copy->len = key->len;
+            copy->cap = key->len + 1;
+            copy->data = malloc(copy->cap);
+            memcpy(copy->data, key->data, key->len);
+            copy->data[key->len] = '\0';
+            hashset_insert(result, (int64_t)copy);
+        }
+    }
+    hashset_iter_free(iter);
+
+    return result;
+}
+
+// Symmetric difference (returns new set containing elements in a or b but not both)
+int64_t hashset_symmetric_difference(int64_t set_a_ptr, int64_t set_b_ptr) {
+    int64_t result = hashset_new();
+
+    // Elements in a but not in b
+    int64_t iter_a = hashset_iter(set_a_ptr);
+    while (hashset_iter_has_next(iter_a)) {
+        int64_t elem = hashset_iter_next(iter_a);
+        if (!hashset_contains(set_b_ptr, elem)) {
+            SxString* key = (SxString*)elem;
+            SxString* copy = malloc(sizeof(SxString));
+            copy->len = key->len;
+            copy->cap = key->len + 1;
+            copy->data = malloc(copy->cap);
+            memcpy(copy->data, key->data, key->len);
+            copy->data[key->len] = '\0';
+            hashset_insert(result, (int64_t)copy);
+        }
+    }
+    hashset_iter_free(iter_a);
+
+    // Elements in b but not in a
+    int64_t iter_b = hashset_iter(set_b_ptr);
+    while (hashset_iter_has_next(iter_b)) {
+        int64_t elem = hashset_iter_next(iter_b);
+        if (!hashset_contains(set_a_ptr, elem)) {
+            SxString* key = (SxString*)elem;
+            SxString* copy = malloc(sizeof(SxString));
+            copy->len = key->len;
+            copy->cap = key->len + 1;
+            copy->data = malloc(copy->cap);
+            memcpy(copy->data, key->data, key->len);
+            copy->data[key->len] = '\0';
+            hashset_insert(result, (int64_t)copy);
+        }
+    }
+    hashset_iter_free(iter_b);
+
+    return result;
+}
+
+// Check if set a is subset of set b
+int8_t hashset_is_subset(int64_t set_a_ptr, int64_t set_b_ptr) {
+    int64_t iter = hashset_iter(set_a_ptr);
+    while (hashset_iter_has_next(iter)) {
+        int64_t elem = hashset_iter_next(iter);
+        if (!hashset_contains(set_b_ptr, elem)) {
+            hashset_iter_free(iter);
+            return 0;  // Not a subset
+        }
+    }
+    hashset_iter_free(iter);
+    return 1;  // Is a subset
+}
+
+// Check if set a is superset of set b
+int8_t hashset_is_superset(int64_t set_a_ptr, int64_t set_b_ptr) {
+    return hashset_is_subset(set_b_ptr, set_a_ptr);
+}
+
+// Check if two sets are disjoint (no common elements)
+int8_t hashset_is_disjoint(int64_t set_a_ptr, int64_t set_b_ptr) {
+    int64_t smaller = hashset_len(set_a_ptr) <= hashset_len(set_b_ptr) ? set_a_ptr : set_b_ptr;
+    int64_t larger = smaller == set_a_ptr ? set_b_ptr : set_a_ptr;
+
+    int64_t iter = hashset_iter(smaller);
+    while (hashset_iter_has_next(iter)) {
+        int64_t elem = hashset_iter_next(iter);
+        if (hashset_contains(larger, elem)) {
+            hashset_iter_free(iter);
+            return 0;  // Not disjoint
+        }
+    }
+    hashset_iter_free(iter);
+    return 1;  // Is disjoint
+}
+
+// ============================================================================
+// HASHSET CONVENIENCE FUNCTIONS (C string)
+// ============================================================================
+
+// Insert with C string
+int8_t hashset_insert_cstr(int64_t set_ptr, const char* value) {
+    SxString* str = intrinsic_string_new(value);
+    int8_t result = hashset_insert(set_ptr, (int64_t)str);
+    if (!result) {
+        // Already existed, free the temp string
+        if (str->data) free(str->data);
+        free(str);
+    }
+    return result;
+}
+
+// Check if C string exists in set
+int8_t hashset_contains_cstr(int64_t set_ptr, const char* value) {
+    SxString* str = intrinsic_string_new(value);
+    int8_t result = hashset_contains(set_ptr, (int64_t)str);
+    if (str->data) free(str->data);
+    free(str);
+    return result;
+}
+
+// Remove C string from set
+int8_t hashset_remove_cstr(int64_t set_ptr, const char* value) {
+    SxString* str = intrinsic_string_new(value);
+    int8_t result = hashset_remove(set_ptr, (int64_t)str);
+    if (str->data) free(str->data);
+    free(str);
+    return result;
+}
+
+// ============================================================================
+// INTEGER HASHSET (for when elements are i64)
+// ============================================================================
+
+// Create new integer HashSet
+int64_t int_hashset_new(void) {
+    return int_hashmap_new();
+}
+
+// Insert integer into set
+int8_t int_hashset_insert(int64_t set_ptr, int64_t value) {
+    if (!int_hashmap_contains(set_ptr, value)) {
+        int_hashmap_insert(set_ptr, value, 1);
+        return 1;
+    }
+    return 0;
+}
+
+// Remove integer from set
+int8_t int_hashset_remove(int64_t set_ptr, int64_t value) {
+    if (int_hashmap_contains(set_ptr, value)) {
+        int_hashmap_remove(set_ptr, value);
+        return 1;
+    }
+    return 0;
+}
+
+// Check if integer exists in set
+int8_t int_hashset_contains(int64_t set_ptr, int64_t value) {
+    return int_hashmap_contains(set_ptr, value);
+}
+
+// Get number of elements in integer set
+int64_t int_hashset_len(int64_t set_ptr) {
+    return int_hashmap_len(set_ptr);
+}
+
+// Clear all elements from integer set
+void int_hashset_clear(int64_t set_ptr) {
+    int_hashmap_clear(set_ptr);
+}
+
+// Free integer set
+void int_hashset_free(int64_t set_ptr) {
+    int_hashmap_free(set_ptr);
+}
+
+// Create iterator over integer set
+int64_t int_hashset_iter(int64_t set_ptr) {
+    return int_hashmap_iter(set_ptr);
+}
+
+// Get next element from integer set iterator
+int64_t int_hashset_iter_next(int64_t iter_ptr) {
+    return int_hashmap_iter_next_key(iter_ptr);
+}
+
+// Check if integer set iterator has more elements
+int8_t int_hashset_iter_has_next(int64_t iter_ptr) {
+    return int_hashmap_iter_has_next(iter_ptr);
+}
+
+// Free integer set iterator
+void int_hashset_iter_free(int64_t iter_ptr) {
+    int_hashmap_iter_free(iter_ptr);
+}
+
+// Union of two integer sets
+int64_t int_hashset_union(int64_t set_a_ptr, int64_t set_b_ptr) {
+    int64_t result = int_hashset_new();
+
+    int64_t iter_a = int_hashset_iter(set_a_ptr);
+    while (int_hashset_iter_has_next(iter_a)) {
+        int_hashset_insert(result, int_hashset_iter_next(iter_a));
+    }
+    int_hashset_iter_free(iter_a);
+
+    int64_t iter_b = int_hashset_iter(set_b_ptr);
+    while (int_hashset_iter_has_next(iter_b)) {
+        int_hashset_insert(result, int_hashset_iter_next(iter_b));
+    }
+    int_hashset_iter_free(iter_b);
+
+    return result;
+}
+
+// Intersection of two integer sets
+int64_t int_hashset_intersection(int64_t set_a_ptr, int64_t set_b_ptr) {
+    int64_t result = int_hashset_new();
+
+    int64_t smaller = int_hashset_len(set_a_ptr) <= int_hashset_len(set_b_ptr) ? set_a_ptr : set_b_ptr;
+    int64_t larger = smaller == set_a_ptr ? set_b_ptr : set_a_ptr;
+
+    int64_t iter = int_hashset_iter(smaller);
+    while (int_hashset_iter_has_next(iter)) {
+        int64_t elem = int_hashset_iter_next(iter);
+        if (int_hashset_contains(larger, elem)) {
+            int_hashset_insert(result, elem);
+        }
+    }
+    int_hashset_iter_free(iter);
+
+    return result;
+}
+
+// Difference of two integer sets (a - b)
+int64_t int_hashset_difference(int64_t set_a_ptr, int64_t set_b_ptr) {
+    int64_t result = int_hashset_new();
+
+    int64_t iter = int_hashset_iter(set_a_ptr);
+    while (int_hashset_iter_has_next(iter)) {
+        int64_t elem = int_hashset_iter_next(iter);
+        if (!int_hashset_contains(set_b_ptr, elem)) {
+            int_hashset_insert(result, elem);
+        }
+    }
+    int_hashset_iter_free(iter);
+
+    return result;
+}
+
+// Check if integer set a is subset of set b
+int8_t int_hashset_is_subset(int64_t set_a_ptr, int64_t set_b_ptr) {
+    int64_t iter = int_hashset_iter(set_a_ptr);
+    while (int_hashset_iter_has_next(iter)) {
+        if (!int_hashset_contains(set_b_ptr, int_hashset_iter_next(iter))) {
+            int_hashset_iter_free(iter);
+            return 0;
+        }
+    }
+    int_hashset_iter_free(iter);
+    return 1;
 }
