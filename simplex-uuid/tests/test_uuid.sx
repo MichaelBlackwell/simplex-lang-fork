@@ -1,0 +1,141 @@
+// Test file for UUID Library
+// Tests: uuid_v4, uuid_nil, uuid_is_nil, uuid_is_valid
+
+fn test_uuid_v4() -> i64 {
+    let id: String = uuid_v4()
+
+    // UUID should be 36 characters
+    let len: i64 = string_len(id)
+    if len != 36 {
+        print("FAIL: UUID should be 36 chars, got: ")
+        println(int_to_string(len))
+        return 1
+    }
+
+    // Should be valid
+    let valid: i64 = uuid_is_valid(id)
+    if valid != 1 {
+        print("FAIL: uuid_v4 should produce valid UUID: ")
+        println(id)
+        return 1
+    }
+
+    println("PASS: test_uuid_v4")
+    0
+}
+
+fn test_uuid_uniqueness() -> i64 {
+    let id1: String = uuid_v4()
+    let id2: String = uuid_v4()
+
+    // Two UUIDs should be different
+    if string_eq(id1, id2) {
+        println("FAIL: two uuid_v4 calls should produce different UUIDs")
+        return 1
+    }
+
+    println("PASS: test_uuid_uniqueness")
+    0
+}
+
+fn test_uuid_nil() -> i64 {
+    let nil: String = uuid_nil()
+
+    if !string_eq(nil, "00000000-0000-0000-0000-000000000000") {
+        print("FAIL: uuid_nil should be all zeros, got: ")
+        println(nil)
+        return 1
+    }
+
+    println("PASS: test_uuid_nil")
+    0
+}
+
+fn test_uuid_is_nil() -> i64 {
+    let nil: String = uuid_nil()
+    let random: String = uuid_v4()
+
+    let is_nil1: i64 = uuid_is_nil(nil)
+    let is_nil2: i64 = uuid_is_nil(random)
+
+    if is_nil1 != 1 {
+        println("FAIL: nil UUID should be detected as nil")
+        return 1
+    }
+
+    if is_nil2 != 0 {
+        println("FAIL: random UUID should not be nil")
+        return 1
+    }
+
+    println("PASS: test_uuid_is_nil")
+    0
+}
+
+fn test_uuid_is_valid() -> i64 {
+    // Valid UUIDs
+    let valid1: i64 = uuid_is_valid("550e8400-e29b-41d4-a716-446655440000")
+    let valid2: i64 = uuid_is_valid("00000000-0000-0000-0000-000000000000")
+    let valid3: i64 = uuid_is_valid("ffffffff-ffff-ffff-ffff-ffffffffffff")
+
+    if valid1 != 1 {
+        println("FAIL: should recognize valid UUID")
+        return 1
+    }
+
+    if valid2 != 1 {
+        println("FAIL: should recognize nil UUID as valid")
+        return 1
+    }
+
+    if valid3 != 1 {
+        println("FAIL: should recognize all-f UUID as valid")
+        return 1
+    }
+
+    // Invalid UUIDs
+    let invalid1: i64 = uuid_is_valid("not-a-uuid")
+    let invalid2: i64 = uuid_is_valid("550e8400e29b41d4a716446655440000")  // Missing dashes
+    let invalid3: i64 = uuid_is_valid("550e8400-e29b-41d4-a716-44665544000g")  // Invalid char
+
+    if invalid1 != 0 {
+        println("FAIL: should reject 'not-a-uuid'")
+        return 1
+    }
+
+    if invalid2 != 0 {
+        println("FAIL: should reject UUID without dashes")
+        return 1
+    }
+
+    if invalid3 != 0 {
+        println("FAIL: should reject UUID with invalid character")
+        return 1
+    }
+
+    println("PASS: test_uuid_is_valid")
+    0
+}
+
+fn main() -> i64 {
+    println("=== UUID Tests ===")
+    println("")
+
+    var failures: i64 = 0
+
+    failures = failures + test_uuid_v4()
+    failures = failures + test_uuid_uniqueness()
+    failures = failures + test_uuid_nil()
+    failures = failures + test_uuid_is_nil()
+    failures = failures + test_uuid_is_valid()
+
+    println("")
+    if failures == 0 {
+        println("All UUID tests passed!")
+    } else {
+        print("UUID tests failed: ")
+        println(int_to_string(failures))
+    }
+
+    failures
+}

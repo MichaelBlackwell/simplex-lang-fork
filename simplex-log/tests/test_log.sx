@@ -1,0 +1,147 @@
+// Test file for Simple Log Library
+// Tests: slog_set_level, slog_get_level, slog_info, slog_error, etc.
+
+// Log level constants (defined inline since top-level let not supported)
+
+fn test_default_level() -> i64 {
+    let level: i64 = slog_get_level()
+
+    // Default should be INFO (2)
+    if level != 2 {
+        print("FAIL: default log level should be INFO (2), got: ")
+        println(int_to_string(level))
+        return 1
+    }
+
+    println("PASS: test_default_level")
+    0
+}
+
+fn test_set_level() -> i64 {
+    // Set to DEBUG (1)
+    slog_set_level(1)
+    let level1: i64 = slog_get_level()
+    if level1 != 1 {
+        println("FAIL: log level should be DEBUG")
+        return 1
+    }
+
+    // Set to ERROR (4)
+    slog_set_level(4)
+    let level2: i64 = slog_get_level()
+    if level2 != 4 {
+        println("FAIL: log level should be ERROR")
+        return 1
+    }
+
+    // Reset to INFO (2)
+    slog_set_level(2)
+
+    println("PASS: test_set_level")
+    0
+}
+
+fn test_log_info() -> i64 {
+    // Set to INFO level (2)
+    slog_set_level(2)
+
+    // This should print
+    slog_info("Test info message")
+
+    println("PASS: test_log_info")
+    0
+}
+
+fn test_log_error() -> i64 {
+    // Set to INFO level (2)
+    slog_set_level(2)
+
+    // Error should always print at INFO level
+    slog_error("Test error message")
+
+    println("PASS: test_log_error")
+    0
+}
+
+fn test_log_suppression() -> i64 {
+    // Set to ERROR level (4) - only errors should show
+    slog_set_level(4)
+
+    // These should NOT print
+    slog_trace("This trace should be suppressed")
+    slog_debug("This debug should be suppressed")
+    slog_info("This info should be suppressed")
+    slog_warn("This warn should be suppressed")
+
+    // This should print
+    slog_error("This error should show")
+
+    // Reset to INFO (2)
+    slog_set_level(2)
+
+    println("PASS: test_log_suppression")
+    0
+}
+
+fn test_log_ctx() -> i64 {
+    slog_set_level(2)
+
+    // Log with context
+    slog_info_ctx("User action", "user_id", "12345")
+
+    println("PASS: test_log_ctx")
+    0
+}
+
+fn test_log_fmt() -> i64 {
+    slog_set_level(2)
+
+    // Log with format string (level 2 = INFO)
+    slog_fmt(2, "Hello, {}!", "World")
+
+    println("PASS: test_log_fmt")
+    0
+}
+
+fn test_all_levels() -> i64 {
+    // Set to TRACE (0) to see all messages
+    slog_set_level(0)
+
+    slog_trace("Trace level message")
+    slog_debug("Debug level message")
+    slog_info("Info level message")
+    slog_warn("Warning level message")
+    slog_error("Error level message")
+
+    // Reset to INFO (2)
+    slog_set_level(2)
+
+    println("PASS: test_all_levels")
+    0
+}
+
+fn main() -> i64 {
+    println("=== Log Tests ===")
+    println("")
+
+    var failures: i64 = 0
+
+    failures = failures + test_default_level()
+    failures = failures + test_set_level()
+    failures = failures + test_log_info()
+    failures = failures + test_log_error()
+    failures = failures + test_log_suppression()
+    failures = failures + test_log_ctx()
+    failures = failures + test_log_fmt()
+    failures = failures + test_all_levels()
+
+    println("")
+    if failures == 0 {
+        println("All Log tests passed!")
+    } else {
+        print("Log tests failed: ")
+        println(int_to_string(failures))
+    }
+
+    failures
+}

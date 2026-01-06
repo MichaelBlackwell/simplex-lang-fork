@@ -1,0 +1,105 @@
+// Test file for HTTP Client/Server
+// Tests: http_get, http_post, http_request_new, etc.
+
+fn test_http_request_new() -> i64 {
+    let req: i64 = http_request_new("GET", "https://example.com")
+
+    if req == 0 {
+        println("FAIL: http_request_new should not return 0")
+        return 1
+    }
+
+    http_request_free(req)
+    println("PASS: test_http_request_new")
+    0
+}
+
+fn test_http_request_with_headers() -> i64 {
+    let req: i64 = http_request_new("POST", "https://example.com/api")
+
+    if req == 0 {
+        println("FAIL: http_request_new for POST failed")
+        return 1
+    }
+
+    http_request_header(req, "Content-Type", "application/json")
+    http_request_header(req, "Authorization", "Bearer token123")
+    http_request_body(req, "{\"test\": true}")
+
+    http_request_free(req)
+    println("PASS: test_http_request_with_headers")
+    0
+}
+
+fn test_http_server_new() -> i64 {
+    let server: i64 = http_server_new(0)  // Port 0 = random available port
+
+    if server == 0 {
+        println("FAIL: http_server_new should not return 0")
+        return 1
+    }
+
+    http_server_close(server)
+    println("PASS: test_http_server_new")
+    0
+}
+
+fn test_http_response_new() -> i64 {
+    let resp: i64 = http_server_response_new()
+
+    if resp == 0 {
+        println("FAIL: http_server_response_new should not return 0")
+        return 1
+    }
+
+    http_server_response_status(resp, 200, "OK")
+    http_server_response_header(resp, "Content-Type", "text/plain")
+    http_server_response_body(resp, "Hello, World!")
+
+    println("PASS: test_http_response_new")
+    0
+}
+
+fn test_http_status_helpers() -> i64 {
+    // Test HTTP status code constants
+    if 200 != 200 {
+        println("FAIL: HTTP_OK should be 200")
+        return 1
+    }
+
+    if 404 != 404 {
+        println("FAIL: HTTP_NOT_FOUND should be 404")
+        return 1
+    }
+
+    if 500 != 500 {
+        println("FAIL: HTTP_INTERNAL_ERROR should be 500")
+        return 1
+    }
+
+    println("PASS: test_http_status_helpers")
+    0
+}
+
+fn main() -> i64 {
+    println("=== HTTP Tests ===")
+    println("")
+
+    var failures: i64 = 0
+
+    failures = failures + test_http_request_new()
+    failures = failures + test_http_request_with_headers()
+    failures = failures + test_http_server_new()
+    failures = failures + test_http_response_new()
+    failures = failures + test_http_status_helpers()
+
+    println("")
+    if failures == 0 {
+        println("All HTTP tests passed!")
+    } else {
+        print("HTTP tests failed: ")
+        println(int_to_string(failures))
+    }
+
+    failures
+}

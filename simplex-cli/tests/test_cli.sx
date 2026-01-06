@@ -1,0 +1,175 @@
+// Test file for CLI Library
+// Tests: cli_arg_count, cli_get_arg, cli_getenv, cli_cwd, etc.
+
+fn test_arg_count() -> i64 {
+    let count: i64 = cli_arg_count()
+
+    // At minimum we have the program name
+    if count < 1 {
+        println("FAIL: cli_arg_count should be at least 1")
+        return 1
+    }
+
+    println("PASS: test_arg_count")
+    0
+}
+
+fn test_get_arg() -> i64 {
+    // Arg 0 should be the program name
+    let prog: String = cli_get_arg(0)
+
+    if string_len(prog) == 0 {
+        println("FAIL: cli_get_arg(0) should return program name")
+        return 1
+    }
+
+    // Out of bounds should return empty string
+    let invalid: String = cli_get_arg(9999)
+    if string_len(invalid) != 0 {
+        println("FAIL: cli_get_arg(9999) should return empty string")
+        return 1
+    }
+
+    println("PASS: test_get_arg")
+    0
+}
+
+fn test_cwd() -> i64 {
+    let cwd: String = cli_cwd()
+
+    if string_len(cwd) == 0 {
+        println("FAIL: cli_cwd should return current directory")
+        return 1
+    }
+
+    // Should start with /
+    let first: String = string_slice(cwd, 0, 1)
+    if !string_eq(first, "/") {
+        print("FAIL: cwd should start with /, got: ")
+        println(cwd)
+        return 1
+    }
+
+    println("PASS: test_cwd")
+    0
+}
+
+fn test_getenv() -> i64 {
+    // PATH should exist on all systems
+    let path: String = cli_getenv("PATH")
+
+    if string_len(path) == 0 {
+        println("FAIL: PATH environment variable should be set")
+        return 1
+    }
+
+    // Non-existent variable should return empty
+    let nonexistent: String = cli_getenv("SIMPLEX_NONEXISTENT_VAR_12345")
+    if string_len(nonexistent) != 0 {
+        println("FAIL: non-existent env var should return empty")
+        return 1
+    }
+
+    println("PASS: test_getenv")
+    0
+}
+
+fn test_setenv() -> i64 {
+    let name: String = "SIMPLEX_TEST_VAR"
+    let value: String = "test_value_123"
+
+    // Set the variable
+    let result: i64 = cli_setenv(name, value)
+    if result != 0 {
+        println("FAIL: cli_setenv should return 0 on success")
+        return 1
+    }
+
+    // Read it back
+    let retrieved: String = cli_getenv(name)
+    if !string_eq(retrieved, value) {
+        print("FAIL: expected '")
+        print(value)
+        print("', got: '")
+        print(retrieved)
+        println("'")
+        return 1
+    }
+
+    println("PASS: test_setenv")
+    0
+}
+
+fn test_args_vector() -> i64 {
+    let args: i64 = cli_args()
+
+    // Should have at least one argument (program name)
+    let len: i64 = vec_len(args)
+    if len < 1 {
+        println("FAIL: cli_args should return at least 1 element")
+        return 1
+    }
+
+    // First element should match cli_get_arg(0)
+    let first_from_vec: String = vec_get(args, 0)
+    let first_from_arg: String = cli_get_arg(0)
+
+    if !string_eq(first_from_vec, first_from_arg) {
+        println("FAIL: cli_args[0] should match cli_get_arg(0)")
+        return 1
+    }
+
+    println("PASS: test_args_vector")
+    0
+}
+
+fn test_has_flag() -> i64 {
+    // These flags shouldn't exist when running tests normally
+    let has_help: i64 = cli_has_flag("--help")
+    let has_version: i64 = cli_has_flag("--version")
+
+    // Just verify the function works (doesn't crash)
+    // Can't reliably test for specific flags without controlling args
+
+    println("PASS: test_has_flag")
+    0
+}
+
+fn test_get_option() -> i64 {
+    // Test that non-existent option returns empty string
+    let nonexistent: String = cli_get_option("--nonexistent-option-xyz")
+
+    if string_len(nonexistent) != 0 {
+        println("FAIL: cli_get_option should return empty for nonexistent option")
+        return 1
+    }
+
+    println("PASS: test_get_option")
+    0
+}
+
+fn main() -> i64 {
+    println("=== CLI Tests ===")
+    println("")
+
+    var failures: i64 = 0
+
+    failures = failures + test_arg_count()
+    failures = failures + test_get_arg()
+    failures = failures + test_cwd()
+    failures = failures + test_getenv()
+    failures = failures + test_setenv()
+    failures = failures + test_args_vector()
+    failures = failures + test_has_flag()
+    failures = failures + test_get_option()
+
+    println("")
+    if failures == 0 {
+        println("All CLI tests passed!")
+    } else {
+        print("CLI tests failed: ")
+        println(int_to_string(failures))
+    }
+
+    failures
+}

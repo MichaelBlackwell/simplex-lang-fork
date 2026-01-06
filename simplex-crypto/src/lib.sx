@@ -1,0 +1,131 @@
+/// simplex-crypto - Cryptographic primitives for Simplex
+///
+/// Provides secure hashing, encoding, and random number generation
+/// using OpenSSL under the hood.
+///
+/// # Example
+/// ```simplex
+/// use modulus::simplex_crypto::crypto
+///
+/// // Generate secure random bytes
+/// let random: String = crypto_random_bytes(32)
+///
+/// // Hash data with SHA-256
+/// let hash: String = crypto_sha256("hello world")
+/// println(hash)  // hex-encoded hash
+///
+/// // Base64 encoding
+/// let encoded: String = crypto_base64_encode("hello")
+/// let decoded: String = crypto_base64_decode(encoded)
+///
+/// // HMAC for message authentication
+/// let mac: String = crypto_hmac_sha256("secret key", "message")
+/// ```
+
+// ============================================================================
+// Random Number Generation
+// ============================================================================
+
+/// Generate cryptographically secure random bytes
+/// Returns hex-encoded string of `count` random bytes
+pub fn crypto_random_bytes(count: i64) -> String {
+    crypto_random_bytes(count)
+}
+
+// ============================================================================
+// Hash Functions
+// ============================================================================
+
+/// Compute SHA-256 hash of data
+/// Returns 64-character hex string (256 bits)
+pub fn crypto_sha256(data: String) -> String {
+    crypto_sha256(data)
+}
+
+/// Compute SHA-512 hash of data
+/// Returns 128-character hex string (512 bits)
+pub fn crypto_sha512(data: String) -> String {
+    crypto_sha512(data)
+}
+
+// ============================================================================
+// HMAC (Hash-based Message Authentication Code)
+// ============================================================================
+
+/// Compute HMAC-SHA256
+/// key: The secret key
+/// data: The message to authenticate
+/// Returns hex-encoded HMAC
+pub fn crypto_hmac_sha256(key: String, data: String) -> String {
+    crypto_hmac_sha256(key, data)
+}
+
+// ============================================================================
+// Base64 Encoding
+// ============================================================================
+
+/// Encode data as Base64
+pub fn crypto_base64_encode(data: String) -> String {
+    crypto_base64_encode(data)
+}
+
+/// Decode Base64 string
+/// Returns empty string on invalid input
+pub fn crypto_base64_decode(data: String) -> String {
+    crypto_base64_decode(data)
+}
+
+// ============================================================================
+// Hex Encoding
+// ============================================================================
+
+/// Encode data as hexadecimal
+pub fn crypto_hex_encode(data: String) -> String {
+    crypto_hex_encode(data)
+}
+
+/// Decode hexadecimal string
+/// Returns empty string on invalid input
+pub fn crypto_hex_decode(hex: String) -> String {
+    crypto_hex_decode(hex)
+}
+
+// ============================================================================
+// Security Utilities
+// ============================================================================
+
+/// Constant-time string comparison
+/// Returns 1 if equal, 0 if not
+/// Use this instead of == for comparing secrets to prevent timing attacks
+pub fn crypto_compare(a: String, b: String) -> Bool {
+    crypto_compare(a, b) == 1
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Generate a random hex string of specified length (in bytes)
+pub fn crypto_random_hex(bytes: i64) -> String {
+    crypto_random_bytes(bytes)
+}
+
+/// Generate a random base64 string of specified length (in bytes)
+pub fn crypto_random_base64(bytes: i64) -> String {
+    let hex: String = crypto_random_bytes(bytes)
+    let raw: String = crypto_hex_decode(hex)
+    crypto_base64_encode(raw)
+}
+
+/// Hash a password with SHA-256 (simple version)
+/// For production use, consider using bcrypt or argon2
+pub fn crypto_hash_password(password: String, salt: String) -> String {
+    let salted: String = string_concat(salt, password)
+    crypto_sha256(salted)
+}
+
+/// Verify a password against a hash
+pub fn crypto_verify_password(password: String, salt: String, hash: String) -> Bool {
+    let computed: String = crypto_hash_password(password, salt)
+    crypto_compare(computed, hash)
+}
