@@ -2594,19 +2594,81 @@ class CodeGen:
                 self.register_item_visibility(full_mod_name, item['name'], is_pub)
 
         # Handle nested use statements within the module
+        # Set current module path for relative path resolution
+        old_module_path = getattr(self, 'current_module_path', [])
+        self.current_module_path = full_mod_name.split('::')
+
         for item in mod_items:
             if item['type'] == 'UseDef':
                 self.import_from_path(item['path'])
 
+        # Restore previous module path
+        self.current_module_path = old_module_path
+
+    def resolve_relative_path(self, path):
+        """Resolve relative module paths (super::, self::) to absolute paths.
+
+        Args:
+            path: List of path components, e.g., ['super', 'sibling'] or ['self', 'sub']
+
+        Returns:
+            Resolved path list, or None if path cannot be resolved
+        """
+        if not path:
+            return path
+
+        # Get current module path
+        current_module = getattr(self, 'current_module_path', [])
+
+        # Handle 'self::' prefix - refers to current module
+        if path[0] == 'self':
+            if not current_module:
+                print(f"Warning: 'self::' used outside of a module context")
+                return path[1:]  # Just use the rest of the path
+            return current_module + path[1:]
+
+        # Handle 'super::' prefix - refers to parent module
+        if path[0] == 'super':
+            if not current_module:
+                print(f"Warning: 'super::' used outside of a module context")
+                return path[1:]  # Just use the rest of the path
+            if len(current_module) < 1:
+                print(f"Warning: 'super::' used at top level, no parent module")
+                return path[1:]
+
+            # Go up one level
+            parent = current_module[:-1]
+
+            # Handle multiple super:: prefixes (super::super::foo)
+            remaining = path[1:]
+            while remaining and remaining[0] == 'super':
+                if not parent:
+                    print(f"Warning: 'super::' goes beyond root module")
+                    break
+                parent = parent[:-1]
+                remaining = remaining[1:]
+
+            return parent + remaining
+
+        # No relative prefix, return as-is
+        return path
+
     def import_from_path(self, path):
         """Import items from a module path like ['std', 'io'] or ['ai', 'memory', 'EpisodicMemory'].
 
-        Handles three cases:
+        Handles these cases:
         1. use foo;           -> imports module 'foo', items accessible as foo::item
         2. use foo::bar;      -> imports submodule or item 'bar' from 'foo'
         3. use foo::bar::Baz; -> imports specific item 'Baz' from 'foo::bar'
+        4. use super::sibling;-> imports from parent module
+        5. use self::sub;     -> imports from current module
         """
         if len(path) < 1:
+            return
+
+        # Resolve super:: and self:: relative paths
+        path = self.resolve_relative_path(path)
+        if path is None:
             return
 
         # Initialize imported_items if needed
@@ -2691,6 +2753,7 @@ class CodeGen:
         self.emit('declare void @intrinsic_vec_set(ptr, i64, ptr)')
         self.emit('declare ptr @intrinsic_vec_pop(ptr)')
         self.emit('declare void @intrinsic_vec_clear(ptr)')
+        self.emit('declare void @intrinsic_vec_remove(ptr, i64)')
         self.emit('declare i64 @intrinsic_vec_capacity(ptr)')
         self.emit('declare void @intrinsic_vec_reserve(ptr, i64)')
         self.emit('; Option<T> type: tag(0)=None, tag(1)=Some with value at offset 8')
@@ -2739,15 +2802,16 @@ class CodeGen:
         self.emit('declare i64 @json_get(i64, ptr)')
         self.emit('declare i64 @json_get_sx(i64, i64)')
         self.emit('declare i64 @json_object_len(i64)')
+        self.emit('declare i64 @json_object_key_at(i64, i64)')
         self.emit('declare i8 @json_object_has(i64, ptr)')
         self.emit('declare i8 @json_object_has_sx(i64, i64)')
-        self.emit('declare i64 @json_object_key_at(i64, i64)')
         self.emit('declare i64 @json_object_value_at(i64, i64)')
         self.emit('declare i64 @json_keys(i64)')
         self.emit('declare void @json_free(i64)')
         self.emit('declare i64 @json_stringify(i64)')
         self.emit('declare i64 @json_stringify_pretty(i64, i64)')
         self.emit('declare i64 @json_parse(i64)')
+        self.emit('declare i64 @json_parse_simple(i64)')
         self.emit('declare i64 @json_parse_cstr(ptr)')
         self.emit('declare i64 @json_clone(i64)')
         self.emit('declare i8 @json_equals(i64, i64)')
@@ -3767,6 +3831,7 @@ class CodeGen:
         self.emit('declare i64 @cli_setenv(i64, i64)')
         self.emit('declare i64 @cli_cwd()')
         self.emit('declare void @cli_exit(i64)')
+        self.emit('declare void @intrinsic_exit(i64)')
         self.emit('declare i64 @cli_has_flag(i64)')
         self.emit('declare i64 @cli_get_option(i64)')
         self.emit('declare i64 @cli_positional_args()')
@@ -6525,6 +6590,10 @@ class CodeGen:
                 'vec_push': 'intrinsic_vec_push',
                 'vec_get': 'intrinsic_vec_get',
                 'vec_len': 'intrinsic_vec_len',
+                'vec_clear': 'intrinsic_vec_clear',
+                'vec_set': 'intrinsic_vec_set',
+                'vec_pop': 'intrinsic_vec_pop',
+                'vec_remove': 'intrinsic_vec_remove',
                 'println': 'intrinsic_println',
                 'print': 'intrinsic_print',
                 'int_to_string': 'intrinsic_int_to_string',
@@ -6679,6 +6748,7 @@ class CodeGen:
                 'is_directory': 'intrinsic_is_directory',
                 'is_file': 'intrinsic_is_file',
                 'mkdir_p': 'intrinsic_mkdir_p',
+                'mkdir': 'intrinsic_mkdir_p',
                 'remove_path': 'intrinsic_remove_path',
                 'file_size': 'intrinsic_file_size',
                 'file_mtime': 'intrinsic_file_mtime',
@@ -6707,6 +6777,7 @@ class CodeGen:
                 'json_string': 'json_string_sx',
                 'json_array': 'json_array',
                 'json_object': 'json_object',
+                'json_object_new': 'json_object',
                 'json_is_null': 'json_is_null',
                 'json_is_bool': 'json_is_bool',
                 'json_is_number': 'json_is_number',
@@ -6731,7 +6802,7 @@ class CodeGen:
                 'json_free': 'json_free',
                 'json_stringify': 'json_stringify',
                 'json_stringify_pretty': 'json_stringify_pretty',
-                'json_parse': 'json_parse',
+                'json_parse': 'json_parse_simple',
                 'json_parse_cstr': 'json_parse_cstr',
                 'json_clone': 'json_clone',
                 'json_equals': 'json_equals',
@@ -6825,7 +6896,9 @@ class CodeGen:
                 'cli_getenv': 'cli_getenv',
                 'cli_setenv': 'cli_setenv',
                 'cli_cwd': 'cli_cwd',
+                'get_cwd': 'cli_cwd',
                 'cli_exit': 'cli_exit',
+                'exit': 'intrinsic_exit',
                 'cli_has_flag': 'cli_has_flag',
                 'cli_get_option': 'cli_get_option',
                 'cli_positional_args': 'cli_positional_args',
@@ -7340,6 +7413,42 @@ class CodeGen:
                 'histogram_min': (['i64'], 'double'),
                 'histogram_max': (['i64'], 'double'),
                 'timer_elapsed_s': (['i64'], 'double'),
+                # Phase 3: JSON functions
+                'json_parse_simple': (['i64'], 'i64'),
+                'json_stringify': (['i64'], 'i64'),
+                'json_get_sx': (['i64', 'i64'], 'i64'),
+                'json_keys': (['i64'], 'i64'),
+                'json_is_string': (['i64'], 'i1'),
+                'json_is_object': (['i64'], 'i1'),
+                'json_is_array': (['i64'], 'i1'),
+                'json_as_string': (['i64'], 'i64'),
+                'json_as_array': (['i64'], 'i64'),
+                'json_object': ([], 'i64'),
+                'json_object_set': (['i64', 'i64', 'i64'], 'void'),
+                'json_object_set_sx': (['i64', 'i64', 'i64'], 'void'),
+                'json_object_len': (['i64'], 'i64'),
+                'json_object_key_at': (['i64', 'i64'], 'i64'),
+                'json_object_value_at': (['i64', 'i64'], 'i64'),
+                'json_array': ([], 'i64'),
+                'json_array_push': (['i64', 'i64'], 'void'),
+                'json_array_len': (['i64'], 'i64'),
+                'json_get_index': (['i64', 'i64'], 'i64'),
+                'json_free': (['i64'], 'void'),
+                'json_null': ([], 'i64'),
+                'json_bool': (['i64'], 'i64'),
+                'json_number': (['double'], 'i64'),
+                'json_number_i64': (['i64'], 'i64'),
+                'json_string_sx': (['i64'], 'i64'),
+                'json_clone': (['i64'], 'i64'),
+                'json_equals': (['i64', 'i64'], 'i1'),
+                'json_object_has_sx': (['i64', 'i64'], 'i1'),
+                'json_is_null': (['i64'], 'i1'),
+                'json_is_bool': (['i64'], 'i1'),
+                'json_is_number': (['i64'], 'i1'),
+                'json_type': (['i64'], 'i64'),
+                'json_as_bool': (['i64'], 'i64'),
+                'json_as_f64': (['i64'], 'double'),
+                'json_as_i64': (['i64'], 'i64'),
                 # Phase 3: HTTP Client/Server
                 'http_request_new': (['i64', 'i64'], 'i64'),
                 'http_request_header': (['i64', 'i64', 'i64'], 'void'),
@@ -7430,7 +7539,9 @@ class CodeGen:
                 'cli_getenv': (['i64'], 'i64'),
                 'cli_setenv': (['i64', 'i64'], 'i64'),
                 'cli_cwd': ([], 'i64'),
+                'get_cwd': ([], 'i64'),
                 'cli_exit': (['i64'], 'void'),
+                'exit': (['i64'], 'void'),
                 'cli_has_flag': (['i64'], 'i64'),
                 'cli_get_option': (['i64'], 'i64'),
                 'cli_positional_args': ([], 'i64'),
@@ -9062,10 +9173,32 @@ def main():
     import os
 
     if len(sys.argv) < 2:
-        print("Usage: stage0.py <input.sx> [input2.sx ...]")
+        print("Usage: stage0.py <input.sx> [input2.sx ...] [--check]")
         sys.exit(1)
 
-    input_files = sys.argv[1:]
+    # Parse arguments
+    input_files = []
+    check_only = False
+    skip_next = False
+
+    for i, arg in enumerate(sys.argv[1:]):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == '--check':
+            check_only = True
+        elif arg == '-o':
+            # Skip -o and its argument (output file)
+            skip_next = True
+        elif arg.startswith('-'):
+            # Skip other options
+            pass
+        else:
+            input_files.append(arg)
+
+    if not input_files:
+        print("Error: no input files specified")
+        sys.exit(1)
 
     # First pass: parse all files and collect enums and structs
     # Initialize with built-in enums: Option<T> and Result<T,E>
@@ -9109,22 +9242,36 @@ def main():
         codegen.structs = all_structs.copy()  # Pre-populate with all structs
         llvm_ir = codegen.generate(items)
 
-        # Output
-        output_file = input_file.replace('.sx', '.ll')
-        with open(output_file, 'w') as f:
-            f.write(llvm_ir)
+        if check_only:
+            # In check mode, just verify parsing and codegen succeeded
+            print(f"Checked {input_file}")
+            print(f"Items: {len(items)}")
+            for item in items:
+                if item['type'] == 'FnDef':
+                    print(f"  fn {item['name']}")
+                elif item['type'] == 'EnumDef':
+                    print(f"  enum {item['name']}")
+                elif item['type'] == 'StructDef':
+                    print(f"  struct {item['name']}")
+                elif item['type'] == 'ImplDef':
+                    print(f"  impl {item['type_name']}")
+        else:
+            # Output
+            output_file = input_file.replace('.sx', '.ll')
+            with open(output_file, 'w') as f:
+                f.write(llvm_ir)
 
-        print(f"Generated {output_file}")
-        print(f"Items: {len(items)}")
-        for item in items:
-            if item['type'] == 'FnDef':
-                print(f"  fn {item['name']}")
-            elif item['type'] == 'EnumDef':
-                print(f"  enum {item['name']}")
-            elif item['type'] == 'StructDef':
-                print(f"  struct {item['name']}")
-            elif item['type'] == 'ImplDef':
-                print(f"  impl {item['type_name']}")
+            print(f"Generated {output_file}")
+            print(f"Items: {len(items)}")
+            for item in items:
+                if item['type'] == 'FnDef':
+                    print(f"  fn {item['name']}")
+                elif item['type'] == 'EnumDef':
+                    print(f"  enum {item['name']}")
+                elif item['type'] == 'StructDef':
+                    print(f"  struct {item['name']}")
+                elif item['type'] == 'ImplDef':
+                    print(f"  impl {item['type_name']}")
 
 
 if __name__ == '__main__':
