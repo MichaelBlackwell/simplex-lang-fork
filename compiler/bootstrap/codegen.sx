@@ -3027,7 +3027,9 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
         emit(cg, " = call i64 @f64_parse(ptr ");
         // Add string constant
         let str_idx: i64 = cg_add_string(cg, text);
-        emit(cg, "@.str.mod.");
+        emit(cg, "@.str.");
+        emit(cg, cg_module_name(cg));
+        emit(cg, ".");
         emit(cg, int_to_string(str_idx));
         emit_line(cg, ")");
         return string_concat("%t", int_to_string(result_t));
@@ -4376,7 +4378,7 @@ fn gen_item(cg: i64, item: i64) -> i64 {
 // Generate program header
 fn gen_header(cg: i64) -> i64 {
     emit_line(cg, "; ModuleID = 'simplex_program'");
-    emit_line(cg, "target triple = \"x86_64-apple-macosx14.0.0\"");
+    emit_line(cg, "target triple = \"x86_64-pc-linux-gnu\"");
     emit_line(cg, "");
     emit_line(cg, "declare ptr @malloc(i64)");
     emit_line(cg, "declare void @free(ptr)");
