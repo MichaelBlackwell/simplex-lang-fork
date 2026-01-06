@@ -1521,6 +1521,36 @@ class Parser:
         if self.check(TokenKind.KW_MATCH):
             return self.parse_match_expr()
 
+        # Rust-style closure: || expr or |x| expr or |x: i64| expr
+        if self.check(TokenKind.PIPEPIPE):
+            # || expr - zero params closure
+            self.advance()
+            if self.check(TokenKind.LBRACE):
+                body = self.parse_block()
+            else:
+                body = self.parse_expr()
+            return make_closure_expr([], body)
+
+        if self.check(TokenKind.PIPE):
+            # |params| expr - closure with params
+            self.advance()
+            params = []
+            while not self.check(TokenKind.PIPE):
+                pname = self.expect(TokenKind.IDENT).text
+                pty = 'i64'  # default type
+                if self.check(TokenKind.COLON):
+                    self.advance()
+                    pty = self.parse_type()
+                params.append(make_param(pname, pty))
+                if self.check(TokenKind.COMMA):
+                    self.advance()
+            self.expect(TokenKind.PIPE)
+            if self.check(TokenKind.LBRACE):
+                body = self.parse_block()
+            else:
+                body = self.parse_expr()
+            return make_closure_expr(params, body)
+
         if self.check(TokenKind.LBRACE):
             return self.parse_block()
 
@@ -1894,6 +1924,13 @@ class Parser:
                 }
             else:
                 # Just a name - could be binding or enum variant without data
+                # If name contains ::, it's an enum variant (not a binding)
+                if '::' in name:
+                    return {
+                        'type': 'EnumPattern',
+                        'enum_variant': name,
+                        'bindings': []
+                    }
                 return {
                     'type': 'BindingPattern',
                     'name': name
@@ -2598,6 +2635,7 @@ class CodeGen:
         self.emit('declare i64 @mt_executor_block_on(i64, i64)')       # block on future
         self.emit('declare void @mt_executor_shutdown(i64)')           # shutdown
         self.emit('declare i64 @mt_executor_thread_count(i64)')        # get thread count
+        self.emit('declare i64 @"block_on"(i64)')                      # simple block_on(future)
         self.emit('declare i64 @mt_task_queue_new()')                  # thread-safe queue
         self.emit('declare void @mt_task_queue_push(i64, i64)')        # push task
         self.emit('declare i64 @mt_task_queue_pop(i64)')               # pop task

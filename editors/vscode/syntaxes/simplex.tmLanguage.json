@@ -1,0 +1,449 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Simplex",
+  "scopeName": "source.simplex",
+  "fileTypes": ["sx"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#functions" },
+    { "include": "#actors" },
+    { "include": "#specialists" },
+    { "include": "#operators" },
+    { "include": "#punctuation" },
+    { "include": "#variables" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.simplex",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.line.documentation.simplex",
+          "match": "///.*$"
+        },
+        {
+          "name": "comment.block.simplex",
+          "begin": "/\\*",
+          "end": "\\*/",
+          "patterns": [
+            { "include": "#comments" }
+          ]
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.interpolated.simplex",
+          "begin": "f\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.simplex",
+              "match": "\\\\."
+            },
+            {
+              "name": "meta.interpolation.simplex",
+              "begin": "\\{",
+              "end": "\\}",
+              "beginCaptures": {
+                "0": { "name": "punctuation.definition.interpolation.begin.simplex" }
+              },
+              "endCaptures": {
+                "0": { "name": "punctuation.definition.interpolation.end.simplex" }
+              },
+              "patterns": [
+                { "include": "#format-specifiers" },
+                { "include": "$self" }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.double.simplex",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.simplex",
+              "match": "\\\\."
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.single.simplex",
+          "begin": "'",
+          "end": "'",
+          "patterns": [
+            {
+              "name": "constant.character.escape.simplex",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+    "format-specifiers": {
+      "patterns": [
+        {
+          "name": "constant.other.format-spec.simplex",
+          "match": ":[#0-9<>^.]*[xXbodfeEgGs?]?"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.simplex",
+          "match": "\\b0x[0-9a-fA-F_]+\\b"
+        },
+        {
+          "name": "constant.numeric.binary.simplex",
+          "match": "\\b0b[01_]+\\b"
+        },
+        {
+          "name": "constant.numeric.octal.simplex",
+          "match": "\\b0o[0-7_]+\\b"
+        },
+        {
+          "name": "constant.numeric.float.simplex",
+          "match": "\\b[0-9][0-9_]*\\.[0-9][0-9_]*([eE][+-]?[0-9_]+)?\\b"
+        },
+        {
+          "name": "constant.numeric.integer.simplex",
+          "match": "\\b[0-9][0-9_]*\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.simplex",
+          "match": "\\b(if|else|match|while|for|in|loop|break|continue|return|yield)\\b"
+        },
+        {
+          "name": "keyword.declaration.simplex",
+          "match": "\\b(fn|let|var|const|type|struct|enum|trait|impl|mod|module|use|pub)\\b"
+        },
+        {
+          "name": "keyword.actor.simplex",
+          "match": "\\b(actor|receive|spawn|send|ask|init)\\b"
+        },
+        {
+          "name": "keyword.async.simplex",
+          "match": "\\b(async|await)\\b"
+        },
+        {
+          "name": "keyword.ai.simplex",
+          "match": "\\b(specialist|hive|infer)\\b"
+        },
+        {
+          "name": "keyword.other.simplex",
+          "match": "\\b(where|as|mut|ref|move|dyn|extern|unsafe)\\b"
+        },
+        {
+          "name": "constant.language.boolean.simplex",
+          "match": "\\b(true|false)\\b"
+        },
+        {
+          "name": "constant.language.simplex",
+          "match": "\\b(None|Some|Ok|Err)\\b"
+        },
+        {
+          "name": "variable.language.simplex",
+          "match": "\\b(self|Self)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "storage.type.primitive.simplex",
+          "match": "\\b(i8|i16|i32|i64|i128|isize|u8|u16|u32|u64|u128|usize|f32|f64|bool|char|str)\\b"
+        },
+        {
+          "name": "storage.type.core.simplex",
+          "match": "\\b(String|Vec|Option|Result|Box|Rc|Arc|Cell|RefCell|Mutex|RwLock)\\b"
+        },
+        {
+          "name": "storage.type.collections.simplex",
+          "match": "\\b(HashMap|HashSet|BTreeMap|BTreeSet|LinkedList|VecDeque)\\b"
+        },
+        {
+          "name": "storage.type.actor.simplex",
+          "match": "\\b(Actor|ActorRef|Message|Future|Stream|Sender|Receiver)\\b"
+        },
+        {
+          "name": "storage.type.ai.simplex",
+          "match": "\\b(Specialist|Hive|Model|Embedding|Completion|Classification)\\b"
+        },
+        {
+          "name": "entity.name.type.simplex",
+          "match": "\\b[A-Z][a-zA-Z0-9_]*\\b"
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "name": "meta.function.definition.simplex",
+          "begin": "\\b(fn)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*(<[^>]*>)?\\s*\\(",
+          "end": "\\)",
+          "beginCaptures": {
+            "1": { "name": "keyword.declaration.function.simplex" },
+            "2": { "name": "entity.name.function.simplex" },
+            "3": { "name": "meta.generic.simplex" }
+          },
+          "patterns": [
+            { "include": "#function-parameters" }
+          ]
+        },
+        {
+          "name": "meta.function.call.simplex",
+          "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?=\\()",
+          "captures": {
+            "1": { "name": "entity.name.function.call.simplex" }
+          }
+        },
+        {
+          "name": "meta.method.call.simplex",
+          "match": "\\.([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?=\\()",
+          "captures": {
+            "1": { "name": "entity.name.function.method.simplex" }
+          }
+        },
+        {
+          "name": "support.function.builtin.simplex",
+          "match": "\\b(println|print|format|panic|assert|assert_eq|dbg|todo|unimplemented)\\b"
+        },
+        {
+          "name": "support.function.intrinsic.simplex",
+          "match": "\\b(malloc|free|sizeof|transmute|drop)\\b"
+        }
+      ]
+    },
+    "function-parameters": {
+      "patterns": [
+        {
+          "match": "([a-zA-Z_][a-zA-Z0-9_]*)\\s*:\\s*(&\\s*mut\\s*)?([a-zA-Z_][a-zA-Z0-9_<>, ]*)",
+          "captures": {
+            "1": { "name": "variable.parameter.simplex" },
+            "2": { "name": "keyword.other.simplex" },
+            "3": { "name": "storage.type.simplex" }
+          }
+        },
+        { "include": "#types" },
+        { "include": "#keywords" }
+      ]
+    },
+    "actors": {
+      "patterns": [
+        {
+          "name": "meta.actor.definition.simplex",
+          "begin": "\\b(actor)\\s+([A-Z][a-zA-Z0-9_]*)\\s*\\{",
+          "end": "\\}",
+          "beginCaptures": {
+            "1": { "name": "keyword.declaration.actor.simplex" },
+            "2": { "name": "entity.name.type.actor.simplex" }
+          },
+          "patterns": [
+            { "include": "#comments" },
+            { "include": "#actor-state" },
+            { "include": "#actor-receive" },
+            { "include": "#actor-init" },
+            { "include": "$self" }
+          ]
+        }
+      ]
+    },
+    "actor-state": {
+      "patterns": [
+        {
+          "match": "([a-zA-Z_][a-zA-Z0-9_]*)\\s*:\\s*([a-zA-Z_][a-zA-Z0-9_<>, ]*)\\s*=",
+          "captures": {
+            "1": { "name": "variable.other.member.simplex" },
+            "2": { "name": "storage.type.simplex" }
+          }
+        }
+      ]
+    },
+    "actor-receive": {
+      "patterns": [
+        {
+          "name": "meta.receive.block.simplex",
+          "begin": "\\b(receive)\\s*\\{",
+          "end": "\\}",
+          "beginCaptures": {
+            "1": { "name": "keyword.control.receive.simplex" }
+          },
+          "patterns": [
+            { "include": "#comments" },
+            {
+              "match": "([A-Z][a-zA-Z0-9_]*)\\s*(\\([^)]*\\))?\\s*=>",
+              "captures": {
+                "1": { "name": "entity.name.tag.message.simplex" },
+                "2": { "name": "meta.message.parameters.simplex" }
+              }
+            },
+            { "include": "$self" }
+          ]
+        }
+      ]
+    },
+    "actor-init": {
+      "patterns": [
+        {
+          "name": "meta.init.block.simplex",
+          "begin": "\\b(init)\\s*\\{",
+          "end": "\\}",
+          "beginCaptures": {
+            "1": { "name": "keyword.control.init.simplex" }
+          },
+          "patterns": [
+            { "include": "$self" }
+          ]
+        }
+      ]
+    },
+    "specialists": {
+      "patterns": [
+        {
+          "name": "meta.specialist.definition.simplex",
+          "begin": "\\b(specialist)\\s+([A-Z][a-zA-Z0-9_]*)\\s*\\{",
+          "end": "\\}",
+          "beginCaptures": {
+            "1": { "name": "keyword.declaration.specialist.simplex" },
+            "2": { "name": "entity.name.type.specialist.simplex" }
+          },
+          "patterns": [
+            { "include": "#comments" },
+            { "include": "#specialist-config" },
+            { "include": "#functions" },
+            { "include": "$self" }
+          ]
+        },
+        {
+          "name": "meta.hive.definition.simplex",
+          "begin": "\\b(hive)\\s+([A-Z][a-zA-Z0-9_]*)\\s*\\{",
+          "end": "\\}",
+          "beginCaptures": {
+            "1": { "name": "keyword.declaration.hive.simplex" },
+            "2": { "name": "entity.name.type.hive.simplex" }
+          },
+          "patterns": [
+            { "include": "#comments" },
+            { "include": "$self" }
+          ]
+        }
+      ]
+    },
+    "specialist-config": {
+      "patterns": [
+        {
+          "match": "\\b(model|temperature|max_tokens|top_p|system_prompt)\\s*:",
+          "captures": {
+            "1": { "name": "variable.other.property.simplex" }
+          }
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.assignment.simplex",
+          "match": "(=|\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=|<<=|>>=)"
+        },
+        {
+          "name": "keyword.operator.comparison.simplex",
+          "match": "(==|!=|<=|>=|<|>)"
+        },
+        {
+          "name": "keyword.operator.logical.simplex",
+          "match": "(&&|\\|\\||!)"
+        },
+        {
+          "name": "keyword.operator.arithmetic.simplex",
+          "match": "(\\+|-|\\*|/|%)"
+        },
+        {
+          "name": "keyword.operator.bitwise.simplex",
+          "match": "(&|\\||\\^|<<|>>)"
+        },
+        {
+          "name": "keyword.operator.range.simplex",
+          "match": "(\\.\\.|\\.\\.=)"
+        },
+        {
+          "name": "keyword.operator.arrow.simplex",
+          "match": "(->|=>)"
+        },
+        {
+          "name": "keyword.operator.namespace.simplex",
+          "match": "::"
+        },
+        {
+          "name": "keyword.operator.question.simplex",
+          "match": "\\?"
+        },
+        {
+          "name": "keyword.operator.reference.simplex",
+          "match": "&"
+        },
+        {
+          "name": "keyword.operator.dereference.simplex",
+          "match": "\\*"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.brackets.round.simplex",
+          "match": "[()]"
+        },
+        {
+          "name": "punctuation.brackets.square.simplex",
+          "match": "[\\[\\]]"
+        },
+        {
+          "name": "punctuation.brackets.curly.simplex",
+          "match": "[{}]"
+        },
+        {
+          "name": "punctuation.brackets.angle.simplex",
+          "match": "[<>]"
+        },
+        {
+          "name": "punctuation.comma.simplex",
+          "match": ","
+        },
+        {
+          "name": "punctuation.semi.simplex",
+          "match": ";"
+        },
+        {
+          "name": "punctuation.colon.simplex",
+          "match": ":"
+        },
+        {
+          "name": "punctuation.dot.simplex",
+          "match": "\\."
+        }
+      ]
+    },
+    "variables": {
+      "patterns": [
+        {
+          "name": "variable.other.simplex",
+          "match": "\\b[a-z_][a-zA-Z0-9_]*\\b"
+        }
+      ]
+    }
+  }
+}

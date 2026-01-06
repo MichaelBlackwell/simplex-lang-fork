@@ -50,6 +50,7 @@ fn EXPR_YIELD() -> i64 { 19 }
 fn EXPR_SPAWN() -> i64 { 20 }
 fn EXPR_ARRAY() -> i64 { 21 }
 fn EXPR_FLOAT() -> i64 { 22 }
+fn EXPR_CLOSURE() -> i64 { 23 }
 
 // Binary operators - must match parser.sx
 fn OP_ADD() -> i64 { 0 }
@@ -77,7 +78,7 @@ fn OP_NOT() -> i64 { 101 }
 fn codegen_new() -> i64 {
     // Allocate codegen: output_sb(0), temp_counter(1), label_counter(2), enums(3), locals(4), strings(5), terminated(6), structs(7), var_types(8), loop_stack(9), loop_depth(10), pre_alloca_queue(11), module_name(12), generic_fns(13), instantiated(14), pending_instantiations(15), assoc_types(16), current_impl_type(17), const_params(18), type_params(19), generic_struct_templates(20), trait_impls(21), is_async_fn(22), async_state_counter(23), async_await_points(24), async_fn_name(25), default_methods(26), trait_defs(27), vtables(28)
     // Note: slot 0 is now a StringBuilder for O(n) instead of O(n²) string building
-    let cg: i64 = malloc(232);
+    let cg: i64 = malloc(248);
     store_ptr(cg, 0, sb_new_cap(65536));
     store_i64(cg, 1, 0);
     store_i64(cg, 2, 0);
@@ -107,6 +108,8 @@ fn codegen_new() -> i64 {
     store_ptr(cg, 26, vec_new()); // default_methods: vec of (trait::method, fn_def) pairs
     store_ptr(cg, 27, vec_new()); // trait_defs: vec of (trait_name, method_sigs) for vtable layout
     store_ptr(cg, 28, vec_new()); // vtables: vec of (type_name, trait_name, vtable_global) pairs
+    store_ptr(cg, 29, vec_new()); // pending_closures: vec of closure code strings
+    store_i64(cg, 30, 0);         // closure_counter: unique ID for closures
     cg
 }
 
@@ -164,6 +167,60 @@ fn cg_module_name(cg: i64) -> i64 {
 
 fn cg_set_module_name(cg: i64, name: i64) -> i64 {
     store_ptr(cg, 12, name);
+    0
+}
+
+// Closure accessors
+fn cg_pending_closures(cg: i64) -> i64 {
+    load_ptr(cg, 29)
+}
+
+fn cg_add_closure(cg: i64, closure_code: i64) -> i64 {
+    let closures: i64 = cg_pending_closures(cg);
+    vec_push(closures, closure_code);
+    0
+}
+
+fn cg_next_closure_id(cg: i64) -> i64 {
+    let id: i64 = load_i64(cg, 30);
+    store_i64(cg, 30, id + 1);
+    id
+}
+
+// State management for closure generation
+fn cg_get_output(cg: i64) -> i64 {
+    load_ptr(cg, 0)
+}
+
+fn cg_set_output(cg: i64, sb: i64) -> i64 {
+    store_ptr(cg, 0, sb);
+    0
+}
+
+fn cg_get_locals(cg: i64) -> i64 {
+    load_ptr(cg, 4)
+}
+
+fn cg_set_locals(cg: i64, locals: i64) -> i64 {
+    store_ptr(cg, 4, locals);
+    0
+}
+
+fn cg_get_temp_counter(cg: i64) -> i64 {
+    load_i64(cg, 1)
+}
+
+fn cg_set_temp_counter(cg: i64, val: i64) -> i64 {
+    store_i64(cg, 1, val);
+    0
+}
+
+fn cg_get_local_id(cg: i64) -> i64 {
+    load_i64(cg, 2)
+}
+
+fn cg_set_local_id(cg: i64, val: i64) -> i64 {
+    store_i64(cg, 2, val);
     0
 }
 
@@ -2869,6 +2926,98 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
         return string_concat("%t", int_to_string(result_t));
     }
 
+    // EXPR_CLOSURE - lambda/closure expression
+    if tag == EXPR_CLOSURE() {
+        let params: i64 = load_ptr(expr, 1);
+        let body: i64 = load_ptr(expr, 2);
+
+        // Generate a unique closure function name
+        let closure_id: i64 = cg_next_closure_id(cg);
+        let closure_name: i64 = string_concat("__closure_", int_to_string(closure_id));
+
+        // For now, generate a simple non-capturing closure
+        // The closure is a function pointer that can be called via call1/call2
+
+        // Generate the closure function as a pending function
+        // We'll emit it after the current function
+        let saved_output: i64 = cg_get_output(cg);
+        let saved_locals: i64 = cg_get_locals(cg);
+        let saved_temp: i64 = cg_get_temp_counter(cg);
+        let saved_local_id: i64 = cg_get_local_id(cg);
+
+        // Create new output buffer for closure (StringBuilder)
+        cg_set_output(cg, sb_new());
+        cg_set_locals(cg, vec_new());
+        cg_set_temp_counter(cg, 0);
+        cg_set_local_id(cg, 0);
+
+        // Generate closure function header
+        emit(cg, "define i64 @\"");
+        emit(cg, closure_name);
+        emit(cg, "\"(");
+
+        // Generate parameter list
+        let num_params: i64 = vec_len(params);
+        let i: i64 = 0;
+        while i < num_params {
+            if i > 0 {
+                emit(cg, ", ");
+            }
+            let param: i64 = vec_get(params, i);
+            let p_name: i64 = load_ptr(param, 0);
+            emit(cg, "i64 %param.");
+            emit(cg, p_name);
+            i = i + 1;
+        }
+        emit_line(cg, ") {");
+        emit_line(cg, "entry:");
+
+        // Allocate locals for params
+        i = 0;
+        while i < num_params {
+            let param: i64 = vec_get(params, i);
+            let p_name: i64 = load_ptr(param, 0);
+            let local_name: i64 = string_concat(p_name, ".0");
+            emit(cg, "  %local.");
+            emit(cg, local_name);
+            emit_line(cg, " = alloca i64");
+            emit(cg, "  store i64 %param.");
+            emit(cg, p_name);
+            emit(cg, ", ptr %local.");
+            emit_line(cg, local_name);
+            // Add to locals
+            add_local(cg, p_name, local_name);
+            i = i + 1;
+        }
+
+        // Generate body expression
+        let body_val: i64 = gen_expr(cg, body);
+        emit(cg, "  ret i64 ");
+        emit_line(cg, body_val);
+        emit_line(cg, "}");
+        emit_line(cg, "");
+
+        // Get closure code and restore state
+        let closure_sb: i64 = cg_get_output(cg);
+        let closure_code: i64 = sb_to_string(closure_sb);
+        cg_set_output(cg, saved_output);
+        cg_set_locals(cg, saved_locals);
+        cg_set_temp_counter(cg, saved_temp);
+        cg_set_local_id(cg, saved_local_id);
+
+        // Add closure code to pending closures
+        cg_add_closure(cg, closure_code);
+
+        // Return function pointer as i64
+        let fn_ptr_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(fn_ptr_t));
+        emit(cg, " = ptrtoint ptr @\"");
+        emit(cg, closure_name);
+        emit_line(cg, "\" to i64");
+        return string_concat("%t", int_to_string(fn_ptr_t));
+    }
+
     string_from("0")
 }
 
@@ -4525,6 +4674,20 @@ fn gen_program_with_module(items: i64, module_name: i64) -> i64 {
         while i < str_count {
             let value: i64 = vec_get(strings, i);
             emit_string_constant(cg, i, value);
+            i = i + 1;
+        }
+    }
+
+    // Emit pending closures
+    let closures: i64 = cg_pending_closures(cg);
+    let closure_count: i64 = vec_len(closures);
+    if closure_count > 0 {
+        emit_line(cg, "");
+        emit_line(cg, "; Closure functions");
+        i = 0;
+        while i < closure_count {
+            let closure_code: i64 = vec_get(closures, i);
+            emit(cg, closure_code);
             i = i + 1;
         }
     }

@@ -136,6 +136,7 @@ fn EXPR_YIELD() -> i64 { 19 }    // yield expr - generator yield
 fn EXPR_SPAWN() -> i64 { 20 }    // spawn Type - spawn actor/specialist
 fn EXPR_ARRAY() -> i64 { 21 }    // [a, b, c] - array literal
 fn EXPR_FLOAT() -> i64 { 22 }    // floating point literal
+fn EXPR_CLOSURE() -> i64 { 23 }  // (params) => expr - closure/lambda
 
 // Parser state - we pass this to all functions
 fn parser_new(tokens: i64) -> i64 {
@@ -693,6 +694,16 @@ fn ast_param(name: i64, ty: i64) -> i64 {
     node
 }
 
+// Closure: (params) => body
+// Layout: tag(0), params(1), body(2)
+fn ast_closure(params: i64, body: i64) -> i64 {
+    let node: i64 = malloc(24);
+    store_i64(node, 0, EXPR_CLOSURE());
+    store_ptr(node, 1, params);
+    store_ptr(node, 2, body);
+    node
+}
+
 // Binary operator codes
 fn OP_ADD() -> i64 { 0 }
 fn OP_SUB() -> i64 { 1 }
@@ -1003,8 +1014,56 @@ fn parse_primary(parser: i64) -> i64 {
         return ast_ident(name);
     }
 
-    // Parenthesized expression
-    if parser_match(parser, TokenKind::LParen) {
+    // Parenthesized expression or closure: (expr) or (params) => body
+    if parser_check(parser, TokenKind::LParen) {
+        // Check if this is a closure: () => body or (x: i64) => body
+        // Lookahead: if we see ) => or ident : after (, it's likely a closure
+        let is_closure: bool = false;
+
+        // () => body  - empty params closure
+        if parser_peek_check(parser, 1, TokenKind::RParen) {
+            if parser_peek_check(parser, 2, TokenKind::FatArrow) {
+                is_closure = true;
+            }
+        }
+        // (ident : type) => body  - closure with params
+        if parser_peek_check(parser, 1, TokenKind::Ident) {
+            if parser_peek_check(parser, 2, TokenKind::Colon) {
+                is_closure = true;
+            }
+        }
+
+        if is_closure {
+            parser_advance(parser);  // consume (
+            let params: i64 = vec_new();
+
+            // Parse params if not empty
+            if parser_check(parser, TokenKind::RParen) == false {
+                // Parse first param: name : type
+                let p_name_tok: i64 = parser_expect(parser, TokenKind::Ident);
+                let p_name: i64 = token_text(p_name_tok);
+                parser_expect(parser, TokenKind::Colon);
+                let p_type: i64 = parse_type(parser);
+                vec_push(params, ast_param(p_name, p_type));
+
+                // Parse more params
+                while parser_match(parser, TokenKind::Comma) {
+                    let pn_tok: i64 = parser_expect(parser, TokenKind::Ident);
+                    let pn: i64 = token_text(pn_tok);
+                    parser_expect(parser, TokenKind::Colon);
+                    let pt: i64 = parse_type(parser);
+                    vec_push(params, ast_param(pn, pt));
+                }
+            }
+
+            parser_expect(parser, TokenKind::RParen);
+            parser_expect(parser, TokenKind::FatArrow);
+            let body: i64 = parse_expr(parser);
+            return ast_closure(params, body);
+        }
+
+        // Not a closure - parenthesized expression
+        parser_advance(parser);  // consume (
         let expr: i64 = parse_expr(parser);
         parser_expect(parser, TokenKind::RParen);
         return expr;
