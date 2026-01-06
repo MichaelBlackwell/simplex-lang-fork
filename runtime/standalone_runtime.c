@@ -3565,14 +3565,16 @@ int64_t flow_mode_signal(void) { return FLOW_SIGNAL; }
 // Phase 8: Async Runtime Support
 // ========================================
 
-#include <sys/event.h>  // kqueue (macOS)
 #include <fcntl.h>
 
 // Poll enum values
 #define POLL_READY 0
 #define POLL_PENDING 1
 
-// I/O Driver using kqueue (macOS)
+#ifdef __APPLE__
+// macOS: Use kqueue for async I/O
+#include <sys/event.h>
+
 typedef struct {
     int kq;
     struct kevent events[256];
@@ -3645,6 +3647,77 @@ void intrinsic_io_driver_free(void* driver_ptr) {
     close(driver->kq);
     free(driver);
 }
+
+#else
+// Linux/other: Use epoll for async I/O
+#include <sys/epoll.h>
+
+typedef struct {
+    int epfd;
+    struct epoll_event events[256];
+    int num_events;
+} IoDriver;
+
+static IoDriver* global_io_driver = NULL;
+
+void* intrinsic_io_driver_new(void) {
+    IoDriver* driver = malloc(sizeof(IoDriver));
+    driver->epfd = epoll_create1(0);
+    driver->num_events = 0;
+    return driver;
+}
+
+void intrinsic_io_driver_init(void) {
+    if (!global_io_driver) {
+        global_io_driver = intrinsic_io_driver_new();
+    }
+}
+
+void intrinsic_io_driver_register_read(void* driver_ptr, int64_t fd, void* waker) {
+    IoDriver* driver = driver_ptr ? driver_ptr : global_io_driver;
+    if (!driver) return;
+
+    struct epoll_event ev;
+    ev.events = EPOLLIN;
+    ev.data.ptr = waker;
+    epoll_ctl(driver->epfd, EPOLL_CTL_ADD, fd, &ev);
+}
+
+void intrinsic_io_driver_register_write(void* driver_ptr, int64_t fd, void* waker) {
+    IoDriver* driver = driver_ptr ? driver_ptr : global_io_driver;
+    if (!driver) return;
+
+    struct epoll_event ev;
+    ev.events = EPOLLOUT;
+    ev.data.ptr = waker;
+    epoll_ctl(driver->epfd, EPOLL_CTL_ADD, fd, &ev);
+}
+
+void intrinsic_io_driver_unregister(void* driver_ptr, int64_t fd) {
+    IoDriver* driver = driver_ptr ? driver_ptr : global_io_driver;
+    if (!driver) return;
+
+    epoll_ctl(driver->epfd, EPOLL_CTL_DEL, fd, NULL);
+}
+
+int64_t intrinsic_io_driver_poll(void* driver_ptr, int64_t timeout_ms) {
+    IoDriver* driver = driver_ptr ? driver_ptr : global_io_driver;
+    if (!driver) return 0;
+
+    int n = epoll_wait(driver->epfd, driver->events, 256, (int)timeout_ms);
+    driver->num_events = n > 0 ? n : 0;
+
+    return driver->num_events;
+}
+
+void intrinsic_io_driver_free(void* driver_ptr) {
+    if (!driver_ptr) return;
+    IoDriver* driver = (IoDriver*)driver_ptr;
+    close(driver->epfd);
+    free(driver);
+}
+
+#endif
 
 // Set file descriptor non-blocking
 int8_t intrinsic_set_nonblocking(int64_t fd) {
