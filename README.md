@@ -226,7 +226,8 @@ simplex-lang/
 │   ├── basics/             # Core language tests
 │   ├── types/              # Type system tests
 │   ├── async/              # Async/await tests
-│   └── actors/             # Actor model tests
+│   ├── actors/             # Actor model tests
+│   └── phase36/            # Phase 36 feature tests
 ├── examples/               # Example programs
 └── docs/
     ├── spec/               # Language specification
@@ -238,10 +239,17 @@ simplex-lang/
 
 | Tool | Description | Status |
 |------|-------------|--------|
-| `sxc` | Simplex compiler (self-hosted native binary) | v0.3.3 |
-| `cursus` | Build tool and bytecode VM | v0.1.2 |
-| `sxdoc` | Documentation generator | v0.1.2 |
-| `sxlsp` | Language server for IDE support | v0.1.2 |
+| `sxc` | Simplex compiler (self-hosted native binary) | v0.3.4 |
+| `cursus` | Build tool and bytecode VM | v0.1.3 |
+| `sxdoc` | Documentation generator | v0.1.3 |
+| `sxlsp` | Language server for IDE support | v0.1.3 |
+
+**v0.3.4 Changes:**
+- Added Rust-style closure syntax (`|| expr` and `|x| expr`) to parser
+- Added `block_on(future)` runtime function for async execution
+- Fixed test files for proper exit code handling
+- Added explicit type annotations for method call resolution
+- All 13 phase36 tests now pass
 
 **v0.3.3 Changes:**
 - Fixed github test suite failure log
