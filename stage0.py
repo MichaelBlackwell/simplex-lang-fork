@@ -3795,6 +3795,22 @@ class CodeGen:
         self.emit('declare i64 @uuid_nil()')
         self.emit('declare i64 @uuid_is_nil(i64)')
         self.emit('declare i64 @uuid_is_valid(i64)')
+        self.emit('; Phase 3: TOML API')
+        self.emit('declare i64 @toml_parse(i64)')
+        self.emit('declare i64 @toml_get_string(i64, i64)')
+        self.emit('declare i64 @toml_get_i64(i64, i64)')
+        self.emit('declare i64 @toml_get_bool(i64, i64)')
+        self.emit('declare double @toml_get_f64(i64, i64)')
+        self.emit('declare i64 @toml_get_array(i64, i64)')
+        self.emit('declare i64 @toml_get_table(i64, i64)')
+        self.emit('declare i64 @toml_has_key(i64, i64)')
+        self.emit('declare i64 @toml_keys(i64)')
+        self.emit('declare void @toml_set_string(i64, i64, i64)')
+        self.emit('declare void @toml_set_i64(i64, i64, i64)')
+        self.emit('declare void @toml_set_bool(i64, i64, i64)')
+        self.emit('declare i64 @toml_stringify(i64)')
+        self.emit('declare i64 @toml_table_new()')
+        self.emit('declare void @toml_free(i64)')
         self.emit('; Phase 25: Distribution & Clustering')
         self.emit('; 25.1 Cluster Membership')
         self.emit('declare i64 @cluster_new(i64, i64, i64)')
@@ -6838,6 +6854,22 @@ class CodeGen:
                 'uuid_nil': 'uuid_nil',
                 'uuid_is_nil': 'uuid_is_nil',
                 'uuid_is_valid': 'uuid_is_valid',
+                # Phase 3: TOML
+                'toml_parse': 'toml_parse',
+                'toml_get_string': 'toml_get_string',
+                'toml_get_i64': 'toml_get_i64',
+                'toml_get_bool': 'toml_get_bool',
+                'toml_get_f64': 'toml_get_f64',
+                'toml_get_array': 'toml_get_array',
+                'toml_get_table': 'toml_get_table',
+                'toml_has_key': 'toml_has_key',
+                'toml_keys': 'toml_keys',
+                'toml_set_string': 'toml_set_string',
+                'toml_set_i64': 'toml_set_i64',
+                'toml_set_bool': 'toml_set_bool',
+                'toml_stringify': 'toml_stringify',
+                'toml_table_new': 'toml_table_new',
+                'toml_free': 'toml_free',
                 # Phase 12: Memory Substrate
                 'remember': 'intrinsic_remember',
                 'recall': 'intrinsic_recall',
@@ -7427,6 +7459,22 @@ class CodeGen:
                 'uuid_nil': ([], 'i64'),
                 'uuid_is_nil': (['i64'], 'i64'),
                 'uuid_is_valid': (['i64'], 'i64'),
+                # Phase 3: TOML
+                'toml_parse': (['i64'], 'i64'),
+                'toml_get_string': (['i64', 'i64'], 'i64'),
+                'toml_get_i64': (['i64', 'i64'], 'i64'),
+                'toml_get_bool': (['i64', 'i64'], 'i64'),
+                'toml_get_f64': (['i64', 'i64'], 'double'),
+                'toml_get_array': (['i64', 'i64'], 'i64'),
+                'toml_get_table': (['i64', 'i64'], 'i64'),
+                'toml_has_key': (['i64', 'i64'], 'i64'),
+                'toml_keys': (['i64'], 'i64'),
+                'toml_set_string': (['i64', 'i64', 'i64'], 'void'),
+                'toml_set_i64': (['i64', 'i64', 'i64'], 'void'),
+                'toml_set_bool': (['i64', 'i64', 'i64'], 'void'),
+                'toml_stringify': (['i64'], 'i64'),
+                'toml_table_new': ([], 'i64'),
+                'toml_free': (['i64'], 'void'),
             }
 
             if func_name in intrinsic_types:

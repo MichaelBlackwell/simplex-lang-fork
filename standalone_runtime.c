@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <ctype.h>
 #include <execinfo.h>
 #include <sys/time.h>
 #include <sys/stat.h>
@@ -26490,4 +26491,973 @@ void timer_record_to(int64_t timer_ptr, int64_t histogram_ptr) {
 
     double elapsed_ms = timer_elapsed_us(timer_ptr) / 1000.0;
     histogram_observe(histogram_ptr, elapsed_ms);
+}
+
+// ============================================================================
+// TOML Parser
+// ============================================================================
+
+// Forward declarations
+void toml_free(int64_t table_ptr);
+
+// TOML Value types
+typedef enum {
+    TOML_STRING = 0,
+    TOML_INTEGER = 1,
+    TOML_FLOAT = 2,
+    TOML_BOOL = 3,
+    TOML_ARRAY = 4,
+    TOML_TABLE = 5
+} TomlType;
+
+// Forward declarations
+typedef struct TomlValue TomlValue;
+typedef struct TomlEntry TomlEntry;
+
+// TOML table entry (key-value pair in linked list)
+struct TomlEntry {
+    char* key;
+    TomlValue* value;
+    TomlEntry* next;
+};
+
+// TOML value
+struct TomlValue {
+    TomlType type;
+    union {
+        char* string_val;
+        int64_t int_val;
+        double float_val;
+        int bool_val;
+        struct {
+            TomlValue** items;
+            int count;
+            int capacity;
+        } array;
+        TomlEntry* table;  // linked list of entries
+    } data;
+};
+
+// Create new TOML table
+int64_t toml_table_new(void) {
+    TomlValue* v = malloc(sizeof(TomlValue));
+    v->type = TOML_TABLE;
+    v->data.table = NULL;
+    return (int64_t)v;
+}
+
+// Create TOML string value
+TomlValue* toml_value_string(const char* s) {
+    TomlValue* v = malloc(sizeof(TomlValue));
+    v->type = TOML_STRING;
+    v->data.string_val = strdup(s);
+    return v;
+}
+
+// Create TOML integer value
+TomlValue* toml_value_int(int64_t n) {
+    TomlValue* v = malloc(sizeof(TomlValue));
+    v->type = TOML_INTEGER;
+    v->data.int_val = n;
+    return v;
+}
+
+// Create TOML float value
+TomlValue* toml_value_float(double n) {
+    TomlValue* v = malloc(sizeof(TomlValue));
+    v->type = TOML_FLOAT;
+    v->data.float_val = n;
+    return v;
+}
+
+// Create TOML bool value
+TomlValue* toml_value_bool(int b) {
+    TomlValue* v = malloc(sizeof(TomlValue));
+    v->type = TOML_BOOL;
+    v->data.bool_val = b;
+    return v;
+}
+
+// Create TOML array value
+TomlValue* toml_value_array(void) {
+    TomlValue* v = malloc(sizeof(TomlValue));
+    v->type = TOML_ARRAY;
+    v->data.array.items = malloc(sizeof(TomlValue*) * 8);
+    v->data.array.count = 0;
+    v->data.array.capacity = 8;
+    return v;
+}
+
+// Add item to TOML array
+void toml_array_push(TomlValue* arr, TomlValue* item) {
+    if (!arr || arr->type != TOML_ARRAY) return;
+    if (arr->data.array.count >= arr->data.array.capacity) {
+        arr->data.array.capacity *= 2;
+        arr->data.array.items = realloc(arr->data.array.items,
+            sizeof(TomlValue*) * arr->data.array.capacity);
+    }
+    arr->data.array.items[arr->data.array.count++] = item;
+}
+
+// Set value in table
+void toml_table_set_internal(TomlValue* table, const char* key, TomlValue* value) {
+    if (!table || table->type != TOML_TABLE) return;
+
+    // Check if key exists
+    TomlEntry* entry = table->data.table;
+    while (entry) {
+        if (strcmp(entry->key, key) == 0) {
+            // Replace value (should free old value)
+            entry->value = value;
+            return;
+        }
+        entry = entry->next;
+    }
+
+    // Add new entry
+    TomlEntry* new_entry = malloc(sizeof(TomlEntry));
+    new_entry->key = strdup(key);
+    new_entry->value = value;
+    new_entry->next = table->data.table;
+    table->data.table = new_entry;
+}
+
+// Get value from table by key
+TomlValue* toml_table_get_internal(TomlValue* table, const char* key) {
+    if (!table || table->type != TOML_TABLE) return NULL;
+
+    TomlEntry* entry = table->data.table;
+    while (entry) {
+        if (strcmp(entry->key, key) == 0) {
+            return entry->value;
+        }
+        entry = entry->next;
+    }
+    return NULL;
+}
+
+// Get or create nested table by dotted path
+TomlValue* toml_table_get_or_create(TomlValue* root, const char* path) {
+    if (!root || root->type != TOML_TABLE) return NULL;
+
+    char* path_copy = strdup(path);
+    char* token = strtok(path_copy, ".");
+    TomlValue* current = root;
+
+    while (token) {
+        TomlValue* next = toml_table_get_internal(current, token);
+        if (!next) {
+            // Create new table
+            next = malloc(sizeof(TomlValue));
+            next->type = TOML_TABLE;
+            next->data.table = NULL;
+            toml_table_set_internal(current, token, next);
+        }
+        current = next;
+        token = strtok(NULL, ".");
+    }
+
+    free(path_copy);
+    return current;
+}
+
+// Skip whitespace
+static const char* skip_ws(const char* s) {
+    while (*s && (*s == ' ' || *s == '\t')) s++;
+    return s;
+}
+
+// Skip to end of line
+static const char* skip_line(const char* s) {
+    while (*s && *s != '\n') s++;
+    if (*s == '\n') s++;
+    return s;
+}
+
+// Parse basic string (double quoted)
+static const char* parse_basic_string(const char* s, char** out) {
+    if (*s != '"') return NULL;
+    s++;
+
+    char buffer[4096];
+    int i = 0;
+
+    while (*s && *s != '"' && i < 4095) {
+        if (*s == '\\' && *(s+1)) {
+            s++;
+            switch (*s) {
+                case 'n': buffer[i++] = '\n'; break;
+                case 't': buffer[i++] = '\t'; break;
+                case 'r': buffer[i++] = '\r'; break;
+                case '\\': buffer[i++] = '\\'; break;
+                case '"': buffer[i++] = '"'; break;
+                default: buffer[i++] = *s;
+            }
+        } else {
+            buffer[i++] = *s;
+        }
+        s++;
+    }
+    buffer[i] = '\0';
+
+    if (*s == '"') s++;
+    *out = strdup(buffer);
+    return s;
+}
+
+// Parse literal string (single quoted)
+static const char* parse_literal_string(const char* s, char** out) {
+    if (*s != '\'') return NULL;
+    s++;
+
+    char buffer[4096];
+    int i = 0;
+
+    while (*s && *s != '\'' && i < 4095) {
+        buffer[i++] = *s++;
+    }
+    buffer[i] = '\0';
+
+    if (*s == '\'') s++;
+    *out = strdup(buffer);
+    return s;
+}
+
+// Parse integer
+static const char* parse_integer(const char* s, int64_t* out) {
+    char* end;
+    *out = strtoll(s, &end, 10);
+    return end;
+}
+
+// Parse float
+static const char* parse_float(const char* s, double* out) {
+    char* end;
+    *out = strtod(s, &end);
+    return end;
+}
+
+// Forward declaration
+static const char* parse_value(const char* s, TomlValue** out);
+
+// Parse array
+static const char* parse_array(const char* s, TomlValue** out) {
+    if (*s != '[') return NULL;
+    s++;
+
+    TomlValue* arr = toml_value_array();
+
+    while (*s) {
+        s = skip_ws(s);
+        while (*s == '\n') s = skip_ws(s + 1);
+
+        if (*s == ']') {
+            s++;
+            *out = arr;
+            return s;
+        }
+
+        if (*s == ',') {
+            s++;
+            continue;
+        }
+
+        // Skip comments in arrays
+        if (*s == '#') {
+            s = skip_line(s);
+            continue;
+        }
+
+        TomlValue* item = NULL;
+        s = parse_value(s, &item);
+        if (item) {
+            toml_array_push(arr, item);
+        }
+    }
+
+    *out = arr;
+    return s;
+}
+
+// Parse inline table
+static const char* parse_inline_table(const char* s, TomlValue** out) {
+    if (*s != '{') return NULL;
+    s++;
+
+    TomlValue* table = malloc(sizeof(TomlValue));
+    table->type = TOML_TABLE;
+    table->data.table = NULL;
+
+    while (*s) {
+        s = skip_ws(s);
+
+        if (*s == '}') {
+            s++;
+            *out = table;
+            return s;
+        }
+
+        if (*s == ',') {
+            s++;
+            continue;
+        }
+
+        // Parse key
+        char key[256];
+        int ki = 0;
+        while (*s && *s != '=' && *s != ' ' && *s != '\t' && ki < 255) {
+            key[ki++] = *s++;
+        }
+        key[ki] = '\0';
+
+        s = skip_ws(s);
+        if (*s != '=') break;
+        s++;
+        s = skip_ws(s);
+
+        // Parse value
+        TomlValue* val = NULL;
+        s = parse_value(s, &val);
+        if (val) {
+            toml_table_set_internal(table, key, val);
+        }
+    }
+
+    *out = table;
+    return s;
+}
+
+// Parse a value
+static const char* parse_value(const char* s, TomlValue** out) {
+    s = skip_ws(s);
+
+    if (*s == '"') {
+        char* str = NULL;
+        s = parse_basic_string(s, &str);
+        *out = toml_value_string(str);
+        free(str);
+        return s;
+    }
+
+    if (*s == '\'') {
+        char* str = NULL;
+        s = parse_literal_string(s, &str);
+        *out = toml_value_string(str);
+        free(str);
+        return s;
+    }
+
+    if (*s == '[') {
+        return parse_array(s, out);
+    }
+
+    if (*s == '{') {
+        return parse_inline_table(s, out);
+    }
+
+    // true/false
+    if (strncmp(s, "true", 4) == 0 && !isalnum(s[4])) {
+        *out = toml_value_bool(1);
+        return s + 4;
+    }
+    if (strncmp(s, "false", 5) == 0 && !isalnum(s[5])) {
+        *out = toml_value_bool(0);
+        return s + 5;
+    }
+
+    // Number (integer or float)
+    if (*s == '-' || *s == '+' || isdigit(*s)) {
+        const char* start = s;
+        if (*s == '-' || *s == '+') s++;
+        while (isdigit(*s)) s++;
+
+        if (*s == '.' || *s == 'e' || *s == 'E') {
+            // Float
+            double val;
+            parse_float(start, &val);
+            *out = toml_value_float(val);
+            // Skip rest of number
+            if (*s == '.') {
+                s++;
+                while (isdigit(*s)) s++;
+            }
+            if (*s == 'e' || *s == 'E') {
+                s++;
+                if (*s == '-' || *s == '+') s++;
+                while (isdigit(*s)) s++;
+            }
+        } else {
+            // Integer
+            int64_t val;
+            parse_integer(start, &val);
+            *out = toml_value_int(val);
+        }
+        return s;
+    }
+
+    return s;
+}
+
+// Parse TOML content
+int64_t toml_parse(int64_t content_ptr) {
+    SxString* content = (SxString*)content_ptr;
+    if (!content || !content->data) return 0;
+
+    TomlValue* root = malloc(sizeof(TomlValue));
+    root->type = TOML_TABLE;
+    root->data.table = NULL;
+
+    TomlValue* current_table = root;
+    const char* s = content->data;
+
+    while (*s) {
+        s = skip_ws(s);
+
+        // Skip empty lines and comments
+        if (*s == '\n') {
+            s++;
+            continue;
+        }
+        if (*s == '#') {
+            s = skip_line(s);
+            continue;
+        }
+
+        // Table header [table] or [[array of tables]]
+        if (*s == '[') {
+            s++;
+            int is_array_table = 0;
+            if (*s == '[') {
+                s++;
+                is_array_table = 1;
+            }
+
+            // Parse table name
+            char table_name[256];
+            int ti = 0;
+            while (*s && *s != ']' && *s != '\n' && ti < 255) {
+                table_name[ti++] = *s++;
+            }
+            table_name[ti] = '\0';
+
+            // Must have closing bracket - if not, it's invalid TOML
+            if (*s != ']') {
+                toml_free((int64_t)root);
+                return 0;
+            }
+            s++;
+            if (is_array_table) {
+                if (*s != ']') {
+                    toml_free((int64_t)root);
+                    return 0;
+                }
+                s++;
+            }
+
+            if (is_array_table) {
+                // Array of tables - create or get array, add new table
+                TomlValue* arr = toml_table_get_internal(root, table_name);
+                if (!arr) {
+                    arr = toml_value_array();
+                    toml_table_set_internal(root, table_name, arr);
+                }
+                TomlValue* new_table = malloc(sizeof(TomlValue));
+                new_table->type = TOML_TABLE;
+                new_table->data.table = NULL;
+                toml_array_push(arr, new_table);
+                current_table = new_table;
+            } else {
+                // Regular table
+                current_table = toml_table_get_or_create(root, table_name);
+            }
+
+            s = skip_line(s);
+            continue;
+        }
+
+        // Key = value
+        char key[256];
+        int ki = 0;
+
+        // Handle quoted keys
+        if (*s == '"') {
+            s++;
+            while (*s && *s != '"' && ki < 255) {
+                key[ki++] = *s++;
+            }
+            if (*s == '"') s++;
+        } else {
+            while (*s && *s != '=' && *s != ' ' && *s != '\t' && ki < 255) {
+                key[ki++] = *s++;
+            }
+        }
+        key[ki] = '\0';
+
+        if (ki == 0) {
+            s = skip_line(s);
+            continue;
+        }
+
+        s = skip_ws(s);
+        if (*s != '=') {
+            s = skip_line(s);
+            continue;
+        }
+        s++;
+        s = skip_ws(s);
+
+        // Parse value
+        TomlValue* value = NULL;
+        s = parse_value(s, &value);
+
+        if (value) {
+            // Handle dotted keys (e.g., foo.bar = value)
+            char* dot = strchr(key, '.');
+            if (dot) {
+                *dot = '\0';
+                TomlValue* nested = toml_table_get_or_create(current_table, key);
+                toml_table_set_internal(nested, dot + 1, value);
+            } else {
+                toml_table_set_internal(current_table, key, value);
+            }
+        }
+
+        s = skip_line(s);
+    }
+
+    return (int64_t)root;
+}
+
+// Get string value by path (e.g., "package.name")
+int64_t toml_get_string(int64_t table_ptr, int64_t path_ptr) {
+    TomlValue* table = (TomlValue*)table_ptr;
+    SxString* path = (SxString*)path_ptr;
+    if (!table || !path || table->type != TOML_TABLE) return 0;
+
+    char* path_copy = strdup(path->data);
+    char* token = strtok(path_copy, ".");
+    TomlValue* current = table;
+
+    while (token) {
+        char* next_token = strtok(NULL, ".");
+
+        if (current->type == TOML_TABLE) {
+            TomlValue* val = toml_table_get_internal(current, token);
+            if (!val) {
+                free(path_copy);
+                return 0;
+            }
+            if (!next_token) {
+                // Last token - should be string
+                free(path_copy);
+                if (val->type == TOML_STRING) {
+                    return (int64_t)intrinsic_string_new(val->data.string_val);
+                }
+                return 0;
+            }
+            current = val;
+        } else {
+            free(path_copy);
+            return 0;
+        }
+        token = next_token;
+    }
+
+    free(path_copy);
+    return 0;
+}
+
+// Get integer value by path
+int64_t toml_get_i64(int64_t table_ptr, int64_t path_ptr) {
+    TomlValue* table = (TomlValue*)table_ptr;
+    SxString* path = (SxString*)path_ptr;
+    if (!table || !path || table->type != TOML_TABLE) return 0;
+
+    char* path_copy = strdup(path->data);
+    char* token = strtok(path_copy, ".");
+    TomlValue* current = table;
+
+    while (token) {
+        char* next_token = strtok(NULL, ".");
+
+        if (current->type == TOML_TABLE) {
+            TomlValue* val = toml_table_get_internal(current, token);
+            if (!val) {
+                free(path_copy);
+                return 0;
+            }
+            if (!next_token) {
+                free(path_copy);
+                if (val->type == TOML_INTEGER) {
+                    return val->data.int_val;
+                }
+                return 0;
+            }
+            current = val;
+        } else {
+            free(path_copy);
+            return 0;
+        }
+        token = next_token;
+    }
+
+    free(path_copy);
+    return 0;
+}
+
+// Get boolean value by path
+int64_t toml_get_bool(int64_t table_ptr, int64_t path_ptr) {
+    TomlValue* table = (TomlValue*)table_ptr;
+    SxString* path = (SxString*)path_ptr;
+    if (!table || !path || table->type != TOML_TABLE) return 0;
+
+    char* path_copy = strdup(path->data);
+    char* token = strtok(path_copy, ".");
+    TomlValue* current = table;
+
+    while (token) {
+        char* next_token = strtok(NULL, ".");
+
+        if (current->type == TOML_TABLE) {
+            TomlValue* val = toml_table_get_internal(current, token);
+            if (!val) {
+                free(path_copy);
+                return 0;
+            }
+            if (!next_token) {
+                free(path_copy);
+                if (val->type == TOML_BOOL) {
+                    return val->data.bool_val;
+                }
+                return 0;
+            }
+            current = val;
+        } else {
+            free(path_copy);
+            return 0;
+        }
+        token = next_token;
+    }
+
+    free(path_copy);
+    return 0;
+}
+
+// Get float value by path
+double toml_get_f64(int64_t table_ptr, int64_t path_ptr) {
+    TomlValue* table = (TomlValue*)table_ptr;
+    SxString* path = (SxString*)path_ptr;
+    if (!table || !path || table->type != TOML_TABLE) return 0.0;
+
+    char* path_copy = strdup(path->data);
+    char* token = strtok(path_copy, ".");
+    TomlValue* current = table;
+
+    while (token) {
+        char* next_token = strtok(NULL, ".");
+
+        if (current->type == TOML_TABLE) {
+            TomlValue* val = toml_table_get_internal(current, token);
+            if (!val) {
+                free(path_copy);
+                return 0.0;
+            }
+            if (!next_token) {
+                free(path_copy);
+                if (val->type == TOML_FLOAT) {
+                    return val->data.float_val;
+                }
+                if (val->type == TOML_INTEGER) {
+                    return (double)val->data.int_val;
+                }
+                return 0.0;
+            }
+            current = val;
+        } else {
+            free(path_copy);
+            return 0.0;
+        }
+        token = next_token;
+    }
+
+    free(path_copy);
+    return 0.0;
+}
+
+// Check if key exists
+int64_t toml_has_key(int64_t table_ptr, int64_t path_ptr) {
+    TomlValue* table = (TomlValue*)table_ptr;
+    SxString* path = (SxString*)path_ptr;
+    if (!table || !path || table->type != TOML_TABLE) return 0;
+
+    char* path_copy = strdup(path->data);
+    char* token = strtok(path_copy, ".");
+    TomlValue* current = table;
+
+    while (token) {
+        char* next_token = strtok(NULL, ".");
+
+        if (current->type == TOML_TABLE) {
+            TomlValue* val = toml_table_get_internal(current, token);
+            if (!val) {
+                free(path_copy);
+                return 0;
+            }
+            if (!next_token) {
+                free(path_copy);
+                return 1;
+            }
+            current = val;
+        } else {
+            free(path_copy);
+            return 0;
+        }
+        token = next_token;
+    }
+
+    free(path_copy);
+    return 0;
+}
+
+// Get array by path
+int64_t toml_get_array(int64_t table_ptr, int64_t path_ptr) {
+    TomlValue* table = (TomlValue*)table_ptr;
+    SxString* path = (SxString*)path_ptr;
+    if (!table || !path || table->type != TOML_TABLE) return 0;
+
+    char* path_copy = strdup(path->data);
+    char* token = strtok(path_copy, ".");
+    TomlValue* current = table;
+
+    while (token) {
+        char* next_token = strtok(NULL, ".");
+
+        if (current->type == TOML_TABLE) {
+            TomlValue* val = toml_table_get_internal(current, token);
+            if (!val) {
+                free(path_copy);
+                return 0;
+            }
+            if (!next_token) {
+                free(path_copy);
+                if (val->type == TOML_ARRAY) {
+                    // Convert to Vec of strings (simplified)
+                    SxVec* vec = intrinsic_vec_new();
+                    for (int i = 0; i < val->data.array.count; i++) {
+                        TomlValue* item = val->data.array.items[i];
+                        if (item->type == TOML_STRING) {
+                            intrinsic_vec_push(vec, (void*)intrinsic_string_new(item->data.string_val));
+                        } else if (item->type == TOML_INTEGER) {
+                            char buf[32];
+                            snprintf(buf, 32, "%lld", (long long)item->data.int_val);
+                            intrinsic_vec_push(vec, (void*)intrinsic_string_new(buf));
+                        }
+                    }
+                    return (int64_t)vec;
+                }
+                return 0;
+            }
+            current = val;
+        } else {
+            free(path_copy);
+            return 0;
+        }
+        token = next_token;
+    }
+
+    free(path_copy);
+    return 0;
+}
+
+// Get nested table by path
+int64_t toml_get_table(int64_t table_ptr, int64_t path_ptr) {
+    TomlValue* table = (TomlValue*)table_ptr;
+    SxString* path = (SxString*)path_ptr;
+    if (!table || !path || table->type != TOML_TABLE) return 0;
+
+    char* path_copy = strdup(path->data);
+    char* token = strtok(path_copy, ".");
+    TomlValue* current = table;
+
+    while (token) {
+        if (current->type == TOML_TABLE) {
+            TomlValue* val = toml_table_get_internal(current, token);
+            if (!val) {
+                free(path_copy);
+                return 0;
+            }
+            current = val;
+        } else {
+            free(path_copy);
+            return 0;
+        }
+        token = strtok(NULL, ".");
+    }
+
+    free(path_copy);
+    if (current->type == TOML_TABLE) {
+        return (int64_t)current;
+    }
+    return 0;
+}
+
+// Get list of keys in table
+int64_t toml_keys(int64_t table_ptr) {
+    TomlValue* table = (TomlValue*)table_ptr;
+    if (!table || table->type != TOML_TABLE) return (int64_t)intrinsic_vec_new();
+
+    SxVec* vec = intrinsic_vec_new();
+    TomlEntry* entry = table->data.table;
+    while (entry) {
+        intrinsic_vec_push(vec, (void*)intrinsic_string_new(entry->key));
+        entry = entry->next;
+    }
+    return (int64_t)vec;
+}
+
+// Set string value in table
+void toml_set_string(int64_t table_ptr, int64_t key_ptr, int64_t value_ptr) {
+    TomlValue* table = (TomlValue*)table_ptr;
+    SxString* key = (SxString*)key_ptr;
+    SxString* value = (SxString*)value_ptr;
+    if (!table || !key || !value || table->type != TOML_TABLE) return;
+
+    toml_table_set_internal(table, key->data, toml_value_string(value->data));
+}
+
+// Set integer value in table
+void toml_set_i64(int64_t table_ptr, int64_t key_ptr, int64_t value) {
+    TomlValue* table = (TomlValue*)table_ptr;
+    SxString* key = (SxString*)key_ptr;
+    if (!table || !key || table->type != TOML_TABLE) return;
+
+    toml_table_set_internal(table, key->data, toml_value_int(value));
+}
+
+// Set boolean value in table
+void toml_set_bool(int64_t table_ptr, int64_t key_ptr, int64_t value) {
+    TomlValue* table = (TomlValue*)table_ptr;
+    SxString* key = (SxString*)key_ptr;
+    if (!table || !key || table->type != TOML_TABLE) return;
+
+    toml_table_set_internal(table, key->data, toml_value_bool(value ? 1 : 0));
+}
+
+// Helper for stringification
+static void toml_stringify_value(TomlValue* val, char* buf, int* pos, int buf_size, int indent);
+
+static void toml_stringify_table_contents(TomlValue* table, char* buf, int* pos, int buf_size) {
+    TomlEntry* entry = table->data.table;
+    while (entry) {
+        // Skip nested tables (handled separately)
+        if (entry->value->type == TOML_TABLE) {
+            entry = entry->next;
+            continue;
+        }
+
+        *pos += snprintf(buf + *pos, buf_size - *pos, "%s = ", entry->key);
+        toml_stringify_value(entry->value, buf, pos, buf_size, 0);
+        *pos += snprintf(buf + *pos, buf_size - *pos, "\n");
+        entry = entry->next;
+    }
+}
+
+static void toml_stringify_value(TomlValue* val, char* buf, int* pos, int buf_size, int indent) {
+    if (!val) return;
+
+    switch (val->type) {
+        case TOML_STRING:
+            *pos += snprintf(buf + *pos, buf_size - *pos, "\"%s\"", val->data.string_val);
+            break;
+        case TOML_INTEGER:
+            *pos += snprintf(buf + *pos, buf_size - *pos, "%lld", (long long)val->data.int_val);
+            break;
+        case TOML_FLOAT:
+            *pos += snprintf(buf + *pos, buf_size - *pos, "%g", val->data.float_val);
+            break;
+        case TOML_BOOL:
+            *pos += snprintf(buf + *pos, buf_size - *pos, "%s", val->data.bool_val ? "true" : "false");
+            break;
+        case TOML_ARRAY:
+            *pos += snprintf(buf + *pos, buf_size - *pos, "[");
+            for (int i = 0; i < val->data.array.count; i++) {
+                if (i > 0) *pos += snprintf(buf + *pos, buf_size - *pos, ", ");
+                toml_stringify_value(val->data.array.items[i], buf, pos, buf_size, indent);
+            }
+            *pos += snprintf(buf + *pos, buf_size - *pos, "]");
+            break;
+        case TOML_TABLE:
+            *pos += snprintf(buf + *pos, buf_size - *pos, "{ ");
+            TomlEntry* entry = val->data.table;
+            int first = 1;
+            while (entry) {
+                if (!first) *pos += snprintf(buf + *pos, buf_size - *pos, ", ");
+                *pos += snprintf(buf + *pos, buf_size - *pos, "%s = ", entry->key);
+                toml_stringify_value(entry->value, buf, pos, buf_size, indent);
+                first = 0;
+                entry = entry->next;
+            }
+            *pos += snprintf(buf + *pos, buf_size - *pos, " }");
+            break;
+    }
+}
+
+// Serialize TOML table to string
+int64_t toml_stringify(int64_t table_ptr) {
+    TomlValue* table = (TomlValue*)table_ptr;
+    if (!table || table->type != TOML_TABLE) {
+        return (int64_t)intrinsic_string_new("");
+    }
+
+    char* buf = malloc(65536);
+    int pos = 0;
+
+    // First, output top-level key-values (non-tables)
+    toml_stringify_table_contents(table, buf, &pos, 65536);
+
+    // Then output nested tables
+    TomlEntry* entry = table->data.table;
+    while (entry) {
+        if (entry->value->type == TOML_TABLE) {
+            pos += snprintf(buf + pos, 65536 - pos, "\n[%s]\n", entry->key);
+            toml_stringify_table_contents(entry->value, buf, &pos, 65536);
+        }
+        entry = entry->next;
+    }
+
+    SxString* result = intrinsic_string_new(buf);
+    free(buf);
+    return (int64_t)result;
+}
+
+// Free TOML value
+void toml_free(int64_t table_ptr) {
+    TomlValue* val = (TomlValue*)table_ptr;
+    if (!val) return;
+
+    switch (val->type) {
+        case TOML_STRING:
+            free(val->data.string_val);
+            break;
+        case TOML_ARRAY:
+            for (int i = 0; i < val->data.array.count; i++) {
+                toml_free((int64_t)val->data.array.items[i]);
+            }
+            free(val->data.array.items);
+            break;
+        case TOML_TABLE: {
+            TomlEntry* entry = val->data.table;
+            while (entry) {
+                TomlEntry* next = entry->next;
+                free(entry->key);
+                toml_free((int64_t)entry->value);
+                free(entry);
+                entry = next;
+            }
+            break;
+        }
+        default:
+            break;
+    }
+    free(val);
 }
