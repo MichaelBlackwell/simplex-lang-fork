@@ -168,7 +168,29 @@ fn manifest_entry(manifest: i64) -> i64 {
             return json_as_string(entry);
         }
     }
+    // Auto-detect: prefer lib.sx for libraries, main.sx for binaries
+    if file_exists("src/lib.sx") {
+        return "src/lib.sx";
+    }
+    if file_exists("src/main.sx") {
+        return "src/main.sx";
+    }
+    // Fallback to main.sx (will error if not found)
     "src/main.sx"
+}
+
+/// Check if this package is a library (has src/lib.sx)
+fn is_library_package() -> bool {
+    file_exists("src/lib.sx")
+}
+
+/// Get the package type as a string
+fn package_type() -> i64 {
+    if is_library_package() {
+        "library"
+    } else {
+        "binary"
+    }
 }
 
 fn manifest_dependencies(manifest: i64) -> i64 {
@@ -213,6 +235,164 @@ fn manifest_validate(manifest: i64) -> i64 {
     }
 
     errors
+}
+
+// ============================================================================
+// Version Range Support (Semver)
+// ============================================================================
+
+/// Parse a semver version string into (major, minor, patch) components
+/// Returns a tuple pointer: (i64, i64, i64)
+fn version_parse(version: i64) -> i64 {
+    let result: i64 = malloc(24)  // 3 * 8 bytes
+    store_i64(result, 0, 0)       // major
+    store_i64(result, 1, 0)       // minor
+    store_i64(result, 2, 0)       // patch
+
+    let parts: i64 = string_split(version, ".")
+    if vec_len(parts) >= 1 {
+        let major_str: i64 = vec_get(parts, 0)
+        store_i64(result, 0, string_to_int(major_str))
+    }
+    if vec_len(parts) >= 2 {
+        let minor_str: i64 = vec_get(parts, 1)
+        store_i64(result, 1, string_to_int(minor_str))
+    }
+    if vec_len(parts) >= 3 {
+        let patch_str: i64 = vec_get(parts, 2)
+        // Handle pre-release suffixes like "1.0.0-beta"
+        let patch_clean: i64 = string_split(patch_str, "-")
+        store_i64(result, 2, string_to_int(vec_get(patch_clean, 0)))
+    }
+    result
+}
+
+/// Get major version from parsed version tuple
+fn version_major(v: i64) -> i64 { load_i64(v, 0) }
+
+/// Get minor version from parsed version tuple
+fn version_minor(v: i64) -> i64 { load_i64(v, 1) }
+
+/// Get patch version from parsed version tuple
+fn version_patch(v: i64) -> i64 { load_i64(v, 2) }
+
+/// Compare two versions: returns -1 if a < b, 0 if a == b, 1 if a > b
+fn version_compare(a: i64, b: i64) -> i64 {
+    let a_major: i64 = version_major(a)
+    let b_major: i64 = version_major(b)
+    if a_major < b_major { return -1 }
+    if a_major > b_major { return 1 }
+
+    let a_minor: i64 = version_minor(a)
+    let b_minor: i64 = version_minor(b)
+    if a_minor < b_minor { return -1 }
+    if a_minor > b_minor { return 1 }
+
+    let a_patch: i64 = version_patch(a)
+    let b_patch: i64 = version_patch(b)
+    if a_patch < b_patch { return -1 }
+    if a_patch > b_patch { return 1 }
+
+    0
+}
+
+/// Check if a version satisfies a version constraint
+/// Supports: *, ^1.2.3, ~1.2.3, >=1.2.3, <=1.2.3, >1.2.3, <1.2.3, =1.2.3, 1.2.3
+fn version_satisfies(version_str: i64, constraint: i64) -> bool {
+    // Wildcard matches everything
+    if string_eq(constraint, "*") {
+        return true
+    }
+
+    let version: i64 = version_parse(version_str)
+
+    // Parse constraint prefix
+    var offset: i64 = 0
+    var op: i64 = "="
+
+    // Check for ^, ~, >=, <=, >, <
+    if string_starts_with(constraint, "^") {
+        op = "^"
+        offset = 1
+    } else if string_starts_with(constraint, "~") {
+        op = "~"
+        offset = 1
+    } else if string_starts_with(constraint, ">=") {
+        op = ">="
+        offset = 2
+    } else if string_starts_with(constraint, "<=") {
+        op = "<="
+        offset = 2
+    } else if string_starts_with(constraint, ">") {
+        op = ">"
+        offset = 1
+    } else if string_starts_with(constraint, "<") {
+        op = "<"
+        offset = 1
+    } else if string_starts_with(constraint, "=") {
+        op = "="
+        offset = 1
+    }
+
+    let constraint_ver_str: i64 = string_slice(constraint, offset, string_len(constraint))
+    let constraint_ver: i64 = version_parse(constraint_ver_str)
+    let cmp: i64 = version_compare(version, constraint_ver)
+
+    if string_eq(op, "=") {
+        return cmp == 0
+    }
+    if string_eq(op, ">") {
+        return cmp > 0
+    }
+    if string_eq(op, "<") {
+        return cmp < 0
+    }
+    if string_eq(op, ">=") {
+        return cmp >= 0
+    }
+    if string_eq(op, "<=") {
+        return cmp <= 0
+    }
+
+    // ^ (caret): compatible with version, allows minor/patch updates
+    // ^1.2.3 matches >=1.2.3 <2.0.0
+    // ^0.2.3 matches >=0.2.3 <0.3.0
+    // ^0.0.3 matches >=0.0.3 <0.0.4
+    if string_eq(op, "^") {
+        if cmp < 0 { return false }  // version must be >= constraint
+        let v_major: i64 = version_major(version)
+        let c_major: i64 = version_major(constraint_ver)
+        let c_minor: i64 = version_minor(constraint_ver)
+        let c_patch: i64 = version_patch(constraint_ver)
+
+        if c_major > 0 {
+            // ^1.2.3 allows changes that don't modify left-most non-zero
+            return v_major == c_major
+        }
+        if c_minor > 0 {
+            // ^0.2.3 only allows patch updates
+            let v_minor: i64 = version_minor(version)
+            return v_major == 0 && v_minor == c_minor
+        }
+        // ^0.0.3 only allows exact match
+        let v_minor: i64 = version_minor(version)
+        let v_patch: i64 = version_patch(version)
+        return v_major == 0 && v_minor == 0 && v_patch == c_patch
+    }
+
+    // ~ (tilde): allows patch-level changes
+    // ~1.2.3 matches >=1.2.3 <1.3.0
+    if string_eq(op, "~") {
+        if cmp < 0 { return false }  // version must be >= constraint
+        let v_major: i64 = version_major(version)
+        let v_minor: i64 = version_minor(version)
+        let c_major: i64 = version_major(constraint_ver)
+        let c_minor: i64 = version_minor(constraint_ver)
+        return v_major == c_major && v_minor == c_minor
+    }
+
+    // Exact version if no operator
+    cmp == 0
 }
 
 // ============================================================================
@@ -670,6 +850,10 @@ fn cmd_test(args: i64, argc: i64, arg_idx: i64) -> i64 {
     if failed > 0 { 1 } else { 0 }
 }
 
+/// Find test files following naming conventions:
+/// - tests/test_*.sx (preferred)
+/// - tests/*_test.sx (alternative)
+/// - Any .sx file in tests/ directory (fallback)
 fn find_test_files() -> i64 {
     let files: i64 = vec_new();
 
@@ -684,7 +868,36 @@ fn find_test_files() -> i64 {
     while i < n {
         let name: i64 = vec_get(listing, i);
         if string_ends_with(name, ".sx") {
-            vec_push(files, path_join("tests", name));
+            // Accept test_*.sx, *_test.sx, or any .sx file
+            if string_starts_with(name, "test_") || string_ends_with(name, "_test.sx") {
+                vec_push(files, path_join("tests", name));
+            } else {
+                // Also include other .sx files for backwards compatibility
+                vec_push(files, path_join("tests", name));
+            }
+        }
+        i = i + 1;
+    }
+
+    files
+}
+
+/// Find example files in examples/ directory
+fn find_example_files() -> i64 {
+    let files: i64 = vec_new();
+
+    // List examples/ directory
+    let listing: i64 = list_dir("examples");
+    if listing == 0 {
+        return files;
+    }
+
+    let n: i64 = vec_len(listing);
+    var i: i64 = 0;
+    while i < n {
+        let name: i64 = vec_get(listing, i);
+        if string_ends_with(name, ".sx") {
+            vec_push(files, path_join("examples", name));
         }
         i = i + 1;
     }

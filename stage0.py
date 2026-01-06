@@ -2594,19 +2594,81 @@ class CodeGen:
                 self.register_item_visibility(full_mod_name, item['name'], is_pub)
 
         # Handle nested use statements within the module
+        # Set current module path for relative path resolution
+        old_module_path = getattr(self, 'current_module_path', [])
+        self.current_module_path = full_mod_name.split('::')
+
         for item in mod_items:
             if item['type'] == 'UseDef':
                 self.import_from_path(item['path'])
 
+        # Restore previous module path
+        self.current_module_path = old_module_path
+
+    def resolve_relative_path(self, path):
+        """Resolve relative module paths (super::, self::) to absolute paths.
+
+        Args:
+            path: List of path components, e.g., ['super', 'sibling'] or ['self', 'sub']
+
+        Returns:
+            Resolved path list, or None if path cannot be resolved
+        """
+        if not path:
+            return path
+
+        # Get current module path
+        current_module = getattr(self, 'current_module_path', [])
+
+        # Handle 'self::' prefix - refers to current module
+        if path[0] == 'self':
+            if not current_module:
+                print(f"Warning: 'self::' used outside of a module context")
+                return path[1:]  # Just use the rest of the path
+            return current_module + path[1:]
+
+        # Handle 'super::' prefix - refers to parent module
+        if path[0] == 'super':
+            if not current_module:
+                print(f"Warning: 'super::' used outside of a module context")
+                return path[1:]  # Just use the rest of the path
+            if len(current_module) < 1:
+                print(f"Warning: 'super::' used at top level, no parent module")
+                return path[1:]
+
+            # Go up one level
+            parent = current_module[:-1]
+
+            # Handle multiple super:: prefixes (super::super::foo)
+            remaining = path[1:]
+            while remaining and remaining[0] == 'super':
+                if not parent:
+                    print(f"Warning: 'super::' goes beyond root module")
+                    break
+                parent = parent[:-1]
+                remaining = remaining[1:]
+
+            return parent + remaining
+
+        # No relative prefix, return as-is
+        return path
+
     def import_from_path(self, path):
         """Import items from a module path like ['std', 'io'] or ['ai', 'memory', 'EpisodicMemory'].
 
-        Handles three cases:
+        Handles these cases:
         1. use foo;           -> imports module 'foo', items accessible as foo::item
         2. use foo::bar;      -> imports submodule or item 'bar' from 'foo'
         3. use foo::bar::Baz; -> imports specific item 'Baz' from 'foo::bar'
+        4. use super::sibling;-> imports from parent module
+        5. use self::sub;     -> imports from current module
         """
         if len(path) < 1:
+            return
+
+        # Resolve super:: and self:: relative paths
+        path = self.resolve_relative_path(path)
+        if path is None:
             return
 
         # Initialize imported_items if needed
@@ -2740,15 +2802,16 @@ class CodeGen:
         self.emit('declare i64 @json_get(i64, ptr)')
         self.emit('declare i64 @json_get_sx(i64, i64)')
         self.emit('declare i64 @json_object_len(i64)')
+        self.emit('declare i64 @json_object_key_at(i64, i64)')
         self.emit('declare i8 @json_object_has(i64, ptr)')
         self.emit('declare i8 @json_object_has_sx(i64, i64)')
-        self.emit('declare i64 @json_object_key_at(i64, i64)')
         self.emit('declare i64 @json_object_value_at(i64, i64)')
         self.emit('declare i64 @json_keys(i64)')
         self.emit('declare void @json_free(i64)')
         self.emit('declare i64 @json_stringify(i64)')
         self.emit('declare i64 @json_stringify_pretty(i64, i64)')
         self.emit('declare i64 @json_parse(i64)')
+        self.emit('declare i64 @json_parse_simple(i64)')
         self.emit('declare i64 @json_parse_cstr(ptr)')
         self.emit('declare i64 @json_clone(i64)')
         self.emit('declare i8 @json_equals(i64, i64)')
@@ -6739,7 +6802,7 @@ class CodeGen:
                 'json_free': 'json_free',
                 'json_stringify': 'json_stringify',
                 'json_stringify_pretty': 'json_stringify_pretty',
-                'json_parse': 'json_parse',
+                'json_parse': 'json_parse_simple',
                 'json_parse_cstr': 'json_parse_cstr',
                 'json_clone': 'json_clone',
                 'json_equals': 'json_equals',
@@ -7350,6 +7413,42 @@ class CodeGen:
                 'histogram_min': (['i64'], 'double'),
                 'histogram_max': (['i64'], 'double'),
                 'timer_elapsed_s': (['i64'], 'double'),
+                # Phase 3: JSON functions
+                'json_parse_simple': (['i64'], 'i64'),
+                'json_stringify': (['i64'], 'i64'),
+                'json_get_sx': (['i64', 'i64'], 'i64'),
+                'json_keys': (['i64'], 'i64'),
+                'json_is_string': (['i64'], 'i1'),
+                'json_is_object': (['i64'], 'i1'),
+                'json_is_array': (['i64'], 'i1'),
+                'json_as_string': (['i64'], 'i64'),
+                'json_as_array': (['i64'], 'i64'),
+                'json_object': ([], 'i64'),
+                'json_object_set': (['i64', 'i64', 'i64'], 'void'),
+                'json_object_set_sx': (['i64', 'i64', 'i64'], 'void'),
+                'json_object_len': (['i64'], 'i64'),
+                'json_object_key_at': (['i64', 'i64'], 'i64'),
+                'json_object_value_at': (['i64', 'i64'], 'i64'),
+                'json_array': ([], 'i64'),
+                'json_array_push': (['i64', 'i64'], 'void'),
+                'json_array_len': (['i64'], 'i64'),
+                'json_get_index': (['i64', 'i64'], 'i64'),
+                'json_free': (['i64'], 'void'),
+                'json_null': ([], 'i64'),
+                'json_bool': (['i64'], 'i64'),
+                'json_number': (['double'], 'i64'),
+                'json_number_i64': (['i64'], 'i64'),
+                'json_string_sx': (['i64'], 'i64'),
+                'json_clone': (['i64'], 'i64'),
+                'json_equals': (['i64', 'i64'], 'i1'),
+                'json_object_has_sx': (['i64', 'i64'], 'i1'),
+                'json_is_null': (['i64'], 'i1'),
+                'json_is_bool': (['i64'], 'i1'),
+                'json_is_number': (['i64'], 'i1'),
+                'json_type': (['i64'], 'i64'),
+                'json_as_bool': (['i64'], 'i64'),
+                'json_as_f64': (['i64'], 'double'),
+                'json_as_i64': (['i64'], 'i64'),
                 # Phase 3: HTTP Client/Server
                 'http_request_new': (['i64', 'i64'], 'i64'),
                 'http_request_header': (['i64', 'i64', 'i64'], 'void'),
@@ -9080,11 +9179,21 @@ def main():
     # Parse arguments
     input_files = []
     check_only = False
+    skip_next = False
 
-    for arg in sys.argv[1:]:
+    for i, arg in enumerate(sys.argv[1:]):
+        if skip_next:
+            skip_next = False
+            continue
         if arg == '--check':
             check_only = True
-        elif not arg.startswith('-'):
+        elif arg == '-o':
+            # Skip -o and its argument (output file)
+            skip_next = True
+        elif arg.startswith('-'):
+            # Skip other options
+            pass
+        else:
             input_files.append(arg)
 
     if not input_files:
