@@ -1391,14 +1391,20 @@ class Parser:
             return {'type': 'ModDef', 'name': name, 'items': None}
 
     def parse_use_def(self):
-        """Parse use path::item; declaration"""
+        """Parse use path::item; or use path::*; declaration"""
         self.expect(TokenKind.KW_USE)
         path = [self.expect(TokenKind.IDENT).text]
+        is_glob = False
         while self.check(TokenKind.DOUBLE_COLON):
             self.advance()
+            # Check for glob import: use foo::*
+            if self.check(TokenKind.STAR):
+                self.advance()
+                is_glob = True
+                break
             path.append(self.expect(TokenKind.IDENT).text)
         self.expect(TokenKind.SEMI)
-        return {'type': 'UseDef', 'path': path}
+        return {'type': 'UseDef', 'path': path, 'glob': is_glob}
 
     def parse_block(self):
         self.expect(TokenKind.LBRACE)
@@ -2594,19 +2600,212 @@ class CodeGen:
                 self.register_item_visibility(full_mod_name, item['name'], is_pub)
 
         # Handle nested use statements within the module
+        # Set current module path for relative path resolution
+        old_module_path = getattr(self, 'current_module_path', [])
+        self.current_module_path = full_mod_name.split('::')
+
         for item in mod_items:
             if item['type'] == 'UseDef':
-                self.import_from_path(item['path'])
+                is_glob = item.get('glob', False)
+                is_pub = item.get('is_pub', False)
+                if is_glob:
+                    # Glob import: use foo::*
+                    self.import_glob_from_module(item['path'], is_pub_reexport=is_pub)
+                else:
+                    self.import_from_path(item['path'])
+                    # Track pub use re-exports
+                    if is_pub:
+                        self.register_reexport(full_mod_name, item['path'])
+
+        # Restore previous module path
+        self.current_module_path = old_module_path
+
+    def register_reexport(self, module_name, path):
+        """Register a re-export: pub use other::Item makes Item available from module_name.
+
+        Args:
+            module_name: The module doing the re-export (e.g., 'mylib')
+            path: The path being re-exported (e.g., ['internal', 'SomeType'])
+        """
+        if not hasattr(self, 'module_reexports'):
+            self.module_reexports = {}
+        if module_name not in self.module_reexports:
+            self.module_reexports[module_name] = {}
+
+        # The re-exported name is the last component of the path
+        reexport_name = path[-1]
+        # The source is the full path being re-exported
+        source_path = '::'.join(path)
+
+        self.module_reexports[module_name][reexport_name] = source_path
+
+        # Also register visibility so it appears as a public item of this module
+        self.register_item_visibility(module_name, reexport_name, True)
+
+    def resolve_reexport(self, module_name, item_name):
+        """Check if an item is a re-export from a module.
+
+        Args:
+            module_name: The module to check (e.g., 'mylib')
+            item_name: The item to look up (e.g., 'SomeType')
+
+        Returns:
+            The source path if this is a re-export, None otherwise
+        """
+        if not hasattr(self, 'module_reexports'):
+            return None
+        if module_name not in self.module_reexports:
+            return None
+        return self.module_reexports[module_name].get(item_name)
+
+    def process_inline_module(self, mod_name, mod_items, is_pub=False):
+        """Process an inline module definition: mod name { ... }
+
+        Args:
+            mod_name: Name of the module
+            mod_items: List of parsed items within the module
+            is_pub: Whether the module is public
+        """
+        # Track loaded modules
+        if not hasattr(self, 'loaded_modules'):
+            self.loaded_modules = set()
+
+        # Build full module name based on current context
+        if hasattr(self, 'current_module_path') and self.current_module_path:
+            full_mod_name = '::'.join(self.current_module_path + [mod_name])
+        else:
+            full_mod_name = mod_name
+
+        if full_mod_name in self.loaded_modules:
+            return  # Already processed
+        self.loaded_modules.add(full_mod_name)
+
+        # Store module items
+        if not hasattr(self, 'module_items'):
+            self.module_items = {}
+        self.module_items[full_mod_name] = mod_items
+
+        # Register module's types, functions, etc.
+        for item in mod_items:
+            item_name = item.get('name', '')
+            item_is_pub = item.get('is_pub', False)
+
+            if item['type'] == 'EnumDef':
+                variants = item['variants']
+                if variants and isinstance(variants[0], dict):
+                    self.enums[f"{full_mod_name}::{item['name']}"] = {v['name']: i for i, v in enumerate(variants)}
+                else:
+                    self.enums[f"{full_mod_name}::{item['name']}"] = {v: i for i, v in enumerate(variants)}
+                self.enums[item['name']] = self.enums[f"{full_mod_name}::{item['name']}"]
+                self.register_item_visibility(full_mod_name, item['name'], item_is_pub)
+
+            elif item['type'] == 'StructDef':
+                self.structs[f"{full_mod_name}::{item['name']}"] = item['fields']
+                self.structs[item['name']] = item['fields']
+                self.register_item_visibility(full_mod_name, item['name'], item_is_pub)
+
+            elif item['type'] == 'FnDef':
+                self.functions.add(f"{full_mod_name}_{item['name']}")
+                self.functions.add(item['name'])
+                self.register_item_visibility(full_mod_name, item['name'], item_is_pub)
+
+            elif item['type'] == 'TraitDef':
+                self.traits[item['name']] = item
+                self.register_item_visibility(full_mod_name, item['name'], item_is_pub)
+
+            elif item['type'] == 'ModDef':
+                # Handle nested inline modules recursively
+                nested_name = item['name']
+                if item.get('items') is not None:
+                    # Save and set current module path
+                    old_path = getattr(self, 'current_module_path', [])
+                    self.current_module_path = full_mod_name.split('::')
+                    self.process_inline_module(nested_name, item['items'], item.get('is_pub', False))
+                    self.current_module_path = old_path
+
+        # Handle use statements within the inline module
+        old_module_path = getattr(self, 'current_module_path', [])
+        self.current_module_path = full_mod_name.split('::')
+
+        for item in mod_items:
+            if item['type'] == 'UseDef':
+                is_glob = item.get('glob', False)
+                is_pub = item.get('is_pub', False)
+                if is_glob:
+                    # Glob import: use foo::*
+                    self.import_glob_from_module(item['path'], is_pub_reexport=is_pub)
+                else:
+                    self.import_from_path(item['path'])
+                    # Track pub use re-exports
+                    if is_pub:
+                        self.register_reexport(full_mod_name, item['path'])
+
+        self.current_module_path = old_module_path
+
+    def resolve_relative_path(self, path):
+        """Resolve relative module paths (super::, self::) to absolute paths.
+
+        Args:
+            path: List of path components, e.g., ['super', 'sibling'] or ['self', 'sub']
+
+        Returns:
+            Resolved path list, or None if path cannot be resolved
+        """
+        if not path:
+            return path
+
+        # Get current module path
+        current_module = getattr(self, 'current_module_path', [])
+
+        # Handle 'self::' prefix - refers to current module
+        if path[0] == 'self':
+            if not current_module:
+                print(f"Warning: 'self::' used outside of a module context")
+                return path[1:]  # Just use the rest of the path
+            return current_module + path[1:]
+
+        # Handle 'super::' prefix - refers to parent module
+        if path[0] == 'super':
+            if not current_module:
+                print(f"Warning: 'super::' used outside of a module context")
+                return path[1:]  # Just use the rest of the path
+            if len(current_module) < 1:
+                print(f"Warning: 'super::' used at top level, no parent module")
+                return path[1:]
+
+            # Go up one level
+            parent = current_module[:-1]
+
+            # Handle multiple super:: prefixes (super::super::foo)
+            remaining = path[1:]
+            while remaining and remaining[0] == 'super':
+                if not parent:
+                    print(f"Warning: 'super::' goes beyond root module")
+                    break
+                parent = parent[:-1]
+                remaining = remaining[1:]
+
+            return parent + remaining
+
+        # No relative prefix, return as-is
+        return path
 
     def import_from_path(self, path):
         """Import items from a module path like ['std', 'io'] or ['ai', 'memory', 'EpisodicMemory'].
 
-        Handles three cases:
+        Handles these cases:
         1. use foo;           -> imports module 'foo', items accessible as foo::item
         2. use foo::bar;      -> imports submodule or item 'bar' from 'foo'
         3. use foo::bar::Baz; -> imports specific item 'Baz' from 'foo::bar'
+        4. use super::sibling;-> imports from parent module
+        5. use self::sub;     -> imports from current module
         """
         if len(path) < 1:
+            return
+
+        # Resolve super:: and self:: relative paths
+        path = self.resolve_relative_path(path)
+        if path is None:
             return
 
         # Initialize imported_items if needed
@@ -2618,38 +2817,156 @@ class CodeGen:
             mod_name = path[0]
             self.load_module(mod_name)
         else:
-            # Path with multiple components
-            # First, try loading as a nested module
-            full_mod_path = '::'.join(path[:-1])
+            # Path with multiple components: use foo::bar or use foo::bar::Item
+            parent_mod = '::'.join(path[:-1])
             item_name = path[-1]
 
-            # Check if last component is a module or an item
-            # Try loading as nested module first
-            full_path_as_mod = '::'.join(path)
-            self.load_module(full_path_as_mod)
+            # Always load the parent module first
+            self.load_module(parent_mod)
 
-            # If that worked (module was loaded), all items are now available
-            if hasattr(self, 'loaded_modules') and full_path_as_mod in self.loaded_modules:
-                # Imported a module, make its items available via short names
-                if hasattr(self, 'module_items') and full_path_as_mod in self.module_items:
-                    for item in self.module_items[full_path_as_mod]:
-                        if item.get('is_pub', False) or item.get('name'):
-                            self.imported_items[item.get('name', '')] = f"{full_path_as_mod}::{item.get('name', '')}"
+            # Check if item is a re-export from the parent module
+            reexport_source = self.resolve_reexport(parent_mod, item_name)
+            if reexport_source:
+                # This is a re-export, resolve to the original source
+                self.imported_items[item_name] = reexport_source
+                # Also load the source module to get the actual item
+                source_parts = reexport_source.split('::')
+                if len(source_parts) > 1:
+                    source_mod = '::'.join(source_parts[:-1])
+                    self.load_module(source_mod)
             else:
-                # Last component might be a specific item (struct, fn, etc.)
-                # Load the parent module and import just the item
-                if len(path) > 1:
-                    parent_mod = path[0] if len(path) == 2 else '::'.join(path[:-1])
-                    self.load_module(parent_mod)
+                # Check if this is a known item in the parent module
+                item_is_known = False
+                if hasattr(self, 'module_items') and parent_mod in self.module_items:
+                    for mod_item in self.module_items[parent_mod]:
+                        if mod_item.get('name') == item_name:
+                            item_is_known = True
+                            break
 
-                # Mark the specific item as imported
-                self.imported_items[item_name] = '::'.join(path)
+                if item_is_known:
+                    # Mark the specific item as imported from parent module
+                    self.imported_items[item_name] = '::'.join(path)
+                else:
+                    # Not a known item - might be a nested module
+                    # Try loading as a nested module (e.g., use foo::submod;)
+                    full_path_as_mod = '::'.join(path)
+                    self.load_module(full_path_as_mod)
+
+                    # If module was loaded, make its items available
+                    if hasattr(self, 'loaded_modules') and full_path_as_mod in self.loaded_modules:
+                        if hasattr(self, 'module_items') and full_path_as_mod in self.module_items:
+                            for mod_item in self.module_items[full_path_as_mod]:
+                                if mod_item.get('is_pub', False) or mod_item.get('name'):
+                                    self.imported_items[mod_item.get('name', '')] = f"{full_path_as_mod}::{mod_item.get('name', '')}"
+                    else:
+                        # Just mark as imported - might be resolved later
+                        self.imported_items[item_name] = '::'.join(path)
 
         # Also store the full path for resolution
         full_path = '::'.join(path)
+        # Check for re-export at the final level too
+        if len(path) > 1:
+            parent_mod = '::'.join(path[:-1])
+            item_name = path[-1]
+            reexport_source = self.resolve_reexport(parent_mod, item_name)
+            if reexport_source:
+                full_path = reexport_source
         self.imported_items[path[-1]] = full_path
 
+    def import_glob_from_module(self, mod_path, is_pub_reexport=False):
+        """Import all public items from a module (glob import: use foo::*).
+
+        Args:
+            mod_path: List of path components to the module (e.g., ['foo', 'bar'])
+            is_pub_reexport: If True, register as re-exports (pub use foo::*)
+        """
+        mod_name = '::'.join(mod_path)
+
+        # Load the module first
+        self.load_module(mod_name)
+
+        # Initialize imported_items if needed
+        if not hasattr(self, 'imported_items'):
+            self.imported_items = {}
+
+        # Get all public items from the module
+        if hasattr(self, 'module_items') and mod_name in self.module_items:
+            for item in self.module_items[mod_name]:
+                if item.get('is_pub', False):
+                    item_name = item.get('name', '')
+                    if item_name:
+                        full_item_path = f"{mod_name}::{item_name}"
+                        self.imported_items[item_name] = full_item_path
+
+                        # If this is a pub use re-export, register for re-export
+                        if is_pub_reexport:
+                            current_mod = getattr(self, 'current_module_path', [])
+                            current_mod_name = '::'.join(current_mod) if current_mod else ''
+                            if current_mod_name:
+                                self.register_reexport(current_mod_name, mod_path + [item_name])
+
+        # Also check for re-exports from the target module
+        if hasattr(self, 'module_reexports') and mod_name in self.module_reexports:
+            for reexport_name, source_path in self.module_reexports[mod_name].items():
+                self.imported_items[reexport_name] = source_path
+                if is_pub_reexport:
+                    current_mod = getattr(self, 'current_module_path', [])
+                    current_mod_name = '::'.join(current_mod) if current_mod else ''
+                    if current_mod_name:
+                        self.register_reexport(current_mod_name, source_path.split('::'))
+
+    def init_prelude(self):
+        """Initialize the prelude - auto-import common types and functions.
+
+        The prelude makes these items available without explicit imports:
+        - Common types: Option, Result, Vec, HashMap, HashSet
+        - Common functions: print, println, print_i64, etc.
+        - Common constructors: Some, None, Ok, Err, vec_new, hashmap_new
+        """
+        if not hasattr(self, 'imported_items'):
+            self.imported_items = {}
+
+        # Register built-in types (these map to their internal representations)
+        prelude_types = [
+            'Option', 'Result', 'Vec', 'HashMap', 'HashSet', 'String',
+        ]
+
+        # Register built-in enum variants
+        prelude_variants = {
+            'Some': 'Option::Some',
+            'None': 'Option::None',
+            'Ok': 'Result::Ok',
+            'Err': 'Result::Err',
+        }
+
+        # Register built-in functions
+        prelude_functions = [
+            'print', 'println', 'print_i64', 'print_f64', 'print_bool',
+            'vec_new', 'vec_push', 'vec_get', 'vec_len', 'vec_pop',
+            'hashmap_new', 'hashmap_insert', 'hashmap_get', 'hashmap_contains', 'hashmap_remove', 'hashmap_keys',
+            'string_len', 'string_eq', 'string_concat', 'string_slice',
+            'sb_new', 'sb_append', 'sb_to_string',
+            'file_read', 'file_write', 'file_exists',
+            'panic',
+        ]
+
+        # Add types to imported items (they're available by short name)
+        for t in prelude_types:
+            self.imported_items[t] = t
+
+        # Add variants
+        for variant, full_path in prelude_variants.items():
+            self.imported_items[variant] = full_path
+
+        # Functions are available as intrinsics and don't need import tracking
+        # but we register them for completeness
+        for fn in prelude_functions:
+            self.imported_items[fn] = fn
+
     def generate(self, items):
+        # Initialize prelude
+        self.init_prelude()
+
         # Header
         self.emit('; ModuleID = "simplex_program"')
         self.emit('target triple = "x86_64-pc-linux-gnu"')
@@ -2691,6 +3008,7 @@ class CodeGen:
         self.emit('declare void @intrinsic_vec_set(ptr, i64, ptr)')
         self.emit('declare ptr @intrinsic_vec_pop(ptr)')
         self.emit('declare void @intrinsic_vec_clear(ptr)')
+        self.emit('declare void @intrinsic_vec_remove(ptr, i64)')
         self.emit('declare i64 @intrinsic_vec_capacity(ptr)')
         self.emit('declare void @intrinsic_vec_reserve(ptr, i64)')
         self.emit('; Option<T> type: tag(0)=None, tag(1)=Some with value at offset 8')
@@ -2711,6 +3029,47 @@ class CodeGen:
         self.emit('declare i64 @result_unwrap_or(i64, i64)')
         self.emit('declare i64 @result_map(i64, i64)')      # result_map(res, fn_ptr)
         self.emit('declare i64 @result_map_err(i64, i64)')  # result_map_err(res, fn_ptr)
+        self.emit('; JSON types and functions')
+        self.emit('declare i64 @json_null()')
+        self.emit('declare i64 @json_bool(i8)')
+        self.emit('declare i64 @json_number(double)')
+        self.emit('declare i64 @json_number_i64(i64)')
+        self.emit('declare i64 @json_string(ptr)')
+        self.emit('declare i64 @json_string_sx(i64)')
+        self.emit('declare i64 @json_array()')
+        self.emit('declare i64 @json_object()')
+        self.emit('declare i8 @json_is_null(i64)')
+        self.emit('declare i8 @json_is_bool(i64)')
+        self.emit('declare i8 @json_is_number(i64)')
+        self.emit('declare i8 @json_is_string(i64)')
+        self.emit('declare i8 @json_is_array(i64)')
+        self.emit('declare i8 @json_is_object(i64)')
+        self.emit('declare i64 @json_type(i64)')
+        self.emit('declare i8 @json_as_bool(i64)')
+        self.emit('declare double @json_as_f64(i64)')
+        self.emit('declare i64 @json_as_i64(i64)')
+        self.emit('declare i64 @json_as_string(i64)')
+        self.emit('declare void @json_array_push(i64, i64)')
+        self.emit('declare i64 @json_get_index(i64, i64)')
+        self.emit('declare i64 @json_array_len(i64)')
+        self.emit('declare void @json_object_set(i64, ptr, i64)')
+        self.emit('declare void @json_object_set_sx(i64, i64, i64)')
+        self.emit('declare i64 @json_get(i64, ptr)')
+        self.emit('declare i64 @json_get_sx(i64, i64)')
+        self.emit('declare i64 @json_object_len(i64)')
+        self.emit('declare i64 @json_object_key_at(i64, i64)')
+        self.emit('declare i8 @json_object_has(i64, ptr)')
+        self.emit('declare i8 @json_object_has_sx(i64, i64)')
+        self.emit('declare i64 @json_object_value_at(i64, i64)')
+        self.emit('declare i64 @json_keys(i64)')
+        self.emit('declare void @json_free(i64)')
+        self.emit('declare i64 @json_stringify(i64)')
+        self.emit('declare i64 @json_stringify_pretty(i64, i64)')
+        self.emit('declare i64 @json_parse(i64)')
+        self.emit('declare i64 @json_parse_simple(i64)')
+        self.emit('declare i64 @json_parse_cstr(ptr)')
+        self.emit('declare i64 @json_clone(i64)')
+        self.emit('declare i8 @json_equals(i64, i64)')
         self.emit('; HashMap<K,V> type')
         self.emit('declare i64 @hashmap_new()')
         self.emit('declare i64 @hashmap_with_capacity(i64)')
@@ -3667,6 +4026,111 @@ class CodeGen:
         self.emit('declare i64 @ws_opcode_close()')
         self.emit('declare i64 @ws_opcode_ping()')
         self.emit('declare i64 @ws_opcode_pong()')
+        self.emit('; Phase 3: SQL/SQLite API')
+        self.emit('declare i64 @sql_open(i64)')
+        self.emit('declare i64 @sql_open_memory()')
+        self.emit('declare void @sql_close(i64)')
+        self.emit('declare i64 @sql_execute(i64, i64)')
+        self.emit('declare i64 @sql_error(i64)')
+        self.emit('declare i64 @sql_prepare(i64, i64)')
+        self.emit('declare i64 @sql_bind_int(i64, i64, i64)')
+        self.emit('declare i64 @sql_bind_text(i64, i64, i64)')
+        self.emit('declare i64 @sql_bind_double(i64, i64, double)')
+        self.emit('declare i64 @sql_bind_null(i64, i64)')
+        self.emit('declare i64 @sql_step(i64)')
+        self.emit('declare i64 @sql_reset(i64)')
+        self.emit('declare i64 @sql_column_count(i64)')
+        self.emit('declare i64 @sql_column_type(i64, i64)')
+        self.emit('declare i64 @sql_column_name(i64, i64)')
+        self.emit('declare i64 @sql_column_int(i64, i64)')
+        self.emit('declare i64 @sql_column_text(i64, i64)')
+        self.emit('declare double @sql_column_double(i64, i64)')
+        self.emit('declare i64 @sql_column_blob(i64, i64)')
+        self.emit('declare i64 @sql_column_blob_len(i64, i64)')
+        self.emit('declare i64 @sql_column_is_null(i64, i64)')
+        self.emit('declare void @sql_finalize(i64)')
+        self.emit('declare i64 @sql_begin(i64)')
+        self.emit('declare i64 @sql_commit(i64)')
+        self.emit('declare i64 @sql_rollback(i64)')
+        self.emit('declare i64 @sql_last_insert_id(i64)')
+        self.emit('declare i64 @sql_changes(i64)')
+        self.emit('declare i64 @sql_total_changes(i64)')
+        self.emit('; Phase 3: Regex API')
+        self.emit('declare i64 @regex_new(i64, i64)')
+        self.emit('declare void @regex_free(i64)')
+        self.emit('declare i64 @regex_is_match(i64, i64)')
+        self.emit('declare i64 @regex_find(i64, i64)')
+        self.emit('declare i64 @regex_find_str(i64, i64)')
+        self.emit('declare i64 @regex_count(i64, i64)')
+        self.emit('declare i64 @regex_replace(i64, i64, i64)')
+        self.emit('declare i64 @regex_replace_first(i64, i64, i64)')
+        self.emit('declare i64 @regex_split(i64, i64)')
+        self.emit('declare i64 @regex_error(i64)')
+        self.emit('declare i64 @regex_group_count(i64)')
+        self.emit('declare i64 @regex_captures(i64, i64)')
+        self.emit('; Phase 3: Crypto API')
+        self.emit('declare i64 @crypto_random_bytes(i64)')
+        self.emit('declare i64 @crypto_sha256(i64)')
+        self.emit('declare i64 @crypto_sha512(i64)')
+        self.emit('declare i64 @crypto_hmac_sha256(i64, i64)')
+        self.emit('declare i64 @crypto_base64_encode(i64)')
+        self.emit('declare i64 @crypto_base64_decode(i64)')
+        self.emit('declare i64 @crypto_hex_encode(i64)')
+        self.emit('declare i64 @crypto_hex_decode(i64)')
+        self.emit('declare i64 @crypto_compare(i64, i64)')
+        self.emit('; Phase 3: CLI API')
+        self.emit('declare i64 @cli_arg_count()')
+        self.emit('declare i64 @cli_get_arg(i64)')
+        self.emit('declare i64 @cli_args()')
+        self.emit('declare i64 @cli_getenv(i64)')
+        self.emit('declare i64 @cli_setenv(i64, i64)')
+        self.emit('declare i64 @cli_cwd()')
+        self.emit('declare void @cli_exit(i64)')
+        self.emit('declare void @intrinsic_exit(i64)')
+        self.emit('declare i64 @cli_has_flag(i64)')
+        self.emit('declare i64 @cli_get_option(i64)')
+        self.emit('declare i64 @cli_positional_args()')
+        self.emit('; Phase 3: Simple Log API')
+        self.emit('declare void @slog_set_level(i64)')
+        self.emit('declare i64 @slog_get_level()')
+        self.emit('declare void @slog_trace(i64)')
+        self.emit('declare void @slog_debug(i64)')
+        self.emit('declare void @slog_info(i64)')
+        self.emit('declare void @slog_warn(i64)')
+        self.emit('declare void @slog_error(i64)')
+        self.emit('declare void @slog_info_ctx(i64, i64, i64)')
+        self.emit('declare void @slog_fmt(i64, i64, i64)')
+        self.emit('; Phase 3: Test Framework API')
+        self.emit('declare void @tfw_reset()')
+        self.emit('declare i64 @tfw_passed_count()')
+        self.emit('declare i64 @tfw_failed_count()')
+        self.emit('declare i64 @tfw_assert(i64, i64)')
+        self.emit('declare i64 @tfw_assert_eq_i64(i64, i64, i64)')
+        self.emit('declare i64 @tfw_assert_eq_str(i64, i64, i64)')
+        self.emit('declare i64 @tfw_assert_ne_i64(i64, i64, i64)')
+        self.emit('declare void @tfw_fail(i64)')
+        self.emit('declare void @tfw_summary()')
+        self.emit('; Phase 3: UUID API')
+        self.emit('declare i64 @uuid_v4()')
+        self.emit('declare i64 @uuid_nil()')
+        self.emit('declare i64 @uuid_is_nil(i64)')
+        self.emit('declare i64 @uuid_is_valid(i64)')
+        self.emit('; Phase 3: TOML API')
+        self.emit('declare i64 @toml_parse(i64)')
+        self.emit('declare i64 @toml_get_string(i64, i64)')
+        self.emit('declare i64 @toml_get_i64(i64, i64)')
+        self.emit('declare i64 @toml_get_bool(i64, i64)')
+        self.emit('declare double @toml_get_f64(i64, i64)')
+        self.emit('declare i64 @toml_get_array(i64, i64)')
+        self.emit('declare i64 @toml_get_table(i64, i64)')
+        self.emit('declare i64 @toml_has_key(i64, i64)')
+        self.emit('declare i64 @toml_keys(i64)')
+        self.emit('declare void @toml_set_string(i64, i64, i64)')
+        self.emit('declare void @toml_set_i64(i64, i64, i64)')
+        self.emit('declare void @toml_set_bool(i64, i64, i64)')
+        self.emit('declare i64 @toml_stringify(i64)')
+        self.emit('declare i64 @toml_table_new()')
+        self.emit('declare void @toml_free(i64)')
         self.emit('; Phase 25: Distribution & Clustering')
         self.emit('; 25.1 Cluster Membership')
         self.emit('declare i64 @cluster_new(i64, i64, i64)')
@@ -4171,13 +4635,30 @@ class CodeGen:
         # First pass: handle module declarations and imports
         for item in items:
             if item['type'] == 'ModDef':
-                # Load module from file
                 mod_name = item['name']
-                self.load_module(mod_name)
+                if item.get('items') is not None:
+                    # Inline module: mod name { ... }
+                    self.process_inline_module(mod_name, item['items'], item.get('is_pub', False))
+                else:
+                    # External module: mod name;
+                    self.load_module(mod_name)
             elif item['type'] == 'UseDef':
                 # Import items from module
                 path = item['path']
-                self.import_from_path(path)
+                is_glob = item.get('glob', False)
+                is_pub = item.get('is_pub', False)
+                if is_glob:
+                    # Glob import: use foo::*
+                    self.import_glob_from_module(path, is_pub_reexport=is_pub)
+                else:
+                    self.import_from_path(path)
+                    # Track pub use re-exports at top level (makes items part of this module's interface)
+                    if is_pub:
+                        # For top-level, register as re-export from 'self' (root module)
+                        current_mod = getattr(self, 'current_module_path', [])
+                        mod_name = '::'.join(current_mod) if current_mod else ''
+                        if mod_name:
+                            self.register_reexport(mod_name, path)
 
         # Second pass: register enums, structs, actors, and specialists
         for item in items:
@@ -6381,6 +6862,10 @@ class CodeGen:
                 'vec_push': 'intrinsic_vec_push',
                 'vec_get': 'intrinsic_vec_get',
                 'vec_len': 'intrinsic_vec_len',
+                'vec_clear': 'intrinsic_vec_clear',
+                'vec_set': 'intrinsic_vec_set',
+                'vec_pop': 'intrinsic_vec_pop',
+                'vec_remove': 'intrinsic_vec_remove',
                 'println': 'intrinsic_println',
                 'print': 'intrinsic_print',
                 'int_to_string': 'intrinsic_int_to_string',
@@ -6535,6 +7020,7 @@ class CodeGen:
                 'is_directory': 'intrinsic_is_directory',
                 'is_file': 'intrinsic_is_file',
                 'mkdir_p': 'intrinsic_mkdir_p',
+                'mkdir': 'intrinsic_mkdir_p',
                 'remove_path': 'intrinsic_remove_path',
                 'file_size': 'intrinsic_file_size',
                 'file_mtime': 'intrinsic_file_mtime',
@@ -6555,6 +7041,180 @@ class CodeGen:
                 'assert_eq_str': 'intrinsic_assert_eq_str',
                 'args_count': 'intrinsic_args_count',
                 'args_get': 'intrinsic_args_get',
+                # Phase 3: JSON functions
+                'json_null': 'json_null',
+                'json_bool': 'json_bool',
+                'json_number': 'json_number',
+                'json_number_i64': 'json_number_i64',
+                'json_string': 'json_string_sx',
+                'json_array': 'json_array',
+                'json_object': 'json_object',
+                'json_object_new': 'json_object',
+                'json_is_null': 'json_is_null',
+                'json_is_bool': 'json_is_bool',
+                'json_is_number': 'json_is_number',
+                'json_is_string': 'json_is_string',
+                'json_is_array': 'json_is_array',
+                'json_is_object': 'json_is_object',
+                'json_type': 'json_type',
+                'json_as_bool': 'json_as_bool',
+                'json_as_f64': 'json_as_f64',
+                'json_as_i64': 'json_as_i64',
+                'json_as_string': 'json_as_string',
+                'json_array_push': 'json_array_push',
+                'json_get_index': 'json_get_index',
+                'json_array_len': 'json_array_len',
+                'json_object_set': 'json_object_set_sx',
+                'json_get': 'json_get_sx',
+                'json_object_len': 'json_object_len',
+                'json_object_has': 'json_object_has_sx',
+                'json_object_key_at': 'json_object_key_at',
+                'json_object_value_at': 'json_object_value_at',
+                'json_keys': 'json_keys',
+                'json_free': 'json_free',
+                'json_stringify': 'json_stringify',
+                'json_stringify_pretty': 'json_stringify_pretty',
+                'json_parse': 'json_parse_simple',
+                'json_parse_cstr': 'json_parse_cstr',
+                'json_clone': 'json_clone',
+                'json_equals': 'json_equals',
+                # Phase 3: HTTP Client/Server
+                'http_request_new': 'http_request_new',
+                'http_request_header': 'http_request_header',
+                'http_request_body': 'http_request_body',
+                'http_request_send': 'http_request_send',
+                'http_request_free': 'http_request_free',
+                'http_response_status': 'http_response_status',
+                'http_response_status_text': 'http_response_status_text',
+                'http_response_header': 'http_response_header',
+                'http_response_body': 'http_response_body',
+                'http_response_body_len': 'http_response_body_len',
+                'http_response_free': 'http_response_free',
+                'http_get': 'http_get',
+                'http_post': 'http_post',
+                'http_server_new': 'http_server_new',
+                'http_server_tls': 'http_server_tls',
+                'http_server_route': 'http_server_route',
+                'http_server_response_new': 'http_server_response_new',
+                'http_server_response_status': 'http_server_response_status',
+                'http_server_response_header': 'http_server_response_header',
+                'http_server_response_body': 'http_server_response_body',
+                'http_server_bind': 'http_server_bind',
+                'http_server_accept_one': 'http_server_accept_one',
+                'http_server_run': 'http_server_run',
+                'http_server_stop': 'http_server_stop',
+                'http_server_close': 'http_server_close',
+                'http_server_port': 'http_server_port',
+                'http_server_request_method': 'http_server_request_method',
+                'http_server_request_path': 'http_server_request_path',
+                'http_server_request_header': 'http_server_request_header',
+                'http_server_request_body': 'http_server_request_body',
+                # Phase 3: SQL/SQLite
+                'sql_open': 'sql_open',
+                'sql_open_memory': 'sql_open_memory',
+                'sql_close': 'sql_close',
+                'sql_execute': 'sql_execute',
+                'sql_error': 'sql_error',
+                'sql_prepare': 'sql_prepare',
+                'sql_bind_int': 'sql_bind_int',
+                'sql_bind_text': 'sql_bind_text',
+                'sql_bind_double': 'sql_bind_double',
+                'sql_bind_null': 'sql_bind_null',
+                'sql_step': 'sql_step',
+                'sql_reset': 'sql_reset',
+                'sql_column_count': 'sql_column_count',
+                'sql_column_type': 'sql_column_type',
+                'sql_column_name': 'sql_column_name',
+                'sql_column_int': 'sql_column_int',
+                'sql_column_text': 'sql_column_text',
+                'sql_column_double': 'sql_column_double',
+                'sql_column_blob': 'sql_column_blob',
+                'sql_column_blob_len': 'sql_column_blob_len',
+                'sql_column_is_null': 'sql_column_is_null',
+                'sql_finalize': 'sql_finalize',
+                'sql_begin': 'sql_begin',
+                'sql_commit': 'sql_commit',
+                'sql_rollback': 'sql_rollback',
+                'sql_last_insert_id': 'sql_last_insert_id',
+                'sql_changes': 'sql_changes',
+                'sql_total_changes': 'sql_total_changes',
+                # Phase 3: Regex
+                'regex_new': 'regex_new',
+                'regex_free': 'regex_free',
+                'regex_is_match': 'regex_is_match',
+                'regex_find': 'regex_find',
+                'regex_find_str': 'regex_find_str',
+                'regex_count': 'regex_count',
+                'regex_replace': 'regex_replace',
+                'regex_replace_first': 'regex_replace_first',
+                'regex_split': 'regex_split',
+                'regex_error': 'regex_error',
+                'regex_group_count': 'regex_group_count',
+                'regex_captures': 'regex_captures',
+                # Phase 3: Crypto
+                'crypto_random_bytes': 'crypto_random_bytes',
+                'crypto_sha256': 'crypto_sha256',
+                'crypto_sha512': 'crypto_sha512',
+                'crypto_hmac_sha256': 'crypto_hmac_sha256',
+                'crypto_base64_encode': 'crypto_base64_encode',
+                'crypto_base64_decode': 'crypto_base64_decode',
+                'crypto_hex_encode': 'crypto_hex_encode',
+                'crypto_hex_decode': 'crypto_hex_decode',
+                'crypto_compare': 'crypto_compare',
+                # Phase 3: CLI
+                'cli_arg_count': 'cli_arg_count',
+                'cli_get_arg': 'cli_get_arg',
+                'cli_args': 'cli_args',
+                'cli_getenv': 'cli_getenv',
+                'cli_setenv': 'cli_setenv',
+                'cli_cwd': 'cli_cwd',
+                'get_cwd': 'cli_cwd',
+                'cli_exit': 'cli_exit',
+                'exit': 'intrinsic_exit',
+                'cli_has_flag': 'cli_has_flag',
+                'cli_get_option': 'cli_get_option',
+                'cli_positional_args': 'cli_positional_args',
+                # Phase 3: Simple Log
+                'slog_set_level': 'slog_set_level',
+                'slog_get_level': 'slog_get_level',
+                'slog_trace': 'slog_trace',
+                'slog_debug': 'slog_debug',
+                'slog_info': 'slog_info',
+                'slog_warn': 'slog_warn',
+                'slog_error': 'slog_error',
+                'slog_info_ctx': 'slog_info_ctx',
+                'slog_fmt': 'slog_fmt',
+                # Phase 3: Test Framework
+                'tfw_reset': 'tfw_reset',
+                'tfw_passed_count': 'tfw_passed_count',
+                'tfw_failed_count': 'tfw_failed_count',
+                'tfw_assert': 'tfw_assert',
+                'tfw_assert_eq_i64': 'tfw_assert_eq_i64',
+                'tfw_assert_eq_str': 'tfw_assert_eq_str',
+                'tfw_assert_ne_i64': 'tfw_assert_ne_i64',
+                'tfw_fail': 'tfw_fail',
+                'tfw_summary': 'tfw_summary',
+                # Phase 3: UUID
+                'uuid_v4': 'uuid_v4',
+                'uuid_nil': 'uuid_nil',
+                'uuid_is_nil': 'uuid_is_nil',
+                'uuid_is_valid': 'uuid_is_valid',
+                # Phase 3: TOML
+                'toml_parse': 'toml_parse',
+                'toml_get_string': 'toml_get_string',
+                'toml_get_i64': 'toml_get_i64',
+                'toml_get_bool': 'toml_get_bool',
+                'toml_get_f64': 'toml_get_f64',
+                'toml_get_array': 'toml_get_array',
+                'toml_get_table': 'toml_get_table',
+                'toml_has_key': 'toml_has_key',
+                'toml_keys': 'toml_keys',
+                'toml_set_string': 'toml_set_string',
+                'toml_set_i64': 'toml_set_i64',
+                'toml_set_bool': 'toml_set_bool',
+                'toml_stringify': 'toml_stringify',
+                'toml_table_new': 'toml_table_new',
+                'toml_free': 'toml_free',
                 # Phase 12: Memory Substrate
                 'remember': 'intrinsic_remember',
                 'recall': 'intrinsic_recall',
@@ -7025,6 +7685,179 @@ class CodeGen:
                 'histogram_min': (['i64'], 'double'),
                 'histogram_max': (['i64'], 'double'),
                 'timer_elapsed_s': (['i64'], 'double'),
+                # Phase 3: JSON functions
+                'json_parse_simple': (['i64'], 'i64'),
+                'json_stringify': (['i64'], 'i64'),
+                'json_get_sx': (['i64', 'i64'], 'i64'),
+                'json_keys': (['i64'], 'i64'),
+                'json_is_string': (['i64'], 'i1'),
+                'json_is_object': (['i64'], 'i1'),
+                'json_is_array': (['i64'], 'i1'),
+                'json_as_string': (['i64'], 'i64'),
+                'json_as_array': (['i64'], 'i64'),
+                'json_object': ([], 'i64'),
+                'json_object_set': (['i64', 'i64', 'i64'], 'void'),
+                'json_object_set_sx': (['i64', 'i64', 'i64'], 'void'),
+                'json_object_len': (['i64'], 'i64'),
+                'json_object_key_at': (['i64', 'i64'], 'i64'),
+                'json_object_value_at': (['i64', 'i64'], 'i64'),
+                'json_array': ([], 'i64'),
+                'json_array_push': (['i64', 'i64'], 'void'),
+                'json_array_len': (['i64'], 'i64'),
+                'json_get_index': (['i64', 'i64'], 'i64'),
+                'json_free': (['i64'], 'void'),
+                'json_null': ([], 'i64'),
+                'json_bool': (['i64'], 'i64'),
+                'json_number': (['double'], 'i64'),
+                'json_number_i64': (['i64'], 'i64'),
+                'json_string_sx': (['i64'], 'i64'),
+                'json_clone': (['i64'], 'i64'),
+                'json_equals': (['i64', 'i64'], 'i1'),
+                'json_object_has_sx': (['i64', 'i64'], 'i1'),
+                'json_is_null': (['i64'], 'i1'),
+                'json_is_bool': (['i64'], 'i1'),
+                'json_is_number': (['i64'], 'i1'),
+                'json_type': (['i64'], 'i64'),
+                'json_as_bool': (['i64'], 'i64'),
+                'json_as_f64': (['i64'], 'double'),
+                'json_as_i64': (['i64'], 'i64'),
+                # Phase 3: HTTP Client/Server
+                'http_request_new': (['i64', 'i64'], 'i64'),
+                'http_request_header': (['i64', 'i64', 'i64'], 'void'),
+                'http_request_body': (['i64', 'i64'], 'void'),
+                'http_request_send': (['i64'], 'i64'),
+                'http_request_free': (['i64'], 'void'),
+                'http_response_status': (['i64'], 'i64'),
+                'http_response_status_text': (['i64'], 'i64'),
+                'http_response_header': (['i64', 'i64'], 'i64'),
+                'http_response_body': (['i64'], 'i64'),
+                'http_response_body_len': (['i64'], 'i64'),
+                'http_response_free': (['i64'], 'void'),
+                'http_get': (['i64'], 'i64'),
+                'http_post': (['i64', 'i64'], 'i64'),
+                'http_server_new': (['i64'], 'i64'),
+                'http_server_tls': (['i64', 'i64', 'i64'], 'i64'),
+                'http_server_route': (['i64', 'i64', 'i64', 'i64'], 'void'),
+                'http_server_response_new': ([], 'i64'),
+                'http_server_response_status': (['i64', 'i64', 'i64'], 'void'),
+                'http_server_response_header': (['i64', 'i64', 'i64'], 'void'),
+                'http_server_response_body': (['i64', 'i64'], 'void'),
+                'http_server_bind': (['i64'], 'i64'),
+                'http_server_accept_one': (['i64'], 'i64'),
+                'http_server_run': (['i64', 'i64'], 'i64'),
+                'http_server_stop': (['i64'], 'void'),
+                'http_server_close': (['i64'], 'void'),
+                'http_server_port': (['i64'], 'i64'),
+                'http_server_request_method': (['i64'], 'i64'),
+                'http_server_request_path': (['i64'], 'i64'),
+                'http_server_request_header': (['i64', 'i64'], 'i64'),
+                'http_server_request_body': (['i64'], 'i64'),
+                # Phase 3: SQL/SQLite
+                'sql_open': (['i64'], 'i64'),
+                'sql_open_memory': ([], 'i64'),
+                'sql_close': (['i64'], 'void'),
+                'sql_execute': (['i64', 'i64'], 'i64'),
+                'sql_error': (['i64'], 'i64'),
+                'sql_prepare': (['i64', 'i64'], 'i64'),
+                'sql_bind_int': (['i64', 'i64', 'i64'], 'i64'),
+                'sql_bind_text': (['i64', 'i64', 'i64'], 'i64'),
+                'sql_bind_double': (['i64', 'i64', 'double'], 'i64'),
+                'sql_bind_null': (['i64', 'i64'], 'i64'),
+                'sql_step': (['i64'], 'i64'),
+                'sql_reset': (['i64'], 'i64'),
+                'sql_column_count': (['i64'], 'i64'),
+                'sql_column_type': (['i64', 'i64'], 'i64'),
+                'sql_column_name': (['i64', 'i64'], 'i64'),
+                'sql_column_int': (['i64', 'i64'], 'i64'),
+                'sql_column_text': (['i64', 'i64'], 'i64'),
+                'sql_column_double': (['i64', 'i64'], 'double'),
+                'sql_column_blob': (['i64', 'i64'], 'i64'),
+                'sql_column_blob_len': (['i64', 'i64'], 'i64'),
+                'sql_column_is_null': (['i64', 'i64'], 'i64'),
+                'sql_finalize': (['i64'], 'void'),
+                'sql_begin': (['i64'], 'i64'),
+                'sql_commit': (['i64'], 'i64'),
+                'sql_rollback': (['i64'], 'i64'),
+                'sql_last_insert_id': (['i64'], 'i64'),
+                'sql_changes': (['i64'], 'i64'),
+                'sql_total_changes': (['i64'], 'i64'),
+                # Phase 3: Regex
+                'regex_new': (['i64', 'i64'], 'i64'),
+                'regex_free': (['i64'], 'void'),
+                'regex_is_match': (['i64', 'i64'], 'i64'),
+                'regex_find': (['i64', 'i64'], 'i64'),
+                'regex_find_str': (['i64', 'i64'], 'i64'),
+                'regex_count': (['i64', 'i64'], 'i64'),
+                'regex_replace': (['i64', 'i64', 'i64'], 'i64'),
+                'regex_replace_first': (['i64', 'i64', 'i64'], 'i64'),
+                'regex_split': (['i64', 'i64'], 'i64'),
+                'regex_error': (['i64'], 'i64'),
+                'regex_group_count': (['i64'], 'i64'),
+                'regex_captures': (['i64', 'i64'], 'i64'),
+                # Phase 3: Crypto
+                'crypto_random_bytes': (['i64'], 'i64'),
+                'crypto_sha256': (['i64'], 'i64'),
+                'crypto_sha512': (['i64'], 'i64'),
+                'crypto_hmac_sha256': (['i64', 'i64'], 'i64'),
+                'crypto_base64_encode': (['i64'], 'i64'),
+                'crypto_base64_decode': (['i64'], 'i64'),
+                'crypto_hex_encode': (['i64'], 'i64'),
+                'crypto_hex_decode': (['i64'], 'i64'),
+                'crypto_compare': (['i64', 'i64'], 'i64'),
+                # Phase 3: CLI
+                'cli_arg_count': ([], 'i64'),
+                'cli_get_arg': (['i64'], 'i64'),
+                'cli_args': ([], 'i64'),
+                'cli_getenv': (['i64'], 'i64'),
+                'cli_setenv': (['i64', 'i64'], 'i64'),
+                'cli_cwd': ([], 'i64'),
+                'get_cwd': ([], 'i64'),
+                'cli_exit': (['i64'], 'void'),
+                'exit': (['i64'], 'void'),
+                'cli_has_flag': (['i64'], 'i64'),
+                'cli_get_option': (['i64'], 'i64'),
+                'cli_positional_args': ([], 'i64'),
+                # Phase 3: Simple Log
+                'slog_set_level': (['i64'], 'void'),
+                'slog_get_level': ([], 'i64'),
+                'slog_trace': (['i64'], 'void'),
+                'slog_debug': (['i64'], 'void'),
+                'slog_info': (['i64'], 'void'),
+                'slog_warn': (['i64'], 'void'),
+                'slog_error': (['i64'], 'void'),
+                'slog_info_ctx': (['i64', 'i64', 'i64'], 'void'),
+                'slog_fmt': (['i64', 'i64', 'i64'], 'void'),
+                # Phase 3: Test Framework
+                'tfw_reset': ([], 'void'),
+                'tfw_passed_count': ([], 'i64'),
+                'tfw_failed_count': ([], 'i64'),
+                'tfw_assert': (['i64', 'i64'], 'i64'),
+                'tfw_assert_eq_i64': (['i64', 'i64', 'i64'], 'i64'),
+                'tfw_assert_eq_str': (['i64', 'i64', 'i64'], 'i64'),
+                'tfw_assert_ne_i64': (['i64', 'i64', 'i64'], 'i64'),
+                'tfw_fail': (['i64'], 'void'),
+                'tfw_summary': ([], 'void'),
+                # Phase 3: UUID
+                'uuid_v4': ([], 'i64'),
+                'uuid_nil': ([], 'i64'),
+                'uuid_is_nil': (['i64'], 'i64'),
+                'uuid_is_valid': (['i64'], 'i64'),
+                # Phase 3: TOML
+                'toml_parse': (['i64'], 'i64'),
+                'toml_get_string': (['i64', 'i64'], 'i64'),
+                'toml_get_i64': (['i64', 'i64'], 'i64'),
+                'toml_get_bool': (['i64', 'i64'], 'i64'),
+                'toml_get_f64': (['i64', 'i64'], 'double'),
+                'toml_get_array': (['i64', 'i64'], 'i64'),
+                'toml_get_table': (['i64', 'i64'], 'i64'),
+                'toml_has_key': (['i64', 'i64'], 'i64'),
+                'toml_keys': (['i64'], 'i64'),
+                'toml_set_string': (['i64', 'i64', 'i64'], 'void'),
+                'toml_set_i64': (['i64', 'i64', 'i64'], 'void'),
+                'toml_set_bool': (['i64', 'i64', 'i64'], 'void'),
+                'toml_stringify': (['i64'], 'i64'),
+                'toml_table_new': ([], 'i64'),
+                'toml_free': (['i64'], 'void'),
             }
 
             if func_name in intrinsic_types:
@@ -8612,10 +9445,32 @@ def main():
     import os
 
     if len(sys.argv) < 2:
-        print("Usage: stage0.py <input.sx> [input2.sx ...]")
+        print("Usage: stage0.py <input.sx> [input2.sx ...] [--check]")
         sys.exit(1)
 
-    input_files = sys.argv[1:]
+    # Parse arguments
+    input_files = []
+    check_only = False
+    skip_next = False
+
+    for i, arg in enumerate(sys.argv[1:]):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == '--check':
+            check_only = True
+        elif arg == '-o':
+            # Skip -o and its argument (output file)
+            skip_next = True
+        elif arg.startswith('-'):
+            # Skip other options
+            pass
+        else:
+            input_files.append(arg)
+
+    if not input_files:
+        print("Error: no input files specified")
+        sys.exit(1)
 
     # First pass: parse all files and collect enums and structs
     # Initialize with built-in enums: Option<T> and Result<T,E>
@@ -8659,22 +9514,36 @@ def main():
         codegen.structs = all_structs.copy()  # Pre-populate with all structs
         llvm_ir = codegen.generate(items)
 
-        # Output
-        output_file = input_file.replace('.sx', '.ll')
-        with open(output_file, 'w') as f:
-            f.write(llvm_ir)
+        if check_only:
+            # In check mode, just verify parsing and codegen succeeded
+            print(f"Checked {input_file}")
+            print(f"Items: {len(items)}")
+            for item in items:
+                if item['type'] == 'FnDef':
+                    print(f"  fn {item['name']}")
+                elif item['type'] == 'EnumDef':
+                    print(f"  enum {item['name']}")
+                elif item['type'] == 'StructDef':
+                    print(f"  struct {item['name']}")
+                elif item['type'] == 'ImplDef':
+                    print(f"  impl {item['type_name']}")
+        else:
+            # Output
+            output_file = input_file.replace('.sx', '.ll')
+            with open(output_file, 'w') as f:
+                f.write(llvm_ir)
 
-        print(f"Generated {output_file}")
-        print(f"Items: {len(items)}")
-        for item in items:
-            if item['type'] == 'FnDef':
-                print(f"  fn {item['name']}")
-            elif item['type'] == 'EnumDef':
-                print(f"  enum {item['name']}")
-            elif item['type'] == 'StructDef':
-                print(f"  struct {item['name']}")
-            elif item['type'] == 'ImplDef':
-                print(f"  impl {item['type_name']}")
+            print(f"Generated {output_file}")
+            print(f"Items: {len(items)}")
+            for item in items:
+                if item['type'] == 'FnDef':
+                    print(f"  fn {item['name']}")
+                elif item['type'] == 'EnumDef':
+                    print(f"  enum {item['name']}")
+                elif item['type'] == 'StructDef':
+                    print(f"  struct {item['name']}")
+                elif item['type'] == 'ImplDef':
+                    print(f"  impl {item['type_name']}")
 
 
 if __name__ == '__main__':

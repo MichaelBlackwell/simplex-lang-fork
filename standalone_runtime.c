@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <ctype.h>
 #include <execinfo.h>
 #include <sys/time.h>
 #include <sys/stat.h>
@@ -7825,6 +7826,12 @@ int8_t json_object_has(int64_t obj_ptr, const char* key) {
     return json_get(obj_ptr, key) != 0;
 }
 
+int8_t json_object_has_sx(int64_t obj_ptr, int64_t key_ptr) {
+    SxString* key = (SxString*)key_ptr;
+    if (!key || !key->data) return 0;
+    return json_object_has(obj_ptr, key->data);
+}
+
 // Get key at index (for iteration)
 int64_t json_object_key_at(int64_t obj_ptr, int64_t index) {
     JsonValue* obj = (JsonValue*)obj_ptr;
@@ -13139,11 +13146,1226 @@ void hnsw_close(int64_t idx_ptr) {
     free(idx);
 }
 
-// --------------------------------------------------------------------------
-// 26.3 Persistent Storage (SQLite)
-// --------------------------------------------------------------------------
+// ==========================================================================
+// Phase 3: simplex-sql SQLite API
+// ==========================================================================
 
 #include <sqlite3.h>
+
+// SQL Result Row structure
+typedef struct SqlRow {
+    int64_t num_columns;
+    int64_t* values;  // Array of SxString* or i64 values (type tagged)
+    int64_t* types;   // Array of column types
+} SqlRow;
+
+// SQL Result structure
+typedef struct SqlResult {
+    int64_t num_rows;
+    int64_t num_columns;
+    SqlRow** rows;
+    char** column_names;
+    int64_t current_row;  // For iteration
+} SqlResult;
+
+// SQL column types
+#define SQL_TYPE_NULL    0
+#define SQL_TYPE_INTEGER 1
+#define SQL_TYPE_REAL    2
+#define SQL_TYPE_TEXT    3
+#define SQL_TYPE_BLOB    4
+
+// Open a SQLite database
+int64_t sql_open(int64_t path_ptr) {
+    SxString* path = (SxString*)path_ptr;
+    if (!path || !path->data) return 0;
+
+    sqlite3* db;
+    if (sqlite3_open(path->data, &db) != SQLITE_OK) {
+        return 0;
+    }
+    return (int64_t)db;
+}
+
+// Open an in-memory database
+int64_t sql_open_memory(void) {
+    sqlite3* db;
+    if (sqlite3_open(":memory:", &db) != SQLITE_OK) {
+        return 0;
+    }
+    return (int64_t)db;
+}
+
+// Close a database
+void sql_close(int64_t db_ptr) {
+    sqlite3* db = (sqlite3*)db_ptr;
+    if (db) {
+        sqlite3_close(db);
+    }
+}
+
+// Execute SQL (no results)
+int64_t sql_execute(int64_t db_ptr, int64_t query_ptr) {
+    sqlite3* db = (sqlite3*)db_ptr;
+    SxString* query = (SxString*)query_ptr;
+    if (!db || !query || !query->data) return -1;
+
+    char* err = NULL;
+    int result = sqlite3_exec(db, query->data, NULL, NULL, &err);
+    if (err) {
+        sqlite3_free(err);
+    }
+    return result == SQLITE_OK ? 0 : -1;
+}
+
+// Get last error message
+int64_t sql_error(int64_t db_ptr) {
+    sqlite3* db = (sqlite3*)db_ptr;
+    if (!db) return (int64_t)intrinsic_string_new("No database");
+    return (int64_t)intrinsic_string_new(sqlite3_errmsg(db));
+}
+
+// Prepare a statement
+int64_t sql_prepare(int64_t db_ptr, int64_t query_ptr) {
+    sqlite3* db = (sqlite3*)db_ptr;
+    SxString* query = (SxString*)query_ptr;
+    if (!db || !query || !query->data) return 0;
+
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(db, query->data, -1, &stmt, NULL) != SQLITE_OK) {
+        return 0;
+    }
+    return (int64_t)stmt;
+}
+
+// Bind integer parameter
+int64_t sql_bind_int(int64_t stmt_ptr, int64_t index, int64_t value) {
+    sqlite3_stmt* stmt = (sqlite3_stmt*)stmt_ptr;
+    if (!stmt) return -1;
+    return sqlite3_bind_int64(stmt, (int)index, value) == SQLITE_OK ? 0 : -1;
+}
+
+// Bind text parameter
+int64_t sql_bind_text(int64_t stmt_ptr, int64_t index, int64_t text_ptr) {
+    sqlite3_stmt* stmt = (sqlite3_stmt*)stmt_ptr;
+    SxString* text = (SxString*)text_ptr;
+    if (!stmt) return -1;
+    if (!text || !text->data) {
+        return sqlite3_bind_null(stmt, (int)index) == SQLITE_OK ? 0 : -1;
+    }
+    return sqlite3_bind_text(stmt, (int)index, text->data, text->len, SQLITE_TRANSIENT) == SQLITE_OK ? 0 : -1;
+}
+
+// Bind double parameter
+int64_t sql_bind_double(int64_t stmt_ptr, int64_t index, double value) {
+    sqlite3_stmt* stmt = (sqlite3_stmt*)stmt_ptr;
+    if (!stmt) return -1;
+    return sqlite3_bind_double(stmt, (int)index, value) == SQLITE_OK ? 0 : -1;
+}
+
+// Bind null parameter
+int64_t sql_bind_null(int64_t stmt_ptr, int64_t index) {
+    sqlite3_stmt* stmt = (sqlite3_stmt*)stmt_ptr;
+    if (!stmt) return -1;
+    return sqlite3_bind_null(stmt, (int)index) == SQLITE_OK ? 0 : -1;
+}
+
+// Step (execute) statement
+int64_t sql_step(int64_t stmt_ptr) {
+    sqlite3_stmt* stmt = (sqlite3_stmt*)stmt_ptr;
+    if (!stmt) return -1;
+    int result = sqlite3_step(stmt);
+    if (result == SQLITE_ROW) return 1;     // Has row
+    if (result == SQLITE_DONE) return 0;    // No more rows
+    return -1;                               // Error
+}
+
+// Reset statement for re-execution
+int64_t sql_reset(int64_t stmt_ptr) {
+    sqlite3_stmt* stmt = (sqlite3_stmt*)stmt_ptr;
+    if (!stmt) return -1;
+    return sqlite3_reset(stmt) == SQLITE_OK ? 0 : -1;
+}
+
+// Get column count
+int64_t sql_column_count(int64_t stmt_ptr) {
+    sqlite3_stmt* stmt = (sqlite3_stmt*)stmt_ptr;
+    if (!stmt) return 0;
+    return sqlite3_column_count(stmt);
+}
+
+// Get column type
+int64_t sql_column_type(int64_t stmt_ptr, int64_t index) {
+    sqlite3_stmt* stmt = (sqlite3_stmt*)stmt_ptr;
+    if (!stmt) return SQL_TYPE_NULL;
+    int type = sqlite3_column_type(stmt, (int)index);
+    switch (type) {
+        case SQLITE_INTEGER: return SQL_TYPE_INTEGER;
+        case SQLITE_FLOAT: return SQL_TYPE_REAL;
+        case SQLITE_TEXT: return SQL_TYPE_TEXT;
+        case SQLITE_BLOB: return SQL_TYPE_BLOB;
+        default: return SQL_TYPE_NULL;
+    }
+}
+
+// Get column name
+int64_t sql_column_name(int64_t stmt_ptr, int64_t index) {
+    sqlite3_stmt* stmt = (sqlite3_stmt*)stmt_ptr;
+    if (!stmt) return (int64_t)intrinsic_string_new("");
+    const char* name = sqlite3_column_name(stmt, (int)index);
+    return (int64_t)intrinsic_string_new(name ? name : "");
+}
+
+// Get integer column value
+int64_t sql_column_int(int64_t stmt_ptr, int64_t index) {
+    sqlite3_stmt* stmt = (sqlite3_stmt*)stmt_ptr;
+    if (!stmt) return 0;
+    return sqlite3_column_int64(stmt, (int)index);
+}
+
+// Get text column value
+int64_t sql_column_text(int64_t stmt_ptr, int64_t index) {
+    sqlite3_stmt* stmt = (sqlite3_stmt*)stmt_ptr;
+    if (!stmt) return (int64_t)intrinsic_string_new("");
+    const char* text = (const char*)sqlite3_column_text(stmt, (int)index);
+    return (int64_t)intrinsic_string_new(text ? text : "");
+}
+
+// Get double column value
+double sql_column_double(int64_t stmt_ptr, int64_t index) {
+    sqlite3_stmt* stmt = (sqlite3_stmt*)stmt_ptr;
+    if (!stmt) return 0.0;
+    return sqlite3_column_double(stmt, (int)index);
+}
+
+// Get blob column value (returns pointer to blob data)
+// Use sql_column_blob_len to get the size
+int64_t sql_column_blob(int64_t stmt_ptr, int64_t index) {
+    sqlite3_stmt* stmt = (sqlite3_stmt*)stmt_ptr;
+    if (!stmt) return 0;
+    return (int64_t)sqlite3_column_blob(stmt, (int)index);
+}
+
+// Get blob column length in bytes
+int64_t sql_column_blob_len(int64_t stmt_ptr, int64_t index) {
+    sqlite3_stmt* stmt = (sqlite3_stmt*)stmt_ptr;
+    if (!stmt) return 0;
+    return sqlite3_column_bytes(stmt, (int)index);
+}
+
+// Finalize (free) statement
+void sql_finalize(int64_t stmt_ptr) {
+    sqlite3_stmt* stmt = (sqlite3_stmt*)stmt_ptr;
+    if (stmt) {
+        sqlite3_finalize(stmt);
+    }
+}
+
+// Begin transaction
+int64_t sql_begin(int64_t db_ptr) {
+    sqlite3* db = (sqlite3*)db_ptr;
+    if (!db) return -1;
+    char* err = NULL;
+    int result = sqlite3_exec(db, "BEGIN TRANSACTION", NULL, NULL, &err);
+    if (err) sqlite3_free(err);
+    return result == SQLITE_OK ? 0 : -1;
+}
+
+// Commit transaction
+int64_t sql_commit(int64_t db_ptr) {
+    sqlite3* db = (sqlite3*)db_ptr;
+    if (!db) return -1;
+    char* err = NULL;
+    int result = sqlite3_exec(db, "COMMIT", NULL, NULL, &err);
+    if (err) sqlite3_free(err);
+    return result == SQLITE_OK ? 0 : -1;
+}
+
+// Rollback transaction
+int64_t sql_rollback(int64_t db_ptr) {
+    sqlite3* db = (sqlite3*)db_ptr;
+    if (!db) return -1;
+    char* err = NULL;
+    int result = sqlite3_exec(db, "ROLLBACK", NULL, NULL, &err);
+    if (err) sqlite3_free(err);
+    return result == SQLITE_OK ? 0 : -1;
+}
+
+// Get last insert rowid
+int64_t sql_last_insert_id(int64_t db_ptr) {
+    sqlite3* db = (sqlite3*)db_ptr;
+    if (!db) return 0;
+    return sqlite3_last_insert_rowid(db);
+}
+
+// Get number of changes from last statement
+int64_t sql_changes(int64_t db_ptr) {
+    sqlite3* db = (sqlite3*)db_ptr;
+    if (!db) return 0;
+    return sqlite3_changes(db);
+}
+
+// Check if column is null
+int64_t sql_column_is_null(int64_t stmt_ptr, int64_t index) {
+    sqlite3_stmt* stmt = (sqlite3_stmt*)stmt_ptr;
+    if (!stmt) return 1;
+    return sqlite3_column_type(stmt, (int)index) == SQLITE_NULL ? 1 : 0;
+}
+
+// Get total number of changes
+int64_t sql_total_changes(int64_t db_ptr) {
+    sqlite3* db = (sqlite3*)db_ptr;
+    if (!db) return 0;
+    return sqlite3_total_changes(db);
+}
+
+// ==========================================================================
+// Phase 3: simplex-regex - POSIX Regex API
+// ==========================================================================
+
+#include <regex.h>
+
+// Compiled regex structure
+typedef struct SxRegex {
+    regex_t compiled;
+    int flags;
+    int compiled_ok;
+} SxRegex;
+
+// Compile a regex pattern
+// flags: 0 = default, 1 = case insensitive
+int64_t regex_new(int64_t pattern_ptr, int64_t flags) {
+    SxString* pattern = (SxString*)pattern_ptr;
+    if (!pattern || !pattern->data) return 0;
+
+    SxRegex* rx = (SxRegex*)malloc(sizeof(SxRegex));
+    if (!rx) return 0;
+
+    int cflags = REG_EXTENDED;
+    if (flags & 1) cflags |= REG_ICASE;
+    if (flags & 2) cflags |= REG_NEWLINE;
+
+    rx->flags = (int)flags;
+    int result = regcomp(&rx->compiled, pattern->data, cflags);
+    rx->compiled_ok = (result == 0);
+
+    if (result != 0) {
+        free(rx);
+        return 0;
+    }
+
+    return (int64_t)rx;
+}
+
+// Free a compiled regex
+void regex_free(int64_t rx_ptr) {
+    SxRegex* rx = (SxRegex*)rx_ptr;
+    if (rx) {
+        if (rx->compiled_ok) {
+            regfree(&rx->compiled);
+        }
+        free(rx);
+    }
+}
+
+// Check if pattern matches string (returns 1 if match, 0 if no match)
+int64_t regex_is_match(int64_t rx_ptr, int64_t text_ptr) {
+    SxRegex* rx = (SxRegex*)rx_ptr;
+    SxString* text = (SxString*)text_ptr;
+    if (!rx || !rx->compiled_ok || !text || !text->data) return 0;
+
+    return regexec(&rx->compiled, text->data, 0, NULL, 0) == 0 ? 1 : 0;
+}
+
+// Find first match position
+// Returns: [start, end] as packed i64 (start << 32 | end), or -1 if no match
+int64_t regex_find(int64_t rx_ptr, int64_t text_ptr) {
+    SxRegex* rx = (SxRegex*)rx_ptr;
+    SxString* text = (SxString*)text_ptr;
+    if (!rx || !rx->compiled_ok || !text || !text->data) return -1;
+
+    regmatch_t match;
+    if (regexec(&rx->compiled, text->data, 1, &match, 0) != 0) {
+        return -1;
+    }
+
+    // Pack start and end into single i64
+    return ((int64_t)match.rm_so << 32) | (match.rm_eo & 0xFFFFFFFF);
+}
+
+// Get the matched substring
+int64_t regex_find_str(int64_t rx_ptr, int64_t text_ptr) {
+    SxRegex* rx = (SxRegex*)rx_ptr;
+    SxString* text = (SxString*)text_ptr;
+    if (!rx || !rx->compiled_ok || !text || !text->data) {
+        return (int64_t)intrinsic_string_new("");
+    }
+
+    regmatch_t match;
+    if (regexec(&rx->compiled, text->data, 1, &match, 0) != 0) {
+        return (int64_t)intrinsic_string_new("");
+    }
+
+    int len = match.rm_eo - match.rm_so;
+    char* result = (char*)malloc(len + 1);
+    strncpy(result, text->data + match.rm_so, len);
+    result[len] = '\0';
+
+    SxString* s = intrinsic_string_new(result);
+    free(result);
+    return (int64_t)s;
+}
+
+// Count number of matches
+int64_t regex_count(int64_t rx_ptr, int64_t text_ptr) {
+    SxRegex* rx = (SxRegex*)rx_ptr;
+    SxString* text = (SxString*)text_ptr;
+    if (!rx || !rx->compiled_ok || !text || !text->data) return 0;
+
+    int64_t count = 0;
+    const char* ptr = text->data;
+    regmatch_t match;
+
+    while (regexec(&rx->compiled, ptr, 1, &match, 0) == 0) {
+        count++;
+        ptr += match.rm_eo;
+        if (match.rm_eo == 0) ptr++;  // Avoid infinite loop on empty match
+        if (*ptr == '\0') break;
+    }
+
+    return count;
+}
+
+// Replace all matches with replacement string
+int64_t regex_replace(int64_t rx_ptr, int64_t text_ptr, int64_t replacement_ptr) {
+    SxRegex* rx = (SxRegex*)rx_ptr;
+    SxString* text = (SxString*)text_ptr;
+    SxString* replacement = (SxString*)replacement_ptr;
+    if (!rx || !rx->compiled_ok || !text || !text->data || !replacement) {
+        return text_ptr;
+    }
+
+    // Build result string
+    size_t result_capacity = text->len * 2 + 1;
+    char* result = (char*)malloc(result_capacity);
+    size_t result_len = 0;
+
+    const char* ptr = text->data;
+    regmatch_t match;
+
+    while (regexec(&rx->compiled, ptr, 1, &match, 0) == 0) {
+        // Copy text before match
+        size_t before_len = match.rm_so;
+        if (result_len + before_len + replacement->len >= result_capacity) {
+            result_capacity = (result_len + before_len + replacement->len) * 2;
+            result = (char*)realloc(result, result_capacity);
+        }
+        memcpy(result + result_len, ptr, before_len);
+        result_len += before_len;
+
+        // Copy replacement
+        memcpy(result + result_len, replacement->data, replacement->len);
+        result_len += replacement->len;
+
+        ptr += match.rm_eo;
+        if (match.rm_eo == 0) ptr++;
+        if (*ptr == '\0') break;
+    }
+
+    // Copy remaining text
+    size_t remaining = strlen(ptr);
+    if (result_len + remaining >= result_capacity) {
+        result_capacity = result_len + remaining + 1;
+        result = (char*)realloc(result, result_capacity);
+    }
+    memcpy(result + result_len, ptr, remaining);
+    result_len += remaining;
+    result[result_len] = '\0';
+
+    SxString* s = intrinsic_string_new(result);
+    free(result);
+    return (int64_t)s;
+}
+
+// Replace first match only
+int64_t regex_replace_first(int64_t rx_ptr, int64_t text_ptr, int64_t replacement_ptr) {
+    SxRegex* rx = (SxRegex*)rx_ptr;
+    SxString* text = (SxString*)text_ptr;
+    SxString* replacement = (SxString*)replacement_ptr;
+    if (!rx || !rx->compiled_ok || !text || !text->data || !replacement) {
+        return text_ptr;
+    }
+
+    regmatch_t match;
+    if (regexec(&rx->compiled, text->data, 1, &match, 0) != 0) {
+        return text_ptr;  // No match, return original
+    }
+
+    size_t new_len = text->len - (match.rm_eo - match.rm_so) + replacement->len;
+    char* result = (char*)malloc(new_len + 1);
+
+    // Copy before match
+    memcpy(result, text->data, match.rm_so);
+    // Copy replacement
+    memcpy(result + match.rm_so, replacement->data, replacement->len);
+    // Copy after match
+    strcpy(result + match.rm_so + replacement->len, text->data + match.rm_eo);
+
+    SxString* s = intrinsic_string_new(result);
+    free(result);
+    return (int64_t)s;
+}
+
+// Split string by regex pattern
+int64_t regex_split(int64_t rx_ptr, int64_t text_ptr) {
+    SxRegex* rx = (SxRegex*)rx_ptr;
+    SxString* text = (SxString*)text_ptr;
+    if (!rx || !rx->compiled_ok || !text || !text->data) {
+        return (int64_t)intrinsic_vec_new();
+    }
+
+    // Create a Vec<String> to hold results
+    SxVec* list = intrinsic_vec_new();
+
+    const char* ptr = text->data;
+    const char* start = ptr;
+    regmatch_t match;
+
+    while (regexec(&rx->compiled, ptr, 1, &match, 0) == 0) {
+        // Extract text before match
+        int len = (ptr - start) + match.rm_so;
+        if (len > 0) {
+            char* part = (char*)malloc(len + 1);
+            strncpy(part, start, len);
+            part[len] = '\0';
+            SxString* s = intrinsic_string_new(part);
+            free(part);
+            intrinsic_vec_push(list, s);
+        }
+
+        ptr += match.rm_eo;
+        start = ptr;
+        if (match.rm_eo == 0) { ptr++; start++; }
+        if (*ptr == '\0') break;
+    }
+
+    // Add remaining text
+    if (*start != '\0') {
+        SxString* s = intrinsic_string_new(start);
+        intrinsic_vec_push(list, s);
+    }
+
+    return (int64_t)list;
+}
+
+// Get error message for failed regex compilation
+int64_t regex_error(int64_t pattern_ptr) {
+    SxString* pattern = (SxString*)pattern_ptr;
+    if (!pattern || !pattern->data) {
+        return (int64_t)intrinsic_string_new("Invalid pattern");
+    }
+
+    regex_t rx;
+    int result = regcomp(&rx, pattern->data, REG_EXTENDED);
+    if (result == 0) {
+        regfree(&rx);
+        return (int64_t)intrinsic_string_new("");
+    }
+
+    char errbuf[256];
+    regerror(result, &rx, errbuf, sizeof(errbuf));
+    return (int64_t)intrinsic_string_new(errbuf);
+}
+
+// Capture group support - get number of capture groups
+int64_t regex_group_count(int64_t rx_ptr) {
+    SxRegex* rx = (SxRegex*)rx_ptr;
+    if (!rx || !rx->compiled_ok) return 0;
+    return rx->compiled.re_nsub;
+}
+
+// Capture groups - returns array of matched groups
+int64_t regex_captures(int64_t rx_ptr, int64_t text_ptr) {
+    SxRegex* rx = (SxRegex*)rx_ptr;
+    SxString* text = (SxString*)text_ptr;
+    if (!rx || !rx->compiled_ok || !text || !text->data) return 0;
+
+    size_t nmatch = rx->compiled.re_nsub + 1;
+    regmatch_t* matches = (regmatch_t*)malloc(nmatch * sizeof(regmatch_t));
+
+    if (regexec(&rx->compiled, text->data, nmatch, matches, 0) != 0) {
+        free(matches);
+        return 0;
+    }
+
+    SxVec* list = intrinsic_vec_new();
+
+    for (size_t i = 0; i < nmatch; i++) {
+        if (matches[i].rm_so >= 0) {
+            int len = matches[i].rm_eo - matches[i].rm_so;
+            char* part = (char*)malloc(len + 1);
+            strncpy(part, text->data + matches[i].rm_so, len);
+            part[len] = '\0';
+            SxString* s = intrinsic_string_new(part);
+            free(part);
+            intrinsic_vec_push(list, s);
+        } else {
+            intrinsic_vec_push(list, intrinsic_string_new(""));
+        }
+    }
+
+    free(matches);
+    return (int64_t)list;
+}
+
+// ==========================================================================
+// Phase 3: simplex-crypto - Cryptography API
+// ==========================================================================
+
+#include <openssl/rand.h>
+#include <openssl/hmac.h>
+#include <openssl/md5.h>
+
+// Generate cryptographically secure random bytes as hex string
+int64_t crypto_random_bytes(int64_t length) {
+    if (length <= 0 || length > 1024 * 1024) return (int64_t)intrinsic_string_new("");
+
+    unsigned char* buf = (unsigned char*)malloc(length);
+    if (!buf) return (int64_t)intrinsic_string_new("");
+
+    if (RAND_bytes(buf, (int)length) != 1) {
+        free(buf);
+        return (int64_t)intrinsic_string_new("");
+    }
+
+    // Convert to hex string
+    char* hex = (char*)malloc(length * 2 + 1);
+    if (!hex) {
+        free(buf);
+        return (int64_t)intrinsic_string_new("");
+    }
+
+    for (int64_t i = 0; i < length; i++) {
+        sprintf(hex + i * 2, "%02x", buf[i]);
+    }
+    hex[length * 2] = '\0';
+
+    SxString* result = intrinsic_string_new(hex);
+    free(hex);
+    free(buf);
+    return (int64_t)result;
+}
+
+// SHA-256 hash (using OpenSSL)
+int64_t crypto_sha256(int64_t data_ptr) {
+    SxString* data = (SxString*)data_ptr;
+    if (!data || !data->data) return (int64_t)intrinsic_string_new("");
+
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    if (!ctx) return (int64_t)intrinsic_string_new("");
+
+    if (EVP_DigestInit_ex(ctx, EVP_sha256(), NULL) != 1 ||
+        EVP_DigestUpdate(ctx, data->data, data->len) != 1 ||
+        EVP_DigestFinal_ex(ctx, hash, NULL) != 1) {
+        EVP_MD_CTX_free(ctx);
+        return (int64_t)intrinsic_string_new("");
+    }
+
+    EVP_MD_CTX_free(ctx);
+
+    char hex[SHA256_DIGEST_LENGTH * 2 + 1];
+    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+        sprintf(hex + i * 2, "%02x", hash[i]);
+    }
+    hex[SHA256_DIGEST_LENGTH * 2] = '\0';
+
+    return (int64_t)intrinsic_string_new(hex);
+}
+
+// SHA-512 hash
+int64_t crypto_sha512(int64_t data_ptr) {
+    SxString* data = (SxString*)data_ptr;
+    if (!data || !data->data) return (int64_t)intrinsic_string_new("");
+
+    unsigned char hash[SHA512_DIGEST_LENGTH];
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    if (!ctx) return (int64_t)intrinsic_string_new("");
+
+    if (EVP_DigestInit_ex(ctx, EVP_sha512(), NULL) != 1 ||
+        EVP_DigestUpdate(ctx, data->data, data->len) != 1 ||
+        EVP_DigestFinal_ex(ctx, hash, NULL) != 1) {
+        EVP_MD_CTX_free(ctx);
+        return (int64_t)intrinsic_string_new("");
+    }
+
+    EVP_MD_CTX_free(ctx);
+
+    char hex[SHA512_DIGEST_LENGTH * 2 + 1];
+    for (int i = 0; i < SHA512_DIGEST_LENGTH; i++) {
+        sprintf(hex + i * 2, "%02x", hash[i]);
+    }
+    hex[SHA512_DIGEST_LENGTH * 2] = '\0';
+
+    return (int64_t)intrinsic_string_new(hex);
+}
+
+// HMAC-SHA256
+int64_t crypto_hmac_sha256(int64_t key_ptr, int64_t data_ptr) {
+    SxString* key = (SxString*)key_ptr;
+    SxString* data = (SxString*)data_ptr;
+    if (!key || !key->data || !data || !data->data) {
+        return (int64_t)intrinsic_string_new("");
+    }
+
+    unsigned char hash[EVP_MAX_MD_SIZE];
+    unsigned int hash_len;
+
+    HMAC(EVP_sha256(), key->data, key->len,
+         (unsigned char*)data->data, data->len, hash, &hash_len);
+
+    char hex[65];
+    for (unsigned int i = 0; i < hash_len; i++) {
+        sprintf(hex + i * 2, "%02x", hash[i]);
+    }
+    hex[hash_len * 2] = '\0';
+
+    return (int64_t)intrinsic_string_new(hex);
+}
+
+// Base64 encoding
+int64_t crypto_base64_encode(int64_t data_ptr) {
+    SxString* data = (SxString*)data_ptr;
+    if (!data || !data->data || data->len == 0) {
+        return (int64_t)intrinsic_string_new("");
+    }
+
+    BIO* b64 = BIO_new(BIO_f_base64());
+    BIO* mem = BIO_new(BIO_s_mem());
+    BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
+    b64 = BIO_push(b64, mem);
+
+    BIO_write(b64, data->data, data->len);
+    BIO_flush(b64);
+
+    BUF_MEM* bptr;
+    BIO_get_mem_ptr(b64, &bptr);
+
+    char* result = (char*)malloc(bptr->length + 1);
+    memcpy(result, bptr->data, bptr->length);
+    result[bptr->length] = '\0';
+
+    BIO_free_all(b64);
+
+    SxString* s = intrinsic_string_new(result);
+    free(result);
+    return (int64_t)s;
+}
+
+// Base64 decoding
+int64_t crypto_base64_decode(int64_t encoded_ptr) {
+    SxString* encoded = (SxString*)encoded_ptr;
+    if (!encoded || !encoded->data || encoded->len == 0) {
+        return (int64_t)intrinsic_string_new("");
+    }
+
+    BIO* b64 = BIO_new(BIO_f_base64());
+    BIO* mem = BIO_new_mem_buf(encoded->data, encoded->len);
+    BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
+    mem = BIO_push(b64, mem);
+
+    char* result = (char*)malloc(encoded->len + 1);
+    int len = BIO_read(mem, result, encoded->len);
+    BIO_free_all(mem);
+
+    if (len < 0) {
+        free(result);
+        return (int64_t)intrinsic_string_new("");
+    }
+
+    result[len] = '\0';
+    SxString* s = intrinsic_string_new(result);
+    free(result);
+    return (int64_t)s;
+}
+
+// Hex encoding
+int64_t crypto_hex_encode(int64_t data_ptr) {
+    SxString* data = (SxString*)data_ptr;
+    if (!data || !data->data) return (int64_t)intrinsic_string_new("");
+
+    char* hex = (char*)malloc(data->len * 2 + 1);
+    for (int64_t i = 0; i < data->len; i++) {
+        sprintf(hex + i * 2, "%02x", (unsigned char)data->data[i]);
+    }
+    hex[data->len * 2] = '\0';
+
+    SxString* s = intrinsic_string_new(hex);
+    free(hex);
+    return (int64_t)s;
+}
+
+// Hex decoding
+int64_t crypto_hex_decode(int64_t hex_ptr) {
+    SxString* hex = (SxString*)hex_ptr;
+    if (!hex || !hex->data || hex->len == 0 || hex->len % 2 != 0) {
+        return (int64_t)intrinsic_string_new("");
+    }
+
+    int64_t out_len = hex->len / 2;
+    char* result = (char*)malloc(out_len + 1);
+
+    for (int64_t i = 0; i < out_len; i++) {
+        unsigned int byte;
+        sscanf(hex->data + i * 2, "%2x", &byte);
+        result[i] = (char)byte;
+    }
+    result[out_len] = '\0';
+
+    SxString* s = intrinsic_string_new(result);
+    free(result);
+    return (int64_t)s;
+}
+
+// Constant-time comparison (for MAC verification)
+int64_t crypto_compare(int64_t a_ptr, int64_t b_ptr) {
+    SxString* a = (SxString*)a_ptr;
+    SxString* b = (SxString*)b_ptr;
+    if (!a || !a->data || !b || !b->data) return 0;
+    if (a->len != b->len) return 0;
+
+    volatile int result = 0;
+    for (int64_t i = 0; i < a->len; i++) {
+        result |= a->data[i] ^ b->data[i];
+    }
+    return result == 0 ? 1 : 0;
+}
+
+// --------------------------------------------------------------------------
+// Phase 3: CLI API
+// --------------------------------------------------------------------------
+
+// Get number of command-line arguments
+int64_t cli_arg_count(void) {
+    return program_argc;
+}
+
+// Get command-line argument by index
+int64_t cli_get_arg(int64_t index) {
+    if (index < 0 || index >= program_argc) {
+        return (int64_t)intrinsic_string_new("");
+    }
+    return (int64_t)intrinsic_string_new(program_argv[index]);
+}
+
+// Get all arguments as a vector
+int64_t cli_args(void) {
+    SxVec* args = intrinsic_vec_new();
+    for (int i = 0; i < program_argc; i++) {
+        intrinsic_vec_push(args, intrinsic_string_new(program_argv[i]));
+    }
+    return (int64_t)args;
+}
+
+// Get environment variable
+int64_t cli_getenv(int64_t name_ptr) {
+    SxString* name = (SxString*)name_ptr;
+    if (!name || !name->data) return (int64_t)intrinsic_string_new("");
+
+    const char* value = getenv(name->data);
+    if (!value) return (int64_t)intrinsic_string_new("");
+    return (int64_t)intrinsic_string_new(value);
+}
+
+// Set environment variable
+int64_t cli_setenv(int64_t name_ptr, int64_t value_ptr) {
+    SxString* name = (SxString*)name_ptr;
+    SxString* value = (SxString*)value_ptr;
+    if (!name || !name->data || !value || !value->data) return -1;
+
+    return setenv(name->data, value->data, 1);
+}
+
+// Get current working directory
+int64_t cli_cwd(void) {
+    char buf[4096];
+    if (getcwd(buf, sizeof(buf)) == NULL) {
+        return (int64_t)intrinsic_string_new("");
+    }
+    return (int64_t)intrinsic_string_new(buf);
+}
+
+// Exit with code
+void cli_exit(int64_t code) {
+    exit((int)code);
+}
+
+// Check if a flag exists (--flag or -f)
+int64_t cli_has_flag(int64_t flag_ptr) {
+    SxString* flag = (SxString*)flag_ptr;
+    if (!flag || !flag->data) return 0;
+
+    for (int i = 1; i < program_argc; i++) {
+        if (strcmp(program_argv[i], flag->data) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Get option value (--name=value or --name value)
+int64_t cli_get_option(int64_t name_ptr) {
+    SxString* name = (SxString*)name_ptr;
+    if (!name || !name->data) return (int64_t)intrinsic_string_new("");
+
+    for (int i = 1; i < program_argc; i++) {
+        // Check for --name=value format
+        size_t name_len = strlen(name->data);
+        if (strncmp(program_argv[i], name->data, name_len) == 0) {
+            if (program_argv[i][name_len] == '=') {
+                return (int64_t)intrinsic_string_new(program_argv[i] + name_len + 1);
+            }
+            // Check for --name value format (next argument)
+            if (program_argv[i][name_len] == '\0' && i + 1 < program_argc) {
+                // Make sure next arg is not a flag
+                if (program_argv[i + 1][0] != '-') {
+                    return (int64_t)intrinsic_string_new(program_argv[i + 1]);
+                }
+            }
+        }
+    }
+    return (int64_t)intrinsic_string_new("");
+}
+
+// Get positional arguments (non-flag arguments)
+int64_t cli_positional_args(void) {
+    SxVec* args = intrinsic_vec_new();
+    for (int i = 1; i < program_argc; i++) {
+        if (program_argv[i][0] != '-') {
+            intrinsic_vec_push(args, intrinsic_string_new(program_argv[i]));
+        } else {
+            // Skip option values (--name value)
+            if (i + 1 < program_argc && program_argv[i + 1][0] != '-' &&
+                strchr(program_argv[i], '=') == NULL) {
+                i++; // Skip the value
+            }
+        }
+    }
+    return (int64_t)args;
+}
+
+// --------------------------------------------------------------------------
+// Phase 3: Simple Log API (slog_ prefix to avoid conflict with Logger API)
+// --------------------------------------------------------------------------
+
+// Log levels: 0=TRACE, 1=DEBUG, 2=INFO, 3=WARN, 4=ERROR
+static int64_t slog_min_level = 2; // Default: INFO
+
+// Set minimum log level
+void slog_set_level(int64_t level) {
+    slog_min_level = level;
+}
+
+// Get current log level
+int64_t slog_get_level(void) {
+    return slog_min_level;
+}
+
+// Internal: format and print log message
+static void slog_print_msg(const char* level_str, int64_t msg_ptr) {
+    SxString* msg = (SxString*)msg_ptr;
+    if (!msg || !msg->data) return;
+
+    // Get timestamp
+    time_t now = time(NULL);
+    struct tm* t = localtime(&now);
+    char timestamp[32];
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", t);
+
+    // Print: [LEVEL] timestamp: message
+    printf("[%s] %s: %s\n", level_str, timestamp, msg->data);
+    fflush(stdout);
+}
+
+// Log at TRACE level (0)
+void slog_trace(int64_t msg_ptr) {
+    if (slog_min_level <= 0) {
+        slog_print_msg("TRACE", msg_ptr);
+    }
+}
+
+// Log at DEBUG level (1)
+void slog_debug(int64_t msg_ptr) {
+    if (slog_min_level <= 1) {
+        slog_print_msg("DEBUG", msg_ptr);
+    }
+}
+
+// Log at INFO level (2)
+void slog_info(int64_t msg_ptr) {
+    if (slog_min_level <= 2) {
+        slog_print_msg("INFO", msg_ptr);
+    }
+}
+
+// Log at WARN level (3)
+void slog_warn(int64_t msg_ptr) {
+    if (slog_min_level <= 3) {
+        slog_print_msg("WARN", msg_ptr);
+    }
+}
+
+// Log at ERROR level (4)
+void slog_error(int64_t msg_ptr) {
+    if (slog_min_level <= 4) {
+        slog_print_msg("ERROR", msg_ptr);
+    }
+}
+
+// Log with key-value context
+void slog_info_ctx(int64_t msg_ptr, int64_t key_ptr, int64_t val_ptr) {
+    if (slog_min_level > 2) return;
+
+    SxString* msg = (SxString*)msg_ptr;
+    SxString* key = (SxString*)key_ptr;
+    SxString* val = (SxString*)val_ptr;
+    if (!msg || !msg->data) return;
+
+    time_t now = time(NULL);
+    struct tm* t = localtime(&now);
+    char timestamp[32];
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", t);
+
+    if (key && key->data && val && val->data) {
+        printf("[INFO] %s: %s {%s=%s}\n", timestamp, msg->data, key->data, val->data);
+    } else {
+        printf("[INFO] %s: %s\n", timestamp, msg->data);
+    }
+    fflush(stdout);
+}
+
+// Log formatted message (simple string interpolation)
+void slog_fmt(int64_t level, int64_t fmt_ptr, int64_t arg_ptr) {
+    if (slog_min_level > level) return;
+
+    SxString* fmt = (SxString*)fmt_ptr;
+    SxString* arg = (SxString*)arg_ptr;
+    if (!fmt || !fmt->data) return;
+
+    const char* level_str = "INFO";
+    switch ((int)level) {
+        case 0: level_str = "TRACE"; break;
+        case 1: level_str = "DEBUG"; break;
+        case 2: level_str = "INFO"; break;
+        case 3: level_str = "WARN"; break;
+        case 4: level_str = "ERROR"; break;
+    }
+
+    time_t now = time(NULL);
+    struct tm* t = localtime(&now);
+    char timestamp[32];
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", t);
+
+    // Simple format: replace {} with arg
+    char* result = (char*)malloc(strlen(fmt->data) + (arg ? arg->len : 0) + 100);
+    if (!result) return;
+
+    const char* placeholder = strstr(fmt->data, "{}");
+    if (placeholder && arg && arg->data) {
+        size_t prefix_len = placeholder - fmt->data;
+        memcpy(result, fmt->data, prefix_len);
+        strcpy(result + prefix_len, arg->data);
+        strcpy(result + prefix_len + arg->len, placeholder + 2);
+    } else {
+        strcpy(result, fmt->data);
+    }
+
+    printf("[%s] %s: %s\n", level_str, timestamp, result);
+    fflush(stdout);
+    free(result);
+}
+
+// --------------------------------------------------------------------------
+// Phase 3: Test Framework API (tfw_ prefix to avoid conflicts)
+// --------------------------------------------------------------------------
+
+static int64_t tfw_passed = 0;
+static int64_t tfw_failed = 0;
+
+// Reset test counters
+void tfw_reset(void) {
+    tfw_passed = 0;
+    tfw_failed = 0;
+}
+
+// Get passed count
+int64_t tfw_passed_count(void) {
+    return tfw_passed;
+}
+
+// Get failed count
+int64_t tfw_failed_count(void) {
+    return tfw_failed;
+}
+
+// Assert condition is true
+int64_t tfw_assert(int64_t condition, int64_t msg_ptr) {
+    SxString* msg = (SxString*)msg_ptr;
+    if (condition) {
+        tfw_passed++;
+        return 1;
+    } else {
+        tfw_failed++;
+        if (msg && msg->data) {
+            printf("ASSERT FAILED: %s\n", msg->data);
+        } else {
+            printf("ASSERT FAILED\n");
+        }
+        return 0;
+    }
+}
+
+// Assert two integers are equal
+int64_t tfw_assert_eq_i64(int64_t a, int64_t b, int64_t msg_ptr) {
+    SxString* msg = (SxString*)msg_ptr;
+    if (a == b) {
+        tfw_passed++;
+        return 1;
+    } else {
+        tfw_failed++;
+        if (msg && msg->data) {
+            printf("ASSERT EQ FAILED: %s (expected %lld, got %lld)\n", msg->data, (long long)a, (long long)b);
+        } else {
+            printf("ASSERT EQ FAILED: expected %lld, got %lld\n", (long long)a, (long long)b);
+        }
+        return 0;
+    }
+}
+
+// Assert two strings are equal
+int64_t tfw_assert_eq_str(int64_t a_ptr, int64_t b_ptr, int64_t msg_ptr) {
+    SxString* a = (SxString*)a_ptr;
+    SxString* b = (SxString*)b_ptr;
+    SxString* msg = (SxString*)msg_ptr;
+
+    int equal = (a && b && a->data && b->data && strcmp(a->data, b->data) == 0);
+    if (equal) {
+        tfw_passed++;
+        return 1;
+    } else {
+        tfw_failed++;
+        const char* a_str = (a && a->data) ? a->data : "(null)";
+        const char* b_str = (b && b->data) ? b->data : "(null)";
+        if (msg && msg->data) {
+            printf("ASSERT EQ FAILED: %s (expected '%s', got '%s')\n", msg->data, a_str, b_str);
+        } else {
+            printf("ASSERT EQ FAILED: expected '%s', got '%s'\n", a_str, b_str);
+        }
+        return 0;
+    }
+}
+
+// Assert two integers are not equal
+int64_t tfw_assert_ne_i64(int64_t a, int64_t b, int64_t msg_ptr) {
+    SxString* msg = (SxString*)msg_ptr;
+    if (a != b) {
+        tfw_passed++;
+        return 1;
+    } else {
+        tfw_failed++;
+        if (msg && msg->data) {
+            printf("ASSERT NE FAILED: %s (both are %lld)\n", msg->data, (long long)a);
+        } else {
+            printf("ASSERT NE FAILED: both values are %lld\n", (long long)a);
+        }
+        return 0;
+    }
+}
+
+// Explicitly fail a test
+void tfw_fail(int64_t msg_ptr) {
+    SxString* msg = (SxString*)msg_ptr;
+    tfw_failed++;
+    if (msg && msg->data) {
+        printf("TEST FAILED: %s\n", msg->data);
+    } else {
+        printf("TEST FAILED\n");
+    }
+}
+
+// Print test summary
+void tfw_summary(void) {
+    int64_t total = tfw_passed + tfw_failed;
+    printf("\n=== Test Summary ===\n");
+    printf("Passed: %lld / %lld\n", (long long)tfw_passed, (long long)total);
+    printf("Failed: %lld / %lld\n", (long long)tfw_failed, (long long)total);
+    if (tfw_failed == 0) {
+        printf("All tests passed!\n");
+    }
+}
+
+// --------------------------------------------------------------------------
+// Phase 3: UUID API
+// --------------------------------------------------------------------------
+
+// Generate a UUID v4 (random)
+int64_t uuid_v4(void) {
+    unsigned char bytes[16];
+    if (RAND_bytes(bytes, 16) != 1) {
+        return (int64_t)intrinsic_string_new("");
+    }
+
+    // Set version (4) and variant (RFC4122)
+    bytes[6] = (bytes[6] & 0x0F) | 0x40;  // Version 4
+    bytes[8] = (bytes[8] & 0x3F) | 0x80;  // Variant 1
+
+    // Format as string: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+    char uuid[37];
+    snprintf(uuid, sizeof(uuid),
+        "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+        bytes[0], bytes[1], bytes[2], bytes[3],
+        bytes[4], bytes[5], bytes[6], bytes[7],
+        bytes[8], bytes[9], bytes[10], bytes[11],
+        bytes[12], bytes[13], bytes[14], bytes[15]);
+
+    return (int64_t)intrinsic_string_new(uuid);
+}
+
+// Generate a nil UUID (all zeros)
+int64_t uuid_nil(void) {
+    return (int64_t)intrinsic_string_new("00000000-0000-0000-0000-000000000000");
+}
+
+// Check if a UUID is nil
+int64_t uuid_is_nil(int64_t uuid_ptr) {
+    SxString* uuid = (SxString*)uuid_ptr;
+    if (!uuid || !uuid->data) return 1;
+    return strcmp(uuid->data, "00000000-0000-0000-0000-000000000000") == 0 ? 1 : 0;
+}
+
+// Validate UUID format
+int64_t uuid_is_valid(int64_t uuid_ptr) {
+    SxString* uuid = (SxString*)uuid_ptr;
+    if (!uuid || !uuid->data || uuid->len != 36) return 0;
+
+    // Check format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+    const char* s = uuid->data;
+    for (int i = 0; i < 36; i++) {
+        if (i == 8 || i == 13 || i == 18 || i == 23) {
+            if (s[i] != '-') return 0;
+        } else {
+            char c = s[i];
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+// --------------------------------------------------------------------------
+// 26.3 Persistent Storage (SQLite) - Memory Database
+// --------------------------------------------------------------------------
 
 typedef struct MemoryDB {
     sqlite3* db;
@@ -25269,4 +26491,973 @@ void timer_record_to(int64_t timer_ptr, int64_t histogram_ptr) {
 
     double elapsed_ms = timer_elapsed_us(timer_ptr) / 1000.0;
     histogram_observe(histogram_ptr, elapsed_ms);
+}
+
+// ============================================================================
+// TOML Parser
+// ============================================================================
+
+// Forward declarations
+void toml_free(int64_t table_ptr);
+
+// TOML Value types
+typedef enum {
+    TOML_STRING = 0,
+    TOML_INTEGER = 1,
+    TOML_FLOAT = 2,
+    TOML_BOOL = 3,
+    TOML_ARRAY = 4,
+    TOML_TABLE = 5
+} TomlType;
+
+// Forward declarations
+typedef struct TomlValue TomlValue;
+typedef struct TomlEntry TomlEntry;
+
+// TOML table entry (key-value pair in linked list)
+struct TomlEntry {
+    char* key;
+    TomlValue* value;
+    TomlEntry* next;
+};
+
+// TOML value
+struct TomlValue {
+    TomlType type;
+    union {
+        char* string_val;
+        int64_t int_val;
+        double float_val;
+        int bool_val;
+        struct {
+            TomlValue** items;
+            int count;
+            int capacity;
+        } array;
+        TomlEntry* table;  // linked list of entries
+    } data;
+};
+
+// Create new TOML table
+int64_t toml_table_new(void) {
+    TomlValue* v = malloc(sizeof(TomlValue));
+    v->type = TOML_TABLE;
+    v->data.table = NULL;
+    return (int64_t)v;
+}
+
+// Create TOML string value
+TomlValue* toml_value_string(const char* s) {
+    TomlValue* v = malloc(sizeof(TomlValue));
+    v->type = TOML_STRING;
+    v->data.string_val = strdup(s);
+    return v;
+}
+
+// Create TOML integer value
+TomlValue* toml_value_int(int64_t n) {
+    TomlValue* v = malloc(sizeof(TomlValue));
+    v->type = TOML_INTEGER;
+    v->data.int_val = n;
+    return v;
+}
+
+// Create TOML float value
+TomlValue* toml_value_float(double n) {
+    TomlValue* v = malloc(sizeof(TomlValue));
+    v->type = TOML_FLOAT;
+    v->data.float_val = n;
+    return v;
+}
+
+// Create TOML bool value
+TomlValue* toml_value_bool(int b) {
+    TomlValue* v = malloc(sizeof(TomlValue));
+    v->type = TOML_BOOL;
+    v->data.bool_val = b;
+    return v;
+}
+
+// Create TOML array value
+TomlValue* toml_value_array(void) {
+    TomlValue* v = malloc(sizeof(TomlValue));
+    v->type = TOML_ARRAY;
+    v->data.array.items = malloc(sizeof(TomlValue*) * 8);
+    v->data.array.count = 0;
+    v->data.array.capacity = 8;
+    return v;
+}
+
+// Add item to TOML array
+void toml_array_push(TomlValue* arr, TomlValue* item) {
+    if (!arr || arr->type != TOML_ARRAY) return;
+    if (arr->data.array.count >= arr->data.array.capacity) {
+        arr->data.array.capacity *= 2;
+        arr->data.array.items = realloc(arr->data.array.items,
+            sizeof(TomlValue*) * arr->data.array.capacity);
+    }
+    arr->data.array.items[arr->data.array.count++] = item;
+}
+
+// Set value in table
+void toml_table_set_internal(TomlValue* table, const char* key, TomlValue* value) {
+    if (!table || table->type != TOML_TABLE) return;
+
+    // Check if key exists
+    TomlEntry* entry = table->data.table;
+    while (entry) {
+        if (strcmp(entry->key, key) == 0) {
+            // Replace value (should free old value)
+            entry->value = value;
+            return;
+        }
+        entry = entry->next;
+    }
+
+    // Add new entry
+    TomlEntry* new_entry = malloc(sizeof(TomlEntry));
+    new_entry->key = strdup(key);
+    new_entry->value = value;
+    new_entry->next = table->data.table;
+    table->data.table = new_entry;
+}
+
+// Get value from table by key
+TomlValue* toml_table_get_internal(TomlValue* table, const char* key) {
+    if (!table || table->type != TOML_TABLE) return NULL;
+
+    TomlEntry* entry = table->data.table;
+    while (entry) {
+        if (strcmp(entry->key, key) == 0) {
+            return entry->value;
+        }
+        entry = entry->next;
+    }
+    return NULL;
+}
+
+// Get or create nested table by dotted path
+TomlValue* toml_table_get_or_create(TomlValue* root, const char* path) {
+    if (!root || root->type != TOML_TABLE) return NULL;
+
+    char* path_copy = strdup(path);
+    char* token = strtok(path_copy, ".");
+    TomlValue* current = root;
+
+    while (token) {
+        TomlValue* next = toml_table_get_internal(current, token);
+        if (!next) {
+            // Create new table
+            next = malloc(sizeof(TomlValue));
+            next->type = TOML_TABLE;
+            next->data.table = NULL;
+            toml_table_set_internal(current, token, next);
+        }
+        current = next;
+        token = strtok(NULL, ".");
+    }
+
+    free(path_copy);
+    return current;
+}
+
+// Skip whitespace
+static const char* skip_ws(const char* s) {
+    while (*s && (*s == ' ' || *s == '\t')) s++;
+    return s;
+}
+
+// Skip to end of line
+static const char* skip_line(const char* s) {
+    while (*s && *s != '\n') s++;
+    if (*s == '\n') s++;
+    return s;
+}
+
+// Parse basic string (double quoted)
+static const char* parse_basic_string(const char* s, char** out) {
+    if (*s != '"') return NULL;
+    s++;
+
+    char buffer[4096];
+    int i = 0;
+
+    while (*s && *s != '"' && i < 4095) {
+        if (*s == '\\' && *(s+1)) {
+            s++;
+            switch (*s) {
+                case 'n': buffer[i++] = '\n'; break;
+                case 't': buffer[i++] = '\t'; break;
+                case 'r': buffer[i++] = '\r'; break;
+                case '\\': buffer[i++] = '\\'; break;
+                case '"': buffer[i++] = '"'; break;
+                default: buffer[i++] = *s;
+            }
+        } else {
+            buffer[i++] = *s;
+        }
+        s++;
+    }
+    buffer[i] = '\0';
+
+    if (*s == '"') s++;
+    *out = strdup(buffer);
+    return s;
+}
+
+// Parse literal string (single quoted)
+static const char* parse_literal_string(const char* s, char** out) {
+    if (*s != '\'') return NULL;
+    s++;
+
+    char buffer[4096];
+    int i = 0;
+
+    while (*s && *s != '\'' && i < 4095) {
+        buffer[i++] = *s++;
+    }
+    buffer[i] = '\0';
+
+    if (*s == '\'') s++;
+    *out = strdup(buffer);
+    return s;
+}
+
+// Parse integer
+static const char* parse_integer(const char* s, int64_t* out) {
+    char* end;
+    *out = strtoll(s, &end, 10);
+    return end;
+}
+
+// Parse float
+static const char* parse_float(const char* s, double* out) {
+    char* end;
+    *out = strtod(s, &end);
+    return end;
+}
+
+// Forward declaration
+static const char* parse_value(const char* s, TomlValue** out);
+
+// Parse array
+static const char* parse_array(const char* s, TomlValue** out) {
+    if (*s != '[') return NULL;
+    s++;
+
+    TomlValue* arr = toml_value_array();
+
+    while (*s) {
+        s = skip_ws(s);
+        while (*s == '\n') s = skip_ws(s + 1);
+
+        if (*s == ']') {
+            s++;
+            *out = arr;
+            return s;
+        }
+
+        if (*s == ',') {
+            s++;
+            continue;
+        }
+
+        // Skip comments in arrays
+        if (*s == '#') {
+            s = skip_line(s);
+            continue;
+        }
+
+        TomlValue* item = NULL;
+        s = parse_value(s, &item);
+        if (item) {
+            toml_array_push(arr, item);
+        }
+    }
+
+    *out = arr;
+    return s;
+}
+
+// Parse inline table
+static const char* parse_inline_table(const char* s, TomlValue** out) {
+    if (*s != '{') return NULL;
+    s++;
+
+    TomlValue* table = malloc(sizeof(TomlValue));
+    table->type = TOML_TABLE;
+    table->data.table = NULL;
+
+    while (*s) {
+        s = skip_ws(s);
+
+        if (*s == '}') {
+            s++;
+            *out = table;
+            return s;
+        }
+
+        if (*s == ',') {
+            s++;
+            continue;
+        }
+
+        // Parse key
+        char key[256];
+        int ki = 0;
+        while (*s && *s != '=' && *s != ' ' && *s != '\t' && ki < 255) {
+            key[ki++] = *s++;
+        }
+        key[ki] = '\0';
+
+        s = skip_ws(s);
+        if (*s != '=') break;
+        s++;
+        s = skip_ws(s);
+
+        // Parse value
+        TomlValue* val = NULL;
+        s = parse_value(s, &val);
+        if (val) {
+            toml_table_set_internal(table, key, val);
+        }
+    }
+
+    *out = table;
+    return s;
+}
+
+// Parse a value
+static const char* parse_value(const char* s, TomlValue** out) {
+    s = skip_ws(s);
+
+    if (*s == '"') {
+        char* str = NULL;
+        s = parse_basic_string(s, &str);
+        *out = toml_value_string(str);
+        free(str);
+        return s;
+    }
+
+    if (*s == '\'') {
+        char* str = NULL;
+        s = parse_literal_string(s, &str);
+        *out = toml_value_string(str);
+        free(str);
+        return s;
+    }
+
+    if (*s == '[') {
+        return parse_array(s, out);
+    }
+
+    if (*s == '{') {
+        return parse_inline_table(s, out);
+    }
+
+    // true/false
+    if (strncmp(s, "true", 4) == 0 && !isalnum(s[4])) {
+        *out = toml_value_bool(1);
+        return s + 4;
+    }
+    if (strncmp(s, "false", 5) == 0 && !isalnum(s[5])) {
+        *out = toml_value_bool(0);
+        return s + 5;
+    }
+
+    // Number (integer or float)
+    if (*s == '-' || *s == '+' || isdigit(*s)) {
+        const char* start = s;
+        if (*s == '-' || *s == '+') s++;
+        while (isdigit(*s)) s++;
+
+        if (*s == '.' || *s == 'e' || *s == 'E') {
+            // Float
+            double val;
+            parse_float(start, &val);
+            *out = toml_value_float(val);
+            // Skip rest of number
+            if (*s == '.') {
+                s++;
+                while (isdigit(*s)) s++;
+            }
+            if (*s == 'e' || *s == 'E') {
+                s++;
+                if (*s == '-' || *s == '+') s++;
+                while (isdigit(*s)) s++;
+            }
+        } else {
+            // Integer
+            int64_t val;
+            parse_integer(start, &val);
+            *out = toml_value_int(val);
+        }
+        return s;
+    }
+
+    return s;
+}
+
+// Parse TOML content
+int64_t toml_parse(int64_t content_ptr) {
+    SxString* content = (SxString*)content_ptr;
+    if (!content || !content->data) return 0;
+
+    TomlValue* root = malloc(sizeof(TomlValue));
+    root->type = TOML_TABLE;
+    root->data.table = NULL;
+
+    TomlValue* current_table = root;
+    const char* s = content->data;
+
+    while (*s) {
+        s = skip_ws(s);
+
+        // Skip empty lines and comments
+        if (*s == '\n') {
+            s++;
+            continue;
+        }
+        if (*s == '#') {
+            s = skip_line(s);
+            continue;
+        }
+
+        // Table header [table] or [[array of tables]]
+        if (*s == '[') {
+            s++;
+            int is_array_table = 0;
+            if (*s == '[') {
+                s++;
+                is_array_table = 1;
+            }
+
+            // Parse table name
+            char table_name[256];
+            int ti = 0;
+            while (*s && *s != ']' && *s != '\n' && ti < 255) {
+                table_name[ti++] = *s++;
+            }
+            table_name[ti] = '\0';
+
+            // Must have closing bracket - if not, it's invalid TOML
+            if (*s != ']') {
+                toml_free((int64_t)root);
+                return 0;
+            }
+            s++;
+            if (is_array_table) {
+                if (*s != ']') {
+                    toml_free((int64_t)root);
+                    return 0;
+                }
+                s++;
+            }
+
+            if (is_array_table) {
+                // Array of tables - create or get array, add new table
+                TomlValue* arr = toml_table_get_internal(root, table_name);
+                if (!arr) {
+                    arr = toml_value_array();
+                    toml_table_set_internal(root, table_name, arr);
+                }
+                TomlValue* new_table = malloc(sizeof(TomlValue));
+                new_table->type = TOML_TABLE;
+                new_table->data.table = NULL;
+                toml_array_push(arr, new_table);
+                current_table = new_table;
+            } else {
+                // Regular table
+                current_table = toml_table_get_or_create(root, table_name);
+            }
+
+            s = skip_line(s);
+            continue;
+        }
+
+        // Key = value
+        char key[256];
+        int ki = 0;
+
+        // Handle quoted keys
+        if (*s == '"') {
+            s++;
+            while (*s && *s != '"' && ki < 255) {
+                key[ki++] = *s++;
+            }
+            if (*s == '"') s++;
+        } else {
+            while (*s && *s != '=' && *s != ' ' && *s != '\t' && ki < 255) {
+                key[ki++] = *s++;
+            }
+        }
+        key[ki] = '\0';
+
+        if (ki == 0) {
+            s = skip_line(s);
+            continue;
+        }
+
+        s = skip_ws(s);
+        if (*s != '=') {
+            s = skip_line(s);
+            continue;
+        }
+        s++;
+        s = skip_ws(s);
+
+        // Parse value
+        TomlValue* value = NULL;
+        s = parse_value(s, &value);
+
+        if (value) {
+            // Handle dotted keys (e.g., foo.bar = value)
+            char* dot = strchr(key, '.');
+            if (dot) {
+                *dot = '\0';
+                TomlValue* nested = toml_table_get_or_create(current_table, key);
+                toml_table_set_internal(nested, dot + 1, value);
+            } else {
+                toml_table_set_internal(current_table, key, value);
+            }
+        }
+
+        s = skip_line(s);
+    }
+
+    return (int64_t)root;
+}
+
+// Get string value by path (e.g., "package.name")
+int64_t toml_get_string(int64_t table_ptr, int64_t path_ptr) {
+    TomlValue* table = (TomlValue*)table_ptr;
+    SxString* path = (SxString*)path_ptr;
+    if (!table || !path || table->type != TOML_TABLE) return 0;
+
+    char* path_copy = strdup(path->data);
+    char* token = strtok(path_copy, ".");
+    TomlValue* current = table;
+
+    while (token) {
+        char* next_token = strtok(NULL, ".");
+
+        if (current->type == TOML_TABLE) {
+            TomlValue* val = toml_table_get_internal(current, token);
+            if (!val) {
+                free(path_copy);
+                return 0;
+            }
+            if (!next_token) {
+                // Last token - should be string
+                free(path_copy);
+                if (val->type == TOML_STRING) {
+                    return (int64_t)intrinsic_string_new(val->data.string_val);
+                }
+                return 0;
+            }
+            current = val;
+        } else {
+            free(path_copy);
+            return 0;
+        }
+        token = next_token;
+    }
+
+    free(path_copy);
+    return 0;
+}
+
+// Get integer value by path
+int64_t toml_get_i64(int64_t table_ptr, int64_t path_ptr) {
+    TomlValue* table = (TomlValue*)table_ptr;
+    SxString* path = (SxString*)path_ptr;
+    if (!table || !path || table->type != TOML_TABLE) return 0;
+
+    char* path_copy = strdup(path->data);
+    char* token = strtok(path_copy, ".");
+    TomlValue* current = table;
+
+    while (token) {
+        char* next_token = strtok(NULL, ".");
+
+        if (current->type == TOML_TABLE) {
+            TomlValue* val = toml_table_get_internal(current, token);
+            if (!val) {
+                free(path_copy);
+                return 0;
+            }
+            if (!next_token) {
+                free(path_copy);
+                if (val->type == TOML_INTEGER) {
+                    return val->data.int_val;
+                }
+                return 0;
+            }
+            current = val;
+        } else {
+            free(path_copy);
+            return 0;
+        }
+        token = next_token;
+    }
+
+    free(path_copy);
+    return 0;
+}
+
+// Get boolean value by path
+int64_t toml_get_bool(int64_t table_ptr, int64_t path_ptr) {
+    TomlValue* table = (TomlValue*)table_ptr;
+    SxString* path = (SxString*)path_ptr;
+    if (!table || !path || table->type != TOML_TABLE) return 0;
+
+    char* path_copy = strdup(path->data);
+    char* token = strtok(path_copy, ".");
+    TomlValue* current = table;
+
+    while (token) {
+        char* next_token = strtok(NULL, ".");
+
+        if (current->type == TOML_TABLE) {
+            TomlValue* val = toml_table_get_internal(current, token);
+            if (!val) {
+                free(path_copy);
+                return 0;
+            }
+            if (!next_token) {
+                free(path_copy);
+                if (val->type == TOML_BOOL) {
+                    return val->data.bool_val;
+                }
+                return 0;
+            }
+            current = val;
+        } else {
+            free(path_copy);
+            return 0;
+        }
+        token = next_token;
+    }
+
+    free(path_copy);
+    return 0;
+}
+
+// Get float value by path
+double toml_get_f64(int64_t table_ptr, int64_t path_ptr) {
+    TomlValue* table = (TomlValue*)table_ptr;
+    SxString* path = (SxString*)path_ptr;
+    if (!table || !path || table->type != TOML_TABLE) return 0.0;
+
+    char* path_copy = strdup(path->data);
+    char* token = strtok(path_copy, ".");
+    TomlValue* current = table;
+
+    while (token) {
+        char* next_token = strtok(NULL, ".");
+
+        if (current->type == TOML_TABLE) {
+            TomlValue* val = toml_table_get_internal(current, token);
+            if (!val) {
+                free(path_copy);
+                return 0.0;
+            }
+            if (!next_token) {
+                free(path_copy);
+                if (val->type == TOML_FLOAT) {
+                    return val->data.float_val;
+                }
+                if (val->type == TOML_INTEGER) {
+                    return (double)val->data.int_val;
+                }
+                return 0.0;
+            }
+            current = val;
+        } else {
+            free(path_copy);
+            return 0.0;
+        }
+        token = next_token;
+    }
+
+    free(path_copy);
+    return 0.0;
+}
+
+// Check if key exists
+int64_t toml_has_key(int64_t table_ptr, int64_t path_ptr) {
+    TomlValue* table = (TomlValue*)table_ptr;
+    SxString* path = (SxString*)path_ptr;
+    if (!table || !path || table->type != TOML_TABLE) return 0;
+
+    char* path_copy = strdup(path->data);
+    char* token = strtok(path_copy, ".");
+    TomlValue* current = table;
+
+    while (token) {
+        char* next_token = strtok(NULL, ".");
+
+        if (current->type == TOML_TABLE) {
+            TomlValue* val = toml_table_get_internal(current, token);
+            if (!val) {
+                free(path_copy);
+                return 0;
+            }
+            if (!next_token) {
+                free(path_copy);
+                return 1;
+            }
+            current = val;
+        } else {
+            free(path_copy);
+            return 0;
+        }
+        token = next_token;
+    }
+
+    free(path_copy);
+    return 0;
+}
+
+// Get array by path
+int64_t toml_get_array(int64_t table_ptr, int64_t path_ptr) {
+    TomlValue* table = (TomlValue*)table_ptr;
+    SxString* path = (SxString*)path_ptr;
+    if (!table || !path || table->type != TOML_TABLE) return 0;
+
+    char* path_copy = strdup(path->data);
+    char* token = strtok(path_copy, ".");
+    TomlValue* current = table;
+
+    while (token) {
+        char* next_token = strtok(NULL, ".");
+
+        if (current->type == TOML_TABLE) {
+            TomlValue* val = toml_table_get_internal(current, token);
+            if (!val) {
+                free(path_copy);
+                return 0;
+            }
+            if (!next_token) {
+                free(path_copy);
+                if (val->type == TOML_ARRAY) {
+                    // Convert to Vec of strings (simplified)
+                    SxVec* vec = intrinsic_vec_new();
+                    for (int i = 0; i < val->data.array.count; i++) {
+                        TomlValue* item = val->data.array.items[i];
+                        if (item->type == TOML_STRING) {
+                            intrinsic_vec_push(vec, (void*)intrinsic_string_new(item->data.string_val));
+                        } else if (item->type == TOML_INTEGER) {
+                            char buf[32];
+                            snprintf(buf, 32, "%lld", (long long)item->data.int_val);
+                            intrinsic_vec_push(vec, (void*)intrinsic_string_new(buf));
+                        }
+                    }
+                    return (int64_t)vec;
+                }
+                return 0;
+            }
+            current = val;
+        } else {
+            free(path_copy);
+            return 0;
+        }
+        token = next_token;
+    }
+
+    free(path_copy);
+    return 0;
+}
+
+// Get nested table by path
+int64_t toml_get_table(int64_t table_ptr, int64_t path_ptr) {
+    TomlValue* table = (TomlValue*)table_ptr;
+    SxString* path = (SxString*)path_ptr;
+    if (!table || !path || table->type != TOML_TABLE) return 0;
+
+    char* path_copy = strdup(path->data);
+    char* token = strtok(path_copy, ".");
+    TomlValue* current = table;
+
+    while (token) {
+        if (current->type == TOML_TABLE) {
+            TomlValue* val = toml_table_get_internal(current, token);
+            if (!val) {
+                free(path_copy);
+                return 0;
+            }
+            current = val;
+        } else {
+            free(path_copy);
+            return 0;
+        }
+        token = strtok(NULL, ".");
+    }
+
+    free(path_copy);
+    if (current->type == TOML_TABLE) {
+        return (int64_t)current;
+    }
+    return 0;
+}
+
+// Get list of keys in table
+int64_t toml_keys(int64_t table_ptr) {
+    TomlValue* table = (TomlValue*)table_ptr;
+    if (!table || table->type != TOML_TABLE) return (int64_t)intrinsic_vec_new();
+
+    SxVec* vec = intrinsic_vec_new();
+    TomlEntry* entry = table->data.table;
+    while (entry) {
+        intrinsic_vec_push(vec, (void*)intrinsic_string_new(entry->key));
+        entry = entry->next;
+    }
+    return (int64_t)vec;
+}
+
+// Set string value in table
+void toml_set_string(int64_t table_ptr, int64_t key_ptr, int64_t value_ptr) {
+    TomlValue* table = (TomlValue*)table_ptr;
+    SxString* key = (SxString*)key_ptr;
+    SxString* value = (SxString*)value_ptr;
+    if (!table || !key || !value || table->type != TOML_TABLE) return;
+
+    toml_table_set_internal(table, key->data, toml_value_string(value->data));
+}
+
+// Set integer value in table
+void toml_set_i64(int64_t table_ptr, int64_t key_ptr, int64_t value) {
+    TomlValue* table = (TomlValue*)table_ptr;
+    SxString* key = (SxString*)key_ptr;
+    if (!table || !key || table->type != TOML_TABLE) return;
+
+    toml_table_set_internal(table, key->data, toml_value_int(value));
+}
+
+// Set boolean value in table
+void toml_set_bool(int64_t table_ptr, int64_t key_ptr, int64_t value) {
+    TomlValue* table = (TomlValue*)table_ptr;
+    SxString* key = (SxString*)key_ptr;
+    if (!table || !key || table->type != TOML_TABLE) return;
+
+    toml_table_set_internal(table, key->data, toml_value_bool(value ? 1 : 0));
+}
+
+// Helper for stringification
+static void toml_stringify_value(TomlValue* val, char* buf, int* pos, int buf_size, int indent);
+
+static void toml_stringify_table_contents(TomlValue* table, char* buf, int* pos, int buf_size) {
+    TomlEntry* entry = table->data.table;
+    while (entry) {
+        // Skip nested tables (handled separately)
+        if (entry->value->type == TOML_TABLE) {
+            entry = entry->next;
+            continue;
+        }
+
+        *pos += snprintf(buf + *pos, buf_size - *pos, "%s = ", entry->key);
+        toml_stringify_value(entry->value, buf, pos, buf_size, 0);
+        *pos += snprintf(buf + *pos, buf_size - *pos, "\n");
+        entry = entry->next;
+    }
+}
+
+static void toml_stringify_value(TomlValue* val, char* buf, int* pos, int buf_size, int indent) {
+    if (!val) return;
+
+    switch (val->type) {
+        case TOML_STRING:
+            *pos += snprintf(buf + *pos, buf_size - *pos, "\"%s\"", val->data.string_val);
+            break;
+        case TOML_INTEGER:
+            *pos += snprintf(buf + *pos, buf_size - *pos, "%lld", (long long)val->data.int_val);
+            break;
+        case TOML_FLOAT:
+            *pos += snprintf(buf + *pos, buf_size - *pos, "%g", val->data.float_val);
+            break;
+        case TOML_BOOL:
+            *pos += snprintf(buf + *pos, buf_size - *pos, "%s", val->data.bool_val ? "true" : "false");
+            break;
+        case TOML_ARRAY:
+            *pos += snprintf(buf + *pos, buf_size - *pos, "[");
+            for (int i = 0; i < val->data.array.count; i++) {
+                if (i > 0) *pos += snprintf(buf + *pos, buf_size - *pos, ", ");
+                toml_stringify_value(val->data.array.items[i], buf, pos, buf_size, indent);
+            }
+            *pos += snprintf(buf + *pos, buf_size - *pos, "]");
+            break;
+        case TOML_TABLE:
+            *pos += snprintf(buf + *pos, buf_size - *pos, "{ ");
+            TomlEntry* entry = val->data.table;
+            int first = 1;
+            while (entry) {
+                if (!first) *pos += snprintf(buf + *pos, buf_size - *pos, ", ");
+                *pos += snprintf(buf + *pos, buf_size - *pos, "%s = ", entry->key);
+                toml_stringify_value(entry->value, buf, pos, buf_size, indent);
+                first = 0;
+                entry = entry->next;
+            }
+            *pos += snprintf(buf + *pos, buf_size - *pos, " }");
+            break;
+    }
+}
+
+// Serialize TOML table to string
+int64_t toml_stringify(int64_t table_ptr) {
+    TomlValue* table = (TomlValue*)table_ptr;
+    if (!table || table->type != TOML_TABLE) {
+        return (int64_t)intrinsic_string_new("");
+    }
+
+    char* buf = malloc(65536);
+    int pos = 0;
+
+    // First, output top-level key-values (non-tables)
+    toml_stringify_table_contents(table, buf, &pos, 65536);
+
+    // Then output nested tables
+    TomlEntry* entry = table->data.table;
+    while (entry) {
+        if (entry->value->type == TOML_TABLE) {
+            pos += snprintf(buf + pos, 65536 - pos, "\n[%s]\n", entry->key);
+            toml_stringify_table_contents(entry->value, buf, &pos, 65536);
+        }
+        entry = entry->next;
+    }
+
+    SxString* result = intrinsic_string_new(buf);
+    free(buf);
+    return (int64_t)result;
+}
+
+// Free TOML value
+void toml_free(int64_t table_ptr) {
+    TomlValue* val = (TomlValue*)table_ptr;
+    if (!val) return;
+
+    switch (val->type) {
+        case TOML_STRING:
+            free(val->data.string_val);
+            break;
+        case TOML_ARRAY:
+            for (int i = 0; i < val->data.array.count; i++) {
+                toml_free((int64_t)val->data.array.items[i]);
+            }
+            free(val->data.array.items);
+            break;
+        case TOML_TABLE: {
+            TomlEntry* entry = val->data.table;
+            while (entry) {
+                TomlEntry* next = entry->next;
+                free(entry->key);
+                toml_free((int64_t)entry->value);
+                free(entry);
+                entry = next;
+            }
+            break;
+        }
+        default:
+            break;
+    }
+    free(val);
 }

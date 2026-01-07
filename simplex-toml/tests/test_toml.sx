@@ -1,0 +1,254 @@
+// Test file for TOML Library
+// Tests: toml_parse, toml_get_*, toml_set_*, toml_stringify, etc.
+
+fn test_parse_basic() -> i64 {
+    let content: String = "name = \"test\"\nversion = 42"
+    let table: i64 = toml_parse(content)
+
+    if table == 0 {
+        println("FAIL: toml_parse should not return 0 for valid TOML")
+        return 1
+    }
+
+    toml_free(table)
+    println("PASS: test_parse_basic")
+    0
+}
+
+fn test_get_string() -> i64 {
+    let content: String = "name = \"hello world\""
+    let table: i64 = toml_parse(content)
+
+    if table == 0 {
+        println("FAIL: could not parse TOML")
+        return 1
+    }
+
+    let name: String = toml_get_string(table, "name")
+    toml_free(table)
+
+    if !string_eq(name, "hello world") {
+        print("FAIL: expected 'hello world', got: ")
+        println(name)
+        return 1
+    }
+
+    println("PASS: test_get_string")
+    0
+}
+
+fn test_get_i64() -> i64 {
+    let content: String = "count = 42\nnegative = -10"
+    let table: i64 = toml_parse(content)
+
+    if table == 0 {
+        println("FAIL: could not parse TOML")
+        return 1
+    }
+
+    let count: i64 = toml_get_i64(table, "count")
+    let negative: i64 = toml_get_i64(table, "negative")
+    toml_free(table)
+
+    if count != 42 {
+        print("FAIL: expected 42, got: ")
+        println(int_to_string(count))
+        return 1
+    }
+
+    if negative != -10 {
+        print("FAIL: expected -10, got: ")
+        println(int_to_string(negative))
+        return 1
+    }
+
+    println("PASS: test_get_i64")
+    0
+}
+
+fn test_get_bool() -> i64 {
+    let content: String = "enabled = true\ndisabled = false"
+    let table: i64 = toml_parse(content)
+
+    if table == 0 {
+        println("FAIL: could not parse TOML")
+        return 1
+    }
+
+    let enabled: i64 = toml_get_bool(table, "enabled")
+    let disabled: i64 = toml_get_bool(table, "disabled")
+    toml_free(table)
+
+    if enabled != 1 {
+        println("FAIL: enabled should be true (1)")
+        return 1
+    }
+
+    if disabled != 0 {
+        println("FAIL: disabled should be false (0)")
+        return 1
+    }
+
+    println("PASS: test_get_bool")
+    0
+}
+
+fn test_nested_table() -> i64 {
+    let content: String = "[package]\nname = \"myapp\"\nversion = \"1.0.0\""
+    let table: i64 = toml_parse(content)
+
+    if table == 0 {
+        println("FAIL: could not parse TOML with section")
+        return 1
+    }
+
+    let name: String = toml_get_string(table, "package.name")
+    let version: String = toml_get_string(table, "package.version")
+    toml_free(table)
+
+    if !string_eq(name, "myapp") {
+        print("FAIL: package.name should be 'myapp', got: ")
+        println(name)
+        return 1
+    }
+
+    if !string_eq(version, "1.0.0") {
+        print("FAIL: package.version should be '1.0.0', got: ")
+        println(version)
+        return 1
+    }
+
+    println("PASS: test_nested_table")
+    0
+}
+
+fn test_has_key() -> i64 {
+    let content: String = "name = \"test\""
+    let table: i64 = toml_parse(content)
+
+    if table == 0 {
+        println("FAIL: could not parse TOML")
+        return 1
+    }
+
+    let has_name: i64 = toml_has_key(table, "name")
+    let has_missing: i64 = toml_has_key(table, "missing")
+    toml_free(table)
+
+    if has_name != 1 {
+        println("FAIL: should have key 'name'")
+        return 1
+    }
+
+    if has_missing != 0 {
+        println("FAIL: should not have key 'missing'")
+        return 1
+    }
+
+    println("PASS: test_has_key")
+    0
+}
+
+fn test_table_new_and_set() -> i64 {
+    let table: i64 = toml_table_new()
+
+    if table == 0 {
+        println("FAIL: toml_table_new should not return 0")
+        return 1
+    }
+
+    toml_set_string(table, "name", "test")
+    toml_set_i64(table, "count", 100)
+    toml_set_bool(table, "active", 1)
+
+    let name: String = toml_get_string(table, "name")
+    let count: i64 = toml_get_i64(table, "count")
+    let active: i64 = toml_get_bool(table, "active")
+
+    toml_free(table)
+
+    if !string_eq(name, "test") {
+        print("FAIL: name should be 'test', got: ")
+        println(name)
+        return 1
+    }
+
+    if count != 100 {
+        print("FAIL: count should be 100, got: ")
+        println(int_to_string(count))
+        return 1
+    }
+
+    if active != 1 {
+        println("FAIL: active should be true (1)")
+        return 1
+    }
+
+    println("PASS: test_table_new_and_set")
+    0
+}
+
+fn test_stringify() -> i64 {
+    let table: i64 = toml_table_new()
+    toml_set_string(table, "name", "hello")
+    toml_set_i64(table, "version", 1)
+
+    let output: String = toml_stringify(table)
+    toml_free(table)
+
+    // Should contain both keys
+    if !string_contains(output, "name") {
+        println("FAIL: stringify output should contain 'name'")
+        return 1
+    }
+
+    if !string_contains(output, "hello") {
+        println("FAIL: stringify output should contain 'hello'")
+        return 1
+    }
+
+    println("PASS: test_stringify")
+    0
+}
+
+fn test_invalid_toml() -> i64 {
+    // Unclosed table header is invalid TOML
+    let content: String = "[invalid_table_header_no_close"
+    let table: i64 = toml_parse(content)
+
+    if table != 0 {
+        toml_free(table)
+        println("FAIL: invalid TOML should return 0")
+        return 1
+    }
+
+    println("PASS: test_invalid_toml")
+    0
+}
+
+fn main() -> i64 {
+    println("=== TOML Tests ===")
+    println("")
+
+    var failures: i64 = 0
+
+    failures = failures + test_parse_basic()
+    failures = failures + test_get_string()
+    failures = failures + test_get_i64()
+    failures = failures + test_get_bool()
+    failures = failures + test_nested_table()
+    failures = failures + test_has_key()
+    failures = failures + test_table_new_and_set()
+    failures = failures + test_stringify()
+    failures = failures + test_invalid_toml()
+
+    println("")
+    if failures == 0 {
+        println("All TOML tests passed!")
+    } else {
+        print("TOML tests failed: ")
+        println(int_to_string(failures))
+    }
+
+    failures
+}

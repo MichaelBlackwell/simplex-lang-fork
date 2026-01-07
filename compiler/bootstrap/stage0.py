@@ -3,6 +3,10 @@
 Stage 0 Simplex Compiler - Written in Python to bootstrap the minimal compiler
 This compiles a subset of Simplex to LLVM IR without depending on Simplex itself.
 Rewritten to avoid dataclasses for Python 3.14 compatibility.
+
+Copyright (c) 2025-2026 Rod Higgins
+Licensed under MIT License - see LICENSE file
+https://github.com/senuamedia/simplex-lang
 """
 
 import sys

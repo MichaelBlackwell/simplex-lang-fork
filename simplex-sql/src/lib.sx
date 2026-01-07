@@ -1,0 +1,252 @@
+/// simplex-sql - SQLite database driver for Simplex
+///
+/// # Example
+/// ```simplex
+/// use modulus::simplex_sql::sql
+///
+/// // Open a database
+/// let db = sql_open("app.db")
+/// if db == 0 {
+///     println("Failed to open database")
+///     return 1
+/// }
+///
+/// // Create table
+/// sql_execute(db, "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT)")
+///
+/// // Insert with prepared statement
+/// let stmt = sql_prepare(db, "INSERT INTO users (name) VALUES (?)")
+/// sql_bind_text(stmt, 1, "Alice")
+/// sql_step(stmt)
+/// sql_finalize(stmt)
+///
+/// // Query
+/// let query = sql_prepare(db, "SELECT id, name FROM users")
+/// while sql_step(query) == 1 {
+///     let id = sql_column_int(query, 0)
+///     let name = sql_column_text(query, 1)
+///     println(name)
+/// }
+/// sql_finalize(query)
+///
+/// sql_close(db)
+/// ```
+
+// ============================================================================
+// SQL Column Types
+// ============================================================================
+
+pub let SQL_TYPE_NULL: i64 = 0
+pub let SQL_TYPE_INTEGER: i64 = 1
+pub let SQL_TYPE_REAL: i64 = 2
+pub let SQL_TYPE_TEXT: i64 = 3
+pub let SQL_TYPE_BLOB: i64 = 4
+
+// ============================================================================
+// Database Connection
+// ============================================================================
+
+/// Open a SQLite database file
+/// Returns database handle or 0 on failure
+pub fn sql_open(path: String) -> i64 {
+    sql_open(path)
+}
+
+/// Open an in-memory database
+pub fn sql_open_memory() -> i64 {
+    sql_open_memory()
+}
+
+/// Close a database connection
+pub fn sql_close(db: i64) -> i64 {
+    sql_close(db)
+    0
+}
+
+// ============================================================================
+// Direct Execution
+// ============================================================================
+
+/// Execute SQL statement (no results)
+/// Returns 0 on success, -1 on error
+pub fn sql_execute(db: i64, query: String) -> i64 {
+    sql_execute(db, query)
+}
+
+/// Get last error message
+pub fn sql_error(db: i64) -> String {
+    sql_error(db)
+}
+
+// ============================================================================
+// Prepared Statements
+// ============================================================================
+
+/// Prepare a SQL statement
+/// Returns statement handle or 0 on failure
+pub fn sql_prepare(db: i64, query: String) -> i64 {
+    sql_prepare(db, query)
+}
+
+/// Bind integer parameter (1-indexed)
+pub fn sql_bind_int(stmt: i64, index: i64, value: i64) -> i64 {
+    sql_bind_int(stmt, index, value)
+}
+
+/// Bind text parameter (1-indexed)
+pub fn sql_bind_text(stmt: i64, index: i64, value: String) -> i64 {
+    sql_bind_text(stmt, index, value)
+}
+
+/// Bind float parameter (1-indexed)
+pub fn sql_bind_double(stmt: i64, index: i64, value: f64) -> i64 {
+    sql_bind_double(stmt, index, value)
+}
+
+/// Bind NULL parameter (1-indexed)
+pub fn sql_bind_null(stmt: i64, index: i64) -> i64 {
+    sql_bind_null(stmt, index)
+}
+
+/// Step/execute statement
+/// Returns: 1 = has row, 0 = done, -1 = error
+pub fn sql_step(stmt: i64) -> i64 {
+    sql_step(stmt)
+}
+
+/// Reset statement for re-execution
+pub fn sql_reset(stmt: i64) -> i64 {
+    sql_reset(stmt)
+}
+
+/// Finalize (free) statement
+pub fn sql_finalize(stmt: i64) -> i64 {
+    sql_finalize(stmt)
+    0
+}
+
+// ============================================================================
+// Column Access
+// ============================================================================
+
+/// Get number of columns in result
+pub fn sql_column_count(stmt: i64) -> i64 {
+    sql_column_count(stmt)
+}
+
+/// Get column type (SQL_TYPE_NULL, SQL_TYPE_INTEGER, etc.)
+pub fn sql_column_type(stmt: i64, index: i64) -> i64 {
+    sql_column_type(stmt, index)
+}
+
+/// Get column name
+pub fn sql_column_name(stmt: i64, index: i64) -> String {
+    sql_column_name(stmt, index)
+}
+
+/// Get integer column value (0-indexed)
+pub fn sql_column_int(stmt: i64, index: i64) -> i64 {
+    sql_column_int(stmt, index)
+}
+
+/// Get text column value (0-indexed)
+pub fn sql_column_text(stmt: i64, index: i64) -> String {
+    sql_column_text(stmt, index)
+}
+
+/// Get double column value (0-indexed)
+pub fn sql_column_double(stmt: i64, index: i64) -> f64 {
+    sql_column_double(stmt, index)
+}
+
+/// Get blob column value as list of bytes (0-indexed)
+pub fn sql_column_blob(stmt: i64, index: i64) -> i64 {
+    sql_column_blob(stmt, index)
+}
+
+/// Check if column is NULL (0-indexed)
+pub fn sql_column_is_null(stmt: i64, index: i64) -> Bool {
+    sql_column_is_null(stmt, index) == 1
+}
+
+// ============================================================================
+// Transactions
+// ============================================================================
+
+/// Begin a transaction
+pub fn sql_begin(db: i64) -> i64 {
+    sql_begin(db)
+}
+
+/// Commit transaction
+pub fn sql_commit(db: i64) -> i64 {
+    sql_commit(db)
+}
+
+/// Rollback transaction
+pub fn sql_rollback(db: i64) -> i64 {
+    sql_rollback(db)
+}
+
+// ============================================================================
+// Utility Functions
+// ============================================================================
+
+/// Get last inserted row ID
+pub fn sql_last_insert_id(db: i64) -> i64 {
+    sql_last_insert_id(db)
+}
+
+/// Get number of rows changed by last statement
+pub fn sql_changes(db: i64) -> i64 {
+    sql_changes(db)
+}
+
+/// Get total number of rows changed since connection opened
+pub fn sql_total_changes(db: i64) -> i64 {
+    sql_total_changes(db)
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Execute and get single integer result
+pub fn sql_query_int(db: i64, query: String) -> i64 {
+    let stmt: i64 = sql_prepare(db, query)
+    if stmt == 0 {
+        return 0
+    }
+    var result: i64 = 0
+    if sql_step(stmt) == 1 {
+        result = sql_column_int(stmt, 0)
+    }
+    sql_finalize(stmt)
+    result
+}
+
+/// Execute and get single string result
+pub fn sql_query_text(db: i64, query: String) -> String {
+    let stmt: i64 = sql_prepare(db, query)
+    if stmt == 0 {
+        return ""
+    }
+    var result: String = ""
+    if sql_step(stmt) == 1 {
+        result = sql_column_text(stmt, 0)
+    }
+    sql_finalize(stmt)
+    result
+}
+
+/// Check if table exists
+pub fn sql_table_exists(db: i64, table_name: String) -> Bool {
+    let stmt: i64 = sql_prepare(db, "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?")
+    if stmt == 0 {
+        return false
+    }
+    sql_bind_text(stmt, 1, table_name)
+    let exists: Bool = sql_step(stmt) == 1
+    sql_finalize(stmt)
+    exists
+}
