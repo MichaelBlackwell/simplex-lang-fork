@@ -4,9 +4,8 @@
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-BOOTSTRAP_DIR="$PROJECT_ROOT/bootstrap_mini"
-RUNTIME="$BOOTSTRAP_DIR/standalone_runtime.c"
-COMPILER="$BOOTSTRAP_DIR/stage0.py"
+RUNTIME="$PROJECT_ROOT/runtime/standalone_runtime.c"
+COMPILER="$PROJECT_ROOT/stage0.py"
 
 # Colors
 GREEN='\033[0;32m'
@@ -44,7 +43,7 @@ run_test() {
     fi
 
     # Link
-    if ! clang -O2 "$test_name.ll" "$RUNTIME" -o "$test_name.bin" -lssl -lcrypto -lsqlite3 2>/dev/null; then
+    if ! clang -O2 "$test_name.ll" "$RUNTIME" -o "$test_name.bin" -lm -lssl -lcrypto -lsqlite3 -lpthread 2>/dev/null; then
         echo -e "${RED}LINK FAIL${NC}"
         ((FAILED++))
         rm -f "$test_name.ll"

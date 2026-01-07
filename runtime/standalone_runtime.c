@@ -16158,3 +16158,1146 @@ void evolution_population_free(int64_t pop_ptr) {
     if (pop->genes) free(pop->genes);
     free(pop);
 }
+
+// ============================================================================
+// HashMap Implementation (String keys)
+// ============================================================================
+
+#define HASHMAP_INITIAL_CAPACITY 16
+#define HASHMAP_LOAD_FACTOR 0.75
+
+typedef struct HashMapEntry {
+    int64_t key;
+    int64_t value;
+    struct HashMapEntry* next;
+    uint64_t hash;
+} HashMapEntry;
+
+typedef struct {
+    HashMapEntry** buckets;
+    size_t capacity;
+    size_t size;
+} HashMap;
+
+// FNV-1a hash for strings
+static uint64_t fnv1a_hash_str(const char* str, size_t len) {
+    uint64_t hash = 14695981039346656037ULL;
+    for (size_t i = 0; i < len; i++) {
+        hash ^= (uint8_t)str[i];
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+// Hash a Simplex string key
+static uint64_t hash_string_key(int64_t key) {
+    if (key == 0) return 0;
+    SxString* s = (SxString*)key;
+    return fnv1a_hash_str(s->data, s->len);
+}
+
+// Compare two Simplex string keys
+static int string_keys_equal(int64_t a, int64_t b) {
+    if (a == b) return 1;
+    if (a == 0 || b == 0) return 0;
+    SxString* sa = (SxString*)a;
+    SxString* sb = (SxString*)b;
+    if (sa->len != sb->len) return 0;
+    return memcmp(sa->data, sb->data, sa->len) == 0;
+}
+
+int64_t hashmap_new(void) {
+    HashMap* map = (HashMap*)malloc(sizeof(HashMap));
+    map->capacity = HASHMAP_INITIAL_CAPACITY;
+    map->size = 0;
+    map->buckets = (HashMapEntry**)calloc(map->capacity, sizeof(HashMapEntry*));
+    return (int64_t)map;
+}
+
+int64_t hashmap_with_capacity(int64_t cap) {
+    HashMap* map = (HashMap*)malloc(sizeof(HashMap));
+    map->capacity = cap > 0 ? (size_t)cap : HASHMAP_INITIAL_CAPACITY;
+    map->size = 0;
+    map->buckets = (HashMapEntry**)calloc(map->capacity, sizeof(HashMapEntry*));
+    return (int64_t)map;
+}
+
+static void hashmap_resize_internal(HashMap* map) {
+    size_t new_capacity = map->capacity * 2;
+    HashMapEntry** new_buckets = (HashMapEntry**)calloc(new_capacity, sizeof(HashMapEntry*));
+
+    for (size_t i = 0; i < map->capacity; i++) {
+        HashMapEntry* entry = map->buckets[i];
+        while (entry) {
+            HashMapEntry* next = entry->next;
+            size_t idx = entry->hash % new_capacity;
+            entry->next = new_buckets[idx];
+            new_buckets[idx] = entry;
+            entry = next;
+        }
+    }
+
+    free(map->buckets);
+    map->buckets = new_buckets;
+    map->capacity = new_capacity;
+}
+
+void hashmap_insert(int64_t map_ptr, int64_t key, int64_t value) {
+    HashMap* map = (HashMap*)map_ptr;
+    if (!map) return;
+
+    uint64_t hash = hash_string_key(key);
+    size_t idx = hash % map->capacity;
+
+    // Check if key exists
+    HashMapEntry* entry = map->buckets[idx];
+    while (entry) {
+        if (entry->hash == hash && string_keys_equal(entry->key, key)) {
+            entry->value = value;
+            return;
+        }
+        entry = entry->next;
+    }
+
+    // Add new entry
+    if ((double)map->size / map->capacity >= HASHMAP_LOAD_FACTOR) {
+        hashmap_resize_internal(map);
+        idx = hash % map->capacity;
+    }
+
+    entry = (HashMapEntry*)malloc(sizeof(HashMapEntry));
+    entry->key = key;
+    entry->value = value;
+    entry->hash = hash;
+    entry->next = map->buckets[idx];
+    map->buckets[idx] = entry;
+    map->size++;
+}
+
+int64_t hashmap_get(int64_t map_ptr, int64_t key) {
+    HashMap* map = (HashMap*)map_ptr;
+    if (!map) return 0;
+
+    uint64_t hash = hash_string_key(key);
+    size_t idx = hash % map->capacity;
+
+    HashMapEntry* entry = map->buckets[idx];
+    while (entry) {
+        if (entry->hash == hash && string_keys_equal(entry->key, key)) {
+            // Return Some(value)
+            int64_t* opt = (int64_t*)malloc(16);
+            opt[0] = 1;
+            opt[1] = entry->value;
+            return (int64_t)opt;
+        }
+        entry = entry->next;
+    }
+
+    // Return None
+    int64_t* opt = (int64_t*)malloc(16);
+    opt[0] = 0;
+    opt[1] = 0;
+    return (int64_t)opt;
+}
+
+int64_t hashmap_contains(int64_t map_ptr, int64_t key) {
+    HashMap* map = (HashMap*)map_ptr;
+    if (!map) return 0;
+
+    uint64_t hash = hash_string_key(key);
+    size_t idx = hash % map->capacity;
+
+    HashMapEntry* entry = map->buckets[idx];
+    while (entry) {
+        if (entry->hash == hash && string_keys_equal(entry->key, key)) {
+            return 1;
+        }
+        entry = entry->next;
+    }
+    return 0;
+}
+
+int64_t hashmap_remove(int64_t map_ptr, int64_t key) {
+    HashMap* map = (HashMap*)map_ptr;
+    if (!map) return 0;
+
+    uint64_t hash = hash_string_key(key);
+    size_t idx = hash % map->capacity;
+
+    HashMapEntry** prev = &map->buckets[idx];
+    HashMapEntry* entry = *prev;
+
+    while (entry) {
+        if (entry->hash == hash && string_keys_equal(entry->key, key)) {
+            *prev = entry->next;
+            int64_t value = entry->value;
+            free(entry);
+            map->size--;
+
+            int64_t* opt = (int64_t*)malloc(16);
+            opt[0] = 1;
+            opt[1] = value;
+            return (int64_t)opt;
+        }
+        prev = &entry->next;
+        entry = entry->next;
+    }
+
+    int64_t* opt = (int64_t*)malloc(16);
+    opt[0] = 0;
+    opt[1] = 0;
+    return (int64_t)opt;
+}
+
+int64_t hashmap_len(int64_t map_ptr) {
+    HashMap* map = (HashMap*)map_ptr;
+    return map ? (int64_t)map->size : 0;
+}
+
+int64_t hashmap_is_empty(int64_t map_ptr) {
+    HashMap* map = (HashMap*)map_ptr;
+    return map ? (map->size == 0 ? 1 : 0) : 1;
+}
+
+int64_t hashmap_keys(int64_t map_ptr) {
+    HashMap* map = (HashMap*)map_ptr;
+    SxVec* vec = intrinsic_vec_new();
+    if (!map) return (int64_t)vec;
+
+    for (size_t i = 0; i < map->capacity; i++) {
+        HashMapEntry* entry = map->buckets[i];
+        while (entry) {
+            intrinsic_vec_push(vec, (void*)entry->key);
+            entry = entry->next;
+        }
+    }
+    return (int64_t)vec;
+}
+
+int64_t hashmap_values(int64_t map_ptr) {
+    HashMap* map = (HashMap*)map_ptr;
+    SxVec* vec = intrinsic_vec_new();
+    if (!map) return (int64_t)vec;
+
+    for (size_t i = 0; i < map->capacity; i++) {
+        HashMapEntry* entry = map->buckets[i];
+        while (entry) {
+            intrinsic_vec_push(vec, (void*)entry->value);
+            entry = entry->next;
+        }
+    }
+    return (int64_t)vec;
+}
+
+void hashmap_clear(int64_t map_ptr) {
+    HashMap* map = (HashMap*)map_ptr;
+    if (!map) return;
+
+    for (size_t i = 0; i < map->capacity; i++) {
+        HashMapEntry* entry = map->buckets[i];
+        while (entry) {
+            HashMapEntry* next = entry->next;
+            free(entry);
+            entry = next;
+        }
+        map->buckets[i] = NULL;
+    }
+    map->size = 0;
+}
+
+void hashmap_free(int64_t map_ptr) {
+    HashMap* map = (HashMap*)map_ptr;
+    if (!map) return;
+    hashmap_clear(map_ptr);
+    free(map->buckets);
+    free(map);
+}
+
+// ============================================================================
+// HashSet Implementation
+// ============================================================================
+
+typedef struct HashSetEntry {
+    int64_t value;
+    struct HashSetEntry* next;
+    uint64_t hash;
+} HashSetEntry;
+
+typedef struct {
+    HashSetEntry** buckets;
+    size_t capacity;
+    size_t size;
+} HashSet;
+
+int64_t hashset_new(void) {
+    HashSet* set = (HashSet*)malloc(sizeof(HashSet));
+    set->capacity = HASHMAP_INITIAL_CAPACITY;
+    set->size = 0;
+    set->buckets = (HashSetEntry**)calloc(set->capacity, sizeof(HashSetEntry*));
+    return (int64_t)set;
+}
+
+static void hashset_resize_internal(HashSet* set) {
+    size_t new_capacity = set->capacity * 2;
+    HashSetEntry** new_buckets = (HashSetEntry**)calloc(new_capacity, sizeof(HashSetEntry*));
+
+    for (size_t i = 0; i < set->capacity; i++) {
+        HashSetEntry* entry = set->buckets[i];
+        while (entry) {
+            HashSetEntry* next = entry->next;
+            size_t idx = entry->hash % new_capacity;
+            entry->next = new_buckets[idx];
+            new_buckets[idx] = entry;
+            entry = next;
+        }
+    }
+
+    free(set->buckets);
+    set->buckets = new_buckets;
+    set->capacity = new_capacity;
+}
+
+void hashset_insert(int64_t set_ptr, int64_t value) {
+    HashSet* set = (HashSet*)set_ptr;
+    if (!set) return;
+
+    uint64_t hash = hash_string_key(value);
+    size_t idx = hash % set->capacity;
+
+    HashSetEntry* entry = set->buckets[idx];
+    while (entry) {
+        if (entry->hash == hash && string_keys_equal(entry->value, value)) {
+            return;
+        }
+        entry = entry->next;
+    }
+
+    if ((double)set->size / set->capacity >= HASHMAP_LOAD_FACTOR) {
+        hashset_resize_internal(set);
+        idx = hash % set->capacity;
+    }
+
+    entry = (HashSetEntry*)malloc(sizeof(HashSetEntry));
+    entry->value = value;
+    entry->hash = hash;
+    entry->next = set->buckets[idx];
+    set->buckets[idx] = entry;
+    set->size++;
+}
+
+int64_t hashset_contains(int64_t set_ptr, int64_t value) {
+    HashSet* set = (HashSet*)set_ptr;
+    if (!set) return 0;
+
+    uint64_t hash = hash_string_key(value);
+    size_t idx = hash % set->capacity;
+
+    HashSetEntry* entry = set->buckets[idx];
+    while (entry) {
+        if (entry->hash == hash && string_keys_equal(entry->value, value)) {
+            return 1;
+        }
+        entry = entry->next;
+    }
+    return 0;
+}
+
+int64_t hashset_remove(int64_t set_ptr, int64_t value) {
+    HashSet* set = (HashSet*)set_ptr;
+    if (!set) return 0;
+
+    uint64_t hash = hash_string_key(value);
+    size_t idx = hash % set->capacity;
+
+    HashSetEntry** prev = &set->buckets[idx];
+    HashSetEntry* entry = *prev;
+
+    while (entry) {
+        if (entry->hash == hash && string_keys_equal(entry->value, value)) {
+            *prev = entry->next;
+            free(entry);
+            set->size--;
+            return 1;
+        }
+        prev = &entry->next;
+        entry = entry->next;
+    }
+    return 0;
+}
+
+int64_t hashset_len(int64_t set_ptr) {
+    HashSet* set = (HashSet*)set_ptr;
+    return set ? (int64_t)set->size : 0;
+}
+
+int64_t hashset_is_empty(int64_t set_ptr) {
+    HashSet* set = (HashSet*)set_ptr;
+    return set ? (set->size == 0 ? 1 : 0) : 1;
+}
+
+void hashset_clear(int64_t set_ptr) {
+    HashSet* set = (HashSet*)set_ptr;
+    if (!set) return;
+
+    for (size_t i = 0; i < set->capacity; i++) {
+        HashSetEntry* entry = set->buckets[i];
+        while (entry) {
+            HashSetEntry* next = entry->next;
+            free(entry);
+            entry = next;
+        }
+        set->buckets[i] = NULL;
+    }
+    set->size = 0;
+}
+
+int64_t hashset_to_vec(int64_t set_ptr) {
+    HashSet* set = (HashSet*)set_ptr;
+    SxVec* vec = intrinsic_vec_new();
+    if (!set) return (int64_t)vec;
+
+    for (size_t i = 0; i < set->capacity; i++) {
+        HashSetEntry* entry = set->buckets[i];
+        while (entry) {
+            intrinsic_vec_push(vec, (void*)entry->value);
+            entry = entry->next;
+        }
+    }
+    return (int64_t)vec;
+}
+
+int64_t hashset_union(int64_t set1_ptr, int64_t set2_ptr) {
+    int64_t result = hashset_new();
+    HashSet* set1 = (HashSet*)set1_ptr;
+    HashSet* set2 = (HashSet*)set2_ptr;
+
+    if (set1) {
+        for (size_t i = 0; i < set1->capacity; i++) {
+            HashSetEntry* entry = set1->buckets[i];
+            while (entry) {
+                hashset_insert(result, entry->value);
+                entry = entry->next;
+            }
+        }
+    }
+
+    if (set2) {
+        for (size_t i = 0; i < set2->capacity; i++) {
+            HashSetEntry* entry = set2->buckets[i];
+            while (entry) {
+                hashset_insert(result, entry->value);
+                entry = entry->next;
+            }
+        }
+    }
+
+    return result;
+}
+
+int64_t hashset_intersection(int64_t set1_ptr, int64_t set2_ptr) {
+    int64_t result = hashset_new();
+    HashSet* set1 = (HashSet*)set1_ptr;
+
+    if (!set1) return result;
+
+    for (size_t i = 0; i < set1->capacity; i++) {
+        HashSetEntry* entry = set1->buckets[i];
+        while (entry) {
+            if (hashset_contains(set2_ptr, entry->value)) {
+                hashset_insert(result, entry->value);
+            }
+            entry = entry->next;
+        }
+    }
+
+    return result;
+}
+
+int64_t hashset_difference(int64_t set1_ptr, int64_t set2_ptr) {
+    int64_t result = hashset_new();
+    HashSet* set1 = (HashSet*)set1_ptr;
+
+    if (!set1) return result;
+
+    for (size_t i = 0; i < set1->capacity; i++) {
+        HashSetEntry* entry = set1->buckets[i];
+        while (entry) {
+            if (!hashset_contains(set2_ptr, entry->value)) {
+                hashset_insert(result, entry->value);
+            }
+            entry = entry->next;
+        }
+    }
+
+    return result;
+}
+
+int64_t hashset_is_subset(int64_t set1_ptr, int64_t set2_ptr) {
+    HashSet* set1 = (HashSet*)set1_ptr;
+    if (!set1 || set1->size == 0) return 1;
+
+    for (size_t i = 0; i < set1->capacity; i++) {
+        HashSetEntry* entry = set1->buckets[i];
+        while (entry) {
+            if (!hashset_contains(set2_ptr, entry->value)) {
+                return 0;
+            }
+            entry = entry->next;
+        }
+    }
+    return 1;
+}
+
+void hashset_free(int64_t set_ptr) {
+    HashSet* set = (HashSet*)set_ptr;
+    if (!set) return;
+    hashset_clear(set_ptr);
+    free(set->buckets);
+    free(set);
+}
+
+// ============================================================================
+// Vec Helper Functions
+// ============================================================================
+
+int64_t vec_clone(int64_t vec_ptr) {
+    SxVec* src = (SxVec*)vec_ptr;
+    SxVec* result = intrinsic_vec_new();
+    if (!src) return (int64_t)result;
+
+    for (size_t i = 0; i < src->len; i++) {
+        intrinsic_vec_push(result, src->items[i]);
+    }
+    return (int64_t)result;
+}
+
+int64_t vec_find(int64_t vec_ptr, int64_t value) {
+    SxVec* vec = (SxVec*)vec_ptr;
+    if (!vec) return -1;
+
+    for (size_t i = 0; i < vec->len; i++) {
+        if (string_keys_equal((int64_t)vec->items[i], value)) {
+            return (int64_t)i;
+        }
+    }
+    return -1;
+}
+
+int64_t vec_contains(int64_t vec_ptr, int64_t value) {
+    return vec_find(vec_ptr, value) >= 0 ? 1 : 0;
+}
+
+int64_t vec_first(int64_t vec_ptr) {
+    SxVec* vec = (SxVec*)vec_ptr;
+    int64_t* opt = (int64_t*)malloc(16);
+
+    if (!vec || vec->len == 0) {
+        opt[0] = 0;
+        opt[1] = 0;
+    } else {
+        opt[0] = 1;
+        opt[1] = (int64_t)vec->items[0];
+    }
+    return (int64_t)opt;
+}
+
+int64_t vec_last(int64_t vec_ptr) {
+    SxVec* vec = (SxVec*)vec_ptr;
+    int64_t* opt = (int64_t*)malloc(16);
+
+    if (!vec || vec->len == 0) {
+        opt[0] = 0;
+        opt[1] = 0;
+    } else {
+        opt[0] = 1;
+        opt[1] = (int64_t)vec->items[vec->len - 1];
+    }
+    return (int64_t)opt;
+}
+
+int64_t vec_reverse(int64_t vec_ptr) {
+    SxVec* src = (SxVec*)vec_ptr;
+    SxVec* result = intrinsic_vec_new();
+    if (!src) return (int64_t)result;
+
+    for (size_t i = src->len; i > 0; i--) {
+        intrinsic_vec_push(result, src->items[i - 1]);
+    }
+    return (int64_t)result;
+}
+
+int64_t vec_sum(int64_t vec_ptr) {
+    SxVec* vec = (SxVec*)vec_ptr;
+    if (!vec) return 0;
+
+    int64_t sum = 0;
+    for (size_t i = 0; i < vec->len; i++) {
+        sum += (int64_t)vec->items[i];
+    }
+    return sum;
+}
+
+// ============================================================================
+// String Helper Functions
+// ============================================================================
+
+int64_t string_join(int64_t vec_ptr, int64_t sep_ptr) {
+    SxVec* vec = (SxVec*)vec_ptr;
+    SxString* sep = (SxString*)sep_ptr;
+
+    if (!vec || vec->len == 0) {
+        return (int64_t)intrinsic_string_new("");
+    }
+
+    // Calculate total length
+    size_t total_len = 0;
+    for (size_t i = 0; i < vec->len; i++) {
+        SxString* s = (SxString*)vec->items[i];
+        if (s) total_len += s->len;
+    }
+    if (sep && vec->len > 1) {
+        total_len += sep->len * (vec->len - 1);
+    }
+
+    // Build result
+    char* buf = (char*)malloc(total_len + 1);
+    size_t pos = 0;
+
+    for (size_t i = 0; i < vec->len; i++) {
+        if (i > 0 && sep && sep->len > 0) {
+            memcpy(buf + pos, sep->data, sep->len);
+            pos += sep->len;
+        }
+        SxString* s = (SxString*)vec->items[i];
+        if (s && s->len > 0) {
+            memcpy(buf + pos, s->data, s->len);
+            pos += s->len;
+        }
+    }
+    buf[pos] = '\0';
+
+    SxString* result = (SxString*)malloc(sizeof(SxString));
+    result->data = buf;
+    result->len = total_len;
+    result->cap = total_len + 1;
+    return (int64_t)result;
+}
+
+// ============================================================================
+// Option Helper Functions
+// ============================================================================
+
+int64_t option_is_some(int64_t opt_ptr) {
+    if (!opt_ptr) return 0;
+    int64_t* opt = (int64_t*)opt_ptr;
+    return opt[0];
+}
+
+int64_t option_is_none(int64_t opt_ptr) {
+    if (!opt_ptr) return 1;
+    int64_t* opt = (int64_t*)opt_ptr;
+    return opt[0] == 0 ? 1 : 0;
+}
+
+int64_t option_unwrap(int64_t opt_ptr) {
+    if (!opt_ptr) {
+        fprintf(stderr, "Error: unwrap called on None\n");
+        exit(1);
+    }
+    int64_t* opt = (int64_t*)opt_ptr;
+    if (opt[0] == 0) {
+        fprintf(stderr, "Error: unwrap called on None\n");
+        exit(1);
+    }
+    return opt[1];
+}
+
+int64_t option_unwrap_or(int64_t opt_ptr, int64_t default_val) {
+    if (!opt_ptr) return default_val;
+    int64_t* opt = (int64_t*)opt_ptr;
+    return opt[0] ? opt[1] : default_val;
+}
+
+int64_t option_some(int64_t value) {
+    int64_t* opt = (int64_t*)malloc(16);
+    opt[0] = 1;
+    opt[1] = value;
+    return (int64_t)opt;
+}
+
+int64_t option_none(void) {
+    int64_t* opt = (int64_t*)malloc(16);
+    opt[0] = 0;
+    opt[1] = 0;
+    return (int64_t)opt;
+}
+
+// ============================================================================
+// Result Helper Functions
+// ============================================================================
+
+int64_t result_ok(int64_t value) {
+    int64_t* res = (int64_t*)malloc(24);
+    res[0] = 1;
+    res[1] = value;
+    res[2] = 0;
+    return (int64_t)res;
+}
+
+int64_t result_err(int64_t error) {
+    int64_t* res = (int64_t*)malloc(24);
+    res[0] = 0;
+    res[1] = 0;
+    res[2] = error;
+    return (int64_t)res;
+}
+
+int64_t result_is_ok(int64_t res_ptr) {
+    if (!res_ptr) return 0;
+    int64_t* res = (int64_t*)res_ptr;
+    return res[0];
+}
+
+int64_t result_is_err(int64_t res_ptr) {
+    if (!res_ptr) return 1;
+    int64_t* res = (int64_t*)res_ptr;
+    return res[0] == 0 ? 1 : 0;
+}
+
+int64_t result_unwrap(int64_t res_ptr) {
+    if (!res_ptr) {
+        fprintf(stderr, "Error: unwrap called on Err result\n");
+        exit(1);
+    }
+    int64_t* res = (int64_t*)res_ptr;
+    if (res[0] == 0) {
+        fprintf(stderr, "Error: unwrap called on Err result\n");
+        exit(1);
+    }
+    return res[1];
+}
+
+int64_t result_unwrap_err(int64_t res_ptr) {
+    if (!res_ptr) {
+        fprintf(stderr, "Error: unwrap_err called on Ok result\n");
+        exit(1);
+    }
+    int64_t* res = (int64_t*)res_ptr;
+    if (res[0] != 0) {
+        fprintf(stderr, "Error: unwrap_err called on Ok result\n");
+        exit(1);
+    }
+    return res[2];
+}
+
+int64_t result_ok_or(int64_t res_ptr, int64_t default_val) {
+    if (!res_ptr) return default_val;
+    int64_t* res = (int64_t*)res_ptr;
+    return res[0] ? res[1] : default_val;
+}
+
+// ============================================================================
+// Iterator Functions
+// ============================================================================
+
+typedef struct {
+    int64_t source;
+    int64_t position;
+    int64_t end;
+    int64_t step;
+    int type;
+    int64_t func;
+    int64_t inner;
+} SxIterator;
+
+int64_t sxiter_from_vec(int64_t vec_ptr) {
+    SxIterator* iter = (SxIterator*)malloc(sizeof(SxIterator));
+    iter->source = vec_ptr;
+    iter->position = 0;
+    iter->end = intrinsic_vec_len((SxVec*)vec_ptr);
+    iter->step = 1;
+    iter->type = 0;
+    iter->func = 0;
+    iter->inner = 0;
+    return (int64_t)iter;
+}
+
+int64_t sxiter_range(int64_t start, int64_t end) {
+    SxIterator* iter = (SxIterator*)malloc(sizeof(SxIterator));
+    iter->source = 0;
+    iter->position = start;
+    iter->end = end;
+    iter->step = 1;
+    iter->type = 1;
+    iter->func = 0;
+    iter->inner = 0;
+    return (int64_t)iter;
+}
+
+int64_t sxiter_range_step(int64_t start, int64_t end, int64_t step) {
+    SxIterator* iter = (SxIterator*)malloc(sizeof(SxIterator));
+    iter->source = 0;
+    iter->position = start;
+    iter->end = end;
+    iter->step = step;
+    iter->type = 1;
+    iter->func = 0;
+    iter->inner = 0;
+    return (int64_t)iter;
+}
+
+int64_t sxiter_next(int64_t iter_ptr) {
+    SxIterator* iter = (SxIterator*)iter_ptr;
+    if (!iter) return option_none();
+
+    if (iter->type == 0) {
+        SxVec* vec = (SxVec*)iter->source;
+        if (!vec || iter->position >= (int64_t)vec->len) {
+            return option_none();
+        }
+        int64_t value = (int64_t)vec->items[iter->position++];
+        return option_some(value);
+    } else if (iter->type == 1) {
+        if (iter->step > 0 && iter->position >= iter->end) {
+            return option_none();
+        }
+        if (iter->step < 0 && iter->position <= iter->end) {
+            return option_none();
+        }
+        int64_t value = iter->position;
+        iter->position += iter->step;
+        return option_some(value);
+    }
+
+    return option_none();
+}
+
+int64_t sxiter_collect(int64_t iter_ptr) {
+    SxVec* result = intrinsic_vec_new();
+    while (1) {
+        int64_t opt = sxiter_next(iter_ptr);
+        if (option_is_none(opt)) break;
+        intrinsic_vec_push(result, (void*)option_unwrap(opt));
+    }
+    return (int64_t)result;
+}
+
+int64_t sxiter_count(int64_t iter_ptr) {
+    int64_t count = 0;
+    while (1) {
+        int64_t opt = sxiter_next(iter_ptr);
+        if (option_is_none(opt)) break;
+        count++;
+    }
+    return count;
+}
+
+int64_t sxiter_sum(int64_t iter_ptr) {
+    int64_t sum = 0;
+    while (1) {
+        int64_t opt = sxiter_next(iter_ptr);
+        if (option_is_none(opt)) break;
+        sum += option_unwrap(opt);
+    }
+    return sum;
+}
+
+int64_t sxiter_product(int64_t iter_ptr) {
+    int64_t product = 1;
+    while (1) {
+        int64_t opt = sxiter_next(iter_ptr);
+        if (option_is_none(opt)) break;
+        product *= option_unwrap(opt);
+    }
+    return product;
+}
+
+int64_t sxiter_min(int64_t iter_ptr) {
+    int64_t first_opt = sxiter_next(iter_ptr);
+    if (option_is_none(first_opt)) return option_none();
+
+    int64_t min_val = option_unwrap(first_opt);
+    while (1) {
+        int64_t opt = sxiter_next(iter_ptr);
+        if (option_is_none(opt)) break;
+        int64_t val = option_unwrap(opt);
+        if (val < min_val) min_val = val;
+    }
+    return option_some(min_val);
+}
+
+int64_t sxiter_max(int64_t iter_ptr) {
+    int64_t first_opt = sxiter_next(iter_ptr);
+    if (option_is_none(first_opt)) return option_none();
+
+    int64_t max_val = option_unwrap(first_opt);
+    while (1) {
+        int64_t opt = sxiter_next(iter_ptr);
+        if (option_is_none(opt)) break;
+        int64_t val = option_unwrap(opt);
+        if (val > max_val) max_val = val;
+    }
+    return option_some(max_val);
+}
+
+int64_t sxiter_any(int64_t iter_ptr, int64_t pred_fn) {
+    typedef int64_t (*PredFn)(int64_t);
+    PredFn pred = (PredFn)pred_fn;
+
+    while (1) {
+        int64_t opt = sxiter_next(iter_ptr);
+        if (option_is_none(opt)) break;
+        if (pred(option_unwrap(opt))) return 1;
+    }
+    return 0;
+}
+
+int64_t sxiter_all(int64_t iter_ptr, int64_t pred_fn) {
+    typedef int64_t (*PredFn)(int64_t);
+    PredFn pred = (PredFn)pred_fn;
+
+    while (1) {
+        int64_t opt = sxiter_next(iter_ptr);
+        if (option_is_none(opt)) break;
+        if (!pred(option_unwrap(opt))) return 0;
+    }
+    return 1;
+}
+
+int64_t sxiter_find(int64_t iter_ptr, int64_t pred_fn) {
+    typedef int64_t (*PredFn)(int64_t);
+    PredFn pred = (PredFn)pred_fn;
+
+    while (1) {
+        int64_t opt = sxiter_next(iter_ptr);
+        if (option_is_none(opt)) return option_none();
+        int64_t val = option_unwrap(opt);
+        if (pred(val)) return option_some(val);
+    }
+}
+
+int64_t sxiter_position(int64_t iter_ptr, int64_t pred_fn) {
+    typedef int64_t (*PredFn)(int64_t);
+    PredFn pred = (PredFn)pred_fn;
+    int64_t pos = 0;
+
+    while (1) {
+        int64_t opt = sxiter_next(iter_ptr);
+        if (option_is_none(opt)) return option_none();
+        if (pred(option_unwrap(opt))) return option_some(pos);
+        pos++;
+    }
+}
+
+int64_t sxiter_nth(int64_t iter_ptr, int64_t n) {
+    for (int64_t i = 0; i < n; i++) {
+        int64_t opt = sxiter_next(iter_ptr);
+        if (option_is_none(opt)) return option_none();
+    }
+    return sxiter_next(iter_ptr);
+}
+
+int64_t sxiter_last(int64_t iter_ptr) {
+    int64_t last = option_none();
+    while (1) {
+        int64_t opt = sxiter_next(iter_ptr);
+        if (option_is_none(opt)) break;
+        last = opt;
+    }
+    return last;
+}
+
+void sxiter_free(int64_t iter_ptr) {
+    if (iter_ptr) free((void*)iter_ptr);
+}
+
+// ============================================================================
+// Integer-keyed HashMap Implementation
+// ============================================================================
+
+typedef struct IntHashMapEntry {
+    int64_t key;
+    int64_t value;
+    struct IntHashMapEntry* next;
+} IntHashMapEntry;
+
+typedef struct {
+    IntHashMapEntry** buckets;
+    size_t capacity;
+    size_t size;
+} IntHashMap;
+
+// Simple integer hash
+static uint64_t hash_int_key(int64_t key) {
+    uint64_t x = (uint64_t)key;
+    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+    return x ^ (x >> 31);
+}
+
+int64_t int_hashmap_new(void) {
+    IntHashMap* map = (IntHashMap*)malloc(sizeof(IntHashMap));
+    map->capacity = 16;
+    map->size = 0;
+    map->buckets = (IntHashMapEntry**)calloc(map->capacity, sizeof(IntHashMapEntry*));
+    return (int64_t)map;
+}
+
+static void int_hashmap_resize(IntHashMap* map) {
+    size_t new_capacity = map->capacity * 2;
+    IntHashMapEntry** new_buckets = (IntHashMapEntry**)calloc(new_capacity, sizeof(IntHashMapEntry*));
+
+    for (size_t i = 0; i < map->capacity; i++) {
+        IntHashMapEntry* entry = map->buckets[i];
+        while (entry) {
+            IntHashMapEntry* next = entry->next;
+            size_t idx = hash_int_key(entry->key) % new_capacity;
+            entry->next = new_buckets[idx];
+            new_buckets[idx] = entry;
+            entry = next;
+        }
+    }
+
+    free(map->buckets);
+    map->buckets = new_buckets;
+    map->capacity = new_capacity;
+}
+
+int64_t int_hashmap_insert(int64_t map_ptr, int64_t key, int64_t value) {
+    IntHashMap* map = (IntHashMap*)map_ptr;
+    if (!map) return 0;
+
+    uint64_t hash = hash_int_key(key);
+    size_t idx = hash % map->capacity;
+
+    // Check if key exists
+    IntHashMapEntry* entry = map->buckets[idx];
+    while (entry) {
+        if (entry->key == key) {
+            entry->value = value;
+            return 0;
+        }
+        entry = entry->next;
+    }
+
+    // Add new entry
+    if ((double)map->size / map->capacity >= 0.75) {
+        int_hashmap_resize(map);
+        idx = hash % map->capacity;
+    }
+
+    entry = (IntHashMapEntry*)malloc(sizeof(IntHashMapEntry));
+    entry->key = key;
+    entry->value = value;
+    entry->next = map->buckets[idx];
+    map->buckets[idx] = entry;
+    map->size++;
+    return 0;
+}
+
+int64_t int_hashmap_get(int64_t map_ptr, int64_t key) {
+    IntHashMap* map = (IntHashMap*)map_ptr;
+    if (!map) return 0;
+
+    uint64_t hash = hash_int_key(key);
+    size_t idx = hash % map->capacity;
+
+    IntHashMapEntry* entry = map->buckets[idx];
+    while (entry) {
+        if (entry->key == key) {
+            int64_t* opt = (int64_t*)malloc(16);
+            opt[0] = 1;
+            opt[1] = entry->value;
+            return (int64_t)opt;
+        }
+        entry = entry->next;
+    }
+
+    int64_t* opt = (int64_t*)malloc(16);
+    opt[0] = 0;
+    opt[1] = 0;
+    return (int64_t)opt;
+}
+
+int64_t int_hashmap_contains(int64_t map_ptr, int64_t key) {
+    IntHashMap* map = (IntHashMap*)map_ptr;
+    if (!map) return 0;
+
+    uint64_t hash = hash_int_key(key);
+    size_t idx = hash % map->capacity;
+
+    IntHashMapEntry* entry = map->buckets[idx];
+    while (entry) {
+        if (entry->key == key) {
+            return 1;
+        }
+        entry = entry->next;
+    }
+    return 0;
+}
+
+int64_t int_hashmap_remove(int64_t map_ptr, int64_t key) {
+    IntHashMap* map = (IntHashMap*)map_ptr;
+    if (!map) return 0;
+
+    uint64_t hash = hash_int_key(key);
+    size_t idx = hash % map->capacity;
+
+    IntHashMapEntry** prev = &map->buckets[idx];
+    IntHashMapEntry* entry = *prev;
+
+    while (entry) {
+        if (entry->key == key) {
+            *prev = entry->next;
+            int64_t value = entry->value;
+            free(entry);
+            map->size--;
+
+            int64_t* opt = (int64_t*)malloc(16);
+            opt[0] = 1;
+            opt[1] = value;
+            return (int64_t)opt;
+        }
+        prev = &entry->next;
+        entry = entry->next;
+    }
+
+    int64_t* opt = (int64_t*)malloc(16);
+    opt[0] = 0;
+    opt[1] = 0;
+    return (int64_t)opt;
+}
+
+int64_t int_hashmap_len(int64_t map_ptr) {
+    IntHashMap* map = (IntHashMap*)map_ptr;
+    return map ? (int64_t)map->size : 0;
+}
+
+int64_t int_hashmap_is_empty(int64_t map_ptr) {
+    IntHashMap* map = (IntHashMap*)map_ptr;
+    return map ? (map->size == 0 ? 1 : 0) : 1;
+}
+
+void int_hashmap_clear(int64_t map_ptr) {
+    IntHashMap* map = (IntHashMap*)map_ptr;
+    if (!map) return;
+
+    for (size_t i = 0; i < map->capacity; i++) {
+        IntHashMapEntry* entry = map->buckets[i];
+        while (entry) {
+            IntHashMapEntry* next = entry->next;
+            free(entry);
+            entry = next;
+        }
+        map->buckets[i] = NULL;
+    }
+    map->size = 0;
+}
+
+void int_hashmap_free(int64_t map_ptr) {
+    IntHashMap* map = (IntHashMap*)map_ptr;
+    if (!map) return;
+    int_hashmap_clear(map_ptr);
+    free(map->buckets);
+    free(map);
+}
