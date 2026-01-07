@@ -1,8 +1,48 @@
 # Cognitive Hive AI Architecture
 
+**Version 0.5.0**
+
 **The future of AI is not one giant mind, but a swarm of specialists.**
 
 Simplex embraces the Cognitive Hive AI (CHAI) philosophy as a core architectural principle. Rather than relying on monolithic Large Language Models (LLMs), Simplex enables the orchestration of Small Language Models (SLMs) working as specialized agents within a coordinated hive.
+
+---
+
+## v0.5.0 Key Architecture: Per-Hive SLM
+
+**Each hive provisions ONE shared SLM that all its specialists use.**
+
+This is the core architectural decision of Simplex v0.5.0:
+
+```
+┌─────────────────────────────────────────────────┐
+│                  HIVE SLM                        │
+│           (One model per hive)                   │
+│         simplex-cognitive-7b (4.1 GB)            │
+└──────────────────┬──────────────────────────────┘
+                   │
+    ┌──────────────┼──────────────┐
+    │              │              │
+    ▼              ▼              ▼
+┌────────┐   ┌────────┐   ┌────────┐
+│Analyst │   │Coder   │   │Reviewer│
+│ Anima  │   │ Anima  │   │ Anima  │
+└────────┘   └────────┘   └────────┘
+    │              │              │
+    └──────────────┴──────────────┘
+              HiveMnemonic
+         (Shared consciousness)
+```
+
+**Why per-hive, not per-specialist?**
+
+| Per-Specialist (bad) | Per-Hive (Simplex) |
+|---------------------|-------------------|
+| 10 specialists = 10 models | 10 specialists = 1 model |
+| 80+ GB RAM | 8-12 GB RAM |
+| Expensive, wasteful | Efficient, practical |
+
+See [SLM Provisioning](13-slm-provisioning.md) for complete architecture details.
 
 ---
 
@@ -525,6 +565,130 @@ fn confidence_weighted<T>(responses: List<(T, f64)>) -> T {
 
 ---
 
+## The HiveMnemonic: Shared Consciousness
+
+**v0.5.0 Feature**
+
+The HiveMnemonic is the shared memory layer that creates collective consciousness across all specialists in a hive.
+
+### Three-Level Memory Hierarchy
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│              SPECIALIST ANIMA (Individual)                   │
+│   - Personal episodic memories (my experiences)              │
+│   - Personal semantic memories (my knowledge)                │
+│   - Personal beliefs (30% revision threshold)                │
+│   - Working memory (active context)                          │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│               HIVE MNEMONIC (Shared)                         │
+│   - Shared episodic memories (our experiences)               │
+│   - Shared semantic memories (our knowledge)                 │
+│   - Collective beliefs (50% revision threshold)              │
+│   - All specialists read/write to this                       │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────┐
+│               DIVINE (Solution-wide, optional)               │
+│   - Aggregated memories from all hives                       │
+│   - Global beliefs (70% revision threshold)                  │
+│   - Cross-hive reasoning                                     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Defining a Hive with Mnemonic
+
+```simplex
+hive AnalyticsHive {
+    // Specialists in this hive
+    specialists: [Analyzer, Summarizer, Critic],
+
+    // Shared SLM for all specialists
+    slm: "simplex-cognitive-7b",
+
+    // Shared consciousness (mnemonic)
+    mnemonic: {
+        episodic: {
+            capacity: 1000,
+            importance_threshold: 0.4,
+        },
+        semantic: {
+            capacity: 5000,
+        },
+        beliefs: {
+            revision_threshold: 50,  // 50% vs 30% individual
+            contradiction_resolution: ConsensusWithEvidence,
+        },
+    },
+
+    strategy: OneForOne,
+}
+```
+
+### How Context Flows to the SLM
+
+When a specialist calls `infer()`:
+
+1. **Personal context** - Specialist's Anima memories are formatted
+2. **Shared context** - Hive's Mnemonic is added
+3. **Combined prompt** - Both contexts prepended to the prompt
+4. **Inference** - Sent to the shared Hive SLM
+
+```simplex
+specialist Analyst {
+    receive Analyze(text: String) -> String {
+        // When infer() is called:
+        // 1. My Anima memories → formatted as context
+        // 2. Hive Mnemonic → added to context
+        // 3. "Analyze: {text}" → appended
+        // 4. Sent to hive.slm for inference
+        infer("Analyze: " + text)
+    }
+}
+```
+
+### Contributing to Shared Memory
+
+```simplex
+specialist Researcher {
+    receive Research(topic: String) {
+        let findings = do_research(topic)
+
+        // Personal memory (my Anima)
+        self.anima.remember("I researched: {topic}")
+
+        // Shared memory (Hive Mnemonic)
+        hive.mnemonic.learn("Research finding: {findings.summary}")
+        hive.mnemonic.believe("Topic {topic} is well-documented", confidence: 80)
+
+        findings
+    }
+}
+```
+
+### Accessing Shared Memory
+
+```simplex
+specialist Synthesizer {
+    receive Synthesize(query: String) -> Report {
+        // Recall from shared Hive Mnemonic
+        let team_knowledge = hive.mnemonic.recall_for(query)
+
+        // Recall from personal Anima
+        let my_experience = self.anima.recall_for(query)
+
+        // Both inform the inference
+        infer("Create synthesis report for: {query}")
+    }
+}
+```
+
+---
+
 ## Shared Memory
 
 Specialists can share context through hive memory:
@@ -866,15 +1030,39 @@ hive ResilientHive {
 
 | Concept | Purpose |
 |---------|---------|
-| `specialist` | Actor wrapping an SLM with defined capabilities |
-| `hive` | Supervisor coordinating multiple specialists |
-| `infer` | Call the specialist's underlying model |
+| `specialist` | Actor with Anima that uses the shared Hive SLM |
+| `hive` | Supervisor with ONE shared SLM for all specialists |
+| `anima` | Individual cognitive soul (memory, beliefs, intentions) |
+| `mnemonic` | Shared consciousness across all specialists in a hive |
+| `infer` | Call the Hive SLM with Anima + Mnemonic context |
 | `router` | Direct tasks to appropriate specialists |
 | `ensemble` | Combine multiple specialist outputs |
 | `consensus` | Resolve disagreements between specialists |
-| `memory` | Share context across specialists |
+
+### v0.5.0 Architecture Summary
+
+```
+Per-Hive SLM Architecture:
+  - ONE SLM per hive (not per specialist)
+  - HiveMnemonic for shared consciousness
+  - Specialist Anima for individual memory
+  - Three-tier hierarchy: Divine → Hive → Specialist
+
+Model Sizes:
+  - simplex-cognitive-7b: 4.1 GB (primary reasoning)
+  - simplex-cognitive-1b: 700 MB (edge/mobile)
+  - simplex-mnemonic-embed: 134 MB (memory recall)
+
+Belief Thresholds:
+  - Specialist Anima: 30%
+  - Hive Mnemonic: 50%
+  - Divine (global): 70%
+```
 
 The Cognitive Hive architecture enables Simplex programs to leverage AI at scale with:
+- **Per-hive SLM sharing**: 10 specialists share 1 model (not 10 models)
+- **Memory efficiency**: 8-12 GB for a full hive vs 80+ GB per-specialist
+- **Shared consciousness**: HiveMnemonic creates collective knowledge
 - **Cost efficiency**: Run on commodity hardware
 - **Low latency**: Local inference, no API round-trips
 - **High reliability**: Fault-tolerant specialist swarm
@@ -883,8 +1071,8 @@ The Cognitive Hive architecture enables Simplex programs to leverage AI at scale
 
 ---
 
-*"Many small minds, working in concert, can surpass a single great one."*
+*"Many minds, one model, shared consciousness."*
 
 ---
 
-*See also: [AI Integration](07-ai-integration.md) | [Swarm Computing](06-swarm-computing.md) | [Cost Optimization](08-cost-optimization.md)*
+*See also: [SLM Provisioning](13-slm-provisioning.md) | [The Anima](12-anima.md) | [AI Integration](07-ai-integration.md) | [Swarm Computing](06-swarm-computing.md) | [Cost Optimization](08-cost-optimization.md)*

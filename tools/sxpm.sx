@@ -2,7 +2,7 @@
 // Build tool and package manager for Simplex projects
 // Part of Phase 2: Package Ecosystem
 
-fn SXPM_VERSION() -> i64 { "0.1.5" }
+fn SXPM_VERSION() -> i64 { "0.5.0" }
 
 // ============================================================================
 // Help and Version
@@ -28,6 +28,12 @@ fn sxpm_show_help() {
     println("    search <query>       Search for packages");
     println("    info <package>       Show package information");
     println("    install <package>    Install a package");
+    println("");
+    println("MODEL COMMANDS:");
+    println("    model list           List available/installed models");
+    println("    model install <name> Download and install a model");
+    println("    model remove <name>  Remove an installed model");
+    println("    model info <name>    Show model information");
     println("");
     println("OPTIONS:");
     println("    -h, --help           Show this help");
@@ -168,7 +174,29 @@ fn manifest_entry(manifest: i64) -> i64 {
             return json_as_string(entry);
         }
     }
+    // Auto-detect: prefer lib.sx for libraries, main.sx for binaries
+    if file_exists("src/lib.sx") {
+        return "src/lib.sx";
+    }
+    if file_exists("src/main.sx") {
+        return "src/main.sx";
+    }
+    // Fallback to main.sx (will error if not found)
     "src/main.sx"
+}
+
+/// Check if this package is a library (has src/lib.sx)
+fn is_library_package() -> bool {
+    file_exists("src/lib.sx")
+}
+
+/// Get the package type as a string
+fn package_type() -> i64 {
+    if is_library_package() {
+        "library"
+    } else {
+        "binary"
+    }
 }
 
 fn manifest_dependencies(manifest: i64) -> i64 {
@@ -213,6 +241,164 @@ fn manifest_validate(manifest: i64) -> i64 {
     }
 
     errors
+}
+
+// ============================================================================
+// Version Range Support (Semver)
+// ============================================================================
+
+/// Parse a semver version string into (major, minor, patch) components
+/// Returns a tuple pointer: (i64, i64, i64)
+fn version_parse(version: i64) -> i64 {
+    let result: i64 = malloc(24)  // 3 * 8 bytes
+    store_i64(result, 0, 0)       // major
+    store_i64(result, 1, 0)       // minor
+    store_i64(result, 2, 0)       // patch
+
+    let parts: i64 = string_split(version, ".")
+    if vec_len(parts) >= 1 {
+        let major_str: i64 = vec_get(parts, 0)
+        store_i64(result, 0, string_to_int(major_str))
+    }
+    if vec_len(parts) >= 2 {
+        let minor_str: i64 = vec_get(parts, 1)
+        store_i64(result, 1, string_to_int(minor_str))
+    }
+    if vec_len(parts) >= 3 {
+        let patch_str: i64 = vec_get(parts, 2)
+        // Handle pre-release suffixes like "1.0.0-beta"
+        let patch_clean: i64 = string_split(patch_str, "-")
+        store_i64(result, 2, string_to_int(vec_get(patch_clean, 0)))
+    }
+    result
+}
+
+/// Get major version from parsed version tuple
+fn version_major(v: i64) -> i64 { load_i64(v, 0) }
+
+/// Get minor version from parsed version tuple
+fn version_minor(v: i64) -> i64 { load_i64(v, 1) }
+
+/// Get patch version from parsed version tuple
+fn version_patch(v: i64) -> i64 { load_i64(v, 2) }
+
+/// Compare two versions: returns -1 if a < b, 0 if a == b, 1 if a > b
+fn version_compare(a: i64, b: i64) -> i64 {
+    let a_major: i64 = version_major(a)
+    let b_major: i64 = version_major(b)
+    if a_major < b_major { return -1 }
+    if a_major > b_major { return 1 }
+
+    let a_minor: i64 = version_minor(a)
+    let b_minor: i64 = version_minor(b)
+    if a_minor < b_minor { return -1 }
+    if a_minor > b_minor { return 1 }
+
+    let a_patch: i64 = version_patch(a)
+    let b_patch: i64 = version_patch(b)
+    if a_patch < b_patch { return -1 }
+    if a_patch > b_patch { return 1 }
+
+    0
+}
+
+/// Check if a version satisfies a version constraint
+/// Supports: *, ^1.2.3, ~1.2.3, >=1.2.3, <=1.2.3, >1.2.3, <1.2.3, =1.2.3, 1.2.3
+fn version_satisfies(version_str: i64, constraint: i64) -> bool {
+    // Wildcard matches everything
+    if string_eq(constraint, "*") {
+        return true
+    }
+
+    let version: i64 = version_parse(version_str)
+
+    // Parse constraint prefix
+    var offset: i64 = 0
+    var op: i64 = "="
+
+    // Check for ^, ~, >=, <=, >, <
+    if string_starts_with(constraint, "^") {
+        op = "^"
+        offset = 1
+    } else if string_starts_with(constraint, "~") {
+        op = "~"
+        offset = 1
+    } else if string_starts_with(constraint, ">=") {
+        op = ">="
+        offset = 2
+    } else if string_starts_with(constraint, "<=") {
+        op = "<="
+        offset = 2
+    } else if string_starts_with(constraint, ">") {
+        op = ">"
+        offset = 1
+    } else if string_starts_with(constraint, "<") {
+        op = "<"
+        offset = 1
+    } else if string_starts_with(constraint, "=") {
+        op = "="
+        offset = 1
+    }
+
+    let constraint_ver_str: i64 = string_slice(constraint, offset, string_len(constraint))
+    let constraint_ver: i64 = version_parse(constraint_ver_str)
+    let cmp: i64 = version_compare(version, constraint_ver)
+
+    if string_eq(op, "=") {
+        return cmp == 0
+    }
+    if string_eq(op, ">") {
+        return cmp > 0
+    }
+    if string_eq(op, "<") {
+        return cmp < 0
+    }
+    if string_eq(op, ">=") {
+        return cmp >= 0
+    }
+    if string_eq(op, "<=") {
+        return cmp <= 0
+    }
+
+    // ^ (caret): compatible with version, allows minor/patch updates
+    // ^1.2.3 matches >=1.2.3 <2.0.0
+    // ^0.2.3 matches >=0.2.3 <0.3.0
+    // ^0.0.3 matches >=0.0.3 <0.0.4
+    if string_eq(op, "^") {
+        if cmp < 0 { return false }  // version must be >= constraint
+        let v_major: i64 = version_major(version)
+        let c_major: i64 = version_major(constraint_ver)
+        let c_minor: i64 = version_minor(constraint_ver)
+        let c_patch: i64 = version_patch(constraint_ver)
+
+        if c_major > 0 {
+            // ^1.2.3 allows changes that don't modify left-most non-zero
+            return v_major == c_major
+        }
+        if c_minor > 0 {
+            // ^0.2.3 only allows patch updates
+            let v_minor: i64 = version_minor(version)
+            return v_major == 0 && v_minor == c_minor
+        }
+        // ^0.0.3 only allows exact match
+        let v_minor: i64 = version_minor(version)
+        let v_patch: i64 = version_patch(version)
+        return v_major == 0 && v_minor == 0 && v_patch == c_patch
+    }
+
+    // ~ (tilde): allows patch-level changes
+    // ~1.2.3 matches >=1.2.3 <1.3.0
+    if string_eq(op, "~") {
+        if cmp < 0 { return false }  // version must be >= constraint
+        let v_major: i64 = version_major(version)
+        let v_minor: i64 = version_minor(version)
+        let c_major: i64 = version_major(constraint_ver)
+        let c_minor: i64 = version_minor(constraint_ver)
+        return v_major == c_major && v_minor == c_minor
+    }
+
+    // Exact version if no operator
+    cmp == 0
 }
 
 // ============================================================================
@@ -530,11 +716,11 @@ fn cmd_build(args: i64, argc: i64, arg_idx: i64) -> i64 {
     let target_dir: i64 = if release_mode { "target/release" } else { "target/debug" };
     mkdir_p(target_dir);
 
-    // Resolve dependencies
+    // Resolve dependencies with lock file support
     let deps: i64 = manifest_dependencies(manifest);
     if vec_len(deps) > 0 {
         println("Resolving dependencies...");
-        let resolve_result: i64 = resolve_dependencies(manifest, verbose);
+        let resolve_result: i64 = resolve_with_lockfile(manifest, verbose);
         if resolve_result != 0 {
             println("Error: failed to resolve dependencies");
             return 1;
@@ -670,6 +856,10 @@ fn cmd_test(args: i64, argc: i64, arg_idx: i64) -> i64 {
     if failed > 0 { 1 } else { 0 }
 }
 
+/// Find test files following naming conventions:
+/// - tests/test_*.sx (preferred)
+/// - tests/*_test.sx (alternative)
+/// - Any .sx file in tests/ directory (fallback)
 fn find_test_files() -> i64 {
     let files: i64 = vec_new();
 
@@ -684,7 +874,36 @@ fn find_test_files() -> i64 {
     while i < n {
         let name: i64 = vec_get(listing, i);
         if string_ends_with(name, ".sx") {
-            vec_push(files, path_join("tests", name));
+            // Accept test_*.sx, *_test.sx, or any .sx file
+            if string_starts_with(name, "test_") || string_ends_with(name, "_test.sx") {
+                vec_push(files, path_join("tests", name));
+            } else {
+                // Also include other .sx files for backwards compatibility
+                vec_push(files, path_join("tests", name));
+            }
+        }
+        i = i + 1;
+    }
+
+    files
+}
+
+/// Find example files in examples/ directory
+fn find_example_files() -> i64 {
+    let files: i64 = vec_new();
+
+    // List examples/ directory
+    let listing: i64 = list_dir("examples");
+    if listing == 0 {
+        return files;
+    }
+
+    let n: i64 = vec_len(listing);
+    var i: i64 = 0;
+    while i < n {
+        let name: i64 = vec_get(listing, i);
+        if string_ends_with(name, ".sx") {
+            vec_push(files, path_join("examples", name));
         }
         i = i + 1;
     }
@@ -703,6 +922,128 @@ fn cmd_clean(args: i64, argc: i64, arg_idx: i64) -> i64 {
 
     if result == 0 {
         println("Removed target/");
+    }
+
+    result
+}
+
+// ============================================================================
+// Command: update
+// ============================================================================
+
+fn cmd_update(args: i64, argc: i64, arg_idx: i64) -> i64 {
+    // Load manifest
+    let manifest: i64 = manifest_load("simplex.json");
+    if manifest == 0 {
+        println("Error: simplex.json not found");
+        return 1;
+    }
+
+    var verbose: bool = false;
+
+    // Parse options
+    var i: i64 = arg_idx;
+    while i < argc {
+        let arg: i64 = vec_get(args, i);
+        if string_eq(arg, "-v") || string_eq(arg, "--verbose") {
+            verbose = true;
+        }
+        i = i + 1;
+    }
+
+    println("Updating dependencies...");
+
+    // Remove existing lock file to force re-resolution
+    if check_file_exists("simplex.lock") {
+        process_run("rm simplex.lock");
+        if verbose {
+            println("Removed existing simplex.lock");
+        }
+    }
+
+    // Resolve dependencies fresh
+    let result: i64 = resolve_dependencies(manifest, verbose);
+    if result != 0 {
+        println("Error: failed to resolve dependencies");
+        return result;
+    }
+
+    // Generate new lock file
+    let graph: DepGraph = build_dep_graph(manifest, verbose);
+    generate_lockfile(graph, verbose);
+
+    println("Dependencies updated successfully");
+    0
+}
+
+// ============================================================================
+// Command: check
+// ============================================================================
+
+fn cmd_check(args: i64, argc: i64, arg_idx: i64) -> i64 {
+    // Load manifest
+    let manifest: i64 = manifest_load("simplex.json");
+    if manifest == 0 {
+        println("Error: simplex.json not found");
+        return 1;
+    }
+
+    // Validate manifest
+    let errors: i64 = manifest_validate(manifest);
+    if vec_len(errors) > 0 {
+        println("Error: invalid simplex.json:");
+        var i: i64 = 0;
+        while i < vec_len(errors) {
+            print("  - ");
+            println(vec_get(errors, i));
+            i = i + 1;
+        }
+        return 1;
+    }
+
+    let name: i64 = manifest_name(manifest);
+    let entry: i64 = manifest_entry(manifest);
+
+    var verbose: bool = false;
+
+    // Parse options
+    var i: i64 = arg_idx;
+    while i < argc {
+        let arg: i64 = vec_get(args, i);
+        if string_eq(arg, "-v") || string_eq(arg, "--verbose") {
+            verbose = true;
+        }
+        i = i + 1;
+    }
+
+    print("Checking ");
+    println(name);
+
+    // Just compile to LLVM IR without linking (type checking)
+    let resolve_result: i64 = resolve_with_lockfile(manifest, verbose);
+    if resolve_result != 0 {
+        println("Error: failed to resolve dependencies");
+        return 1;
+    }
+
+    // Run compiler in check-only mode
+    let sb: i64 = sb_new();
+    sb_append(sb, "python3 stage0.py ");
+    sb_append(sb, entry);
+    sb_append(sb, " --check");
+    let compile_cmd: i64 = sb_to_string(sb);
+
+    if verbose {
+        print("Running: ");
+        println(compile_cmd);
+    }
+
+    let result: i64 = process_run(compile_cmd);
+
+    if result == 0 {
+        println("Check passed!");
+    } else {
+        println("Check failed");
     }
 
     result
@@ -901,10 +1242,402 @@ fn cmd_install(args: i64, argc: i64, arg_idx: i64) -> i64 {
 }
 
 // ============================================================================
-// Dependency Resolution
+// Dependency Resolution with DAG
 // ============================================================================
 
+// Dependency graph node
+// Stores: name, version, dependencies (vec of names), visited state
+struct DepNode {
+    name: i64,
+    version: i64,
+    path: i64,           // Path to dependency source
+    deps: i64,           // Vec of dependency names
+    state: i64,          // 0=unvisited, 1=visiting, 2=visited
+    constraints: i64,    // Vec of (requirer, constraint) pairs for diamond detection
+    resolved_version: i64  // Final resolved version after constraint solving
+}
+
+fn dep_node_new(name: i64, version: i64, path: i64) -> DepNode {
+    DepNode {
+        name: name,
+        version: version,
+        path: path,
+        deps: vec_new(),
+        state: 0,
+        constraints: vec_new(),
+        resolved_version: version
+    }
+}
+
+// Add a version constraint from a requirer package
+fn dep_node_add_constraint(node: DepNode, requirer: i64, constraint: i64) {
+    // Store as a pair struct (simple approach: store alternating requirer, constraint)
+    vec_push(node.constraints, requirer);
+    vec_push(node.constraints, constraint);
+}
+
+// Dependency graph (DAG)
+struct DepGraph {
+    nodes: i64,          // HashMap<name, DepNode>
+    order: i64,          // Vec of names in topological order
+    has_cycle: bool,
+    cycle_path: i64,     // Vec of names showing cycle
+    conflicts: i64       // Vec of conflict messages for diamond deps
+}
+
+fn dep_graph_new() -> DepGraph {
+    DepGraph {
+        nodes: hashmap_new(),
+        order: vec_new(),
+        has_cycle: false,
+        cycle_path: vec_new(),
+        conflicts: vec_new()
+    }
+}
+
+// Add a node to the graph, with version constraint tracking for diamond deps
+// requirer: the package requiring this dependency (empty string for root)
+// constraint: the version constraint (e.g., "^1.0.0", ">=2.0")
+fn dep_graph_add_node_with_constraint(graph: DepGraph, name: i64, version: i64, path: i64, requirer: i64, constraint: i64) -> DepGraph {
+    if hashmap_contains(graph.nodes, name) == 0 {
+        // First time seeing this dependency
+        let node: DepNode = dep_node_new(name, version, path);
+        if string_len(requirer) > 0 {
+            dep_node_add_constraint(node, requirer, constraint);
+        }
+        hashmap_insert(graph.nodes, name, node);
+    } else {
+        // Diamond dependency: this package is already required by another
+        let node_opt: i64 = hashmap_get(graph.nodes, name);
+        if node_opt != 0 {
+            let existing: DepNode = node_opt;
+
+            // Track the new constraint
+            if string_len(requirer) > 0 {
+                dep_node_add_constraint(existing, requirer, constraint);
+            }
+
+            // Check if the existing version satisfies the new constraint
+            if string_len(constraint) > 0 {
+                if version_satisfies(existing.version, constraint) == false {
+                    // Version conflict detected!
+                    let msg: i64 = string_concat("Diamond dependency conflict for '", name);
+                    msg = string_concat(msg, "': ");
+                    msg = string_concat(msg, requirer);
+                    msg = string_concat(msg, " requires ");
+                    msg = string_concat(msg, constraint);
+                    msg = string_concat(msg, " but resolved version is ");
+                    msg = string_concat(msg, existing.version);
+                    vec_push(graph.conflicts, msg);
+                }
+            }
+        }
+    }
+    graph
+}
+
+// Add a node to the graph (backwards compatible version)
+fn dep_graph_add_node(graph: DepGraph, name: i64, version: i64, path: i64) -> DepGraph {
+    dep_graph_add_node_with_constraint(graph, name, version, path, "", "*")
+}
+
+// Add an edge (dependency relationship) from 'from' to 'to'
+fn dep_graph_add_edge(graph: DepGraph, from_name: i64, to_name: i64) -> DepGraph {
+    let node_opt: i64 = hashmap_get(graph.nodes, from_name);
+    if node_opt != 0 {
+        let node: DepNode = node_opt;
+        vec_push(node.deps, to_name);
+    }
+    graph
+}
+
+// DFS-based topological sort with cycle detection
+// Returns: 0 = success, 1 = cycle detected
+fn dep_graph_toposort(graph: DepGraph) -> i64 {
+    // Reset all states
+    let keys: i64 = hashmap_keys(graph.nodes);
+    var i: i64 = 0;
+    while i < vec_len(keys) {
+        let name: i64 = vec_get(keys, i);
+        let node_opt: i64 = hashmap_get(graph.nodes, name);
+        if node_opt != 0 {
+            let node: DepNode = node_opt;
+            node.state = 0;  // unvisited
+        }
+        i = i + 1;
+    }
+
+    // Clear previous order
+    vec_clear(graph.order);
+    graph.has_cycle = false;
+    vec_clear(graph.cycle_path);
+
+    // Visit all nodes
+    i = 0;
+    while i < vec_len(keys) {
+        let name: i64 = vec_get(keys, i);
+        let node_opt: i64 = hashmap_get(graph.nodes, name);
+        if node_opt != 0 {
+            let node: DepNode = node_opt;
+            if node.state == 0 {  // unvisited
+                let result: i64 = dep_graph_visit(graph, name, vec_new());
+                if result != 0 {
+                    return 1;  // cycle detected
+                }
+            }
+        }
+        i = i + 1;
+    }
+
+    0  // success
+}
+
+// Visit a node for topological sort
+fn dep_graph_visit(graph: DepGraph, name: i64, path: i64) -> i64 {
+    let node_opt: i64 = hashmap_get(graph.nodes, name);
+    if node_opt == 0 {
+        return 0;  // Node doesn't exist, skip
+    }
+
+    let node: DepNode = node_opt;
+
+    // Check for cycle (visiting a node that's already in the current path)
+    if node.state == 1 {  // currently visiting
+        graph.has_cycle = true;
+        // Build cycle path
+        vec_push(path, name);
+        graph.cycle_path = path;
+        return 1;
+    }
+
+    // Already visited
+    if node.state == 2 {
+        return 0;
+    }
+
+    // Mark as visiting
+    node.state = 1;
+    vec_push(path, name);
+
+    // Visit all dependencies
+    var i: i64 = 0;
+    while i < vec_len(node.deps) {
+        let dep_name: i64 = vec_get(node.deps, i);
+        let result: i64 = dep_graph_visit(graph, dep_name, path);
+        if result != 0 {
+            return 1;  // cycle detected
+        }
+        i = i + 1;
+    }
+
+    // Mark as visited
+    node.state = 2;
+    vec_pop(path);
+
+    // Add to order (reverse, so dependencies come first)
+    vec_push(graph.order, name);
+
+    0
+}
+
+// Print cycle error
+fn dep_graph_print_cycle(graph: DepGraph) {
+    println("Error: Circular dependency detected!");
+    print("  Cycle: ");
+    var i: i64 = 0;
+    while i < vec_len(graph.cycle_path) {
+        if i > 0 {
+            print(" -> ");
+        }
+        print(vec_get(graph.cycle_path, i));
+        i = i + 1;
+    }
+    println("");
+}
+
+// Check if graph has any version conflicts (diamond dependency issues)
+fn dep_graph_has_conflicts(graph: DepGraph) -> bool {
+    vec_len(graph.conflicts) > 0
+}
+
+// Print all version conflicts
+fn dep_graph_print_conflicts(graph: DepGraph) {
+    println("Error: Version conflicts detected (diamond dependencies):");
+    var i: i64 = 0;
+    while i < vec_len(graph.conflicts) {
+        print("  ");
+        println(vec_get(graph.conflicts, i));
+        i = i + 1;
+    }
+    println("");
+    println("Hint: Update version constraints to allow a compatible version,");
+    println("      or pin all dependents to the same version.");
+}
+
+// Show all constraints for a node (debugging helper)
+fn dep_node_print_constraints(node: DepNode) {
+    print("Constraints for '");
+    print(node.name);
+    print("' (resolved: ");
+    print(node.version);
+    println("):");
+    var i: i64 = 0;
+    while i < vec_len(node.constraints) {
+        let requirer: i64 = vec_get(node.constraints, i);
+        let constraint: i64 = vec_get(node.constraints, i + 1);
+        print("  - required by '");
+        print(requirer);
+        print("': ");
+        println(constraint);
+        i = i + 2;
+    }
+}
+
+// Build dependency graph from manifest
+fn build_dep_graph(manifest: i64, verbose: bool) -> DepGraph {
+    let graph: DepGraph = dep_graph_new();
+
+    // Add root package
+    let root_name: i64 = manifest_name(manifest);
+    let root_version: i64 = manifest_version(manifest);
+    graph = dep_graph_add_node(graph, root_name, root_version, ".");
+
+    // Queue for BFS traversal
+    let queue: i64 = vec_new();
+    vec_push(queue, root_name);
+
+    // Visited set to avoid re-processing
+    let visited: i64 = hashmap_new();
+    hashmap_insert(visited, root_name, 1);
+
+    while vec_len(queue) > 0 {
+        let current_name: i64 = vec_get(queue, 0);
+        // Remove first element (shift)
+        let new_queue: i64 = vec_new();
+        var i: i64 = 1;
+        while i < vec_len(queue) {
+            vec_push(new_queue, vec_get(queue, i));
+            i = i + 1;
+        }
+        queue = new_queue;
+
+        // Get current package's manifest
+        let current_manifest: i64 = 0;
+        if string_eq(current_name, root_name) {
+            current_manifest = manifest;
+        } else {
+            // Load manifest from dependency path
+            let node_opt: i64 = hashmap_get(graph.nodes, current_name);
+            if node_opt != 0 {
+                let node: DepNode = node_opt;
+                let manifest_path: i64 = path_join(node.path, "simplex.json");
+                current_manifest = manifest_load(manifest_path);
+            }
+        }
+
+        if current_manifest == 0 {
+            continue;
+        }
+
+        // Process dependencies
+        let deps: i64 = manifest_dependencies(current_manifest);
+        i = 0;
+        while i < vec_len(deps) {
+            let dep: i64 = vec_get(deps, i);
+            let dep_name: i64 = dep_name(dep);
+
+            // Determine dependency path
+            let dep_path: i64 = "";
+            if dep_is_path(dep) {
+                dep_path = dep_path(dep);
+            } else if dep_is_git(dep) {
+                dep_path = path_join(".simplex/deps", dep_name);
+            } else {
+                dep_path = path_join(".simplex/deps", dep_name);
+            }
+
+            // Add node if not exists
+            let dep_manifest_path: i64 = path_join(dep_path, "simplex.json");
+            let dep_manifest: i64 = manifest_load(dep_manifest_path);
+            let actual_version: i64 = "0.0.0";
+            if dep_manifest != 0 {
+                actual_version = manifest_version(dep_manifest);
+            }
+
+            // Get version constraint from dependency spec (for diamond conflict detection)
+            let constraint: i64 = dep_version(dep);
+            if string_len(constraint) == 0 {
+                constraint = "*";  // No constraint means any version
+            }
+
+            // Use constraint-aware add to detect diamond conflicts
+            graph = dep_graph_add_node_with_constraint(graph, dep_name, actual_version, dep_path, current_name, constraint);
+
+            // Add edge from current to dependency
+            graph = dep_graph_add_edge(graph, current_name, dep_name);
+
+            // Queue for processing if not visited
+            if hashmap_contains(visited, dep_name) == 0 {
+                hashmap_insert(visited, dep_name, 1);
+                vec_push(queue, dep_name);
+            }
+
+            i = i + 1;
+        }
+    }
+
+    graph
+}
+
+// Resolve dependencies with proper DAG
 fn resolve_dependencies(manifest: i64, verbose: bool) -> i64 {
+    if verbose {
+        println("Building dependency graph...");
+    }
+
+    // First, fetch all dependencies
+    let result: i64 = fetch_dependencies(manifest, verbose);
+    if result != 0 {
+        return result;
+    }
+
+    // Build dependency graph
+    let graph: DepGraph = build_dep_graph(manifest, verbose);
+
+    // Check for diamond dependency conflicts
+    if dep_graph_has_conflicts(graph) {
+        dep_graph_print_conflicts(graph);
+        return 1;
+    }
+
+    // Perform topological sort
+    if verbose {
+        println("Checking for cycles...");
+    }
+
+    let sort_result: i64 = dep_graph_toposort(graph);
+    if sort_result != 0 {
+        dep_graph_print_cycle(graph);
+        return 1;
+    }
+
+    if verbose {
+        println("Build order:");
+        var i: i64 = 0;
+        while i < vec_len(graph.order) {
+            print("  ");
+            print_i64(i + 1);
+            print(". ");
+            println(vec_get(graph.order, i));
+            i = i + 1;
+        }
+    }
+
+    0
+}
+
+// Fetch dependencies (download/clone as needed)
+fn fetch_dependencies(manifest: i64, verbose: bool) -> i64 {
     let deps: i64 = manifest_dependencies(manifest);
     let n: i64 = vec_len(deps);
 
@@ -974,6 +1707,219 @@ fn resolve_dependencies(manifest: i64, verbose: bool) -> i64 {
 }
 
 // ============================================================================
+// Lock File Generation
+// ============================================================================
+
+// Generate simplex.lock from resolved dependency graph
+fn generate_lockfile(graph: DepGraph, verbose: bool) -> i64 {
+    if verbose {
+        println("Generating simplex.lock...");
+    }
+
+    let sb: i64 = sb_new();
+    sb_append(sb, "{\n");
+    sb_append(sb, "  \"version\": 1,\n");
+    sb_append(sb, "  \"packages\": {\n");
+
+    let keys: i64 = hashmap_keys(graph.nodes);
+    var i: i64 = 0;
+    var first: bool = true;
+
+    while i < vec_len(keys) {
+        let name: i64 = vec_get(keys, i);
+        let node_opt: i64 = hashmap_get(graph.nodes, name);
+
+        if node_opt != 0 {
+            let node: DepNode = node_opt;
+
+            if first == false {
+                sb_append(sb, ",\n");
+            }
+            first = false;
+
+            sb_append(sb, "    \"");
+            sb_append(sb, name);
+            sb_append(sb, "\": {\n");
+
+            sb_append(sb, "      \"version\": \"");
+            sb_append(sb, node.version);
+            sb_append(sb, "\",\n");
+
+            sb_append(sb, "      \"source\": \"");
+            if string_eq(node.path, ".") {
+                sb_append(sb, "root");
+            } else if string_starts_with(node.path, ".simplex/deps") {
+                sb_append(sb, "registry");
+            } else {
+                sb_append(sb, "path");
+            }
+            sb_append(sb, "\",\n");
+
+            sb_append(sb, "      \"path\": \"");
+            sb_append(sb, node.path);
+            sb_append(sb, "\",\n");
+
+            // Dependencies list
+            sb_append(sb, "      \"dependencies\": [");
+            var j: i64 = 0;
+            while j < vec_len(node.deps) {
+                if j > 0 {
+                    sb_append(sb, ", ");
+                }
+                sb_append(sb, "\"");
+                sb_append(sb, vec_get(node.deps, j));
+                sb_append(sb, "\"");
+                j = j + 1;
+            }
+            sb_append(sb, "]\n");
+
+            sb_append(sb, "    }");
+        }
+
+        i = i + 1;
+    }
+
+    sb_append(sb, "\n  }\n");
+    sb_append(sb, "}\n");
+
+    let lockfile_content: i64 = sb_to_string(sb);
+    sb_free(sb);
+
+    write_file("simplex.lock", lockfile_content);
+
+    if verbose {
+        println("  Created: simplex.lock");
+    }
+
+    0
+}
+
+// Load existing lock file
+fn load_lockfile(verbose: bool) -> i64 {
+    if check_file_exists("simplex.lock") == false {
+        return 0;
+    }
+
+    let content: i64 = read_file("simplex.lock");
+    if content == 0 {
+        return 0;
+    }
+
+    let lock: i64 = json_parse(content);
+    if lock == 0 {
+        println("Warning: Could not parse simplex.lock");
+        return 0;
+    }
+
+    if verbose {
+        println("Loaded simplex.lock");
+    }
+
+    lock
+}
+
+// Check if lock file is up to date with manifest
+fn lockfile_is_current(manifest: i64, lockfile: i64) -> bool {
+    if lockfile == 0 {
+        return false;
+    }
+
+    let packages: i64 = json_get(lockfile, "packages");
+    if json_is_object(packages) == false {
+        return false;
+    }
+
+    // Check all dependencies in manifest are in lockfile
+    let deps: i64 = manifest_dependencies(manifest);
+    var i: i64 = 0;
+    while i < vec_len(deps) {
+        let dep: i64 = vec_get(deps, i);
+        let name: i64 = dep_name(dep);
+
+        let locked_pkg: i64 = json_get(packages, name);
+        if json_is_object(locked_pkg) == false {
+            return false;
+        }
+
+        i = i + 1;
+    }
+
+    true
+}
+
+// Resolve dependencies with lock file support
+fn resolve_with_lockfile(manifest: i64, verbose: bool) -> i64 {
+    // Check for existing lock file
+    let lockfile: i64 = load_lockfile(verbose);
+
+    // If lock file exists and is current, use it
+    if lockfile_is_current(manifest, lockfile) {
+        if verbose {
+            println("Using existing simplex.lock");
+        }
+        // Fetch any missing dependencies based on lock file
+        return fetch_from_lockfile(lockfile, verbose);
+    }
+
+    // Otherwise, resolve fresh
+    let result: i64 = resolve_dependencies(manifest, verbose);
+    if result != 0 {
+        return result;
+    }
+
+    // Generate new lock file
+    let graph: DepGraph = build_dep_graph(manifest, verbose);
+    generate_lockfile(graph, verbose);
+
+    0
+}
+
+// Fetch dependencies based on lock file
+fn fetch_from_lockfile(lockfile: i64, verbose: bool) -> i64 {
+    let packages: i64 = json_get(lockfile, "packages");
+    if json_is_object(packages) == false {
+        return 1;
+    }
+
+    let n: i64 = json_object_len(packages);
+    var i: i64 = 0;
+    while i < n {
+        let name: i64 = json_object_key_at(packages, i);
+        let pkg: i64 = json_object_value_at(packages, i);
+
+        if json_is_object(pkg) {
+            let source: i64 = json_as_string(json_get(pkg, "source"));
+            let path: i64 = json_as_string(json_get(pkg, "path"));
+
+            // Skip root package
+            if string_eq(source, "root") {
+                i = i + 1;
+                continue;
+            }
+
+            // Check if path exists
+            if check_file_exists(path) == false {
+                if verbose {
+                    print("  Fetching: ");
+                    println(name);
+                }
+
+                // For registry/git packages, we would need to re-fetch
+                // For now, just warn
+                print("Warning: dependency '");
+                print(name);
+                print("' not found at: ");
+                println(path);
+            }
+        }
+
+        i = i + 1;
+    }
+
+    0
+}
+
+// ============================================================================
 // Helper Functions (requires runtime support)
 // ============================================================================
 
@@ -999,16 +1945,551 @@ fn path_basename(path: i64) -> i64 {
 // get_cwd and list_dir are now intrinsics - no wrapper needed
 
 // ============================================================================
+// Build Cache System
+// ============================================================================
+
+// Cache entry for a source file
+struct CacheEntry {
+    source_path: i64,    // Path to source file
+    mtime: i64,          // Last modification time
+    hash: i64,           // Content hash (for more robust checking)
+    ll_path: i64,        // Path to compiled .ll file
+    deps: i64            // Vec of dependency source paths
+}
+
+fn cache_entry_new(source_path: i64) -> CacheEntry {
+    CacheEntry {
+        source_path: source_path,
+        mtime: file_mtime(source_path),
+        hash: "",
+        ll_path: "",
+        deps: vec_new()
+    }
+}
+
+// Cache directory paths
+fn cache_dir() -> i64 {
+    ".simplex/cache"
+}
+
+fn cache_meta_path() -> i64 {
+    ".simplex/cache/meta.json"
+}
+
+// Initialize cache directory
+fn cache_init() {
+    mkdir_p(".simplex");
+    mkdir_p(".simplex/cache");
+}
+
+// Simple hash function for source file content
+fn hash_file_content(path: i64) -> i64 {
+    let content: i64 = file_read(path);
+    if string_len(content) == 0 {
+        return "0";
+    }
+
+    // Simple FNV-1a style hash as string
+    var hash: i64 = 2166136261;  // FNV offset basis
+    var i: i64 = 0;
+    let len: i64 = string_len(content);
+
+    while i < len {
+        let c: i64 = string_char_at(content, i);
+        hash = (hash * 16777619) + c;  // FNV prime
+        // Keep hash manageable
+        hash = hash % 9999999999;
+        i = i + 1;
+    }
+
+    int_to_string(hash)
+}
+
+// Check if a source file needs recompilation
+fn needs_recompile(source_path: i64, cache: i64) -> bool {
+    // Get cached entry for this file
+    let entry_opt: i64 = hashmap_get(cache, source_path);
+    if entry_opt == 0 {
+        // Not in cache - needs compile
+        return true;
+    }
+
+    let entry: CacheEntry = entry_opt;
+
+    // Check modification time first (fast check)
+    let current_mtime: i64 = file_mtime(source_path);
+    if current_mtime != entry.mtime {
+        // File was modified - needs recompile
+        return true;
+    }
+
+    // Check if .ll file exists
+    if check_file_exists(entry.ll_path) == false {
+        return true;
+    }
+
+    // Check dependencies
+    var i: i64 = 0;
+    while i < vec_len(entry.deps) {
+        let dep_path: i64 = vec_get(entry.deps, i);
+        if needs_recompile(dep_path, cache) {
+            return true;
+        }
+        i = i + 1;
+    }
+
+    false
+}
+
+// Load cache metadata from disk
+fn cache_load() -> i64 {
+    let cache: i64 = hashmap_new();
+
+    if check_file_exists(cache_meta_path()) == false {
+        return cache;
+    }
+
+    let content: i64 = file_read(cache_meta_path());
+    if string_len(content) == 0 {
+        return cache;
+    }
+
+    let json: i64 = json_parse_simple(content);
+    if json == 0 {
+        return cache;
+    }
+
+    // Parse entries array
+    let entries: i64 = json_get(json, "entries");
+    if json_is_array(entries) == false {
+        return cache;
+    }
+
+    var i: i64 = 0;
+    while i < json_array_len(entries) {
+        let entry_json: i64 = json_get_index(entries, i);
+
+        let source_path: i64 = json_as_string(json_get(entry_json, "source"));
+        let entry: CacheEntry = CacheEntry {
+            source_path: source_path,
+            mtime: json_as_i64(json_get(entry_json, "mtime")),
+            hash: json_as_string(json_get(entry_json, "hash")),
+            ll_path: json_as_string(json_get(entry_json, "ll_path")),
+            deps: vec_new()
+        };
+
+        // Load deps
+        let deps_json: i64 = json_get(entry_json, "deps");
+        if json_is_array(deps_json) {
+            var j: i64 = 0;
+            while j < json_array_len(deps_json) {
+                vec_push(entry.deps, json_as_string(json_get_index(deps_json, j)));
+                j = j + 1;
+            }
+        }
+
+        hashmap_insert(cache, source_path, entry);
+        i = i + 1;
+    }
+
+    cache
+}
+
+// Save cache metadata to disk
+fn cache_save(cache: i64) {
+    let sb: i64 = sb_new();
+    sb_append(sb, "{\n  \"entries\": [\n");
+
+    let keys: i64 = hashmap_keys(cache);
+    var i: i64 = 0;
+    while i < vec_len(keys) {
+        let key: i64 = vec_get(keys, i);
+        let entry_opt: i64 = hashmap_get(cache, key);
+        if entry_opt != 0 {
+            let entry: CacheEntry = entry_opt;
+
+            if i > 0 {
+                sb_append(sb, ",\n");
+            }
+            sb_append(sb, "    {\n");
+            sb_append(sb, "      \"source\": \"");
+            sb_append(sb, entry.source_path);
+            sb_append(sb, "\",\n");
+            sb_append(sb, "      \"mtime\": ");
+            sb_append(sb, int_to_string(entry.mtime));
+            sb_append(sb, ",\n");
+            sb_append(sb, "      \"hash\": \"");
+            sb_append(sb, entry.hash);
+            sb_append(sb, "\",\n");
+            sb_append(sb, "      \"ll_path\": \"");
+            sb_append(sb, entry.ll_path);
+            sb_append(sb, "\",\n");
+            sb_append(sb, "      \"deps\": [");
+
+            var j: i64 = 0;
+            while j < vec_len(entry.deps) {
+                if j > 0 {
+                    sb_append(sb, ", ");
+                }
+                sb_append(sb, "\"");
+                sb_append(sb, vec_get(entry.deps, j));
+                sb_append(sb, "\"");
+                j = j + 1;
+            }
+
+            sb_append(sb, "]\n");
+            sb_append(sb, "    }");
+        }
+        i = i + 1;
+    }
+
+    sb_append(sb, "\n  ]\n}\n");
+    file_write(cache_meta_path(), sb_to_string(sb));
+}
+
+// Update cache entry after compilation
+fn cache_update(cache: i64, source_path: i64, ll_path: i64, deps: i64) {
+    let entry: CacheEntry = CacheEntry {
+        source_path: source_path,
+        mtime: file_mtime(source_path),
+        hash: hash_file_content(source_path),
+        ll_path: ll_path,
+        deps: deps
+    };
+    hashmap_insert(cache, source_path, entry);
+}
+
+// Clear cache for a specific file
+fn cache_invalidate(cache: i64, source_path: i64) {
+    hashmap_remove(cache, source_path);
+}
+
+// Clear all cache
+fn cache_clear() {
+    if check_file_exists(cache_meta_path()) {
+        remove_path(cache_meta_path());
+    }
+}
+
+// ============================================================================
+// Model Management for SLM Provisioning
+// ============================================================================
+
+// Model directory paths
+fn models_global_dir() -> i64 {
+    let home: i64 = cli_getenv("HOME");
+    path_join(home, ".simplex/models")
+}
+
+fn models_local_dir() -> i64 {
+    ".simplex/models"
+}
+
+// Model registry URL (can be overridden via SIMPLEX_MODEL_REGISTRY env)
+fn models_registry_url() -> i64 {
+    let env_url: i64 = cli_getenv("SIMPLEX_MODEL_REGISTRY");
+    if string_len(env_url) > 0 {
+        return env_url;
+    }
+    "https://raw.githubusercontent.com/anthropics/simplex-models/main/registry.json"
+}
+
+// Built-in model definitions (when registry unavailable)
+fn builtin_models() -> i64 {
+    let models: i64 = json_object();
+
+    // Cognitive model for anima.think()
+    let cognitive: i64 = json_object();
+    json_object_set_sx(cognitive, "name", json_string_sx("simplex-cognitive-7b"));
+    json_object_set_sx(cognitive, "description", json_string_sx("Default reasoning model for anima.think()"));
+    json_object_set_sx(cognitive, "size", json_string_sx("4.1GB"));
+    json_object_set_sx(cognitive, "quantization", json_string_sx("Q4_K_M"));
+    json_object_set_sx(cognitive, "url", json_string_sx("https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.2-GGUF/resolve/main/mistral-7b-instruct-v0.2.Q4_K_M.gguf"));
+    json_object_set_sx(cognitive, "sha256", json_string_sx(""));
+    json_object_set_sx(models, "simplex-cognitive-7b", cognitive);
+
+    // Lightweight cognitive model
+    let cognitive_sm: i64 = json_object();
+    json_object_set_sx(cognitive_sm, "name", json_string_sx("simplex-cognitive-1b"));
+    json_object_set_sx(cognitive_sm, "description", json_string_sx("Lightweight model for resource-constrained environments"));
+    json_object_set_sx(cognitive_sm, "size", json_string_sx("700MB"));
+    json_object_set_sx(cognitive_sm, "quantization", json_string_sx("Q4_K_M"));
+    json_object_set_sx(cognitive_sm, "url", json_string_sx("https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"));
+    json_object_set_sx(cognitive_sm, "sha256", json_string_sx(""));
+    json_object_set_sx(models, "simplex-cognitive-1b", cognitive_sm);
+
+    // Embedding model for mnemonic memory
+    let embed: i64 = json_object();
+    json_object_set_sx(embed, "name", json_string_sx("simplex-mnemonic-embed"));
+    json_object_set_sx(embed, "description", json_string_sx("Embedding model for memory recall and semantic search"));
+    json_object_set_sx(embed, "size", json_string_sx("134MB"));
+    json_object_set_sx(embed, "quantization", json_string_sx("F16"));
+    json_object_set_sx(embed, "url", json_string_sx("https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q8_0.gguf"));
+    json_object_set_sx(embed, "sha256", json_string_sx(""));
+    json_object_set_sx(models, "simplex-mnemonic-embed", embed);
+
+    models
+}
+
+// Check if model is installed
+fn model_is_installed(name: i64) -> bool {
+    let global_path: i64 = path_join(models_global_dir(), name);
+    let gguf_path: i64 = string_concat(global_path, ".gguf");
+    if check_file_exists(gguf_path) {
+        return true;
+    }
+    let local_path: i64 = path_join(models_local_dir(), name);
+    let local_gguf: i64 = string_concat(local_path, ".gguf");
+    check_file_exists(local_gguf)
+}
+
+// Get model file path
+fn model_path(name: i64) -> i64 {
+    let global_path: i64 = path_join(models_global_dir(), name);
+    let gguf_path: i64 = string_concat(global_path, ".gguf");
+    if check_file_exists(gguf_path) {
+        return gguf_path;
+    }
+    let local_path: i64 = path_join(models_local_dir(), name);
+    string_concat(local_path, ".gguf")
+}
+
+// List models
+fn cmd_model_list(args: i64, argc: i64, arg_idx: i64) -> i64 {
+    println("Available Models:");
+    println("================");
+    println("");
+
+    let models: i64 = builtin_models();
+    let keys: i64 = json_keys(models);
+    let n: i64 = vec_len(keys);
+    let i: i64 = 0;
+
+    while i < n {
+        let name: i64 = vec_get(keys, i);
+        let model: i64 = json_get_sx(models, name);
+        let desc: i64 = json_as_string(json_get_sx(model, "description"));
+        let size: i64 = json_as_string(json_get_sx(model, "size"));
+
+        print("  ");
+        print(name);
+        if model_is_installed(name) {
+            print(" [installed]");
+        }
+        println("");
+        print("    ");
+        println(desc);
+        print("    Size: ");
+        println(size);
+        println("");
+
+        i = i + 1;
+    }
+
+    0
+}
+
+// Install a model
+fn cmd_model_install(args: i64, argc: i64, arg_idx: i64) -> i64 {
+    if arg_idx >= argc {
+        println("Usage: sxpm model install <name>");
+        println("");
+        println("Available models:");
+        let models: i64 = builtin_models();
+        let keys: i64 = json_keys(models);
+        let n: i64 = vec_len(keys);
+        let i: i64 = 0;
+        while i < n {
+            print("  ");
+            println(vec_get(keys, i));
+            i = i + 1;
+        }
+        return 1;
+    }
+
+    let name: i64 = vec_get(args, arg_idx);
+
+    // Check if already installed
+    if model_is_installed(name) {
+        print("Model '");
+        print(name);
+        println("' is already installed.");
+        print("Path: ");
+        println(model_path(name));
+        return 0;
+    }
+
+    // Look up model in registry
+    let models: i64 = builtin_models();
+    let model: i64 = json_get_sx(models, name);
+
+    if json_is_null(model) {
+        print("Unknown model: ");
+        println(name);
+        println("Run 'sxpm model list' to see available models.");
+        return 1;
+    }
+
+    let url: i64 = json_as_string(json_get_sx(model, "url"));
+    let size: i64 = json_as_string(json_get_sx(model, "size"));
+
+    print("Installing model: ");
+    println(name);
+    print("Size: ");
+    println(size);
+    println("");
+
+    // Ensure models directory exists
+    mkdir_p(models_global_dir());
+
+    let dest_path: i64 = path_join(models_global_dir(), name);
+    let dest_gguf: i64 = string_concat(dest_path, ".gguf");
+
+    print("Downloading to: ");
+    println(dest_gguf);
+    println("");
+    println("Note: Download will use curl. For large models this may take several minutes.");
+    println("");
+
+    // Download using curl
+    let cmd: i64 = sb_new();
+    sb_append(cmd, "curl -L -# -o \"");
+    sb_append(cmd, dest_gguf);
+    sb_append(cmd, "\" \"");
+    sb_append(cmd, url);
+    sb_append(cmd, "\"");
+    let cmd_str: i64 = sb_to_string(cmd);
+    sb_free(cmd);
+
+    let result: i64 = process_run(cmd_str);
+
+    if result == 0 {
+        println("");
+        print("Model '");
+        print(name);
+        println("' installed successfully!");
+        print("Path: ");
+        println(dest_gguf);
+    } else {
+        print("Failed to download model. Exit code: ");
+        print_i64(result);
+        println("");
+    }
+
+    result
+}
+
+// Remove a model
+fn cmd_model_remove(args: i64, argc: i64, arg_idx: i64) -> i64 {
+    if arg_idx >= argc {
+        println("Usage: sxpm model remove <name>");
+        return 1;
+    }
+
+    let name: i64 = vec_get(args, arg_idx);
+
+    if !model_is_installed(name) {
+        print("Model '");
+        print(name);
+        println("' is not installed.");
+        return 1;
+    }
+
+    let path: i64 = model_path(name);
+    print("Removing model: ");
+    println(path);
+
+    remove_path(path);
+
+    print("Model '");
+    print(name);
+    println("' removed.");
+
+    0
+}
+
+// Show model info
+fn cmd_model_info(args: i64, argc: i64, arg_idx: i64) -> i64 {
+    if arg_idx >= argc {
+        println("Usage: sxpm model info <name>");
+        return 1;
+    }
+
+    let name: i64 = vec_get(args, arg_idx);
+    let models: i64 = builtin_models();
+    let model: i64 = json_get_sx(models, name);
+
+    if json_is_null(model) {
+        print("Unknown model: ");
+        println(name);
+        return 1;
+    }
+
+    println("Model Information:");
+    println("==================");
+    print("Name:         ");
+    println(json_as_string(json_get_sx(model, "name")));
+    print("Description:  ");
+    println(json_as_string(json_get_sx(model, "description")));
+    print("Size:         ");
+    println(json_as_string(json_get_sx(model, "size")));
+    print("Quantization: ");
+    println(json_as_string(json_get_sx(model, "quantization")));
+    print("Installed:    ");
+    if model_is_installed(name) {
+        println("Yes");
+        print("Path:         ");
+        println(model_path(name));
+    } else {
+        println("No");
+    }
+    print("URL:          ");
+    println(json_as_string(json_get_sx(model, "url")));
+
+    0
+}
+
+// Model command dispatcher
+fn cmd_model(args: i64, argc: i64, arg_idx: i64) -> i64 {
+    if arg_idx >= argc {
+        println("Usage: sxpm model <subcommand>");
+        println("");
+        println("Subcommands:");
+        println("  list           List available/installed models");
+        println("  install <name> Download and install a model");
+        println("  remove <name>  Remove an installed model");
+        println("  info <name>    Show model information");
+        return 1;
+    }
+
+    let subcmd: i64 = vec_get(args, arg_idx);
+
+    if string_eq(subcmd, "list") {
+        return cmd_model_list(args, argc, arg_idx + 1);
+    } else if string_eq(subcmd, "install") {
+        return cmd_model_install(args, argc, arg_idx + 1);
+    } else if string_eq(subcmd, "remove") {
+        return cmd_model_remove(args, argc, arg_idx + 1);
+    } else if string_eq(subcmd, "info") {
+        return cmd_model_info(args, argc, arg_idx + 1);
+    } else {
+        print("Unknown model subcommand: ");
+        println(subcmd);
+        return 1;
+    }
+}
+
+// ============================================================================
 // Main Entry Point
 // ============================================================================
 
-fn main() {
+fn main() -> i64 {
     let args: i64 = get_args();
     let argc: i64 = vec_len(args);
 
     if argc < 2 {
         sxpm_show_help();
-        return;
+        return 0;
     }
 
     let cmd: i64 = vec_get(args, 1);
@@ -1016,12 +2497,12 @@ fn main() {
     // Help flags
     if string_eq(cmd, "-h") || string_eq(cmd, "--help") {
         sxpm_show_help();
-        return;
+        return 0;
     }
 
     if string_eq(cmd, "--version") {
         sxpm_show_version();
-        return;
+        return 0;
     }
 
     // Commands
@@ -1039,6 +2520,10 @@ fn main() {
         result = cmd_test(args, argc, 2);
     } else if string_eq(cmd, "clean") {
         result = cmd_clean(args, argc, 2);
+    } else if string_eq(cmd, "update") {
+        result = cmd_update(args, argc, 2);
+    } else if string_eq(cmd, "check") {
+        result = cmd_check(args, argc, 2);
     } else if string_eq(cmd, "add") {
         result = cmd_add(args, argc, 2);
     } else if string_eq(cmd, "remove") {
@@ -1049,6 +2534,8 @@ fn main() {
         result = cmd_info(args, argc, 2);
     } else if string_eq(cmd, "install") {
         result = cmd_install(args, argc, 2);
+    } else if string_eq(cmd, "model") {
+        result = cmd_model(args, argc, 2);
     } else {
         print("Unknown command: ");
         println(cmd);

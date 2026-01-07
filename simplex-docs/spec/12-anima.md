@@ -1,8 +1,40 @@
 # The Anima - Simplex's Cognitive Soul
 
-**Version 0.4.0**
+**Version 0.5.0**
 
 The `anima` is the cognitive soul of every Simplex AI agent - the beating heart, mind, and memory that gives AI systems personality, continuity, and purpose.
+
+---
+
+## v0.5.0: Anima in the Hive Architecture
+
+In v0.5.0, the Anima integrates with the per-hive SLM architecture:
+
+```
+┌─────────────────────────────────────────────────┐
+│                  HIVE SLM                        │
+│         (One shared model per hive)              │
+└──────────────────┬──────────────────────────────┘
+                   │
+    ┌──────────────┼──────────────┐
+    │              │              │
+    ▼              ▼              ▼
+┌────────┐   ┌────────┐   ┌────────┐
+│Analyst │   │Coder   │   │Reviewer│
+│ Anima  │   │ Anima  │   │ Anima  │
+│ (30%)  │   │ (30%)  │   │ (30%)  │
+└────────┘   └────────┘   └────────┘
+    │              │              │
+    └──────────────┴──────────────┘
+         HiveMnemonic (50%)
+       (Shared consciousness)
+```
+
+**Key points**:
+- Each specialist has its own **Anima** (personal memories, beliefs)
+- All specialists share the **Hive SLM** (one model per hive)
+- The **HiveMnemonic** provides shared consciousness across specialists
+- When `infer()` is called, both Anima and Mnemonic context are included
 
 ---
 
@@ -458,6 +490,133 @@ actor Synthesizer {
 
 ---
 
+## Anima and Hive Integration (v0.5.0)
+
+### The Memory Hierarchy
+
+In v0.5.0, memories flow through three levels:
+
+```
+Specialist Anima (Personal)
+         │
+         ▼
+   HiveMnemonic (Shared)
+         │
+         ▼
+    Divine SLM (Global)
+```
+
+**Belief thresholds at each level**:
+- **Anima**: 30% (individual beliefs, flexible)
+- **Mnemonic**: 50% (shared beliefs, need consensus)
+- **Divine**: 70% (global beliefs, high confidence)
+
+### How Anima Feeds into Hive SLM
+
+When a specialist calls `infer()` or `think()`, the context is assembled:
+
+```simplex
+specialist Analyst {
+    receive Analyze(text: String) -> String {
+        // When infer() is called:
+        // 1. Format Anima memories (episodic, semantic, beliefs)
+        // 2. Add Hive Mnemonic context
+        // 3. Append the prompt
+        // 4. Send to shared Hive SLM
+
+        infer("Analyze: " + text)
+    }
+}
+```
+
+### Context Format
+
+```
+<context>
+Recent experiences:
+- Analyzed security code yesterday
+- Found SQL injection in login.sx
+
+Known facts:
+- This codebase uses prepared statements
+- Team prefers explicit error handling
+
+Current beliefs (confidence > 30%):
+- User prefers detailed output (85%)
+</context>
+
+<hive name="SecurityHive">
+Shared experiences:
+- Team completed security audit last week
+
+Shared knowledge:
+- Production uses PostgreSQL 15
+
+Hive beliefs (confidence > 50%):
+- Always validate user input (92%)
+</hive>
+
+Analyze: [user's text here]
+```
+
+### Contributing to Shared Memory
+
+Specialists can contribute to both personal and shared memory:
+
+```simplex
+specialist Researcher {
+    receive Research(topic: String) {
+        let findings = do_research(topic)
+
+        // Personal memory (my Anima)
+        self.anima.remember("I researched: {topic}")
+        self.anima.learn("Finding: {findings.key_insight}")
+
+        // Shared memory (Hive Mnemonic)
+        hive.mnemonic.learn("Research result: {findings.summary}")
+        hive.mnemonic.believe(
+            "Topic {topic} is well-documented",
+            confidence: 80
+        )
+
+        findings
+    }
+}
+```
+
+### Anima in Hive Definition
+
+```simplex
+hive AnalyticsHive {
+    specialists: [Analyzer, Summarizer, Critic],
+
+    // Shared SLM for all specialists
+    slm: "simplex-cognitive-7b",
+
+    // Shared consciousness
+    mnemonic: {
+        episodic: { capacity: 1000 },
+        semantic: { capacity: 5000 },
+        beliefs: { revision_threshold: 50 },
+    },
+}
+
+specialist Analyzer {
+    // Anima configuration for this specialist
+    anima: {
+        purpose: "Analyze code for issues",
+        beliefs: { revision_threshold: 30 },
+    },
+
+    receive Analyze(code: String) -> Analysis {
+        // My Anima + Hive Mnemonic context flows to Hive SLM
+        infer("Find issues in: " + code)
+    }
+}
+```
+
+---
+
 ## Runtime Functions
 
 | Function | Description |
@@ -475,6 +634,8 @@ actor Synthesizer {
 | `anima_save(mem, path)` | Save to file |
 | `anima_load(path)` | Load from file |
 | `anima_memory_close(mem)` | Close and cleanup |
+| `hive_mnemonic_learn(hive, content)` | Add to shared knowledge (v0.5.0) |
+| `hive_mnemonic_recall(hive, query)` | Recall from shared memory (v0.5.0) |
 
 ---
 
@@ -560,4 +721,4 @@ The Anima gives Simplex AI agents:
 
 ---
 
-*See also: [Cognitive Hive AI](09-cognitive-hive.md) | [AI Integration](07-ai-integration.md) | [Actors](../tutorial/07-actors.md)*
+*See also: [SLM Provisioning](13-slm-provisioning.md) | [Cognitive Hive AI](09-cognitive-hive.md) | [AI Integration](07-ai-integration.md) | [Actors](../tutorial/07-actors.md)*

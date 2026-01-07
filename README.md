@@ -1,11 +1,15 @@
 # Simplex Programming Language
 
+**Version 0.5.0**
+
 Simplex is a modern systems programming language designed for AI-native applications, featuring first-class support for actors, cognitive agents, and distributed computing.
 
 ## Features
 
 - **Actor Model**: Built-in actors with message passing for concurrent programming
 - **Cognitive Agents**: First-class AI specialist agents with inference capabilities
+- **Per-Hive SLM**: Each cognitive hive provisions its own shared language model
+- **HiveMnemonic**: Shared consciousness across specialists within a hive
 - **Self-Hosted**: Compiler written in Simplex itself (bootstrapped from Python)
 - **LLVM Backend**: Compiles to optimized native code via LLVM IR
 - **Rust-Inspired Syntax**: Familiar syntax with enums, traits, and pattern matching
@@ -82,13 +86,13 @@ Compile and run:
 
 ```bash
 # Build to executable
-./sxc build hello.sx
+sxc build hello.sx
 
 # Run directly
 ./hello
 
 # Or compile and run in one step
-./sxc run hello.sx
+sxc run hello.sx
 ```
 
 ### Variables and Types
@@ -184,21 +188,43 @@ async fn main() {
 }
 ```
 
-### AI Specialists
+### Cognitive Hive with Shared SLM (v0.5.0)
 
 ```simplex
-specialist Summarizer {
-    model: "gpt-4";
-    temperature: 0.7;
+// Create a hive with shared consciousness
+let mnemonic = HiveMnemonic::new(100, 500, 50);  // 50% belief threshold
+mnemonic.learn("Team coding standards require Result types", 0.95);
 
-    fn summarize(text: String) -> String {
-        infer("Summarize the following text: " + text)
+// Create shared SLM for the hive
+let hive_slm = HiveSLM::new("CodeReviewHive", "simplex-cognitive-7b", mnemonic);
+
+// Create specialists that share the SLM
+let security = Specialist::new("SecurityAnalyzer", hive_slm, security_anima);
+let quality = Specialist::new("QualityReviewer", hive_slm, quality_anima);
+let perf = Specialist::new("PerformanceOptimizer", hive_slm, perf_anima);
+
+// All three specialists share ONE model instance
+// Findings shared via HiveMnemonic are visible to all
+security.contribute_to_mnemonic("SQL injection found in process_user_input");
+// quality and perf can now see this finding in their context
+```
+
+### AI Specialists with Anima
+
+```simplex
+// Create personal memory for a specialist
+let anima = Anima::new(10);  // 30% belief threshold
+anima.learn("I specialize in code security", 0.9, "self");
+anima.desire("Find security vulnerabilities", 0.95);
+
+specialist SecurityAnalyzer {
+    model: "simplex-cognitive-7b";
+    anima: anima;
+
+    fn analyze(code: String) -> String {
+        // Context from anima + hive mnemonic prepended automatically
+        infer("Analyze this code for security issues: " + code)
     }
-}
-
-fn main() {
-    let summary = Summarizer::summarize("Long article text...");
-    println(summary);
 }
 ```
 
@@ -210,13 +236,13 @@ simplex-lang/
 │   └── bootstrap/          # Self-hosted compiler source
 │       ├── stage0.py       # Python bootstrap compiler
 │       ├── lexer.sx        # Lexical analysis
-│       ├── parser.sx       # Parsing (73KB)
-│       ├── codegen.sx      # Code generation (166KB)
+│       ├── parser.sx       # Parsing
+│       ├── codegen.sx      # Code generation
 │       ├── main.sx         # Compiler entry point
 │       ├── stdlib.sx       # Standard library
 │       └── utils.sx        # Utility functions
 ├── runtime/
-│   └── standalone_runtime.c  # C runtime library (471KB)
+│   └── standalone_runtime.c  # C runtime library
 ├── tools/
 │   ├── sxc.sx              # CLI compiler wrapper
 │   ├── sxpm.sx             # Package manager
@@ -224,28 +250,68 @@ simplex-lang/
 │   ├── sxdoc.sx            # Documentation generator
 │   └── sxlsp.sx            # Language server protocol
 ├── tests/
-│   ├── basics/             # Core language tests
-│   ├── types/              # Type system tests
-│   ├── async/              # Async/await tests
-│   ├── actors/             # Actor model tests
-│   ├── phase36/            # Phase 36 feature tests
-│   ├── stdlib/             # Standard library tests
 │   ├── language/           # Language feature tests
-│   └── integration/        # Integration tests
-├── examples/               # Example programs
-└── docs/
-    ├── spec/               # Language specification
-    ├── tutorial/           # Learning tutorial
-    └── guides/             # How-to guides
+│   ├── stdlib/             # Standard library tests
+│   ├── runtime/            # Runtime tests
+│   ├── ai/                 # AI/Cognitive tests
+│   ├── toolchain/          # Toolchain tests
+│   └── integration/        # End-to-end scenario tests
+├── simplex-docs/
+│   ├── spec/               # Language specification
+│   ├── tutorial/           # Learning tutorial
+│   ├── testing/            # Testing documentation
+│   └── guides/             # How-to guides
+└── tasks/                  # Development roadmap
 ```
 
 ## Compiler Toolchain
 
-- **sxc** (Compiler): v0.4.1
-- **sxpm** (Package Manager): v0.1.6
-- **cursus** (Bytecode VM): v0.1.6
-- **sxdoc** (Documentation Generator): v0.1.6
-- **sxlsp** (Language Server): v0.1.6
+| Tool | Version | Description |
+|------|---------|-------------|
+| **sxc** | 0.5.0 | Simplex Compiler |
+| **sxpm** | 0.5.0 | Package Manager with SLM provisioning |
+| **cursus** | 0.5.0 | Bytecode Virtual Machine |
+| **sxdoc** | 0.5.0 | Documentation Generator |
+| **sxlsp** | 0.5.0 | Language Server Protocol |
+
+## Release History
+
+### v0.5.0 (2026-01-07) - SLM Provisioning & Cognitive Hives
+
+**Per-Hive SLM Architecture:**
+- Each cognitive hive provisions ONE shared SLM
+- All specialists within a hive share the same model instance
+- Memory-efficient: 10 specialists = 1 model, not 10
+- Three-tier belief thresholds: 30% (Anima) → 50% (Hive) → 70% (Divine)
+
+**HiveMnemonic (Shared Consciousness):**
+- Collective memory shared across all specialists in a hive
+- Episodic, semantic, and belief memory types
+- Automatic context injection into inference prompts
+- Cross-specialist knowledge sharing
+
+**Built-in Models:**
+- `simplex-cognitive-7b` (4.1 GB) - Full cognitive capabilities
+- `simplex-cognitive-1b` (700 MB) - Lightweight alternative
+- `simplex-mnemonic-embed` (134 MB) - Embedding model
+
+**sxpm Model Commands:**
+```bash
+sxpm model list              # List available models
+sxpm model install <name>    # Install a model
+sxpm model remove <name>     # Remove a model
+sxpm model info <name>       # Show model details
+```
+
+**New Standard Library Features:**
+- HTTP client with TLS support
+- Terminal colors, progress bars, spinners, tables
+- Enhanced JSON parsing
+
+**Testing Framework:**
+- Comprehensive test coverage documentation
+- End-to-end scenario tests
+- AI/Cognitive component tests
 
 ### v0.4.1 (2026-01-07)
 
@@ -280,40 +346,14 @@ simplex-lang/
 - `sxpm clean` - Remove build artifacts
 - Version range support in dependencies
 
-**v0.3.5 Changes:**
-- Added `sxpm` package manager with full dependency resolution
-- Phase 1 stdlib: HashMap, HashSet, Vec extensions, String operations
-- Phase 2: Package ecosystem with JSON manifest support
-- Added json_parse_simple, json_object_new, json_array_new, json_keys
-- Fixed codegen handlers for stdlib functions
-
-**v0.3.4 Changes:**
-- Added Rust-style closure syntax (`|| expr` and `|x| expr`) to parser
-- Added `block_on(future)` runtime function for async execution
-- Fixed test files for proper exit code handling
-- Added explicit type annotations for method call resolution
-- All 13 phase36 tests now pass
-
-**v0.3.3 Changes:**
-- Fixed github test suite failure log
-
-**v0.3.2 Changes:**
-- Added Linux epoll support for async I/O (was macOS kqueue only)
-- Fixed OpenSSL/SQLite include paths in CI workflow
-- Platform-compatible standalone runtime
-
-**v0.3.1 Changes:**
-- Fixed critical `lookup_variant()` bug in codegen.sx
-- Compiler now uses fully self-hosted native binary (`sxc-compile`)
-- All toolchain binaries compiled: cursus, sxdoc, sxlsp
-
 ### sxc Commands
 
 ```bash
 sxc build <file.sx> [-o output]   # Compile to native executable
 sxc compile <file.sx>             # Compile to LLVM IR (.ll)
 sxc run <file.sx>                 # Compile and run immediately
-sxc version                        # Show version info
+sxc check <file.sx>               # Syntax check only
+sxc version                       # Show version info
 sxc help                          # Show usage help
 ```
 
@@ -328,6 +368,8 @@ sxpm test                 # Run tests
 sxpm add <package>        # Add a dependency
 sxpm remove <package>     # Remove a dependency
 sxpm install              # Install dependencies
+sxpm model list           # List available models
+sxpm model install <name> # Install a model
 ```
 
 ## Language Features
@@ -342,33 +384,37 @@ sxpm install              # Install dependencies
 - f-strings for formatting
 - Reference types (&T, *T)
 - Turbofish syntax (::<T>)
+- Anima cognitive agents
+- HiveMnemonic shared consciousness
+- Per-hive SLM provisioning
 
 ### In Development
 - Full trait bounds and where clauses
 - Module system improvements
-- Enhanced package management features (cursus)
-- Full LSP protocol support (sxlsp)
+- GPU acceleration for SLMs
+- Distributed hive clustering
 
 ## Running Tests
 
 ```bash
-# Run a specific test
-./sxc run tests/basics/for_loop.sx
-
-# Build a test to executable
-./sxc build tests/basics/for_loop.sx -o test_for
-./test_for
-
 # Run all tests
-./run_tests.sh
+sxpm test
+
+# Run specific category
+sxpm test --category ai
+sxpm test --category integration
+
+# Run a specific test
+sxc run tests/language/basics/test_loops.sx
 ```
 
 ## Documentation
 
-- [Language Specification](docs/spec/)
-- [Tutorial](docs/tutorial/)
-- [Getting Started Guide](docs/guides/getting-started.md)
-- [API Reference](docs/api/)
+- [Language Specification](simplex-docs/spec/)
+- [Tutorial](simplex-docs/tutorial/)
+- [Testing Documentation](simplex-docs/testing/)
+- [Getting Started Guide](simplex-docs/guides/getting-started.md)
+- [Release Notes](simplex-docs/RELEASE-0.5.0.md)
 
 ## Contributing
 
@@ -382,4 +428,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 - **Repository**: https://github.com/senuamedia/simplex-lang
 - **Issues**: https://github.com/senuamedia/simplex-lang/issues
-- **Documentation**: https://simplex-lang.org (coming soon / maybe)
+- **Documentation**: https://simplex-lang.org (coming soon)

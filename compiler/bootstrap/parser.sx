@@ -84,6 +84,7 @@ enum TokenKind {
     KwSpecialist,
     KwInfer,
     KwHive,
+    KwAnima,
     // Mutable binding
     KwVar,
     // Spawn expression
@@ -103,6 +104,7 @@ fn TAG_USE() -> i64 { 7 }         // use name::item;
 fn TAG_ACTOR() -> i64 { 8 }       // actor definition
 fn TAG_SPECIALIST() -> i64 { 9 }  // AI specialist
 fn TAG_HIVE() -> i64 { 10 }       // cognitive hive
+fn TAG_ANIMA() -> i64 { 11 }      // cognitive soul
 
 // Stmt tags
 fn STMT_LET() -> i64 { 0 }
@@ -137,6 +139,7 @@ fn EXPR_SPAWN() -> i64 { 20 }    // spawn Type - spawn actor/specialist
 fn EXPR_ARRAY() -> i64 { 21 }    // [a, b, c] - array literal
 fn EXPR_FLOAT() -> i64 { 22 }    // floating point literal
 fn EXPR_CLOSURE() -> i64 { 23 }  // (params) => expr - closure/lambda
+fn EXPR_INFER() -> i64 { 24 }    // infer(prompt) - AI inference
 
 // Parser state - we pass this to all functions
 fn parser_new(tokens: i64) -> i64 {
@@ -598,6 +601,32 @@ fn ast_hive(name: i64, specialists: i64, routing: i64) -> i64 {
     node
 }
 
+// Item: Cognitive Hive with mnemonic definition
+// Layout: tag(0), name(1), specialists(2), routing(3), mnemonic(4)
+fn ast_hive_with_mnemonic(name: i64, specialists: i64, routing: i64, mnemonic: i64) -> i64 {
+    let node: i64 = malloc(40);
+    store_i64(node, 0, TAG_HIVE());
+    store_ptr(node, 1, name);
+    store_ptr(node, 2, specialists);
+    store_ptr(node, 3, routing);
+    store_ptr(node, 4, mnemonic);  // vec of mnemonic block configs
+    node
+}
+
+// Item: Anima (Cognitive Soul) definition
+// Layout: tag(0), name(1), identity(2), memory(3), beliefs(4), slm(5), persistence(6)
+fn ast_anima(name: i64, identity: i64, memory: i64, beliefs: i64, slm: i64, persistence: i64) -> i64 {
+    let node: i64 = malloc(56);
+    store_i64(node, 0, TAG_ANIMA());
+    store_ptr(node, 1, name);
+    store_ptr(node, 2, identity);    // vec of key-value pairs
+    store_ptr(node, 3, memory);      // vec of key-value pairs
+    store_ptr(node, 4, beliefs);     // vec of key-value pairs
+    store_ptr(node, 5, slm);         // vec of key-value pairs
+    store_ptr(node, 6, persistence); // vec of key-value pairs
+    node
+}
+
 // Expr: StructLit
 // Layout: tag(0), name(1), field_inits(2), type_args(3)
 // field_inits is vec of (name, expr) pairs
@@ -682,6 +711,15 @@ fn ast_float(text: i64) -> i64 {
     let node: i64 = malloc(16);
     store_i64(node, 0, EXPR_FLOAT());
     store_ptr(node, 1, text);
+    node
+}
+
+// Expr: Infer - AI model inference
+// Layout: tag(0), prompt(1)
+fn ast_infer(prompt: i64) -> i64 {
+    let node: i64 = malloc(16);
+    store_i64(node, 0, EXPR_INFER());
+    store_ptr(node, 1, prompt);
     node
 }
 
@@ -840,6 +878,15 @@ fn parse_primary(parser: i64) -> i64 {
         let type_tok: i64 = parser_expect(parser, TokenKind::Ident);
         let type_name: i64 = token_text(type_tok);
         return ast_spawn(type_name);
+    }
+
+    // Infer expression (infer(prompt)) - AI model inference
+    if parser_check(parser, TokenKind::KwInfer) {
+        parser_advance(parser);
+        parser_expect(parser, TokenKind::LParen);
+        let prompt: i64 = parse_expr(parser);
+        parser_expect(parser, TokenKind::RParen);
+        return ast_infer(prompt);
     }
 
     // Array literal [a, b, c]
@@ -2155,7 +2202,7 @@ fn parse_specialist(parser: i64) -> i64 {
 }
 
 // Parse hive definition
-// hive Name { specialists: [...], routing: { ... } }
+// hive Name { specialists: [...], router: X, strategy: Y, mnemonic { ... } }
 fn parse_hive(parser: i64) -> i64 {
     parser_expect(parser, TokenKind::KwHive);
     let name_tok: i64 = parser_expect(parser, TokenKind::Ident);
@@ -2164,6 +2211,7 @@ fn parse_hive(parser: i64) -> i64 {
 
     let specialists: i64 = vec_new();
     let routing: i64 = vec_new();
+    let mnemonic: i64 = vec_new();  // mnemonic config blocks
 
     while parser_check(parser, TokenKind::RBrace) == false {
         if parser_at_end(parser) {
@@ -2173,37 +2221,173 @@ fn parse_hive(parser: i64) -> i64 {
 
         let prop_tok: i64 = parser_expect(parser, TokenKind::Ident);
         let prop_name: i64 = token_text(prop_tok);
-        parser_expect(parser, TokenKind::Colon);
 
-        // Parse array of specialist names or identifier value
-        if parser_check(parser, TokenKind::LBracket) {
-            parser_advance(parser);
-            let items: i64 = vec_new();
-            while parser_check(parser, TokenKind::RBracket) == false {
-                let item_tok: i64 = parser_expect(parser, TokenKind::Ident);
-                vec_push(items, token_text(item_tok));
-                parser_match(parser, TokenKind::Comma);
-            }
-            parser_expect(parser, TokenKind::RBracket);
-
-            if string_eq(prop_name, string_from("specialists")) {
-                specialists = items;
+        // Check for mnemonic block (no colon, just brace)
+        if string_eq(prop_name, string_from("mnemonic")) {
+            if parser_check(parser, TokenKind::LBrace) {
+                // Parse mnemonic sub-blocks: episodic, semantic, beliefs
+                parser_advance(parser);
+                while parser_check(parser, TokenKind::RBrace) == false {
+                    let block_tok: i64 = parser_expect(parser, TokenKind::Ident);
+                    let block_name: i64 = token_text(block_tok);
+                    parser_expect(parser, TokenKind::Colon);
+                    let block_config: i64 = parse_config_block(parser);
+                    let block: i64 = malloc(16);
+                    store_ptr(block, 0, block_name);
+                    store_ptr(block, 1, block_config);
+                    vec_push(mnemonic, block);
+                    parser_match(parser, TokenKind::Comma);
+                }
+                parser_expect(parser, TokenKind::RBrace);
             }
         } else {
-            // Simple identifier value (router, strategy, etc.)
-            if parser_check(parser, TokenKind::Ident) {
-                let val_tok: i64 = parser_advance(parser);
-                let val: i64 = token_text(val_tok);
-                // Store in routing for now (we can extend later)
-                vec_push(routing, prop_name);
-                vec_push(routing, val);
+            parser_expect(parser, TokenKind::Colon);
+
+            // Parse array of specialist names or identifier value
+            if parser_check(parser, TokenKind::LBracket) {
+                parser_advance(parser);
+                let items: i64 = vec_new();
+                while parser_check(parser, TokenKind::RBracket) == false {
+                    let item_tok: i64 = parser_expect(parser, TokenKind::Ident);
+                    vec_push(items, token_text(item_tok));
+                    parser_match(parser, TokenKind::Comma);
+                }
+                parser_expect(parser, TokenKind::RBracket);
+
+                if string_eq(prop_name, string_from("specialists")) {
+                    specialists = items;
+                }
+            } else {
+                // Simple identifier value (router, strategy, etc.)
+                if parser_check(parser, TokenKind::Ident) {
+                    let val_tok: i64 = parser_advance(parser);
+                    let val: i64 = token_text(val_tok);
+                    // Store in routing for now (we can extend later)
+                    vec_push(routing, prop_name);
+                    vec_push(routing, val);
+                }
             }
         }
         parser_match(parser, TokenKind::Comma);
     }
 
     parser_expect(parser, TokenKind::RBrace);
-    ast_hive(name, specialists, routing)
+    ast_hive_with_mnemonic(name, specialists, routing, mnemonic)
+}
+
+// Parse a block of key-value pairs { key: value, ... }
+fn parse_config_block(parser: i64) -> i64 {
+    let config: i64 = vec_new();
+    parser_expect(parser, TokenKind::LBrace);
+
+    while parser_check(parser, TokenKind::RBrace) == false {
+        if parser_at_end(parser) {
+            return config;
+        }
+
+        let key_tok: i64 = parser_expect(parser, TokenKind::Ident);
+        let key: i64 = token_text(key_tok);
+        parser_expect(parser, TokenKind::Colon);
+
+        // Parse value - can be string, array, or expression
+        let val: i64 = 0;
+        if parser_check(parser, TokenKind::LBracket) {
+            // Array of strings
+            parser_advance(parser);
+            let items: i64 = vec_new();
+            while parser_check(parser, TokenKind::RBracket) == false {
+                if parser_check(parser, TokenKind::String) {
+                    let s_tok: i64 = parser_advance(parser);
+                    vec_push(items, token_text(s_tok));
+                } else {
+                    if parser_check(parser, TokenKind::Ident) {
+                        let i_tok: i64 = parser_advance(parser);
+                        vec_push(items, token_text(i_tok));
+                    } else {
+                        parser_advance(parser);
+                    }
+                }
+                parser_match(parser, TokenKind::Comma);
+            }
+            parser_expect(parser, TokenKind::RBracket);
+            val = items;
+        } else {
+            val = parse_expr(parser);
+        }
+
+        let pair: i64 = malloc(16);
+        store_ptr(pair, 0, key);
+        store_ptr(pair, 1, val);
+        vec_push(config, pair);
+        parser_match(parser, TokenKind::Comma);
+    }
+
+    parser_expect(parser, TokenKind::RBrace);
+    config
+}
+
+// Parse anima definition (cognitive soul)
+// anima Name { identity { ... } memory { ... } beliefs { ... } slm { ... } persistence { ... } }
+fn parse_anima(parser: i64) -> i64 {
+    parser_expect(parser, TokenKind::KwAnima);
+    let name_tok: i64 = parser_expect(parser, TokenKind::Ident);
+    let name: i64 = token_text(name_tok);
+    parser_expect(parser, TokenKind::LBrace);
+
+    let identity: i64 = vec_new();
+    let memory: i64 = vec_new();
+    let beliefs: i64 = vec_new();
+    let slm: i64 = vec_new();
+    let persistence: i64 = vec_new();
+
+    while parser_check(parser, TokenKind::RBrace) == false {
+        if parser_at_end(parser) {
+            parser_add_error(parser, string_from("Unexpected end of file in anima"));
+            return 0;
+        }
+
+        let block_tok: i64 = parser_expect(parser, TokenKind::Ident);
+        let block_name: i64 = token_text(block_tok);
+
+        if string_eq(block_name, string_from("identity")) {
+            identity = parse_config_block(parser);
+        } else {
+        if string_eq(block_name, string_from("memory")) {
+            memory = parse_config_block(parser);
+        } else {
+        if string_eq(block_name, string_from("beliefs")) {
+            beliefs = parse_config_block(parser);
+        } else {
+        if string_eq(block_name, string_from("slm")) {
+            slm = parse_config_block(parser);
+        } else {
+        if string_eq(block_name, string_from("persistence")) {
+            persistence = parse_config_block(parser);
+        } else {
+            parser_add_error(parser, string_concat(string_from("Unknown anima block: "), block_name));
+            // Skip unknown block
+            if parser_check(parser, TokenKind::LBrace) {
+                parser_advance(parser);
+                let depth: i64 = 1;
+                while depth > 0 {
+                    if parser_check(parser, TokenKind::LBrace) {
+                        depth = depth + 1;
+                    }
+                    if parser_check(parser, TokenKind::RBrace) {
+                        depth = depth - 1;
+                    }
+                    parser_advance(parser);
+                }
+            }
+        }
+        }
+        }
+        }
+        }
+    }
+
+    parser_expect(parser, TokenKind::RBrace);
+    ast_anima(name, identity, memory, beliefs, slm, persistence)
 }
 
 // Parse a single item (fn, enum, or struct)
@@ -2251,6 +2435,9 @@ fn parse_item(parser: i64) -> i64 {
     }
     if parser_check(parser, TokenKind::KwHive) {
         return parse_hive(parser);
+    }
+    if parser_check(parser, TokenKind::KwAnima) {
+        return parse_anima(parser);
     }
 
     // Unknown item

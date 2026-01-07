@@ -1,6 +1,6 @@
 # Simplex Language Documentation
 
-**Version 0.4.1**
+**Version 0.5.0**
 
 Simplex (Latin for "simple") is a programming language designed for the AI era. It combines the fault-tolerance of Erlang, the memory safety of Rust, the distributed computing model of Ray, and the content-addressable code of Unison into a cohesive system built for intelligent, distributed workloads.
 
@@ -24,6 +24,7 @@ Simplex (Latin for "simple") is a programming language designed for the AI era. 
 | [Compiler Toolchain](spec/10-compiler-toolchain.md) | sxc, spx, cursus - 100% pure Simplex |
 | [Standard Library](spec/11-standard-library.md) | Complete std API reference |
 | [The Anima](spec/12-anima.md) | Cognitive soul - memory, beliefs, intentions |
+| [SLM Provisioning](spec/13-slm-provisioning.md) | **NEW** Per-hive model architecture |
 
 ### Tutorial
 
@@ -86,7 +87,17 @@ Start the tutorial: [Tutorial Index](tutorial/README.md)
 
 ---
 
-## Key Features (v0.4.1)
+## Key Features (v0.5.0)
+
+### NEW in v0.5.0: Per-Hive SLM Architecture
+
+**The headline feature**: Each hive provisions ONE shared SLM that all its specialists use.
+
+- **Per-hive SLM**: 10 specialists share 1 model (not 10)
+- **HiveMnemonic**: Shared consciousness across specialists
+- **Memory-augmented inference**: Anima + Mnemonic context flows to SLM
+- **Built-in models**: cognitive-7b (4.1GB), cognitive-1b (700MB), mnemonic-embed (134MB)
+- **sxpm model commands**: `install`, `list`, `remove`, `info`
 
 ### Language Core
 - Static typing with inference
@@ -112,7 +123,9 @@ Start the tutorial: [Tutorial Index](tutorial/README.md)
 - Memory persistence and sharing
 
 ### AI Specialists & Hives
-- Multi-provider support (Anthropic, OpenAI, Ollama)
+- **NEW**: Per-hive SLM sharing (one model per hive)
+- **NEW**: HiveMnemonic for collective memory
+- Multi-provider support (Anthropic, OpenAI, Ollama, local SLMs)
 - Streaming responses
 - Tool/function calling
 - Multi-actor orchestration (pipeline, parallel, consensus)
@@ -126,7 +139,8 @@ Start the tutorial: [Tutorial Index](tutorial/README.md)
 
 ### Toolchain
 - `sxc` - Native compiler (LLVM backend)
-- `sxpm` - Package manager
+- `sxpm` - Package manager with model provisioning
+  - **NEW**: `sxpm model list/install/remove/info` for SLM management
 - `sxdoc` - Documentation generator
 - `sxlsp` - Language server
 - `cursus` - Build system
@@ -169,6 +183,7 @@ Simplex uses the following terminology for its module system:
 | 0.3.5 | 2025-01 | Added sxpm package manager, Phase 1 stdlib (HashMap, HashSet, String ops) |
 | 0.4.0 | 2026-01 | The Anima: cognitive memory, BDI, tool calling, observability, multi-actor orchestration |
 | 0.4.1 | 2026-01 | sxpm enhancements: inline modules, pub use re-exports, diamond dependency detection, build cache, lock files |
+| 0.5.0 | 2026-01 | SLM Provisioning: per-hive models, HiveMnemonic, sxpm model commands, HTTP client, terminal colors |
 
 ---
 
