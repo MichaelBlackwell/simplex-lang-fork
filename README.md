@@ -241,13 +241,44 @@ simplex-lang/
 
 ## Compiler Toolchain
 
-| Tool | Description | Status |
-|------|-------------|--------|
-| `sxc` | Simplex compiler (self-hosted native binary) | v0.3.5 |
-| `sxpm` | Package manager and build tool | v0.1.5 |
-| `cursus` | Bytecode VM with garbage collection | v0.1.5 |
-| `sxdoc` | Documentation generator | v0.1.5 |
-| `sxlsp` | Language server for IDE support | v0.1.5 |
+- **sxc** (Compiler): v0.4.1
+- **sxpm** (Package Manager): v0.1.6
+- **cursus** (Bytecode VM): v0.1.6
+- **sxdoc** (Documentation Generator): v0.1.6
+- **sxlsp** (Language Server): v0.1.6
+
+### v0.4.1 (2026-01-07)
+
+**Module System Enhancements:**
+- Inline module blocks: `mod name { ... }` syntax
+- Re-exports: `pub use other::Thing` for API design
+- Glob re-exports: `pub use other::*` for convenience
+- Prelude auto-imports: common types/functions available without imports
+
+**Build System:**
+- Build cache with mtime tracking and hash-based invalidation
+- Incremental compilation support via `needs_recompile()`
+- Cache persistence in `.simplex/cache/meta.json`
+
+**Dependency Resolution:**
+- Diamond dependency detection with version conflict reporting
+- Full semver constraint support: `^`, `~`, `>=`, `<=`, `>`, `<`, `=`
+- Enhanced lock file support with `sxpm update`
+
+### v0.4.0 (2026-01-07)
+
+**Phase 2: Package Ecosystem Core**
+- Module system with `use`, `mod`, visibility modifiers (`pub`)
+- Relative paths: `use super::sibling`, `use self::sub`
+- Dependency graph with topological sort and cycle detection
+- Lock file generation for reproducible builds
+- Standard package structure: `src/lib.sx` vs `src/main.sx` detection
+
+**sxpm Commands:**
+- `sxpm check` - Type check without building
+- `sxpm update` - Regenerate lock file
+- `sxpm clean` - Remove build artifacts
+- Version range support in dependencies
 
 **v0.3.5 Changes:**
 - Added `sxpm` package manager with full dependency resolution

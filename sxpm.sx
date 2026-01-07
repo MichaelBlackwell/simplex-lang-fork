@@ -1246,7 +1246,9 @@ struct DepNode {
     version: i64,
     path: i64,           // Path to dependency source
     deps: i64,           // Vec of dependency names
-    state: i64           // 0=unvisited, 1=visiting, 2=visited
+    state: i64,          // 0=unvisited, 1=visiting, 2=visited
+    constraints: i64,    // Vec of (requirer, constraint) pairs for diamond detection
+    resolved_version: i64  // Final resolved version after constraint solving
 }
 
 fn dep_node_new(name: i64, version: i64, path: i64) -> DepNode {
@@ -1255,8 +1257,17 @@ fn dep_node_new(name: i64, version: i64, path: i64) -> DepNode {
         version: version,
         path: path,
         deps: vec_new(),
-        state: 0
+        state: 0,
+        constraints: vec_new(),
+        resolved_version: version
     }
+}
+
+// Add a version constraint from a requirer package
+fn dep_node_add_constraint(node: DepNode, requirer: i64, constraint: i64) {
+    // Store as a pair struct (simple approach: store alternating requirer, constraint)
+    vec_push(node.constraints, requirer);
+    vec_push(node.constraints, constraint);
 }
 
 // Dependency graph (DAG)
@@ -1264,7 +1275,8 @@ struct DepGraph {
     nodes: i64,          // HashMap<name, DepNode>
     order: i64,          // Vec of names in topological order
     has_cycle: bool,
-    cycle_path: i64      // Vec of names showing cycle
+    cycle_path: i64,     // Vec of names showing cycle
+    conflicts: i64       // Vec of conflict messages for diamond deps
 }
 
 fn dep_graph_new() -> DepGraph {
@@ -1272,18 +1284,55 @@ fn dep_graph_new() -> DepGraph {
         nodes: hashmap_new(),
         order: vec_new(),
         has_cycle: false,
-        cycle_path: vec_new()
+        cycle_path: vec_new(),
+        conflicts: vec_new()
     }
 }
 
-// Add a node to the graph
-fn dep_graph_add_node(graph: DepGraph, name: i64, version: i64, path: i64) -> DepGraph {
-    // Check if already exists
+// Add a node to the graph, with version constraint tracking for diamond deps
+// requirer: the package requiring this dependency (empty string for root)
+// constraint: the version constraint (e.g., "^1.0.0", ">=2.0")
+fn dep_graph_add_node_with_constraint(graph: DepGraph, name: i64, version: i64, path: i64, requirer: i64, constraint: i64) -> DepGraph {
     if hashmap_contains(graph.nodes, name) == 0 {
+        // First time seeing this dependency
         let node: DepNode = dep_node_new(name, version, path);
+        if string_len(requirer) > 0 {
+            dep_node_add_constraint(node, requirer, constraint);
+        }
         hashmap_insert(graph.nodes, name, node);
+    } else {
+        // Diamond dependency: this package is already required by another
+        let node_opt: i64 = hashmap_get(graph.nodes, name);
+        if node_opt != 0 {
+            let existing: DepNode = node_opt;
+
+            // Track the new constraint
+            if string_len(requirer) > 0 {
+                dep_node_add_constraint(existing, requirer, constraint);
+            }
+
+            // Check if the existing version satisfies the new constraint
+            if string_len(constraint) > 0 {
+                if version_satisfies(existing.version, constraint) == false {
+                    // Version conflict detected!
+                    let msg: i64 = string_concat("Diamond dependency conflict for '", name);
+                    msg = string_concat(msg, "': ");
+                    msg = string_concat(msg, requirer);
+                    msg = string_concat(msg, " requires ");
+                    msg = string_concat(msg, constraint);
+                    msg = string_concat(msg, " but resolved version is ");
+                    msg = string_concat(msg, existing.version);
+                    vec_push(graph.conflicts, msg);
+                }
+            }
+        }
     }
     graph
+}
+
+// Add a node to the graph (backwards compatible version)
+fn dep_graph_add_node(graph: DepGraph, name: i64, version: i64, path: i64) -> DepGraph {
+    dep_graph_add_node_with_constraint(graph, name, version, path, "", "*")
 }
 
 // Add an edge (dependency relationship) from 'from' to 'to'
@@ -1400,6 +1449,44 @@ fn dep_graph_print_cycle(graph: DepGraph) {
     println("");
 }
 
+// Check if graph has any version conflicts (diamond dependency issues)
+fn dep_graph_has_conflicts(graph: DepGraph) -> bool {
+    vec_len(graph.conflicts) > 0
+}
+
+// Print all version conflicts
+fn dep_graph_print_conflicts(graph: DepGraph) {
+    println("Error: Version conflicts detected (diamond dependencies):");
+    var i: i64 = 0;
+    while i < vec_len(graph.conflicts) {
+        print("  ");
+        println(vec_get(graph.conflicts, i));
+        i = i + 1;
+    }
+    println("");
+    println("Hint: Update version constraints to allow a compatible version,");
+    println("      or pin all dependents to the same version.");
+}
+
+// Show all constraints for a node (debugging helper)
+fn dep_node_print_constraints(node: DepNode) {
+    print("Constraints for '");
+    print(node.name);
+    print("' (resolved: ");
+    print(node.version);
+    println("):");
+    var i: i64 = 0;
+    while i < vec_len(node.constraints) {
+        let requirer: i64 = vec_get(node.constraints, i);
+        let constraint: i64 = vec_get(node.constraints, i + 1);
+        print("  - required by '");
+        print(requirer);
+        print("': ");
+        println(constraint);
+        i = i + 2;
+    }
+}
+
 // Build dependency graph from manifest
 fn build_dep_graph(manifest: i64, verbose: bool) -> DepGraph {
     let graph: DepGraph = dep_graph_new();
@@ -1466,12 +1553,19 @@ fn build_dep_graph(manifest: i64, verbose: bool) -> DepGraph {
             // Add node if not exists
             let dep_manifest_path: i64 = path_join(dep_path, "simplex.json");
             let dep_manifest: i64 = manifest_load(dep_manifest_path);
-            let dep_version: i64 = "0.0.0";
+            let actual_version: i64 = "0.0.0";
             if dep_manifest != 0 {
-                dep_version = manifest_version(dep_manifest);
+                actual_version = manifest_version(dep_manifest);
             }
 
-            graph = dep_graph_add_node(graph, dep_name, dep_version, dep_path);
+            // Get version constraint from dependency spec (for diamond conflict detection)
+            let constraint: i64 = dep_version(dep);
+            if string_len(constraint) == 0 {
+                constraint = "*";  // No constraint means any version
+            }
+
+            // Use constraint-aware add to detect diamond conflicts
+            graph = dep_graph_add_node_with_constraint(graph, dep_name, actual_version, dep_path, current_name, constraint);
 
             // Add edge from current to dependency
             graph = dep_graph_add_edge(graph, current_name, dep_name);
@@ -1503,6 +1597,12 @@ fn resolve_dependencies(manifest: i64, verbose: bool) -> i64 {
 
     // Build dependency graph
     let graph: DepGraph = build_dep_graph(manifest, verbose);
+
+    // Check for diamond dependency conflicts
+    if dep_graph_has_conflicts(graph) {
+        dep_graph_print_conflicts(graph);
+        return 1;
+    }
 
     // Perform topological sort
     if verbose {
@@ -1837,6 +1937,233 @@ fn path_basename(path: i64) -> i64 {
 }
 
 // get_cwd and list_dir are now intrinsics - no wrapper needed
+
+// ============================================================================
+// Build Cache System
+// ============================================================================
+
+// Cache entry for a source file
+struct CacheEntry {
+    source_path: i64,    // Path to source file
+    mtime: i64,          // Last modification time
+    hash: i64,           // Content hash (for more robust checking)
+    ll_path: i64,        // Path to compiled .ll file
+    deps: i64            // Vec of dependency source paths
+}
+
+fn cache_entry_new(source_path: i64) -> CacheEntry {
+    CacheEntry {
+        source_path: source_path,
+        mtime: file_mtime(source_path),
+        hash: "",
+        ll_path: "",
+        deps: vec_new()
+    }
+}
+
+// Cache directory paths
+fn cache_dir() -> i64 {
+    ".simplex/cache"
+}
+
+fn cache_meta_path() -> i64 {
+    ".simplex/cache/meta.json"
+}
+
+// Initialize cache directory
+fn cache_init() {
+    mkdir_p(".simplex");
+    mkdir_p(".simplex/cache");
+}
+
+// Simple hash function for source file content
+fn hash_file_content(path: i64) -> i64 {
+    let content: i64 = file_read(path);
+    if string_len(content) == 0 {
+        return "0";
+    }
+
+    // Simple FNV-1a style hash as string
+    var hash: i64 = 2166136261;  // FNV offset basis
+    var i: i64 = 0;
+    let len: i64 = string_len(content);
+
+    while i < len {
+        let c: i64 = string_char_at(content, i);
+        hash = (hash * 16777619) + c;  // FNV prime
+        // Keep hash manageable
+        hash = hash % 9999999999;
+        i = i + 1;
+    }
+
+    int_to_string(hash)
+}
+
+// Check if a source file needs recompilation
+fn needs_recompile(source_path: i64, cache: i64) -> bool {
+    // Get cached entry for this file
+    let entry_opt: i64 = hashmap_get(cache, source_path);
+    if entry_opt == 0 {
+        // Not in cache - needs compile
+        return true;
+    }
+
+    let entry: CacheEntry = entry_opt;
+
+    // Check modification time first (fast check)
+    let current_mtime: i64 = file_mtime(source_path);
+    if current_mtime != entry.mtime {
+        // File was modified - needs recompile
+        return true;
+    }
+
+    // Check if .ll file exists
+    if check_file_exists(entry.ll_path) == false {
+        return true;
+    }
+
+    // Check dependencies
+    var i: i64 = 0;
+    while i < vec_len(entry.deps) {
+        let dep_path: i64 = vec_get(entry.deps, i);
+        if needs_recompile(dep_path, cache) {
+            return true;
+        }
+        i = i + 1;
+    }
+
+    false
+}
+
+// Load cache metadata from disk
+fn cache_load() -> i64 {
+    let cache: i64 = hashmap_new();
+
+    if check_file_exists(cache_meta_path()) == false {
+        return cache;
+    }
+
+    let content: i64 = file_read(cache_meta_path());
+    if string_len(content) == 0 {
+        return cache;
+    }
+
+    let json: i64 = json_parse_simple(content);
+    if json == 0 {
+        return cache;
+    }
+
+    // Parse entries array
+    let entries: i64 = json_get(json, "entries");
+    if json_is_array(entries) == false {
+        return cache;
+    }
+
+    var i: i64 = 0;
+    while i < json_array_len(entries) {
+        let entry_json: i64 = json_get_index(entries, i);
+
+        let source_path: i64 = json_as_string(json_get(entry_json, "source"));
+        let entry: CacheEntry = CacheEntry {
+            source_path: source_path,
+            mtime: json_as_i64(json_get(entry_json, "mtime")),
+            hash: json_as_string(json_get(entry_json, "hash")),
+            ll_path: json_as_string(json_get(entry_json, "ll_path")),
+            deps: vec_new()
+        };
+
+        // Load deps
+        let deps_json: i64 = json_get(entry_json, "deps");
+        if json_is_array(deps_json) {
+            var j: i64 = 0;
+            while j < json_array_len(deps_json) {
+                vec_push(entry.deps, json_as_string(json_get_index(deps_json, j)));
+                j = j + 1;
+            }
+        }
+
+        hashmap_insert(cache, source_path, entry);
+        i = i + 1;
+    }
+
+    cache
+}
+
+// Save cache metadata to disk
+fn cache_save(cache: i64) {
+    let sb: i64 = sb_new();
+    sb_append(sb, "{\n  \"entries\": [\n");
+
+    let keys: i64 = hashmap_keys(cache);
+    var i: i64 = 0;
+    while i < vec_len(keys) {
+        let key: i64 = vec_get(keys, i);
+        let entry_opt: i64 = hashmap_get(cache, key);
+        if entry_opt != 0 {
+            let entry: CacheEntry = entry_opt;
+
+            if i > 0 {
+                sb_append(sb, ",\n");
+            }
+            sb_append(sb, "    {\n");
+            sb_append(sb, "      \"source\": \"");
+            sb_append(sb, entry.source_path);
+            sb_append(sb, "\",\n");
+            sb_append(sb, "      \"mtime\": ");
+            sb_append(sb, int_to_string(entry.mtime));
+            sb_append(sb, ",\n");
+            sb_append(sb, "      \"hash\": \"");
+            sb_append(sb, entry.hash);
+            sb_append(sb, "\",\n");
+            sb_append(sb, "      \"ll_path\": \"");
+            sb_append(sb, entry.ll_path);
+            sb_append(sb, "\",\n");
+            sb_append(sb, "      \"deps\": [");
+
+            var j: i64 = 0;
+            while j < vec_len(entry.deps) {
+                if j > 0 {
+                    sb_append(sb, ", ");
+                }
+                sb_append(sb, "\"");
+                sb_append(sb, vec_get(entry.deps, j));
+                sb_append(sb, "\"");
+                j = j + 1;
+            }
+
+            sb_append(sb, "]\n");
+            sb_append(sb, "    }");
+        }
+        i = i + 1;
+    }
+
+    sb_append(sb, "\n  ]\n}\n");
+    file_write(cache_meta_path(), sb_to_string(sb));
+}
+
+// Update cache entry after compilation
+fn cache_update(cache: i64, source_path: i64, ll_path: i64, deps: i64) {
+    let entry: CacheEntry = CacheEntry {
+        source_path: source_path,
+        mtime: file_mtime(source_path),
+        hash: hash_file_content(source_path),
+        ll_path: ll_path,
+        deps: deps
+    };
+    hashmap_insert(cache, source_path, entry);
+}
+
+// Clear cache for a specific file
+fn cache_invalidate(cache: i64, source_path: i64) {
+    hashmap_remove(cache, source_path);
+}
+
+// Clear all cache
+fn cache_clear() {
+    if check_file_exists(cache_meta_path()) {
+        remove_path(cache_meta_path());
+    }
+}
 
 // ============================================================================
 // Main Entry Point
