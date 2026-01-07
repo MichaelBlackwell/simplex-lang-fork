@@ -1,0 +1,384 @@
+{
+  "$schema": "https://simplex.senuamedia.com/context-schema.json",
+  "meta": {
+    "language": "Simplex",
+    "version": "0.5.0",
+    "description": "AI-native programming language with actors, cognitive hives, and first-class AI primitives",
+    "paradigms": ["functional", "actor-based", "AI-native", "concurrent"],
+    "influenced_by": ["Rust", "Erlang", "Python"],
+    "file_extension": ".sx",
+    "context_version": "1.0.0"
+  },
+
+  "syntax": {
+    "comments": {
+      "line": "//",
+      "doc": "///",
+      "block_start": "/*",
+      "block_end": "*/"
+    },
+    "string_literals": {
+      "single_line": "\"...\"",
+      "multiline": "\"\"\"...\"\"\"",
+      "interpolation": "f\"Hello {expression}\"",
+      "interpolation_note": "Use f-strings with f\"...\" prefix for interpolation",
+      "raw": "r\"...\""
+    },
+    "variable_binding": {
+      "immutable": "let name: Type = value",
+      "mutable": "var name: Type = value"
+    },
+    "method_receiver": "self (like Rust)",
+    "module_import": {
+      "external_package": "use modulus::package::module",
+      "same_package": "use module::item"
+    }
+  },
+
+  "keywords": {
+    "declarations": {
+      "let": "Immutable variable binding",
+      "var": "Mutable variable binding",
+      "fn": "Function declaration",
+      "struct": "Struct type definition",
+      "enum": "Enum type definition",
+      "type": "Type alias",
+      "trait": "Trait definition",
+      "impl": "Implementation block",
+      "pub": "Public visibility modifier",
+      "mod": "Module declaration",
+      "use": "Import statement",
+      "const": "Constant declaration"
+    },
+    "control_flow": {
+      "if": "Conditional expression",
+      "else": "Alternative branch",
+      "match": "Pattern matching",
+      "for": "For loop iteration (for x in range)",
+      "in": "Used with for loops",
+      "while": "While loop",
+      "break": "Exit loop",
+      "continue": "Skip to next iteration",
+      "return": "Return from function"
+    },
+    "actor_system": {
+      "keywords": {
+        "actor": "Actor definition with state and message handlers",
+        "receive": "Message handler in actor",
+        "init": "Actor constructor/initializer",
+        "spawn": "Create new actor instance"
+      },
+      "runtime_functions": {
+        "send": "Fire-and-forget message to actor (not a keyword)",
+        "ask": "Request-response message to actor (not a keyword)",
+        "checkpoint": "Persist actor state (not a keyword)"
+      },
+      "note": "supervisor is designed but not yet a keyword - use functions"
+    },
+    "ai_native": {
+      "keywords": {
+        "specialist": "AI specialist actor wrapping an SLM",
+        "hive": "Cognitive hive supervising specialists with shared SLM",
+        "infer": "Call the hive's SLM for inference",
+        "anima": "Individual cognitive soul (memory, beliefs)"
+      },
+      "designed_not_keywords": {
+        "mnemonic": "Shared consciousness - accessed via hive.mnemonic",
+        "divine": "Global memory - accessed via runtime"
+      }
+    },
+    "async": {
+      "async": "Async function modifier",
+      "await": "Await future completion",
+      "yield": "Generator yield expression",
+      "dyn": "Dynamic dispatch marker"
+    },
+    "error_handling": {
+      "Result": "Ok(T) | Err(E) for fallible operations",
+      "Option": "Some(T) | None for optional values",
+      "?": "Error propagation operator"
+    }
+  },
+
+  "types": {
+    "primitives": {
+      "i8": "8-bit signed integer",
+      "i16": "16-bit signed integer",
+      "i32": "32-bit signed integer",
+      "i64": "64-bit signed integer (default integer)",
+      "u8": "8-bit unsigned integer",
+      "u16": "16-bit unsigned integer",
+      "u32": "32-bit unsigned integer",
+      "u64": "64-bit unsigned integer",
+      "f32": "32-bit floating point",
+      "f64": "64-bit floating point (default float)",
+      "Bool": "Boolean true/false",
+      "Char": "Unicode character",
+      "String": "UTF-8 string"
+    },
+    "collections": {
+      "List<T>": "Ordered, growable array",
+      "Map<K, V>": "Key-value hash map",
+      "Set<T>": "Unique value set",
+      "Deque<T>": "Double-ended queue",
+      "Vec<T>": "Alias for List<T>",
+      "Tuple": "(T1, T2, ...) fixed-size mixed types"
+    },
+    "ai_native": {
+      "Vector<f64, N>": "Fixed-size embedding vector",
+      "Tensor<T, Shape>": "Multi-dimensional tensor for ML",
+      "Embedding": "Type alias for Vector<f64, 1536>"
+    },
+    "actor_types": {
+      "ActorRef<A>": "Typed reference to actor A",
+      "Message": "Actor message type",
+      "Future<T>": "Async computation result"
+    },
+    "error_types": {
+      "Result<T, E>": "Ok(T) or Err(E)",
+      "Option<T>": "Some(T) or None"
+    }
+  },
+
+  "operators": {
+    "arithmetic": ["+", "-", "*", "/", "%"],
+    "comparison": ["==", "!=", "<", ">", "<=", ">="],
+    "logical": ["&&", "||", "!"],
+    "bitwise": ["&", "|", "^", "~", "<<", ">>"],
+    "assignment": ["=", "+=", "-=", "*=", "/="],
+    "range": ["..", "..="],
+    "error_propagation": ["?"],
+    "member_access": [".", "::"],
+    "lambda": ["=>"]
+  },
+
+  "constructs": {
+    "function": {
+      "syntax": "fn name<T>(param: Type) -> ReturnType { body }",
+      "examples": [
+        "fn add(a: i64, b: i64) -> i64 { a + b }",
+        "fn greet(name: String) { print(\"Hello, {name}\") }",
+        "async fn fetch(url: String) -> Result<Response, HttpError> { await http::get(url) }"
+      ]
+    },
+    "struct": {
+      "syntax": "struct Name { field: Type, ... }",
+      "examples": [
+        "struct Point { x: f64, y: f64 }",
+        "struct User { id: i64, name: String, email: Option<String> }"
+      ]
+    },
+    "enum": {
+      "syntax": "enum Name { Variant, Variant(Type), ... }",
+      "examples": [
+        "enum Status { Pending, Active, Completed }",
+        "enum Message { Text(String), Image(Bytes, String) }",
+        "enum Result<T, E> { Ok(T), Err(E) }"
+      ]
+    },
+    "impl": {
+      "syntax": "impl TypeName { fn method(self, ...) -> T { ... } }",
+      "note": "Use 'self' as receiver (Rust-style)",
+      "examples": [
+        "impl Point { pub fn distance(self, other: Point) -> f64 { ... } }",
+        "impl Point { pub fn new(x: f64, y: f64) -> Point { Point { x: x, y: y } } }"
+      ]
+    },
+    "actor": {
+      "syntax": "actor Name { var state: T = init\n  receive MsgName(args) -> ReturnType { ... } }",
+      "lifecycle_hooks": ["on_start()", "on_stop()", "on_checkpoint()", "on_resume()"],
+      "examples": [
+        "actor Counter {\n  var count: i64 = 0\n  receive Increment { count += 1 }\n  receive GetCount -> i64 { count }\n}"
+      ]
+    },
+    "specialist": {
+      "syntax": "specialist Name { model: \"model-name\", domain: \"description\"\n  receive Task(args) -> T { infer(prompt) } }",
+      "key_primitive": "infer(prompt) - calls the hive's shared SLM",
+      "examples": [
+        "specialist Summarizer {\n  model: \"mistral-7b\",\n  domain: \"summarization\"\n  receive Summarize(text: String) -> String { infer(\"Summarize: {text}\") }\n}"
+      ]
+    },
+    "hive": {
+      "syntax": "hive Name { specialists: [...], slm: \"model\", router: RouterType, mnemonic: {...} }",
+      "key_concepts": [
+        "ONE shared SLM per hive (not per specialist)",
+        "HiveMnemonic for shared consciousness",
+        "Router directs tasks to specialists"
+      ],
+      "examples": [
+        "hive DocumentProcessor {\n  specialists: [Summarizer, Extractor, Classifier],\n  slm: \"simplex-cognitive-7b\",\n  router: SemanticRouter,\n  strategy: OneForOne\n}"
+      ]
+    },
+    "pattern_matching": {
+      "syntax": "match value { Pattern => result, ... }",
+      "features": ["guards (if condition)", "destructuring", "wildcard (_)", "rest patterns (..)"],
+      "examples": [
+        "match status {\n  Status::Active => \"running\",\n  Status::Pending => \"waiting\",\n  _ => \"unknown\"\n}",
+        "match list {\n  [] => \"empty\",\n  [head, ..tail] => \"has items\"\n}"
+      ]
+    },
+    "closures": {
+      "syntax": "param => expression OR (params) => { body }",
+      "examples": [
+        "numbers.map(x => x * 2)",
+        "items.filter(item => item.active)",
+        "list.fold(0, (acc, x) => acc + x)"
+      ]
+    },
+    "async_await": {
+      "syntax": "async fn name() -> T { await future }",
+      "parallel_execution": "let (a, b, c) = await parallel(future1, future2, future3)",
+      "examples": [
+        "async fn fetch_all(urls: List<String>) -> List<Response> {\n  let futures = urls.map(url => fetch(url))\n  await parallel(futures)\n}"
+      ]
+    }
+  },
+
+  "ai_module": {
+    "description": "First-class AI primitives, not library calls",
+    "functions": {
+      "ai::complete": {
+        "signature": "async fn complete(prompt: String, model?: String, temperature?: f64, max_tokens?: u64) -> String",
+        "description": "Text completion from AI model"
+      },
+      "ai::stream": {
+        "signature": "async fn stream(prompt: String) -> Stream<String>",
+        "description": "Streaming text completion"
+      },
+      "ai::embed": {
+        "signature": "fn embed(text: String) -> Vector<f64, 1536>",
+        "description": "Generate embedding vector for text"
+      },
+      "ai::embed_batch": {
+        "signature": "fn embed_batch(texts: List<String>) -> List<Vector<f64, 1536>>",
+        "description": "Batch embedding generation (more efficient)"
+      },
+      "ai::extract": {
+        "signature": "async fn extract<T>(input: String) -> Result<T, ExtractionError>",
+        "description": "Extract typed data from unstructured text"
+      },
+      "ai::classify": {
+        "signature": "async fn classify<T: Enum>(input: String) -> T",
+        "description": "Classify text into enum categories"
+      },
+      "ai::similarity": {
+        "signature": "fn similarity(a: Vector, b: Vector) -> f64",
+        "description": "Compute cosine similarity between vectors"
+      },
+      "ai::nearest": {
+        "signature": "fn nearest(query: Vector, candidates: List<Vector>, k: u64) -> List<(usize, f64)>",
+        "description": "Find k nearest neighbors"
+      }
+    },
+    "model_tiers": {
+      "fast": "Small model (7B), 10-50ms latency",
+      "default": "Medium model (70B), 50-200ms latency",
+      "quality": "Large model (Claude/GPT-4), 200-2000ms latency"
+    }
+  },
+
+  "standard_library": {
+    "std::io": ["Read", "Write", "BufRead", "Seek", "stdin()", "stdout()", "stderr()"],
+    "std::fs": ["File::open", "File::create", "read_to_string", "write", "read_dir", "create_dir_all"],
+    "std::collections": ["Vec<T>", "Map<K,V>", "Set<T>", "Deque<T>", "PriorityQueue<T>"],
+    "std::string": ["String", "StringBuilder", "split", "trim", "contains", "replace"],
+    "std::time": ["Duration", "Instant", "SystemTime", "sleep", "timestamp"],
+    "std::math": ["PI", "E", "sqrt", "pow", "sin", "cos", "floor", "ceil", "min", "max"],
+    "std::net": ["TcpListener", "TcpStream", "UdpSocket", "IpAddr", "SocketAddr"],
+    "std::env": ["args", "var", "set_var", "current_dir", "home_dir"],
+    "std::process": ["Command", "spawn", "output", "status"],
+    "std::fmt": ["Display", "Debug", "format"]
+  },
+
+  "supervision": {
+    "strategies": {
+      "OneForOne": "Only restart the failed child",
+      "OneForAll": "Restart all children if one fails",
+      "RestForOne": "Restart failed child and all children after it"
+    },
+    "restart_policies": {
+      "Always": "Always restart on failure",
+      "Never": "Never restart",
+      "Transient": "Restart only on abnormal exit"
+    },
+    "syntax": "supervisor Name { strategy: OneForOne, max_restarts: 3, within: Duration::seconds(60), children: [...] }"
+  },
+
+  "cognitive_hive_architecture": {
+    "description": "Per-hive SLM with shared consciousness",
+    "key_principle": "Many specialists, ONE model per hive",
+    "memory_hierarchy": {
+      "anima": "Individual specialist memory (30% belief revision threshold)",
+      "mnemonic": "Shared hive consciousness (50% belief revision threshold)",
+      "divine": "Solution-wide memory across hives (70% threshold)"
+    },
+    "naming_conventions": {
+      "elvish": {
+        "Isto": "Knowledge retrieval",
+        "Penna": "Text generation",
+        "Curu": "Code/technical tasks",
+        "Silma": "Summarization",
+        "Hîr": "Orchestrator/router"
+      },
+      "latin": {
+        "Cogito": "Reasoning/analysis",
+        "Scribo": "Text generation",
+        "Lego": "Document processing",
+        "Faber": "Code generation",
+        "Index": "Routing/classification"
+      }
+    }
+  },
+
+  "common_patterns": {
+    "error_handling": "let result = operation()?  // Propagate errors with ?",
+    "option_unwrap": "let value = maybe.unwrap_or(default)",
+    "iteration": "for item in collection { ... }",
+    "map_filter": "items.filter(x => x.active).map(x => x.value)",
+    "actor_spawn": "let actor = spawn ActorName(args)",
+    "actor_message": "send(actor, Message) OR let result = ask(actor, Query)",
+    "async_parallel": "let (a, b) = await parallel(future1, future2)",
+    "rag_pattern": "let embedding = ai::embed(query); let similar = ai::nearest(embedding, docs, k: 5)"
+  },
+
+  "idioms": {
+    "string_interpolation": "f\"Hello, {name}! You have {count} messages.\"",
+    "struct_initialization": "Point { x: 1.0, y: 2.0 }",
+    "method_chaining": "items.filter(...).map(...).collect()",
+    "pattern_destructuring": "let User { name, email, .. } = user",
+    "tuple_destructuring": "let (x, y) = get_point()",
+    "range_iteration": "for i in 0..10 { ... }",
+    "closure_capture": "let multiplier = 10; numbers.map(x => x * multiplier)"
+  },
+
+  "file_structure": {
+    "module_declaration": "module package::module_name",
+    "visibility": {
+      "pub": "Public, accessible from anywhere",
+      "default": "Private, module-only",
+      "pub(modulus)": "Package-internal"
+    }
+  },
+
+  "implemented_keywords_from_lexer": [
+    "fn", "let", "var", "if", "else", "while", "for", "in", "return",
+    "enum", "struct", "impl", "trait", "type", "use", "mod", "const", "pub",
+    "true", "false", "self", "match", "break", "continue",
+    "async", "await", "yield", "dyn",
+    "actor", "receive", "init", "spawn",
+    "specialist", "infer", "hive", "anima",
+    "_"
+  ],
+
+  "llm_hints": {
+    "receiver_is_self": "Methods use 'self' as receiver (Rust-style)",
+    "no_null": "Simplex has no null - use Option<T> instead",
+    "result_based_errors": "Use Result<T, E> for fallible operations, not exceptions",
+    "actor_state_is_private": "Actor state is encapsulated, only accessible via messages",
+    "infer_uses_hive_slm": "The infer() primitive in specialists uses the shared hive SLM",
+    "immutable_by_default": "Use 'let' for immutable, 'var' for mutable",
+    "expression_oriented": "if/match are expressions that return values",
+    "fstring_interpolation": "Use f\"text {expr}\" for string interpolation, not plain \"text {expr}\"",
+    "underscore_wildcard": "Use _ as wildcard pattern in match expressions"
+  }
+}
