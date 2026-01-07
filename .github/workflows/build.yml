@@ -27,6 +27,85 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Create merge script
+        run: |
+          cat > /tmp/merge_ll.py << 'PYEOF'
+          import re
+          import sys
+
+          def extract_function_defs(content):
+              funcs = {}
+              pattern = r'define\s+(?:internal\s+)?[^\s]+\s+@"?([^"(\s]+)"?\s*\('
+              lines = content.split('\n')
+              i = 0
+              while i < len(lines):
+                  line = lines[i]
+                  m = re.match(pattern, line)
+                  if m:
+                      func_name = m.group(1)
+                      func_lines = [line]
+                      i += 1
+                      brace_count = line.count('{') - line.count('}')
+                      while i < len(lines) and brace_count > 0:
+                          func_lines.append(lines[i])
+                          brace_count += lines[i].count('{') - lines[i].count('}')
+                          i += 1
+                      if i < len(lines) and lines[i] == '}':
+                          func_lines.append(lines[i])
+                          i += 1
+                      funcs[func_name] = '\n'.join(func_lines)
+                  else:
+                      i += 1
+              return funcs
+
+          def extract_strings(content):
+              strings = {}
+              for m in re.finditer(r'(@\.str\.[^\s]+)\s*=\s*private.*', content):
+                  strings[m.group(1)] = m.group(0)
+              return strings
+
+          def get_base_header(content):
+              lines = content.split('\n')
+              header_lines = []
+              for line in lines:
+                  if line.startswith('define ') or line.startswith('@.str'):
+                      continue
+                  if line.startswith('; ModuleID') or line.startswith('target ') or line.startswith('declare '):
+                      header_lines.append(line)
+              return '\n'.join(header_lines)
+
+          def merge_files(output_path, input_paths):
+              contents = []
+              for path in input_paths:
+                  with open(path) as f:
+                      contents.append(f.read())
+
+              header = get_base_header(contents[0])
+              all_strings = {}
+              all_funcs = {}
+
+              for content in contents:
+                  all_strings.update(extract_strings(content))
+                  for fn, body in extract_function_defs(content).items():
+                      if fn not in all_funcs:
+                          all_funcs[fn] = body
+
+              combined = header + '\n\n'
+              for str_name, str_def in sorted(all_strings.items()):
+                  combined += str_def + '\n'
+              combined += '\n'
+              for fn_name, fn_body in sorted(all_funcs.items()):
+                  combined += fn_body + '\n\n'
+
+              with open(output_path, 'w') as f:
+                  f.write(combined)
+              print(f"Created {output_path} ({len(all_funcs)} functions)")
+
+          if __name__ == '__main__':
+              merge_files(sys.argv[1], sys.argv[2:])
+          PYEOF
+          sed -i 's/^          //' /tmp/merge_ll.py
+
       - name: Build toolchain
         run: |
           echo "=== Building Simplex Toolchain v$SIMPLEX_VERSION for Linux x86_64 ==="
@@ -34,31 +113,14 @@ jobs:
           PLATFORM="linux-x86_64"
           mkdir -p dist/$PLATFORM
 
-          # Helper function to merge LLVM IR files (keeps header from first file only)
-          merge_ll() {
-            local output=$1
-            shift
-            local first=$1
-            shift
-
-            # Copy first file and ensure it ends with newline
-            cat "$first" > "$output"
-            echo "" >> "$output"
-
-            # Append remaining files, stripping header lines
-            for f in "$@"; do
-              grep -v -E '^(; ModuleID|source_filename|target datalayout|target triple)' "$f" >> "$output"
-              echo "" >> "$output"
-            done
-          }
-
           cd compiler/bootstrap
+
           python3 stage0.py lexer.sx
           python3 stage0.py parser.sx
           python3 stage0.py codegen.sx
           python3 stage0.py main.sx
 
-          merge_ll sxc_combined.ll lexer.ll parser.ll codegen.ll main.ll
+          python3 /tmp/merge_ll.py sxc_combined.ll lexer.ll parser.ll codegen.ll main.ll
           cd ../..
 
           echo "Building sxc..."
@@ -70,7 +132,7 @@ jobs:
             echo "Building $tool..."
             python3 stage0.py ../../tools/${tool}.sx
             mv ../../tools/${tool}.ll .
-            merge_ll ${tool}_combined.ll lexer.ll parser.ll codegen.ll ${tool}.ll
+            python3 /tmp/merge_ll.py ${tool}_combined.ll lexer.ll parser.ll codegen.ll ${tool}.ll
           done
           cd ../..
 
@@ -113,6 +175,85 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Create merge script
+        run: |
+          cat > /tmp/merge_ll.py << 'PYEOF'
+          import re
+          import sys
+
+          def extract_function_defs(content):
+              funcs = {}
+              pattern = r'define\s+(?:internal\s+)?[^\s]+\s+@"?([^"(\s]+)"?\s*\('
+              lines = content.split('\n')
+              i = 0
+              while i < len(lines):
+                  line = lines[i]
+                  m = re.match(pattern, line)
+                  if m:
+                      func_name = m.group(1)
+                      func_lines = [line]
+                      i += 1
+                      brace_count = line.count('{') - line.count('}')
+                      while i < len(lines) and brace_count > 0:
+                          func_lines.append(lines[i])
+                          brace_count += lines[i].count('{') - lines[i].count('}')
+                          i += 1
+                      if i < len(lines) and lines[i] == '}':
+                          func_lines.append(lines[i])
+                          i += 1
+                      funcs[func_name] = '\n'.join(func_lines)
+                  else:
+                      i += 1
+              return funcs
+
+          def extract_strings(content):
+              strings = {}
+              for m in re.finditer(r'(@\.str\.[^\s]+)\s*=\s*private.*', content):
+                  strings[m.group(1)] = m.group(0)
+              return strings
+
+          def get_base_header(content):
+              lines = content.split('\n')
+              header_lines = []
+              for line in lines:
+                  if line.startswith('define ') or line.startswith('@.str'):
+                      continue
+                  if line.startswith('; ModuleID') or line.startswith('target ') or line.startswith('declare '):
+                      header_lines.append(line)
+              return '\n'.join(header_lines)
+
+          def merge_files(output_path, input_paths):
+              contents = []
+              for path in input_paths:
+                  with open(path) as f:
+                      contents.append(f.read())
+
+              header = get_base_header(contents[0])
+              all_strings = {}
+              all_funcs = {}
+
+              for content in contents:
+                  all_strings.update(extract_strings(content))
+                  for fn, body in extract_function_defs(content).items():
+                      if fn not in all_funcs:
+                          all_funcs[fn] = body
+
+              combined = header + '\n\n'
+              for str_name, str_def in sorted(all_strings.items()):
+                  combined += str_def + '\n'
+              combined += '\n'
+              for fn_name, fn_body in sorted(all_funcs.items()):
+                  combined += fn_body + '\n\n'
+
+              with open(output_path, 'w') as f:
+                  f.write(combined)
+              print(f"Created {output_path} ({len(all_funcs)} functions)")
+
+          if __name__ == '__main__':
+              merge_files(sys.argv[1], sys.argv[2:])
+          PYEOF
+          sed -i '' 's/^          //' /tmp/merge_ll.py
+
       - name: Build toolchain
         run: |
           echo "=== Building Simplex Toolchain v$SIMPLEX_VERSION for macOS arm64 ==="
@@ -120,34 +261,19 @@ jobs:
           PLATFORM="macos-arm64"
           mkdir -p dist/$PLATFORM
 
-          # Helper function to merge LLVM IR files (keeps header from first file only)
-          merge_ll() {
-            local output=$1
-            shift
-            local first=$1
-            shift
-
-            cat "$first" > "$output"
-            echo "" >> "$output"
-
-            for f in "$@"; do
-              grep -v -E '^(; ModuleID|source_filename|target datalayout|target triple)' "$f" >> "$output"
-              echo "" >> "$output"
-            done
-          }
-
           OPENSSL_PREFIX=$(brew --prefix openssl@3)
           SQLITE_PREFIX=$(brew --prefix sqlite3)
           export CFLAGS="-I$OPENSSL_PREFIX/include -I$SQLITE_PREFIX/include"
           export LDFLAGS="-L$OPENSSL_PREFIX/lib -L$SQLITE_PREFIX/lib"
 
           cd compiler/bootstrap
+
           python3 stage0.py lexer.sx
           python3 stage0.py parser.sx
           python3 stage0.py codegen.sx
           python3 stage0.py main.sx
 
-          merge_ll sxc_combined.ll lexer.ll parser.ll codegen.ll main.ll
+          python3 /tmp/merge_ll.py sxc_combined.ll lexer.ll parser.ll codegen.ll main.ll
           cd ../..
 
           clang -O2 $CFLAGS $LDFLAGS compiler/bootstrap/sxc_combined.ll runtime/standalone_runtime.c \
@@ -157,7 +283,7 @@ jobs:
           for tool in sxpm cursus sxdoc sxlsp; do
             python3 stage0.py ../../tools/${tool}.sx
             mv ../../tools/${tool}.ll .
-            merge_ll ${tool}_combined.ll lexer.ll parser.ll codegen.ll ${tool}.ll
+            python3 /tmp/merge_ll.py ${tool}_combined.ll lexer.ll parser.ll codegen.ll ${tool}.ll
           done
           cd ../..
 
@@ -178,11 +304,137 @@ jobs:
           name: simplex-toolchain-macos-arm64
           path: dist/simplex-toolchain-${{ env.SIMPLEX_VERSION }}-macos-arm64.zip
 
-  # Windows build disabled - runtime/standalone_runtime.c needs Windows compatibility updates
-  # (execinfo.h doesn't exist on Windows, needs conditional compilation)
+  build-windows-x86_64:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LLVM
+        run: choco install llvm -y
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build LLVM IR
+        shell: bash
+        run: |
+          echo "=== Building Simplex Toolchain LLVM IR for Windows x86_64 ==="
+          echo "Note: Full Windows binaries require runtime porting"
+
+          # Create merge script
+          cat > /tmp/merge_ll.py << 'PYEOF'
+          import re
+          import sys
+
+          def extract_function_defs(content):
+              funcs = {}
+              pattern = r'define\s+(?:internal\s+)?[^\s]+\s+@"?([^"(\s]+)"?\s*\('
+              lines = content.split('\n')
+              i = 0
+              while i < len(lines):
+                  line = lines[i]
+                  m = re.match(pattern, line)
+                  if m:
+                      func_name = m.group(1)
+                      func_lines = [line]
+                      i += 1
+                      brace_count = line.count('{') - line.count('}')
+                      while i < len(lines) and brace_count > 0:
+                          func_lines.append(lines[i])
+                          brace_count += lines[i].count('{') - lines[i].count('}')
+                          i += 1
+                      if i < len(lines) and lines[i] == '}':
+                          func_lines.append(lines[i])
+                          i += 1
+                      funcs[func_name] = '\n'.join(func_lines)
+                  else:
+                      i += 1
+              return funcs
+
+          def extract_strings(content):
+              strings = {}
+              for m in re.finditer(r'(@\.str\.[^\s]+)\s*=\s*private.*', content):
+                  strings[m.group(1)] = m.group(0)
+              return strings
+
+          def get_base_header(content):
+              lines = content.split('\n')
+              header_lines = []
+              for line in lines:
+                  if line.startswith('define ') or line.startswith('@.str'):
+                      continue
+                  if line.startswith('; ModuleID') or line.startswith('target ') or line.startswith('declare '):
+                      header_lines.append(line)
+              return '\n'.join(header_lines)
+
+          def merge_files(output_path, input_paths):
+              contents = []
+              for path in input_paths:
+                  with open(path) as f:
+                      contents.append(f.read())
+
+              header = get_base_header(contents[0])
+              all_strings = {}
+              all_funcs = {}
+
+              for content in contents:
+                  all_strings.update(extract_strings(content))
+                  for fn, body in extract_function_defs(content).items():
+                      if fn not in all_funcs:
+                          all_funcs[fn] = body
+
+              combined = header + '\n\n'
+              for str_name, str_def in sorted(all_strings.items()):
+                  combined += str_def + '\n'
+              combined += '\n'
+              for fn_name, fn_body in sorted(all_funcs.items()):
+                  combined += fn_body + '\n\n'
+
+              with open(output_path, 'w') as f:
+                  f.write(combined)
+              print(f"Created {output_path} ({len(all_funcs)} functions)")
+
+          if __name__ == '__main__':
+              merge_files(sys.argv[1], sys.argv[2:])
+          PYEOF
+          sed -i 's/^          //' /tmp/merge_ll.py
+
+          mkdir -p dist/windows-x86_64-llvm-ir
+
+          cd compiler/bootstrap
+          python stage0.py lexer.sx
+          python stage0.py parser.sx
+          python stage0.py codegen.sx
+          python stage0.py main.sx
+
+          python /tmp/merge_ll.py sxc_combined.ll lexer.ll parser.ll codegen.ll main.ll
+          cp sxc_combined.ll ../../dist/windows-x86_64-llvm-ir/
+
+          for tool in sxpm cursus sxdoc sxlsp; do
+            echo "Building $tool LLVM IR..."
+            python stage0.py ../../tools/${tool}.sx
+            mv ../../tools/${tool}.ll .
+            python /tmp/merge_ll.py ${tool}_combined.ll lexer.ll parser.ll codegen.ll ${tool}.ll
+            cp ${tool}_combined.ll ../../dist/windows-x86_64-llvm-ir/
+          done
+
+          cd ../..
+          echo "=== Generated LLVM IR ==="
+          ls -lh dist/windows-x86_64-llvm-ir/
+        continue-on-error: true
+
+      - name: Upload LLVM IR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: simplex-windows-x86_64-llvm-ir
+          path: dist/windows-x86_64-llvm-ir/
+        if: always()
 
   release:
-    needs: [build-linux-x86_64, build-macos-arm64]
+    needs: [build-linux-x86_64, build-macos-arm64, build-windows-x86_64]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
 
