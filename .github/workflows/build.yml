@@ -34,15 +34,29 @@ jobs:
           PLATFORM="linux-x86_64"
           mkdir -p dist/$PLATFORM
 
+          # Helper function to merge LLVM IR files (keeps header from first file only)
+          merge_ll() {
+            local output=$1
+            shift
+            local first=$1
+            shift
+
+            # Copy first file entirely
+            cp "$first" "$output"
+
+            # Append remaining files, stripping headers
+            for f in "$@"; do
+              awk '/^define |^declare |^@[a-zA-Z]/ { found=1 } found { print }' "$f" >> "$output"
+            done
+          }
+
           cd compiler/bootstrap
           python3 stage0.py lexer.sx
           python3 stage0.py parser.sx
           python3 stage0.py codegen.sx
           python3 stage0.py main.sx
 
-          # Merge LLVM IR files using simple concatenation
-          echo "; Combined LLVM IR" > sxc_combined.ll
-          cat lexer.ll parser.ll codegen.ll main.ll >> sxc_combined.ll
+          merge_ll sxc_combined.ll lexer.ll parser.ll codegen.ll main.ll
           cd ../..
 
           echo "Building sxc..."
@@ -54,8 +68,7 @@ jobs:
             echo "Building $tool..."
             python3 stage0.py ../../tools/${tool}.sx
             mv ../../tools/${tool}.ll .
-            echo "; Combined LLVM IR for $tool" > ${tool}_combined.ll
-            cat lexer.ll parser.ll codegen.ll ${tool}.ll >> ${tool}_combined.ll
+            merge_ll ${tool}_combined.ll lexer.ll parser.ll codegen.ll ${tool}.ll
           done
           cd ../..
 
@@ -84,71 +97,6 @@ jobs:
           name: simplex-toolchain-linux-x86_64
           path: dist/simplex-toolchain-${{ env.SIMPLEX_VERSION }}-linux-x86_64.zip
 
-  build-macos-x86_64:
-    runs-on: macos-13
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: brew install openssl@3 sqlite3
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Build toolchain
-        run: |
-          echo "=== Building Simplex Toolchain v$SIMPLEX_VERSION for macOS x86_64 ==="
-
-          PLATFORM="macos-x86_64"
-          mkdir -p dist/$PLATFORM
-
-          OPENSSL_PREFIX=$(brew --prefix openssl@3)
-          SQLITE_PREFIX=$(brew --prefix sqlite3)
-          export CFLAGS="-I$OPENSSL_PREFIX/include -I$SQLITE_PREFIX/include"
-          export LDFLAGS="-L$OPENSSL_PREFIX/lib -L$SQLITE_PREFIX/lib"
-
-          cd compiler/bootstrap
-          python3 stage0.py lexer.sx
-          python3 stage0.py parser.sx
-          python3 stage0.py codegen.sx
-          python3 stage0.py main.sx
-
-          echo "; Combined LLVM IR" > sxc_combined.ll
-          cat lexer.ll parser.ll codegen.ll main.ll >> sxc_combined.ll
-          cd ../..
-
-          clang -O2 $CFLAGS $LDFLAGS compiler/bootstrap/sxc_combined.ll runtime/standalone_runtime.c \
-            -o dist/$PLATFORM/sxc -lm -lssl -lcrypto -lsqlite3
-
-          cd compiler/bootstrap
-          for tool in sxpm cursus sxdoc sxlsp; do
-            python3 stage0.py ../../tools/${tool}.sx
-            mv ../../tools/${tool}.ll .
-            echo "; Combined LLVM IR for $tool" > ${tool}_combined.ll
-            cat lexer.ll parser.ll codegen.ll ${tool}.ll >> ${tool}_combined.ll
-          done
-          cd ../..
-
-          for tool in sxpm cursus sxdoc sxlsp; do
-            clang -O2 $CFLAGS $LDFLAGS compiler/bootstrap/${tool}_combined.ll runtime/standalone_runtime.c \
-              -o dist/$PLATFORM/$tool -lm -lssl -lcrypto -lsqlite3
-          done
-
-          chmod +x dist/$PLATFORM/*
-          ls -lh dist/$PLATFORM/
-
-          cd dist
-          zip -r simplex-toolchain-$SIMPLEX_VERSION-$PLATFORM.zip $PLATFORM/
-
-      - name: Upload zip archive
-        uses: actions/upload-artifact@v4
-        with:
-          name: simplex-toolchain-macos-x86_64
-          path: dist/simplex-toolchain-${{ env.SIMPLEX_VERSION }}-macos-x86_64.zip
-
   build-macos-arm64:
     runs-on: macos-latest
 
@@ -170,6 +118,19 @@ jobs:
           PLATFORM="macos-arm64"
           mkdir -p dist/$PLATFORM
 
+          # Helper function to merge LLVM IR files (keeps header from first file only)
+          merge_ll() {
+            local output=$1
+            shift
+            local first=$1
+            shift
+
+            cp "$first" "$output"
+            for f in "$@"; do
+              awk '/^define |^declare |^@[a-zA-Z]/ { found=1 } found { print }' "$f" >> "$output"
+            done
+          }
+
           OPENSSL_PREFIX=$(brew --prefix openssl@3)
           SQLITE_PREFIX=$(brew --prefix sqlite3)
           export CFLAGS="-I$OPENSSL_PREFIX/include -I$SQLITE_PREFIX/include"
@@ -181,8 +142,7 @@ jobs:
           python3 stage0.py codegen.sx
           python3 stage0.py main.sx
 
-          echo "; Combined LLVM IR" > sxc_combined.ll
-          cat lexer.ll parser.ll codegen.ll main.ll >> sxc_combined.ll
+          merge_ll sxc_combined.ll lexer.ll parser.ll codegen.ll main.ll
           cd ../..
 
           clang -O2 $CFLAGS $LDFLAGS compiler/bootstrap/sxc_combined.ll runtime/standalone_runtime.c \
@@ -192,8 +152,7 @@ jobs:
           for tool in sxpm cursus sxdoc sxlsp; do
             python3 stage0.py ../../tools/${tool}.sx
             mv ../../tools/${tool}.ll .
-            echo "; Combined LLVM IR for $tool" > ${tool}_combined.ll
-            cat lexer.ll parser.ll codegen.ll ${tool}.ll >> ${tool}_combined.ll
+            merge_ll ${tool}_combined.ll lexer.ll parser.ll codegen.ll ${tool}.ll
           done
           cd ../..
 
@@ -214,85 +173,11 @@ jobs:
           name: simplex-toolchain-macos-arm64
           path: dist/simplex-toolchain-${{ env.SIMPLEX_VERSION }}-macos-arm64.zip
 
-  build-windows-x86_64:
-    runs-on: windows-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install LLVM
-        uses: KyleMayes/install-llvm-action@v2
-        with:
-          version: "17.0"
-
-      - name: Install dependencies
-        run: |
-          choco install openssl sqlite -y
-          echo "C:\Program Files\OpenSSL-Win64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          echo "C:\ProgramData\chocolatey\lib\SQLite\tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Build toolchain
-        shell: bash
-        run: |
-          echo "=== Building Simplex Toolchain v$SIMPLEX_VERSION for Windows x86_64 ==="
-
-          PLATFORM="windows-x86_64"
-          mkdir -p dist/$PLATFORM
-
-          cd compiler/bootstrap
-          python stage0.py lexer.sx
-          python stage0.py parser.sx
-          python stage0.py codegen.sx
-          python stage0.py main.sx
-
-          echo "; Combined LLVM IR" > sxc_combined.ll
-          cat lexer.ll parser.ll codegen.ll main.ll >> sxc_combined.ll
-          cd ../..
-
-          echo "Building sxc..."
-          clang -O2 compiler/bootstrap/sxc_combined.ll runtime/standalone_runtime.c \
-            -o dist/$PLATFORM/sxc.exe \
-            -I"C:/Program Files/OpenSSL-Win64/include" \
-            -L"C:/Program Files/OpenSSL-Win64/lib" \
-            -lssl -lcrypto -lsqlite3 -lws2_32 -ladvapi32 -luser32 -lcrypt32
-
-          cd compiler/bootstrap
-          for tool in sxpm cursus sxdoc sxlsp; do
-            echo "Building $tool..."
-            python stage0.py ../../tools/${tool}.sx
-            mv ../../tools/${tool}.ll .
-            echo "; Combined LLVM IR for $tool" > ${tool}_combined.ll
-            cat lexer.ll parser.ll codegen.ll ${tool}.ll >> ${tool}_combined.ll
-          done
-          cd ../..
-
-          for tool in sxpm cursus sxdoc sxlsp; do
-            clang -O2 compiler/bootstrap/${tool}_combined.ll runtime/standalone_runtime.c \
-              -o dist/$PLATFORM/${tool}.exe \
-              -I"C:/Program Files/OpenSSL-Win64/include" \
-              -L"C:/Program Files/OpenSSL-Win64/lib" \
-              -lssl -lcrypto -lsqlite3 -lws2_32 -ladvapi32 -luser32 -lcrypt32
-          done
-
-          echo "=== Built Binaries ==="
-          ls -lh dist/$PLATFORM/
-
-      - name: Create zip archive
-        run: Compress-Archive -Path dist/windows-x86_64/* -DestinationPath dist/simplex-toolchain-${{ env.SIMPLEX_VERSION }}-windows-x86_64.zip
-
-      - name: Upload zip archive
-        uses: actions/upload-artifact@v4
-        with:
-          name: simplex-toolchain-windows-x86_64
-          path: dist/simplex-toolchain-${{ env.SIMPLEX_VERSION }}-windows-x86_64.zip
+  # Windows build disabled - runtime/standalone_runtime.c needs Windows compatibility updates
+  # (execinfo.h doesn't exist on Windows, needs conditional compilation)
 
   release:
-    needs: [build-linux-x86_64, build-macos-x86_64, build-macos-arm64, build-windows-x86_64]
+    needs: [build-linux-x86_64, build-macos-arm64]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
 
@@ -307,9 +192,7 @@ jobs:
         with:
           files: |
             artifacts/simplex-toolchain-linux-x86_64/simplex-toolchain-*.zip
-            artifacts/simplex-toolchain-macos-x86_64/simplex-toolchain-*.zip
             artifacts/simplex-toolchain-macos-arm64/simplex-toolchain-*.zip
-            artifacts/simplex-toolchain-windows-x86_64/simplex-toolchain-*.zip
           draft: false
           prerelease: false
           generate_release_notes: true
