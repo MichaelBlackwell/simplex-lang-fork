@@ -2,7 +2,7 @@
 // Build tool and package manager for Simplex projects
 // Part of Phase 2: Package Ecosystem
 
-fn SXPM_VERSION() -> i64 { "0.1.5" }
+fn SXPM_VERSION() -> i64 { "0.5.0" }
 
 // ============================================================================
 // Help and Version
@@ -28,6 +28,12 @@ fn sxpm_show_help() {
     println("    search <query>       Search for packages");
     println("    info <package>       Show package information");
     println("    install <package>    Install a package");
+    println("");
+    println("MODEL COMMANDS:");
+    println("    model list           List available/installed models");
+    println("    model install <name> Download and install a model");
+    println("    model remove <name>  Remove an installed model");
+    println("    model info <name>    Show model information");
     println("");
     println("OPTIONS:");
     println("    -h, --help           Show this help");
@@ -2166,6 +2172,314 @@ fn cache_clear() {
 }
 
 // ============================================================================
+// Model Management for SLM Provisioning
+// ============================================================================
+
+// Model directory paths
+fn models_global_dir() -> i64 {
+    let home: i64 = cli_getenv("HOME");
+    path_join(home, ".simplex/models")
+}
+
+fn models_local_dir() -> i64 {
+    ".simplex/models"
+}
+
+// Model registry URL (can be overridden via SIMPLEX_MODEL_REGISTRY env)
+fn models_registry_url() -> i64 {
+    let env_url: i64 = cli_getenv("SIMPLEX_MODEL_REGISTRY");
+    if string_len(env_url) > 0 {
+        return env_url;
+    }
+    "https://raw.githubusercontent.com/anthropics/simplex-models/main/registry.json"
+}
+
+// Built-in model definitions (when registry unavailable)
+fn builtin_models() -> i64 {
+    let models: i64 = json_object();
+
+    // Cognitive model for anima.think()
+    let cognitive: i64 = json_object();
+    json_object_set_sx(cognitive, "name", json_string_sx("simplex-cognitive-7b"));
+    json_object_set_sx(cognitive, "description", json_string_sx("Default reasoning model for anima.think()"));
+    json_object_set_sx(cognitive, "size", json_string_sx("4.1GB"));
+    json_object_set_sx(cognitive, "quantization", json_string_sx("Q4_K_M"));
+    json_object_set_sx(cognitive, "url", json_string_sx("https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.2-GGUF/resolve/main/mistral-7b-instruct-v0.2.Q4_K_M.gguf"));
+    json_object_set_sx(cognitive, "sha256", json_string_sx(""));
+    json_object_set_sx(models, "simplex-cognitive-7b", cognitive);
+
+    // Lightweight cognitive model
+    let cognitive_sm: i64 = json_object();
+    json_object_set_sx(cognitive_sm, "name", json_string_sx("simplex-cognitive-1b"));
+    json_object_set_sx(cognitive_sm, "description", json_string_sx("Lightweight model for resource-constrained environments"));
+    json_object_set_sx(cognitive_sm, "size", json_string_sx("700MB"));
+    json_object_set_sx(cognitive_sm, "quantization", json_string_sx("Q4_K_M"));
+    json_object_set_sx(cognitive_sm, "url", json_string_sx("https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"));
+    json_object_set_sx(cognitive_sm, "sha256", json_string_sx(""));
+    json_object_set_sx(models, "simplex-cognitive-1b", cognitive_sm);
+
+    // Embedding model for mnemonic memory
+    let embed: i64 = json_object();
+    json_object_set_sx(embed, "name", json_string_sx("simplex-mnemonic-embed"));
+    json_object_set_sx(embed, "description", json_string_sx("Embedding model for memory recall and semantic search"));
+    json_object_set_sx(embed, "size", json_string_sx("134MB"));
+    json_object_set_sx(embed, "quantization", json_string_sx("F16"));
+    json_object_set_sx(embed, "url", json_string_sx("https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q8_0.gguf"));
+    json_object_set_sx(embed, "sha256", json_string_sx(""));
+    json_object_set_sx(models, "simplex-mnemonic-embed", embed);
+
+    models
+}
+
+// Check if model is installed
+fn model_is_installed(name: i64) -> bool {
+    let global_path: i64 = path_join(models_global_dir(), name);
+    let gguf_path: i64 = string_concat(global_path, ".gguf");
+    if check_file_exists(gguf_path) {
+        return true;
+    }
+    let local_path: i64 = path_join(models_local_dir(), name);
+    let local_gguf: i64 = string_concat(local_path, ".gguf");
+    check_file_exists(local_gguf)
+}
+
+// Get model file path
+fn model_path(name: i64) -> i64 {
+    let global_path: i64 = path_join(models_global_dir(), name);
+    let gguf_path: i64 = string_concat(global_path, ".gguf");
+    if check_file_exists(gguf_path) {
+        return gguf_path;
+    }
+    let local_path: i64 = path_join(models_local_dir(), name);
+    string_concat(local_path, ".gguf")
+}
+
+// List models
+fn cmd_model_list(args: i64, argc: i64, arg_idx: i64) -> i64 {
+    println("Available Models:");
+    println("================");
+    println("");
+
+    let models: i64 = builtin_models();
+    let keys: i64 = json_keys(models);
+    let n: i64 = vec_len(keys);
+    let i: i64 = 0;
+
+    while i < n {
+        let name: i64 = vec_get(keys, i);
+        let model: i64 = json_get_sx(models, name);
+        let desc: i64 = json_as_string(json_get_sx(model, "description"));
+        let size: i64 = json_as_string(json_get_sx(model, "size"));
+
+        print("  ");
+        print(name);
+        if model_is_installed(name) {
+            print(" [installed]");
+        }
+        println("");
+        print("    ");
+        println(desc);
+        print("    Size: ");
+        println(size);
+        println("");
+
+        i = i + 1;
+    }
+
+    0
+}
+
+// Install a model
+fn cmd_model_install(args: i64, argc: i64, arg_idx: i64) -> i64 {
+    if arg_idx >= argc {
+        println("Usage: sxpm model install <name>");
+        println("");
+        println("Available models:");
+        let models: i64 = builtin_models();
+        let keys: i64 = json_keys(models);
+        let n: i64 = vec_len(keys);
+        let i: i64 = 0;
+        while i < n {
+            print("  ");
+            println(vec_get(keys, i));
+            i = i + 1;
+        }
+        return 1;
+    }
+
+    let name: i64 = vec_get(args, arg_idx);
+
+    // Check if already installed
+    if model_is_installed(name) {
+        print("Model '");
+        print(name);
+        println("' is already installed.");
+        print("Path: ");
+        println(model_path(name));
+        return 0;
+    }
+
+    // Look up model in registry
+    let models: i64 = builtin_models();
+    let model: i64 = json_get_sx(models, name);
+
+    if json_is_null(model) {
+        print("Unknown model: ");
+        println(name);
+        println("Run 'sxpm model list' to see available models.");
+        return 1;
+    }
+
+    let url: i64 = json_as_string(json_get_sx(model, "url"));
+    let size: i64 = json_as_string(json_get_sx(model, "size"));
+
+    print("Installing model: ");
+    println(name);
+    print("Size: ");
+    println(size);
+    println("");
+
+    // Ensure models directory exists
+    mkdir_p(models_global_dir());
+
+    let dest_path: i64 = path_join(models_global_dir(), name);
+    let dest_gguf: i64 = string_concat(dest_path, ".gguf");
+
+    print("Downloading to: ");
+    println(dest_gguf);
+    println("");
+    println("Note: Download will use curl. For large models this may take several minutes.");
+    println("");
+
+    // Download using curl
+    let cmd: i64 = sb_new();
+    sb_append(cmd, "curl -L -# -o \"");
+    sb_append(cmd, dest_gguf);
+    sb_append(cmd, "\" \"");
+    sb_append(cmd, url);
+    sb_append(cmd, "\"");
+    let cmd_str: i64 = sb_to_string(cmd);
+    sb_free(cmd);
+
+    let result: i64 = process_run(cmd_str);
+
+    if result == 0 {
+        println("");
+        print("Model '");
+        print(name);
+        println("' installed successfully!");
+        print("Path: ");
+        println(dest_gguf);
+    } else {
+        print("Failed to download model. Exit code: ");
+        print_i64(result);
+        println("");
+    }
+
+    result
+}
+
+// Remove a model
+fn cmd_model_remove(args: i64, argc: i64, arg_idx: i64) -> i64 {
+    if arg_idx >= argc {
+        println("Usage: sxpm model remove <name>");
+        return 1;
+    }
+
+    let name: i64 = vec_get(args, arg_idx);
+
+    if !model_is_installed(name) {
+        print("Model '");
+        print(name);
+        println("' is not installed.");
+        return 1;
+    }
+
+    let path: i64 = model_path(name);
+    print("Removing model: ");
+    println(path);
+
+    remove_path(path);
+
+    print("Model '");
+    print(name);
+    println("' removed.");
+
+    0
+}
+
+// Show model info
+fn cmd_model_info(args: i64, argc: i64, arg_idx: i64) -> i64 {
+    if arg_idx >= argc {
+        println("Usage: sxpm model info <name>");
+        return 1;
+    }
+
+    let name: i64 = vec_get(args, arg_idx);
+    let models: i64 = builtin_models();
+    let model: i64 = json_get_sx(models, name);
+
+    if json_is_null(model) {
+        print("Unknown model: ");
+        println(name);
+        return 1;
+    }
+
+    println("Model Information:");
+    println("==================");
+    print("Name:         ");
+    println(json_as_string(json_get_sx(model, "name")));
+    print("Description:  ");
+    println(json_as_string(json_get_sx(model, "description")));
+    print("Size:         ");
+    println(json_as_string(json_get_sx(model, "size")));
+    print("Quantization: ");
+    println(json_as_string(json_get_sx(model, "quantization")));
+    print("Installed:    ");
+    if model_is_installed(name) {
+        println("Yes");
+        print("Path:         ");
+        println(model_path(name));
+    } else {
+        println("No");
+    }
+    print("URL:          ");
+    println(json_as_string(json_get_sx(model, "url")));
+
+    0
+}
+
+// Model command dispatcher
+fn cmd_model(args: i64, argc: i64, arg_idx: i64) -> i64 {
+    if arg_idx >= argc {
+        println("Usage: sxpm model <subcommand>");
+        println("");
+        println("Subcommands:");
+        println("  list           List available/installed models");
+        println("  install <name> Download and install a model");
+        println("  remove <name>  Remove an installed model");
+        println("  info <name>    Show model information");
+        return 1;
+    }
+
+    let subcmd: i64 = vec_get(args, arg_idx);
+
+    if string_eq(subcmd, "list") {
+        return cmd_model_list(args, argc, arg_idx + 1);
+    } else if string_eq(subcmd, "install") {
+        return cmd_model_install(args, argc, arg_idx + 1);
+    } else if string_eq(subcmd, "remove") {
+        return cmd_model_remove(args, argc, arg_idx + 1);
+    } else if string_eq(subcmd, "info") {
+        return cmd_model_info(args, argc, arg_idx + 1);
+    } else {
+        print("Unknown model subcommand: ");
+        println(subcmd);
+        return 1;
+    }
+}
+
+// ============================================================================
 // Main Entry Point
 // ============================================================================
 
@@ -2220,6 +2534,8 @@ fn main() -> i64 {
         result = cmd_info(args, argc, 2);
     } else if string_eq(cmd, "install") {
         result = cmd_install(args, argc, 2);
+    } else if string_eq(cmd, "model") {
+        result = cmd_model(args, argc, 2);
     } else {
         print("Unknown command: ");
         println(cmd);

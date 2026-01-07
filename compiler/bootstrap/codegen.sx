@@ -17,6 +17,7 @@ fn TAG_USE() -> i64 { 7 }
 fn TAG_ACTOR() -> i64 { 8 }       // actor definition
 fn TAG_SPECIALIST() -> i64 { 9 }  // AI specialist
 fn TAG_HIVE() -> i64 { 10 }       // cognitive hive
+fn TAG_ANIMA() -> i64 { 11 }      // cognitive soul
 
 // Stmt tags
 fn STMT_LET() -> i64 { 0 }
@@ -4331,6 +4332,138 @@ fn gen_hive(cg: i64, item: i64) -> i64 {
     0
 }
 
+// Generate anima (cognitive soul)
+// Layout: tag(0), name(1), identity(2), memory(3), beliefs(4), slm(5), persistence(6)
+fn gen_anima(cg: i64, item: i64) -> i64 {
+    let name: i64 = load_ptr(item, 1);
+    let identity: i64 = load_ptr(item, 2);
+    let memory: i64 = load_ptr(item, 3);
+    let beliefs: i64 = load_ptr(item, 4);
+    let slm: i64 = load_ptr(item, 5);
+    let persistence: i64 = load_ptr(item, 6);
+
+    emit(cg, "; Anima: ");
+    emit_line(cg, name);
+
+    // Generate anima_new function - creates a new anima instance
+    emit(cg, "define i64 @\"");
+    emit(cg, name);
+    emit_line(cg, "_new\"() {");
+    emit_line(cg, "entry:");
+    // Allocate anima struct: identity, memory stores, beliefs, slm, persistence
+    emit_line(cg, "  %anima = call ptr @malloc(i64 256)");
+    // Initialize memory stores
+    emit_line(cg, "  %episodic = call ptr @intrinsic_vec_new()");
+    emit_line(cg, "  %semantic = call ptr @intrinsic_vec_new()");
+    emit_line(cg, "  %procedural = call ptr @intrinsic_vec_new()");
+    emit_line(cg, "  %working = call ptr @intrinsic_vec_new()");
+    emit_line(cg, "  %beliefs_store = call ptr @intrinsic_vec_new()");
+    // Store memory stores in anima struct
+    emit_line(cg, "  %ep_ptr = getelementptr ptr, ptr %anima, i64 0");
+    emit_line(cg, "  store ptr %episodic, ptr %ep_ptr");
+    emit_line(cg, "  %sem_ptr = getelementptr ptr, ptr %anima, i64 1");
+    emit_line(cg, "  store ptr %semantic, ptr %sem_ptr");
+    emit_line(cg, "  %proc_ptr = getelementptr ptr, ptr %anima, i64 2");
+    emit_line(cg, "  store ptr %procedural, ptr %proc_ptr");
+    emit_line(cg, "  %work_ptr = getelementptr ptr, ptr %anima, i64 3");
+    emit_line(cg, "  store ptr %working, ptr %work_ptr");
+    emit_line(cg, "  %bel_ptr = getelementptr ptr, ptr %anima, i64 4");
+    emit_line(cg, "  store ptr %beliefs_store, ptr %bel_ptr");
+    emit_line(cg, "  %ret = ptrtoint ptr %anima to i64");
+    emit_line(cg, "  ret i64 %ret");
+    emit_line(cg, "}");
+    emit_line(cg, "");
+
+    // Generate remember function - stores experience in episodic memory
+    emit(cg, "define void @\"");
+    emit(cg, name);
+    emit_line(cg, "_remember\"(i64 %self, i64 %experience) {");
+    emit_line(cg, "entry:");
+    emit_line(cg, "  %anima = inttoptr i64 %self to ptr");
+    emit_line(cg, "  %ep_ptr = getelementptr ptr, ptr %anima, i64 0");
+    emit_line(cg, "  %episodic = load ptr, ptr %ep_ptr");
+    emit_line(cg, "  %exp = inttoptr i64 %experience to ptr");
+    emit_line(cg, "  call void @intrinsic_vec_push(ptr %episodic, ptr %exp)");
+    emit_line(cg, "  ret void");
+    emit_line(cg, "}");
+    emit_line(cg, "");
+
+    // Generate learn function - stores fact in semantic memory
+    emit(cg, "define void @\"");
+    emit(cg, name);
+    emit_line(cg, "_learn\"(i64 %self, i64 %fact) {");
+    emit_line(cg, "entry:");
+    emit_line(cg, "  %anima = inttoptr i64 %self to ptr");
+    emit_line(cg, "  %sem_ptr = getelementptr ptr, ptr %anima, i64 1");
+    emit_line(cg, "  %semantic = load ptr, ptr %sem_ptr");
+    emit_line(cg, "  %f = inttoptr i64 %fact to ptr");
+    emit_line(cg, "  call void @intrinsic_vec_push(ptr %semantic, ptr %f)");
+    emit_line(cg, "  ret void");
+    emit_line(cg, "}");
+    emit_line(cg, "");
+
+    // Generate believe function - stores belief with confidence
+    emit(cg, "define void @\"");
+    emit(cg, name);
+    emit_line(cg, "_believe\"(i64 %self, i64 %belief, i64 %confidence) {");
+    emit_line(cg, "entry:");
+    emit_line(cg, "  %anima = inttoptr i64 %self to ptr");
+    emit_line(cg, "  %bel_ptr = getelementptr ptr, ptr %anima, i64 4");
+    emit_line(cg, "  %beliefs = load ptr, ptr %bel_ptr");
+    emit_line(cg, "  %b = inttoptr i64 %belief to ptr");
+    emit_line(cg, "  call void @intrinsic_vec_push(ptr %beliefs, ptr %b)");
+    emit_line(cg, "  ret void");
+    emit_line(cg, "}");
+    emit_line(cg, "");
+
+    // Generate recall_for function - goal-directed recall
+    emit(cg, "define i64 @\"");
+    emit(cg, name);
+    emit_line(cg, "_recall_for\"(i64 %self, i64 %goal, i64 %context) {");
+    emit_line(cg, "entry:");
+    // For now, return empty vec - will be enhanced with SLM integration
+    emit_line(cg, "  %results = call ptr @intrinsic_vec_new()");
+    emit_line(cg, "  %ret = ptrtoint ptr %results to i64");
+    emit_line(cg, "  ret i64 %ret");
+    emit_line(cg, "}");
+    emit_line(cg, "");
+
+    // Generate think function - SLM reasoning
+    emit(cg, "define i64 @\"");
+    emit(cg, name);
+    emit_line(cg, "_think\"(i64 %self, i64 %question) {");
+    emit_line(cg, "entry:");
+    // For now, return the question - will be enhanced with SLM integration
+    emit_line(cg, "  ret i64 %question");
+    emit_line(cg, "}");
+    emit_line(cg, "");
+
+    // Generate save function - persist anima to file
+    emit(cg, "define i64 @\"");
+    emit(cg, name);
+    emit_line(cg, "_save\"(i64 %self, i64 %path) {");
+    emit_line(cg, "entry:");
+    // TODO: Implement serialization
+    emit_line(cg, "  ret i64 1");
+    emit_line(cg, "}");
+    emit_line(cg, "");
+
+    // Generate load function - load anima from file
+    emit(cg, "define i64 @\"");
+    emit(cg, name);
+    emit_line(cg, "_load\"(i64 %path) {");
+    emit_line(cg, "entry:");
+    // For now, create new anima - will be enhanced with deserialization
+    emit(cg, "  %anima = call i64 @\"");
+    emit(cg, name);
+    emit_line(cg, "_new\"()");
+    emit_line(cg, "  ret i64 %anima");
+    emit_line(cg, "}");
+    emit_line(cg, "");
+
+    0
+}
+
 // Generate item
 fn gen_item(cg: i64, item: i64) -> i64 {
     let tag: i64 = load_i64(item, 0);
@@ -4369,6 +4502,9 @@ fn gen_item(cg: i64, item: i64) -> i64 {
     }
     if tag == TAG_HIVE() {
         return gen_hive(cg, item);
+    }
+    if tag == TAG_ANIMA() {
+        return gen_anima(cg, item);
     }
     0
 }
