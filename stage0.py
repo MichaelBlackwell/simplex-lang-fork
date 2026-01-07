@@ -5605,6 +5605,9 @@ class CodeGen:
                 'timer_record_to', 'timer_close',
                 'malloc', 'free', 'print_i64', 'print_string', 'println', 'string_from',
                 'vec_new', 'vec_push', 'vec_get', 'vec_len', 'vec_set', 'vec_pop',
+                'vec_find', 'vec_contains', 'vec_first', 'vec_last', 'vec_reverse',
+                'vec_sum', 'vec_clone',
+                'option_is_some', 'option_is_none', 'option_unwrap', 'option_unwrap_or',
             }
             if fn['name'] in runtime_funcs:
                 return  # Already declared in header
@@ -6959,6 +6962,17 @@ class CodeGen:
                 'vec_set': 'intrinsic_vec_set',
                 'vec_pop': 'intrinsic_vec_pop',
                 'vec_remove': 'intrinsic_vec_remove',
+                'vec_find': 'vec_find',
+                'vec_contains': 'vec_contains',
+                'vec_first': 'vec_first',
+                'vec_last': 'vec_last',
+                'vec_reverse': 'vec_reverse',
+                'vec_sum': 'vec_sum',
+                'vec_clone': 'vec_clone',
+                'option_is_some': 'option_is_some',
+                'option_is_none': 'option_is_none',
+                'option_unwrap': 'option_unwrap',
+                'option_unwrap_or': 'option_unwrap_or',
                 'println': 'intrinsic_println',
                 'print': 'intrinsic_print',
                 'int_to_string': 'intrinsic_int_to_string',
@@ -7412,6 +7426,17 @@ class CodeGen:
                 'intrinsic_vec_push': (['ptr', 'ptr'], 'void'),
                 'intrinsic_vec_get': (['ptr', 'i64'], 'ptr'),
                 'intrinsic_vec_len': (['ptr'], 'i64'),
+                'vec_find': (['i64', 'i64'], 'i64'),
+                'vec_contains': (['i64', 'i64'], 'i64'),
+                'vec_first': (['i64'], 'i64'),
+                'vec_last': (['i64'], 'i64'),
+                'vec_reverse': (['i64'], 'i64'),
+                'vec_sum': (['i64'], 'i64'),
+                'vec_clone': (['i64'], 'i64'),
+                'option_is_some': (['i64'], 'i64'),
+                'option_is_none': (['i64'], 'i64'),
+                'option_unwrap': (['i64'], 'i64'),
+                'option_unwrap_or': (['i64', 'i64'], 'i64'),
                 'intrinsic_println': (['ptr'], 'void'),
                 'intrinsic_print': (['ptr'], 'void'),
                 'intrinsic_int_to_string': (['i64'], 'ptr'),
@@ -8001,21 +8026,47 @@ class CodeGen:
                     self.emit(f'  {temp2} = ptrtoint ptr {temp} to i64')
                     return temp2
             elif func_name == 'call1':
-                # Indirect call with 1 arg: call1(fn_ptr, arg1)
-                fn_ptr = args[0]
+                # Indirect call with 1 arg: call1(closure_ptr, arg1)
+                # Closure struct = {fn_ptr, env_ptr}
+                closure_val = args[0]
                 arg1 = args[1]
-                ptr_temp = self.new_temp()
-                self.emit(f'  {ptr_temp} = inttoptr i64 {fn_ptr} to ptr')
-                self.emit(f'  {temp} = call i64 {ptr_temp}(i64 {arg1})')
+                # Convert to pointer
+                closure_ptr = self.new_temp()
+                self.emit(f'  {closure_ptr} = inttoptr i64 {closure_val} to ptr')
+                # Extract function pointer (offset 0)
+                fn_ptr_temp = self.new_temp()
+                self.emit(f'  {fn_ptr_temp} = load i64, ptr {closure_ptr}')
+                # Extract environment pointer (offset 8)
+                env_gep = self.new_temp()
+                self.emit(f'  {env_gep} = getelementptr i8, ptr {closure_ptr}, i64 8')
+                env_ptr_temp = self.new_temp()
+                self.emit(f'  {env_ptr_temp} = load i64, ptr {env_gep}')
+                # Call closure: fn_ptr(env_ptr, arg1)
+                fn_ptr = self.new_temp()
+                self.emit(f'  {fn_ptr} = inttoptr i64 {fn_ptr_temp} to ptr')
+                self.emit(f'  {temp} = call i64 {fn_ptr}(i64 {env_ptr_temp}, i64 {arg1})')
                 return temp
             elif func_name == 'call2':
-                # Indirect call with 2 args: call2(fn_ptr, arg1, arg2)
-                fn_ptr = args[0]
+                # Indirect call with 2 args: call2(closure_ptr, arg1, arg2)
+                # Closure struct = {fn_ptr, env_ptr}
+                closure_val = args[0]
                 arg1 = args[1]
                 arg2 = args[2]
-                ptr_temp = self.new_temp()
-                self.emit(f'  {ptr_temp} = inttoptr i64 {fn_ptr} to ptr')
-                self.emit(f'  {temp} = call i64 {ptr_temp}(i64 {arg1}, i64 {arg2})')
+                # Convert to pointer
+                closure_ptr = self.new_temp()
+                self.emit(f'  {closure_ptr} = inttoptr i64 {closure_val} to ptr')
+                # Extract function pointer (offset 0)
+                fn_ptr_temp = self.new_temp()
+                self.emit(f'  {fn_ptr_temp} = load i64, ptr {closure_ptr}')
+                # Extract environment pointer (offset 8)
+                env_gep = self.new_temp()
+                self.emit(f'  {env_gep} = getelementptr i8, ptr {closure_ptr}, i64 8')
+                env_ptr_temp = self.new_temp()
+                self.emit(f'  {env_ptr_temp} = load i64, ptr {env_gep}')
+                # Call closure: fn_ptr(env_ptr, arg1, arg2)
+                fn_ptr = self.new_temp()
+                self.emit(f'  {fn_ptr} = inttoptr i64 {fn_ptr_temp} to ptr')
+                self.emit(f'  {temp} = call i64 {fn_ptr}(i64 {env_ptr_temp}, i64 {arg1}, i64 {arg2})')
                 return temp
             else:
                 # Check if this is a closure call (function name is a local variable)
@@ -8477,42 +8528,52 @@ class CodeGen:
                             if v in variants:
                                 disc_val = variants[v]
                                 break
-                    # Scrutinee is ptr to enum, first 8 bytes is discriminant
-                    ptr_temp = self.new_temp()
-                    self.emit(f'  {ptr_temp} = inttoptr i64 {scrutinee_val} to ptr')
-                    disc_load = self.new_temp()
-                    self.emit(f'  {disc_load} = load i64, ptr {ptr_temp}')
-                    cmp_temp = self.new_temp()
-                    self.emit(f'  {cmp_temp} = icmp eq i64 {disc_load}, {disc_val}')
-                    # If matches, extract bindings in arm_label; else go to next check
+
+                    # Determine if this is a simple enum (no bindings = integer value)
+                    # or a tagged union (has bindings = pointer to struct)
                     extract_label = f'extract{match_id}_{i}'
-                    self.emit(f'  br i1 {cmp_temp}, label %{extract_label}, label %{next_check}')
-                    self.emit(f'{extract_label}:')
-                    # Extract payload bindings using recursive helper
-                    for j, binding in enumerate(bindings):
-                        binding_offset = 8 + j * 8  # Payload starts after discriminant
-                        if binding.get('type') == 'BindingPattern':
-                            bname = binding['name']
-                            local_suffix = self.local_counter
-                            self.local_counter += 1
-                            slot = f'%local.{bname}.{local_suffix}'
-                            self.locals[bname] = slot
-                            self.emit(f'  {slot} = alloca i64')
-                            gep = self.new_temp()
-                            self.emit(f'  {gep} = getelementptr i8, ptr {ptr_temp}, i64 {binding_offset}')
-                            val = self.new_temp()
-                            self.emit(f'  {val} = load i64, ptr {gep}')
-                            self.emit(f'  store i64 {val}, ptr {slot}')
-                        elif binding.get('type') == 'EnumPattern':
-                            # Nested enum - extract inner ptr and recurse
-                            gep = self.new_temp()
-                            self.emit(f'  {gep} = getelementptr i8, ptr {ptr_temp}, i64 {binding_offset}')
-                            inner_val = self.new_temp()
-                            self.emit(f'  {inner_val} = load i64, ptr {gep}')
-                            inner_ptr = self.new_temp()
-                            self.emit(f'  {inner_ptr} = inttoptr i64 {inner_val} to ptr')
-                            # Recursively extract bindings from nested pattern
-                            self.extract_pattern_bindings(binding, inner_ptr, 0)
+                    if not bindings:
+                        # Simple enum: compare scrutinee value directly against discriminant
+                        cmp_temp = self.new_temp()
+                        self.emit(f'  {cmp_temp} = icmp eq i64 {scrutinee_val}, {disc_val}')
+                        self.emit(f'  br i1 {cmp_temp}, label %{extract_label}, label %{next_check}')
+                        self.emit(f'{extract_label}:')
+                    else:
+                        # Tagged union: scrutinee is ptr to enum, first 8 bytes is discriminant
+                        ptr_temp = self.new_temp()
+                        self.emit(f'  {ptr_temp} = inttoptr i64 {scrutinee_val} to ptr')
+                        disc_load = self.new_temp()
+                        self.emit(f'  {disc_load} = load i64, ptr {ptr_temp}')
+                        cmp_temp = self.new_temp()
+                        self.emit(f'  {cmp_temp} = icmp eq i64 {disc_load}, {disc_val}')
+                        # If matches, extract bindings in arm_label; else go to next check
+                        self.emit(f'  br i1 {cmp_temp}, label %{extract_label}, label %{next_check}')
+                        self.emit(f'{extract_label}:')
+                        # Extract payload bindings using recursive helper
+                        for j, binding in enumerate(bindings):
+                            binding_offset = 8 + j * 8  # Payload starts after discriminant
+                            if binding.get('type') == 'BindingPattern':
+                                bname = binding['name']
+                                local_suffix = self.local_counter
+                                self.local_counter += 1
+                                slot = f'%local.{bname}.{local_suffix}'
+                                self.locals[bname] = slot
+                                self.emit(f'  {slot} = alloca i64')
+                                gep = self.new_temp()
+                                self.emit(f'  {gep} = getelementptr i8, ptr {ptr_temp}, i64 {binding_offset}')
+                                val = self.new_temp()
+                                self.emit(f'  {val} = load i64, ptr {gep}')
+                                self.emit(f'  store i64 {val}, ptr {slot}')
+                            elif binding.get('type') == 'EnumPattern':
+                                # Nested enum - extract inner ptr and recurse
+                                gep = self.new_temp()
+                                self.emit(f'  {gep} = getelementptr i8, ptr {ptr_temp}, i64 {binding_offset}')
+                                inner_val = self.new_temp()
+                                self.emit(f'  {inner_val} = load i64, ptr {gep}')
+                                inner_ptr = self.new_temp()
+                                self.emit(f'  {inner_ptr} = inttoptr i64 {inner_val} to ptr')
+                                # Recursively extract bindings from nested pattern
+                                self.extract_pattern_bindings(binding, inner_ptr, 0)
                     if guard:
                         self.emit(f'  br label %{guard_label}')
                     else:
@@ -9368,8 +9429,29 @@ class CodeGen:
             # ? operator: desugar to Result check and early return
             # Result layout: tag(0=Err, 1=Ok), value(1)
             # If Err, early return the Result; if Ok, unwrap the value
+            #
+            # Bootstrap hack: If the value is small (< 4096), treat it as a
+            # plain i64 and pass through (not a Result pointer). This handles
+            # cases where ? is used on non-Result types during bootstrap.
 
             inner_val = self.generate_expr(expr['expr'])
+
+            # Check if value looks like a pointer (>= 4096) or a plain value
+            is_ptr_label = self.new_label('try_isptr')
+            passthrough_label = self.new_label('try_passthrough')
+            is_ptr_temp = self.new_temp()
+            self.emit(f'  {is_ptr_temp} = icmp uge i64 {inner_val}, 4096')
+            self.emit(f'  br i1 {is_ptr_temp}, label %{is_ptr_label}, label %{passthrough_label}')
+
+            # Passthrough path: value is not a pointer, just return it
+            self.emit(f'{passthrough_label}:')
+            passthrough_result = self.new_temp()
+            self.emit(f'  {passthrough_result} = add i64 {inner_val}, 0')  # Copy value
+            passthrough_end = self.new_label('try_passthrough_end')
+            self.emit(f'  br label %{passthrough_end}')
+
+            # Pointer path: treat as Result
+            self.emit(f'{is_ptr_label}:')
 
             # Convert i64 to ptr
             ptr_temp = self.new_temp()
@@ -9400,8 +9482,18 @@ class CodeGen:
             self.emit(f'  {gep_temp} = getelementptr i8, ptr {ptr_temp}, i64 8')
             value_temp = self.new_temp()
             self.emit(f'  {value_temp} = load i64, ptr {gep_temp}')
+            ok_end = self.new_label('try_ok_end')
+            self.emit(f'  br label %{ok_end}')
 
-            return value_temp
+            # End labels for phi
+            self.emit(f'{passthrough_end}:')
+            self.emit(f'  br label %{ok_end}')
+
+            self.emit(f'{ok_end}:')
+            result_temp = self.new_temp()
+            self.emit(f'  {result_temp} = phi i64 [{passthrough_result}, %{passthrough_end}], [{value_temp}, %{ok_label}]')
+
+            return result_temp
 
         if expr_type == 'SpawnExpr':
             # spawn ActorName -> ActorName_new()

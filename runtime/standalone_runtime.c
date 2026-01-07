@@ -16676,7 +16676,7 @@ int64_t vec_find(int64_t vec_ptr, int64_t value) {
     if (!vec) return -1;
 
     for (size_t i = 0; i < vec->len; i++) {
-        if (string_keys_equal((int64_t)vec->items[i], value)) {
+        if ((int64_t)vec->items[i] == value) {
             return (int64_t)i;
         }
     }
