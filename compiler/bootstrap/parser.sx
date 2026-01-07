@@ -109,6 +109,7 @@ fn TAG_ACTOR() -> i64 { 8 }       // actor definition
 fn TAG_SPECIALIST() -> i64 { 9 }  // AI specialist
 fn TAG_HIVE() -> i64 { 10 }       // cognitive hive
 fn TAG_ANIMA() -> i64 { 11 }      // cognitive soul
+fn TAG_TYPE_ALIAS() -> i64 { 12 } // type alias: type Name = Type;
 
 // Stmt tags
 fn STMT_LET() -> i64 { 0 }
@@ -568,6 +569,24 @@ fn ast_use(path: i64) -> i64 {
     store_i64(node, 0, TAG_USE());
     store_ptr(node, 1, path);
     node
+}
+
+// Item: Type alias (type Name = Type;)
+// Layout: tag(0), name(1), target_type(2)
+fn ast_type_alias(name: i64, target_type: i64) -> i64 {
+    let node: i64 = malloc(24);
+    store_i64(node, 0, TAG_TYPE_ALIAS());
+    store_ptr(node, 1, name);
+    store_ptr(node, 2, target_type);
+    node
+}
+
+fn ast_type_alias_name(node: i64) -> i64 {
+    load_ptr(node, 1)
+}
+
+fn ast_type_alias_target(node: i64) -> i64 {
+    load_ptr(node, 2)
 }
 
 // Item: Actor definition
@@ -2045,6 +2064,17 @@ fn parse_use(parser: i64) -> i64 {
     ast_use(path)
 }
 
+// Parse type alias: type Name = Type;
+fn parse_type_alias(parser: i64) -> i64 {
+    parser_expect(parser, TokenKind::KwType);
+    let name_tok: i64 = parser_expect(parser, TokenKind::Ident);
+    let name: i64 = token_text(name_tok);
+    parser_expect(parser, TokenKind::Eq);
+    let target_type: i64 = parse_type(parser);
+    parser_expect(parser, TokenKind::Semi);
+    ast_type_alias(name, target_type)
+}
+
 // Parse actor definition
 // actor Name { var field: Type = init, init(params) { }, receive MsgName(params) -> RetType { } }
 fn parse_actor(parser: i64) -> i64 {
@@ -2430,6 +2460,9 @@ fn parse_item(parser: i64) -> i64 {
     }
     if parser_check(parser, TokenKind::KwUse) {
         return parse_use(parser);
+    }
+    if parser_check(parser, TokenKind::KwType) {
+        return parse_type_alias(parser);
     }
     if parser_check(parser, TokenKind::KwActor) {
         return parse_actor(parser);
