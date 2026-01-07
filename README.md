@@ -1,6 +1,6 @@
 # Simplex Programming Language
 
-**Version 0.5.0**
+**Version 0.5.1**
 
 Simplex is a modern systems programming language designed for AI-native applications, featuring first-class support for actors, cognitive agents, and distributed computing.
 
@@ -268,13 +268,36 @@ simplex-lang/
 
 | Tool | Version | Description |
 |------|---------|-------------|
-| **sxc** | 0.5.0 | Simplex Compiler |
-| **sxpm** | 0.5.0 | Package Manager with SLM provisioning |
-| **cursus** | 0.5.0 | Bytecode Virtual Machine |
-| **sxdoc** | 0.5.0 | Documentation Generator |
-| **sxlsp** | 0.5.0 | Language Server Protocol |
+| **sxc** | 0.5.1 | Simplex Compiler |
+| **sxpm** | 0.5.1 | Package Manager with SLM provisioning |
+| **cursus** | 0.5.1 | Bytecode Virtual Machine |
+| **sxdoc** | 0.5.1 | Documentation Generator |
+| **sxlsp** | 0.5.1 | Language Server Protocol |
 
 ## Release History
+
+### v0.5.1 (2026-01-07) - Type Aliases
+
+**Type Alias Support:**
+- New `type Name = ExistingType;` syntax for type aliases
+- Type aliases resolved at compile time
+- Improves code readability and maintainability
+
+```simplex
+type UserId = i64;
+type Count = i64;
+type Handler = fn(Request) -> Response;
+
+fn process(id: UserId) -> Count {
+    // UserId and Count are interchangeable with i64
+    id + 1
+}
+```
+
+**LLM Context Specification:**
+- New `simplex.context.json` file for AI/LLM code generation
+- Consolidated language specification in machine-readable format
+- Uploaded to https://simplex.senuamedia.com/simplex.context.json
 
 ### v0.5.0 (2026-01-07) - SLM Provisioning & Cognitive Hives
 

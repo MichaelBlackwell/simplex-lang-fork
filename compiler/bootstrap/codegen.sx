@@ -22,6 +22,7 @@ fn TAG_ACTOR() -> i64 { 8 }       // actor definition
 fn TAG_SPECIALIST() -> i64 { 9 }  // AI specialist
 fn TAG_HIVE() -> i64 { 10 }       // cognitive hive
 fn TAG_ANIMA() -> i64 { 11 }      // cognitive soul
+fn TAG_TYPE_ALIAS() -> i64 { 12 } // type alias
 
 // Stmt tags
 fn STMT_LET() -> i64 { 0 }
@@ -80,9 +81,9 @@ fn OP_NOT() -> i64 { 101 }
 
 // Codegen state
 fn codegen_new() -> i64 {
-    // Allocate codegen: output_sb(0), temp_counter(1), label_counter(2), enums(3), locals(4), strings(5), terminated(6), structs(7), var_types(8), loop_stack(9), loop_depth(10), pre_alloca_queue(11), module_name(12), generic_fns(13), instantiated(14), pending_instantiations(15), assoc_types(16), current_impl_type(17), const_params(18), type_params(19), generic_struct_templates(20), trait_impls(21), is_async_fn(22), async_state_counter(23), async_await_points(24), async_fn_name(25), default_methods(26), trait_defs(27), vtables(28)
+    // Allocate codegen: output_sb(0), temp_counter(1), label_counter(2), enums(3), locals(4), strings(5), terminated(6), structs(7), var_types(8), loop_stack(9), loop_depth(10), pre_alloca_queue(11), module_name(12), generic_fns(13), instantiated(14), pending_instantiations(15), assoc_types(16), current_impl_type(17), const_params(18), type_params(19), generic_struct_templates(20), trait_impls(21), is_async_fn(22), async_state_counter(23), async_await_points(24), async_fn_name(25), default_methods(26), trait_defs(27), vtables(28), type_aliases(29)
     // Note: slot 0 is now a StringBuilder for O(n) instead of O(n²) string building
-    let cg: i64 = malloc(232);
+    let cg: i64 = malloc(240);
     store_ptr(cg, 0, sb_new_cap(65536));
     store_i64(cg, 1, 0);
     store_i64(cg, 2, 0);
@@ -112,6 +113,7 @@ fn codegen_new() -> i64 {
     store_ptr(cg, 26, vec_new()); // default_methods: vec of (trait::method, fn_def) pairs
     store_ptr(cg, 27, vec_new()); // trait_defs: vec of (trait_name, method_sigs) for vtable layout
     store_ptr(cg, 28, vec_new()); // vtables: vec of (type_name, trait_name, vtable_global) pairs
+    store_ptr(cg, 29, vec_new()); // type_aliases: vec of (alias_name, target_type) pairs
     cg
 }
 
@@ -281,7 +283,7 @@ fn cg_lookup_assoc_type(cg: i64, impl_type: i64, assoc_name: i64) -> i64 {
     0
 }
 
-// Resolve a type: if it's "Self::Name", look it up; if it's "Self", return current impl type
+// Resolve a type: handles Self, Self::Name, and type aliases
 fn cg_resolve_type(cg: i64, type_name: i64) -> i64 {
     // Check for Self::Name pattern
     if string_starts_with(type_name, string_from("Self::")) {
@@ -303,7 +305,12 @@ fn cg_resolve_type(cg: i64, type_name: i64) -> i64 {
             return impl_type;
         }
     }
-    // Not Self::anything, return as-is
+    // Check for type alias
+    let resolved: i64 = cg_resolve_type_alias(cg, type_name);
+    if string_eq(resolved, type_name) == false {
+        return resolved;
+    }
+    // Not Self::anything or alias, return as-is
     type_name
 }
 
@@ -623,6 +630,37 @@ fn cg_get_vtable(cg: i64, type_name: i64, trait_name: i64) -> i64 {
         i = i + 1;
     }
     0
+}
+
+// Slot 29: type_aliases - stores type alias mappings
+fn cg_type_aliases(cg: i64) -> i64 {
+    load_ptr(cg, 29)
+}
+
+// Register a type alias
+fn cg_register_type_alias(cg: i64, alias_name: i64, target_type: i64) -> i64 {
+    let aliases: i64 = cg_type_aliases(cg);
+    let entry: i64 = malloc(16);
+    store_ptr(entry, 0, alias_name);
+    store_ptr(entry, 1, target_type);
+    vec_push(aliases, entry);
+    0
+}
+
+// Resolve a type alias, returns the target type or the original if not an alias
+fn cg_resolve_type_alias(cg: i64, type_name: i64) -> i64 {
+    let aliases: i64 = cg_type_aliases(cg);
+    let n: i64 = vec_len(aliases);
+    let i: i64 = 0;
+    while i < n {
+        let entry: i64 = vec_get(aliases, i);
+        let alias: i64 = load_ptr(entry, 0);
+        if string_eq(alias, type_name) {
+            return load_ptr(entry, 1);
+        }
+        i = i + 1;
+    }
+    type_name  // Not an alias, return as-is
 }
 
 // Get method index in vtable for a trait method
@@ -4496,6 +4534,13 @@ fn gen_item(cg: i64, item: i64) -> i64 {
     }
     if tag == TAG_USE() {
         return 0;
+    }
+    // Type alias - register the alias for type resolution
+    if tag == TAG_TYPE_ALIAS() {
+        let alias_name: i64 = load_ptr(item, 1);
+        let target_type: i64 = load_ptr(item, 2);
+        cg_register_type_alias(cg, alias_name, target_type);
+        return 0;  // No code generated for type aliases
     }
     // Actor, Specialist, Hive - call dedicated generators
     if tag == TAG_ACTOR() {
