@@ -1391,14 +1391,20 @@ class Parser:
             return {'type': 'ModDef', 'name': name, 'items': None}
 
     def parse_use_def(self):
-        """Parse use path::item; declaration"""
+        """Parse use path::item; or use path::*; declaration"""
         self.expect(TokenKind.KW_USE)
         path = [self.expect(TokenKind.IDENT).text]
+        is_glob = False
         while self.check(TokenKind.DOUBLE_COLON):
             self.advance()
+            # Check for glob import: use foo::*
+            if self.check(TokenKind.STAR):
+                self.advance()
+                is_glob = True
+                break
             path.append(self.expect(TokenKind.IDENT).text)
         self.expect(TokenKind.SEMI)
-        return {'type': 'UseDef', 'path': path}
+        return {'type': 'UseDef', 'path': path, 'glob': is_glob}
 
     def parse_block(self):
         self.expect(TokenKind.LBRACE)
@@ -2600,10 +2606,16 @@ class CodeGen:
 
         for item in mod_items:
             if item['type'] == 'UseDef':
-                self.import_from_path(item['path'])
-                # Track pub use re-exports
-                if item.get('is_pub', False):
-                    self.register_reexport(full_mod_name, item['path'])
+                is_glob = item.get('glob', False)
+                is_pub = item.get('is_pub', False)
+                if is_glob:
+                    # Glob import: use foo::*
+                    self.import_glob_from_module(item['path'], is_pub_reexport=is_pub)
+                else:
+                    self.import_from_path(item['path'])
+                    # Track pub use re-exports
+                    if is_pub:
+                        self.register_reexport(full_mod_name, item['path'])
 
         # Restore previous module path
         self.current_module_path = old_module_path
@@ -2717,10 +2729,16 @@ class CodeGen:
 
         for item in mod_items:
             if item['type'] == 'UseDef':
-                self.import_from_path(item['path'])
-                # Track pub use re-exports
-                if item.get('is_pub', False):
-                    self.register_reexport(full_mod_name, item['path'])
+                is_glob = item.get('glob', False)
+                is_pub = item.get('is_pub', False)
+                if is_glob:
+                    # Glob import: use foo::*
+                    self.import_glob_from_module(item['path'], is_pub_reexport=is_pub)
+                else:
+                    self.import_from_path(item['path'])
+                    # Track pub use re-exports
+                    if is_pub:
+                        self.register_reexport(full_mod_name, item['path'])
 
         self.current_module_path = old_module_path
 
@@ -2855,7 +2873,100 @@ class CodeGen:
                 full_path = reexport_source
         self.imported_items[path[-1]] = full_path
 
+    def import_glob_from_module(self, mod_path, is_pub_reexport=False):
+        """Import all public items from a module (glob import: use foo::*).
+
+        Args:
+            mod_path: List of path components to the module (e.g., ['foo', 'bar'])
+            is_pub_reexport: If True, register as re-exports (pub use foo::*)
+        """
+        mod_name = '::'.join(mod_path)
+
+        # Load the module first
+        self.load_module(mod_name)
+
+        # Initialize imported_items if needed
+        if not hasattr(self, 'imported_items'):
+            self.imported_items = {}
+
+        # Get all public items from the module
+        if hasattr(self, 'module_items') and mod_name in self.module_items:
+            for item in self.module_items[mod_name]:
+                if item.get('is_pub', False):
+                    item_name = item.get('name', '')
+                    if item_name:
+                        full_item_path = f"{mod_name}::{item_name}"
+                        self.imported_items[item_name] = full_item_path
+
+                        # If this is a pub use re-export, register for re-export
+                        if is_pub_reexport:
+                            current_mod = getattr(self, 'current_module_path', [])
+                            current_mod_name = '::'.join(current_mod) if current_mod else ''
+                            if current_mod_name:
+                                self.register_reexport(current_mod_name, mod_path + [item_name])
+
+        # Also check for re-exports from the target module
+        if hasattr(self, 'module_reexports') and mod_name in self.module_reexports:
+            for reexport_name, source_path in self.module_reexports[mod_name].items():
+                self.imported_items[reexport_name] = source_path
+                if is_pub_reexport:
+                    current_mod = getattr(self, 'current_module_path', [])
+                    current_mod_name = '::'.join(current_mod) if current_mod else ''
+                    if current_mod_name:
+                        self.register_reexport(current_mod_name, source_path.split('::'))
+
+    def init_prelude(self):
+        """Initialize the prelude - auto-import common types and functions.
+
+        The prelude makes these items available without explicit imports:
+        - Common types: Option, Result, Vec, HashMap, HashSet
+        - Common functions: print, println, print_i64, etc.
+        - Common constructors: Some, None, Ok, Err, vec_new, hashmap_new
+        """
+        if not hasattr(self, 'imported_items'):
+            self.imported_items = {}
+
+        # Register built-in types (these map to their internal representations)
+        prelude_types = [
+            'Option', 'Result', 'Vec', 'HashMap', 'HashSet', 'String',
+        ]
+
+        # Register built-in enum variants
+        prelude_variants = {
+            'Some': 'Option::Some',
+            'None': 'Option::None',
+            'Ok': 'Result::Ok',
+            'Err': 'Result::Err',
+        }
+
+        # Register built-in functions
+        prelude_functions = [
+            'print', 'println', 'print_i64', 'print_f64', 'print_bool',
+            'vec_new', 'vec_push', 'vec_get', 'vec_len', 'vec_pop',
+            'hashmap_new', 'hashmap_insert', 'hashmap_get', 'hashmap_contains', 'hashmap_remove', 'hashmap_keys',
+            'string_len', 'string_eq', 'string_concat', 'string_slice',
+            'sb_new', 'sb_append', 'sb_to_string',
+            'file_read', 'file_write', 'file_exists',
+            'panic',
+        ]
+
+        # Add types to imported items (they're available by short name)
+        for t in prelude_types:
+            self.imported_items[t] = t
+
+        # Add variants
+        for variant, full_path in prelude_variants.items():
+            self.imported_items[variant] = full_path
+
+        # Functions are available as intrinsics and don't need import tracking
+        # but we register them for completeness
+        for fn in prelude_functions:
+            self.imported_items[fn] = fn
+
     def generate(self, items):
+        # Initialize prelude
+        self.init_prelude()
+
         # Header
         self.emit('; ModuleID = "simplex_program"')
         self.emit('target triple = "x86_64-apple-macosx15.0.0"')
@@ -4534,14 +4645,20 @@ class CodeGen:
             elif item['type'] == 'UseDef':
                 # Import items from module
                 path = item['path']
-                self.import_from_path(path)
-                # Track pub use re-exports at top level (makes items part of this module's interface)
-                if item.get('is_pub', False):
-                    # For top-level, register as re-export from 'self' (root module)
-                    current_mod = getattr(self, 'current_module_path', [])
-                    mod_name = '::'.join(current_mod) if current_mod else ''
-                    if mod_name:
-                        self.register_reexport(mod_name, path)
+                is_glob = item.get('glob', False)
+                is_pub = item.get('is_pub', False)
+                if is_glob:
+                    # Glob import: use foo::*
+                    self.import_glob_from_module(path, is_pub_reexport=is_pub)
+                else:
+                    self.import_from_path(path)
+                    # Track pub use re-exports at top level (makes items part of this module's interface)
+                    if is_pub:
+                        # For top-level, register as re-export from 'self' (root module)
+                        current_mod = getattr(self, 'current_module_path', [])
+                        mod_name = '::'.join(current_mod) if current_mod else ''
+                        if mod_name:
+                            self.register_reexport(mod_name, path)
 
         # Second pass: register enums, structs, actors, and specialists
         for item in items:

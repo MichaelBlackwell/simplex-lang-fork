@@ -1,6 +1,6 @@
 # Simplex Language Documentation
 
-**Version 0.4.0**
+**Version 0.4.1**
 
 Simplex (Latin for "simple") is a programming language designed for the AI era. It combines the fault-tolerance of Erlang, the memory safety of Rust, the distributed computing model of Ray, and the content-addressable code of Unison into a cohesive system built for intelligent, distributed workloads.
 
@@ -86,7 +86,7 @@ Start the tutorial: [Tutorial Index](tutorial/README.md)
 
 ---
 
-## Key Features (v0.4.0)
+## Key Features (v0.4.1)
 
 ### Language Core
 - Static typing with inference
@@ -168,6 +168,7 @@ Simplex uses the following terminology for its module system:
 | 0.3.1 | 2025-01 | Complete toolchain: sxc, cursus, sxdoc, sxlsp all compiled |
 | 0.3.5 | 2025-01 | Added sxpm package manager, Phase 1 stdlib (HashMap, HashSet, String ops) |
 | 0.4.0 | 2026-01 | The Anima: cognitive memory, BDI, tool calling, observability, multi-actor orchestration |
+| 0.4.1 | 2026-01 | sxpm enhancements: inline modules, pub use re-exports, diamond dependency detection, build cache, lock files |
 
 ---
 
