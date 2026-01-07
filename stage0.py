@@ -2601,8 +2601,127 @@ class CodeGen:
         for item in mod_items:
             if item['type'] == 'UseDef':
                 self.import_from_path(item['path'])
+                # Track pub use re-exports
+                if item.get('is_pub', False):
+                    self.register_reexport(full_mod_name, item['path'])
 
         # Restore previous module path
+        self.current_module_path = old_module_path
+
+    def register_reexport(self, module_name, path):
+        """Register a re-export: pub use other::Item makes Item available from module_name.
+
+        Args:
+            module_name: The module doing the re-export (e.g., 'mylib')
+            path: The path being re-exported (e.g., ['internal', 'SomeType'])
+        """
+        if not hasattr(self, 'module_reexports'):
+            self.module_reexports = {}
+        if module_name not in self.module_reexports:
+            self.module_reexports[module_name] = {}
+
+        # The re-exported name is the last component of the path
+        reexport_name = path[-1]
+        # The source is the full path being re-exported
+        source_path = '::'.join(path)
+
+        self.module_reexports[module_name][reexport_name] = source_path
+
+        # Also register visibility so it appears as a public item of this module
+        self.register_item_visibility(module_name, reexport_name, True)
+
+    def resolve_reexport(self, module_name, item_name):
+        """Check if an item is a re-export from a module.
+
+        Args:
+            module_name: The module to check (e.g., 'mylib')
+            item_name: The item to look up (e.g., 'SomeType')
+
+        Returns:
+            The source path if this is a re-export, None otherwise
+        """
+        if not hasattr(self, 'module_reexports'):
+            return None
+        if module_name not in self.module_reexports:
+            return None
+        return self.module_reexports[module_name].get(item_name)
+
+    def process_inline_module(self, mod_name, mod_items, is_pub=False):
+        """Process an inline module definition: mod name { ... }
+
+        Args:
+            mod_name: Name of the module
+            mod_items: List of parsed items within the module
+            is_pub: Whether the module is public
+        """
+        # Track loaded modules
+        if not hasattr(self, 'loaded_modules'):
+            self.loaded_modules = set()
+
+        # Build full module name based on current context
+        if hasattr(self, 'current_module_path') and self.current_module_path:
+            full_mod_name = '::'.join(self.current_module_path + [mod_name])
+        else:
+            full_mod_name = mod_name
+
+        if full_mod_name in self.loaded_modules:
+            return  # Already processed
+        self.loaded_modules.add(full_mod_name)
+
+        # Store module items
+        if not hasattr(self, 'module_items'):
+            self.module_items = {}
+        self.module_items[full_mod_name] = mod_items
+
+        # Register module's types, functions, etc.
+        for item in mod_items:
+            item_name = item.get('name', '')
+            item_is_pub = item.get('is_pub', False)
+
+            if item['type'] == 'EnumDef':
+                variants = item['variants']
+                if variants and isinstance(variants[0], dict):
+                    self.enums[f"{full_mod_name}::{item['name']}"] = {v['name']: i for i, v in enumerate(variants)}
+                else:
+                    self.enums[f"{full_mod_name}::{item['name']}"] = {v: i for i, v in enumerate(variants)}
+                self.enums[item['name']] = self.enums[f"{full_mod_name}::{item['name']}"]
+                self.register_item_visibility(full_mod_name, item['name'], item_is_pub)
+
+            elif item['type'] == 'StructDef':
+                self.structs[f"{full_mod_name}::{item['name']}"] = item['fields']
+                self.structs[item['name']] = item['fields']
+                self.register_item_visibility(full_mod_name, item['name'], item_is_pub)
+
+            elif item['type'] == 'FnDef':
+                self.functions.add(f"{full_mod_name}_{item['name']}")
+                self.functions.add(item['name'])
+                self.register_item_visibility(full_mod_name, item['name'], item_is_pub)
+
+            elif item['type'] == 'TraitDef':
+                self.traits[item['name']] = item
+                self.register_item_visibility(full_mod_name, item['name'], item_is_pub)
+
+            elif item['type'] == 'ModDef':
+                # Handle nested inline modules recursively
+                nested_name = item['name']
+                if item.get('items') is not None:
+                    # Save and set current module path
+                    old_path = getattr(self, 'current_module_path', [])
+                    self.current_module_path = full_mod_name.split('::')
+                    self.process_inline_module(nested_name, item['items'], item.get('is_pub', False))
+                    self.current_module_path = old_path
+
+        # Handle use statements within the inline module
+        old_module_path = getattr(self, 'current_module_path', [])
+        self.current_module_path = full_mod_name.split('::')
+
+        for item in mod_items:
+            if item['type'] == 'UseDef':
+                self.import_from_path(item['path'])
+                # Track pub use re-exports
+                if item.get('is_pub', False):
+                    self.register_reexport(full_mod_name, item['path'])
+
         self.current_module_path = old_module_path
 
     def resolve_relative_path(self, path):
@@ -2680,35 +2799,60 @@ class CodeGen:
             mod_name = path[0]
             self.load_module(mod_name)
         else:
-            # Path with multiple components
-            # First, try loading as a nested module
-            full_mod_path = '::'.join(path[:-1])
+            # Path with multiple components: use foo::bar or use foo::bar::Item
+            parent_mod = '::'.join(path[:-1])
             item_name = path[-1]
 
-            # Check if last component is a module or an item
-            # Try loading as nested module first
-            full_path_as_mod = '::'.join(path)
-            self.load_module(full_path_as_mod)
+            # Always load the parent module first
+            self.load_module(parent_mod)
 
-            # If that worked (module was loaded), all items are now available
-            if hasattr(self, 'loaded_modules') and full_path_as_mod in self.loaded_modules:
-                # Imported a module, make its items available via short names
-                if hasattr(self, 'module_items') and full_path_as_mod in self.module_items:
-                    for item in self.module_items[full_path_as_mod]:
-                        if item.get('is_pub', False) or item.get('name'):
-                            self.imported_items[item.get('name', '')] = f"{full_path_as_mod}::{item.get('name', '')}"
+            # Check if item is a re-export from the parent module
+            reexport_source = self.resolve_reexport(parent_mod, item_name)
+            if reexport_source:
+                # This is a re-export, resolve to the original source
+                self.imported_items[item_name] = reexport_source
+                # Also load the source module to get the actual item
+                source_parts = reexport_source.split('::')
+                if len(source_parts) > 1:
+                    source_mod = '::'.join(source_parts[:-1])
+                    self.load_module(source_mod)
             else:
-                # Last component might be a specific item (struct, fn, etc.)
-                # Load the parent module and import just the item
-                if len(path) > 1:
-                    parent_mod = path[0] if len(path) == 2 else '::'.join(path[:-1])
-                    self.load_module(parent_mod)
+                # Check if this is a known item in the parent module
+                item_is_known = False
+                if hasattr(self, 'module_items') and parent_mod in self.module_items:
+                    for mod_item in self.module_items[parent_mod]:
+                        if mod_item.get('name') == item_name:
+                            item_is_known = True
+                            break
 
-                # Mark the specific item as imported
-                self.imported_items[item_name] = '::'.join(path)
+                if item_is_known:
+                    # Mark the specific item as imported from parent module
+                    self.imported_items[item_name] = '::'.join(path)
+                else:
+                    # Not a known item - might be a nested module
+                    # Try loading as a nested module (e.g., use foo::submod;)
+                    full_path_as_mod = '::'.join(path)
+                    self.load_module(full_path_as_mod)
+
+                    # If module was loaded, make its items available
+                    if hasattr(self, 'loaded_modules') and full_path_as_mod in self.loaded_modules:
+                        if hasattr(self, 'module_items') and full_path_as_mod in self.module_items:
+                            for mod_item in self.module_items[full_path_as_mod]:
+                                if mod_item.get('is_pub', False) or mod_item.get('name'):
+                                    self.imported_items[mod_item.get('name', '')] = f"{full_path_as_mod}::{mod_item.get('name', '')}"
+                    else:
+                        # Just mark as imported - might be resolved later
+                        self.imported_items[item_name] = '::'.join(path)
 
         # Also store the full path for resolution
         full_path = '::'.join(path)
+        # Check for re-export at the final level too
+        if len(path) > 1:
+            parent_mod = '::'.join(path[:-1])
+            item_name = path[-1]
+            reexport_source = self.resolve_reexport(parent_mod, item_name)
+            if reexport_source:
+                full_path = reexport_source
         self.imported_items[path[-1]] = full_path
 
     def generate(self, items):
@@ -4380,13 +4524,24 @@ class CodeGen:
         # First pass: handle module declarations and imports
         for item in items:
             if item['type'] == 'ModDef':
-                # Load module from file
                 mod_name = item['name']
-                self.load_module(mod_name)
+                if item.get('items') is not None:
+                    # Inline module: mod name { ... }
+                    self.process_inline_module(mod_name, item['items'], item.get('is_pub', False))
+                else:
+                    # External module: mod name;
+                    self.load_module(mod_name)
             elif item['type'] == 'UseDef':
                 # Import items from module
                 path = item['path']
                 self.import_from_path(path)
+                # Track pub use re-exports at top level (makes items part of this module's interface)
+                if item.get('is_pub', False):
+                    # For top-level, register as re-export from 'self' (root module)
+                    current_mod = getattr(self, 'current_module_path', [])
+                    mod_name = '::'.join(current_mod) if current_mod else ''
+                    if mod_name:
+                        self.register_reexport(mod_name, path)
 
         # Second pass: register enums, structs, actors, and specialists
         for item in items:
