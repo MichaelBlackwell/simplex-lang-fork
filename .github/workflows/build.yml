@@ -41,12 +41,14 @@ jobs:
             local first=$1
             shift
 
-            # Copy first file entirely
-            cp "$first" "$output"
+            # Copy first file and ensure it ends with newline
+            cat "$first" > "$output"
+            echo "" >> "$output"
 
-            # Append remaining files, stripping headers
+            # Append remaining files, stripping header lines
             for f in "$@"; do
-              awk '/^define |^declare |^@[a-zA-Z]/ { found=1 } found { print }' "$f" >> "$output"
+              grep -v -E '^(; ModuleID|source_filename|target datalayout|target triple)' "$f" >> "$output"
+              echo "" >> "$output"
             done
           }
 
@@ -125,9 +127,12 @@ jobs:
             local first=$1
             shift
 
-            cp "$first" "$output"
+            cat "$first" > "$output"
+            echo "" >> "$output"
+
             for f in "$@"; do
-              awk '/^define |^declare |^@[a-zA-Z]/ { found=1 } found { print }' "$f" >> "$output"
+              grep -v -E '^(; ModuleID|source_filename|target datalayout|target triple)' "$f" >> "$output"
+              echo "" >> "$output"
             done
           }
 
