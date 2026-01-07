@@ -424,6 +424,20 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 [MIT License](LICENSE)
 
+## Credits
+
+Simplex was created and developed by **Rod Higgins** ([@senuamedia](https://github.com/senuamedia)).
+
+Key contributions include:
+- Language design and specification
+- Self-hosted compiler implementation
+- Actor model and cognitive agent architecture
+- "Anima" cognitive memory system concept
+- Per-hive SLM provisioning architecture
+- HiveMnemonic shared consciousness design
+
+If you use Simplex in your project, please maintain the copyright notices in the source files.
+
 ## Links
 
 - **Repository**: https://github.com/senuamedia/simplex-lang

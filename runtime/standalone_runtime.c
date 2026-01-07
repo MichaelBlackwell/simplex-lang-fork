@@ -1,5 +1,9 @@
-// Standalone minimal runtime for bootstrap_mini
-// Self-contained with no external dependencies
+// Simplex Runtime Library
+// Standalone minimal runtime for Simplex programs
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under MIT License - see LICENSE file
+// https://github.com/senuamedia/simplex-lang
 
 #include <stdio.h>
 #include <stdlib.h>
