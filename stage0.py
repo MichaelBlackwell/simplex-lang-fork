@@ -3,6 +3,10 @@
 Stage 0 Simplex Compiler - Written in Python to bootstrap the minimal compiler
 This compiles a subset of Simplex to LLVM IR without depending on Simplex itself.
 Rewritten to avoid dataclasses for Python 3.14 compatibility.
+
+Copyright (c) 2025-2026 Rod Higgins
+Licensed under MIT License - see LICENSE file
+https://github.com/senuamedia/simplex
 """
 
 import sys
@@ -97,6 +101,18 @@ class TokenKind:
     FAT_ARROW = 'FAT_ARROW'
     UNDERSCORE = 'UNDERSCORE'
     HASH = 'HASH'
+    AT = 'AT'  # @ symbol for annotations
+    # Neural IR keywords
+    KW_NEURAL_GATE = 'KW_NEURAL_GATE'
+    KW_REQUIRES = 'KW_REQUIRES'
+    KW_ENSURES = 'KW_ENSURES'
+    KW_INVARIANT = 'KW_INVARIANT'
+    KW_FALLBACK = 'KW_FALLBACK'
+    KW_BINDS = 'KW_BINDS'
+    # Hardware targeting keywords
+    KW_CPU = 'KW_CPU'
+    KW_GPU = 'KW_GPU'
+    KW_NPU = 'KW_NPU'
 
 KEYWORDS = {
     'fn': TokenKind.KW_FN,
@@ -141,6 +157,16 @@ KEYWORDS = {
     'where': TokenKind.KW_WHERE,
     'mut': TokenKind.KW_MUT,
     '_': TokenKind.UNDERSCORE,
+    # Neural IR keywords
+    'neural_gate': TokenKind.KW_NEURAL_GATE,
+    'requires': TokenKind.KW_REQUIRES,
+    'ensures': TokenKind.KW_ENSURES,
+    'invariant': TokenKind.KW_INVARIANT,
+    'fallback': TokenKind.KW_FALLBACK,
+    'binds': TokenKind.KW_BINDS,
+    'cpu': TokenKind.KW_CPU,
+    'gpu': TokenKind.KW_GPU,
+    'npu': TokenKind.KW_NPU,
 }
 
 class Token:
@@ -204,6 +230,7 @@ class Lexer:
         if c == '*': return Token(TokenKind.STAR, c, start)
         if c == '%': return Token(TokenKind.PERCENT, c, start)
         if c == '#': return Token(TokenKind.HASH, c, start)
+        if c == '@': return Token(TokenKind.AT, c, start)
         if c == '.':
             if self.peek() == '.':
                 self.advance()
@@ -489,6 +516,28 @@ def make_anima_def(name, identity, memory, beliefs, slm, persistence, desires=No
             'beliefs': beliefs, 'slm': slm, 'persistence': persistence,
             'desires': desires or [], 'intentions': intentions or []}
 
+def make_neural_gate_def(name, params, return_type, body, requires_clause=None, ensures_clause=None,
+                         invariant_clause=None, fallback_block=None, hardware_target='auto', anima_binding=None):
+    """Create a Neural Gate definition AST node.
+
+    Neural gates are differentiable control flow constructs that compile to:
+    - Training mode: sigmoid/softmax relaxations for gradient flow
+    - Inference mode: discrete branches (zero overhead)
+    """
+    return {
+        'type': 'NeuralGateDef',
+        'name': name,
+        'params': params,
+        'return_type': return_type,
+        'body': body,
+        'requires': requires_clause,
+        'ensures': ensures_clause,
+        'invariant': invariant_clause,
+        'fallback': fallback_block,
+        'hardware_target': hardware_target,  # 'auto', 'cpu', 'gpu', 'npu'
+        'anima_binding': anima_binding,  # Name of bound anima, if any
+    }
+
 def make_infer_expr(prompt, options):
     return {'type': 'InferExpr', 'prompt': prompt, 'options': options}
 
@@ -575,6 +624,22 @@ class Parser:
         # Parse any attributes first
         attrs = self.parse_attributes()
 
+        # Parse hardware annotation (@cpu, @gpu, @npu)
+        hardware_target = 'auto'
+        if self.check(TokenKind.AT):
+            self.advance()  # Consume @
+            if self.check(TokenKind.KW_CPU):
+                self.advance()
+                hardware_target = 'cpu'
+            elif self.check(TokenKind.KW_GPU):
+                self.advance()
+                hardware_target = 'gpu'
+            elif self.check(TokenKind.KW_NPU):
+                self.advance()
+                hardware_target = 'npu'
+            else:
+                raise SyntaxError(f"Expected cpu, gpu, or npu after @, got {self.current().kind}")
+
         # Track visibility: pub = public, otherwise private
         is_pub = False
         if self.check(TokenKind.KW_PUB):
@@ -582,7 +647,9 @@ class Parser:
             is_pub = True
 
         item = None
-        if self.check(TokenKind.KW_ASYNC):
+        if self.check(TokenKind.KW_NEURAL_GATE):
+            item = self.parse_neural_gate_def(hardware_target)
+        elif self.check(TokenKind.KW_ASYNC):
             self.advance()
             item = self.parse_fn_def(is_async=True)
         elif self.check(TokenKind.KW_FN):
@@ -1335,6 +1402,87 @@ class Parser:
         self.expect(TokenKind.RBRACE)
         return make_anima_def(name, identity, memory, beliefs, slm, persistence, desires, intentions)
 
+    def parse_neural_gate_def(self, hardware_target='auto'):
+        """Parse a neural gate definition.
+
+        Syntax:
+            @gpu  // optional hardware target
+            neural_gate name(params) -> ReturnType
+                requires expr
+                ensures expr
+                binds AnimaName
+            {
+                body
+            }
+            fallback {
+                fallback_body
+            }
+        """
+        self.expect(TokenKind.KW_NEURAL_GATE)
+        name = self.expect(TokenKind.IDENT).text
+
+        # Parse parameters
+        self.expect(TokenKind.LPAREN)
+        params = []
+        while not self.check(TokenKind.RPAREN):
+            param_name = self.expect(TokenKind.IDENT).text
+            self.expect(TokenKind.COLON)
+            param_type = self.parse_type()
+            params.append((param_name, param_type))
+            if self.check(TokenKind.COMMA):
+                self.advance()
+        self.expect(TokenKind.RPAREN)
+
+        # Parse return type
+        return_type = 'bool'  # Default return type
+        if self.check(TokenKind.ARROW):
+            self.advance()
+            return_type = self.parse_type()
+
+        # Parse optional contract clauses
+        requires_clause = None
+        ensures_clause = None
+        invariant_clause = None
+        anima_binding = None
+
+        while True:
+            if self.check(TokenKind.KW_REQUIRES):
+                self.advance()
+                requires_clause = self.parse_expr()
+            elif self.check(TokenKind.KW_ENSURES):
+                self.advance()
+                ensures_clause = self.parse_expr()
+            elif self.check(TokenKind.KW_INVARIANT):
+                self.advance()
+                invariant_clause = self.parse_expr()
+            elif self.check(TokenKind.KW_BINDS):
+                self.advance()
+                anima_binding = self.expect(TokenKind.IDENT).text
+            else:
+                break
+
+        # Parse body
+        body = self.parse_block()
+
+        # Parse optional fallback block
+        fallback_block = None
+        if self.check(TokenKind.KW_FALLBACK):
+            self.advance()
+            fallback_block = self.parse_block()
+
+        return make_neural_gate_def(
+            name=name,
+            params=params,
+            return_type=return_type,
+            body=body,
+            requires_clause=requires_clause,
+            ensures_clause=ensures_clause,
+            invariant_clause=invariant_clause,
+            fallback_block=fallback_block,
+            hardware_target=hardware_target,
+            anima_binding=anima_binding
+        )
+
     def parse_mod_def(self):
         """Parse mod name; or mod name { ... } declaration"""
         self.expect(TokenKind.KW_MOD)
@@ -1609,6 +1757,16 @@ class Parser:
             return make_binary_expr('==', operand, make_int_expr(0))
         if self.check(TokenKind.MINUS):
             self.advance()
+            # Optimize: if the next token is a numeric literal, negate directly
+            if self.check(TokenKind.INT):
+                val = int(self.current().text)
+                self.advance()
+                return make_int_expr(-val)
+            if self.check(TokenKind.FLOAT):
+                val = float(self.current().text)
+                self.advance()
+                return make_float_expr(-val)
+            # Otherwise, parse as 0 - operand
             operand = self.parse_unary()
             return make_binary_expr('-', make_int_expr(0), operand)
         # P1.1: Address-of operator (&x, &mut x)
@@ -2318,6 +2476,8 @@ class CodeGen:
         self.const_params = {}  # const_param_name -> literal_value (for current instantiation)
         # Track function names for function pointer references
         self.functions = set()
+        # Track neural gates (use double types instead of i64)
+        self.neural_gates = set()
         # Visibility enforcement (34.3.1)
         self.public_items = {}  # module_name -> set of public item names
         self.item_visibility = {}  # (module_name, item_name) -> bool (is_pub)
@@ -3284,6 +3444,213 @@ class CodeGen:
         self.emit('declare i64 @anima_save(i64, i64)')                # save to file
         self.emit('declare i64 @anima_load(i64)')                     # load from file
         self.emit('declare i64 @anima_exists(i64)')                   # check if file exists
+
+        self.emit('; Neural IR: Neural Gate Support')
+        self.emit('declare i64 @neural_get_training_mode()')              # get training mode (0=infer, 1=train)
+        self.emit('declare void @neural_set_training_mode(i64)')          # set training mode
+        self.emit('declare double @neural_get_temperature()')             # get temperature
+        self.emit('declare void @neural_set_temperature(double)')         # set temperature
+        self.emit('declare double @neural_sigmoid(double)')               # sigmoid activation
+        self.emit('declare double @neural_tanh(double)')                  # tanh activation
+        self.emit('declare double @neural_relu(double)')                  # relu activation
+        self.emit('declare i64 @neural_gate_new(i64, double, i64, i64)')  # create gate
+        self.emit('declare double @neural_gate_threshold(i64)')           # get threshold
+        self.emit('declare void @neural_gate_set_threshold(i64, double)') # set threshold
+        self.emit('declare void @neural_gate_add_gradient(i64, double)')  # accumulate gradient
+        self.emit('declare double @neural_gate_gradient(i64)')            # get gradient
+        self.emit('declare void @neural_gate_zero_grad(i64)')             # zero gradient
+        self.emit('declare void @neural_gate_update(i64, double)')        # apply gradient update
+        self.emit('; Neural IR: Autograd Support')
+        self.emit('declare i64 @grad_tape_new()')                         # create gradient tape
+        self.emit('declare void @grad_tape_set_training(i64, i64)')       # set training mode
+        self.emit('declare void @grad_tape_set_temperature(i64, double)') # set temperature
+        self.emit('declare double @grad_tape_temperature(i64)')           # get temperature
+        self.emit('declare void @grad_tape_free(i64)')                   # free gradient tape
+        self.emit('declare i64 @grad_input(double, i64)')                 # create input value
+        self.emit('declare double @grad_value_get(i64)')                  # get value
+        self.emit('declare double @grad_value_grad(i64)')                 # get gradient
+        self.emit('declare i64 @grad_add(i64, i64)')                      # add operation
+        self.emit('declare i64 @grad_sub(i64, i64)')                      # subtract operation
+        self.emit('declare i64 @grad_mul(i64, i64)')                      # multiply operation
+        self.emit('declare i64 @grad_div(i64, i64)')                      # divide operation
+        self.emit('declare i64 @grad_neg(i64)')                           # negate operation
+        self.emit('declare i64 @grad_gt(i64, i64, i64)')                  # greater than (soft)
+        self.emit('declare i64 @grad_lt(i64, i64, i64)')                  # less than (soft)
+        self.emit('declare i64 @grad_ge(i64, i64, i64)')                  # greater or equal (soft)
+        self.emit('declare i64 @grad_le(i64, i64, i64)')                  # less or equal (soft)
+        self.emit('declare void @backward(i64)')                          # backward pass
+        self.emit('declare double @anneal_exponential(double, double, i64)')  # exponential annealing: (temp, decay, steps) -> new_temp
+        self.emit('declare void @anneal_linear(i64, double)')             # linear annealing
+        self.emit('declare i64 @gumbel_softmax(i64, double, i64)')        # Gumbel-Softmax
+        self.emit('declare i64 @gumbel_softmax_hard(i64, double, i64)')   # Hard Gumbel-Softmax
+        self.emit('; Neural IR: Contract Verification')
+        self.emit('declare void @contract_set_min_confidence(double)')    # set min confidence
+        self.emit('declare double @contract_get_min_confidence()')        # get min confidence
+        self.emit('declare void @contract_set_panic_mode(i64)')           # set panic mode
+        self.emit('declare i64 @contract_get_panic_mode()')               # get panic mode
+        self.emit('declare i64 @contract_result_ok()')                    # create OK result
+        self.emit('declare i64 @contract_result_fail(i64, double, double, double, i64)')  # create fail result
+        self.emit('declare i64 @contract_result_satisfied(i64)')          # check if satisfied
+        self.emit('declare i64 @contract_result_violation_type(i64)')     # get violation type
+        self.emit('declare double @contract_result_actual(i64)')          # get actual value
+        self.emit('declare i64 @contract_result_message(i64)')            # get message
+        self.emit('declare void @contract_result_free(i64)')              # free result
+        self.emit('declare i64 @contract_check_requires(double, double, i64)')  # check requires
+        self.emit('declare i64 @contract_check_ensures(double, double, i64)')   # check ensures
+        self.emit('declare i64 @contract_check_invariant(double, double, i64)') # check invariant
+        self.emit('declare i64 @contract_check_confidence(double, double, double, i64)')  # check confidence bounds
+        self.emit('declare void @contract_handle_violation(i64)')         # handle violation
+        self.emit('declare i64 @contract_in_range(double, double, double)')  # check value in range
+        self.emit('declare double @neural_gate_with_contract(i64, double, double, double, double)')  # gate with contracts
+
+        # Phase 3: Hardware-Aware Compilation
+        self.emit('; Phase 3: Hardware-Aware Compilation')
+        self.emit('; 3.1 Device Registry')
+        self.emit('declare void @device_registry_init()')                       # initialize device registry
+        self.emit('declare i64 @device_register(i64, i64, i64, i64, double, double)')  # register device
+        self.emit('declare i64 @device_get(i64)')                               # get device by ID
+        self.emit('declare i64 @device_type(i64)')                              # get device type
+        self.emit('declare i64 @device_name(i64)')                              # get device name
+        self.emit('declare i64 @device_available(i64)')                         # check availability
+        self.emit('declare void @device_set_default(i64)')                      # set default device
+        self.emit('declare i64 @device_get_default()')                          # get default device
+        self.emit('declare i64 @device_count()')                                # count devices
+        self.emit('; 3.2 Gate Device Bindings')
+        self.emit('declare i64 @gate_bind_device(i64, i64)')                    # bind gate to device
+        self.emit('declare i64 @gate_get_device(i64)')                          # get gate device
+        self.emit('declare i64 @gate_has_explicit_binding(i64)')                # check explicit binding
+        self.emit('declare void @gate_set_op_type(i64, i64)')                   # set operation type
+        self.emit('; 3.3 Graph Partitioning')
+        self.emit('declare i64 @graph_new()')                                   # create compute graph
+        self.emit('declare i64 @graph_add_node(i64, i64, i64, double)')         # add node to graph
+        self.emit('declare void @graph_add_edge(i64, i64, i64)')                # add dependency edge
+        self.emit('declare void @graph_partition(i64)')                         # partition graph by device
+        self.emit('declare i64 @graph_partition_count(i64)')                    # count partitions
+        self.emit('declare i64 @graph_partition_device(i64, i64)')              # get partition device
+        self.emit('declare i64 @graph_partition_node_count(i64, i64)')          # get partition node count
+        self.emit('declare double @graph_partition_cost(i64, i64)')             # get partition cost
+        self.emit('declare void @graph_free(i64)')                              # free graph
+        self.emit('; 3.4 Data Marshalling')
+        self.emit('declare void @transfer_queue_init()')                        # init transfer queue
+        self.emit('declare i64 @transfer_queue_add(i64, i64, i64, i64, i64, i64)')  # queue transfer
+        self.emit('declare void @transfer_execute(i64)')                        # execute transfer
+        self.emit('declare i64 @transfer_is_complete(i64)')                     # check if complete
+        self.emit('declare double @transfer_time_ms(i64)')                      # get transfer time
+        self.emit('declare void @transfer_sync_all()')                          # sync all transfers
+        self.emit('; 3.5 Device-Aware Execution')
+        self.emit('declare i64 @kernel_create(i64, i64)')                       # create kernel
+        self.emit('declare void @kernel_set_function(i64, i64)')                # set kernel function
+        self.emit('declare double @kernel_execute(i64, i64, i64, i64, i64)')    # execute kernel
+        self.emit('declare void @kernel_free(i64)')                             # free kernel
+        self.emit('declare double @neural_gate_execute_on_device(i64, double, i64)')  # execute on device
+
+        # Phase 4: Structural Pruning (Neural IR)
+        self.emit('; Phase 4: Structural Pruning (Neural IR)')
+        self.emit('; 4.1 Activation Statistics')
+        self.emit('declare void @activation_tracker_init()')                    # init tracker
+        self.emit('declare void @activation_tracking_set_enabled(i64)')         # enable/disable
+        self.emit('declare i64 @activation_tracking_enabled()')                 # check enabled
+        self.emit('declare void @activation_record(i64, double)')               # record activation
+        self.emit('declare i64 @activation_stats_get(i64)')                     # get stats for gate
+        self.emit('declare double @activation_rate_get(i64)')                   # get activation rate
+        self.emit('declare i64 @activation_count_get(i64)')                     # get activation count
+        self.emit('declare double @activation_mean_get(i64)')                   # get mean output
+        self.emit('declare void @activation_epoch_advance()')                   # advance epoch
+        self.emit('declare i64 @activation_epoch_current()')                    # get current epoch
+        self.emit('declare i64 @activation_gate_count()')                       # count tracked gates
+        self.emit('declare void @activation_stats_reset()')                     # reset all stats
+        self.emit('; 4.2 Weight Magnitude Pruning')
+        self.emit('declare i64 @pruning_context_new(double, double, i64)')      # create context
+        self.emit('declare void @pruning_add_gate(i64, i64, double)')           # add gate
+        self.emit('declare void @pruning_analyze_activations(i64)')             # analyze activations
+        self.emit('declare i64 @pruning_execute(i64)')                          # execute pruning
+        self.emit('declare i64 @pruning_pruned_count(i64)')                     # get pruned count
+        self.emit('declare i64 @pruning_total_count(i64)')                      # get total count
+        self.emit('declare double @pruning_ratio(i64)')                         # get pruning ratio
+        self.emit('declare i64 @pruning_is_pruned(i64, i64)')                   # check if pruned
+        self.emit('declare i64 @pruning_reason(i64, i64)')                      # get pruning reason
+        self.emit('declare void @pruning_context_free(i64)')                    # free context
+        self.emit('; 4.3 Dead Path Elimination')
+        self.emit('declare i64 @dead_path_analyzer_new(i64)')                   # create analyzer
+        self.emit('declare void @dead_path_add_edge(i64, i64, i64)')            # add edge
+        self.emit('declare void @dead_path_mark_entry(i64, i64)')               # mark entry point
+        self.emit('declare void @dead_path_propagate(i64)')                     # propagate reachability
+        self.emit('declare i64 @dead_path_dead_count(i64)')                     # count dead gates
+        self.emit('declare i64 @dead_path_reachable_count(i64)')                # count reachable
+        self.emit('declare i64 @dead_path_is_dead(i64, i64)')                   # check if dead
+        self.emit('declare void @dead_path_analyzer_free(i64)')                 # free analyzer
+        self.emit('; 4.4 Structured Pruning')
+        self.emit('declare i64 @structured_pruner_new(double)')                 # create pruner
+        self.emit('declare i64 @structured_pruner_execute(i64)')                # execute pruning
+        self.emit('declare i64 @structured_pruner_pruned_count(i64)')           # get pruned count
+        self.emit('declare i64 @structured_pruner_total_count(i64)')            # get total count
+        self.emit('declare i64 @structured_pruner_is_pruned(i64, i64)')         # check if pruned
+        self.emit('declare double @structured_pruner_importance(i64, i64)')     # get importance
+        self.emit('declare void @structured_pruner_free(i64)')                  # free pruner
+        self.emit('; 4.5 Optimization Stats')
+        self.emit('declare i64 @optimization_stats_calculate(i64, i64, i64)')   # calculate stats
+        self.emit('declare double @optimization_size_reduction(i64)')           # get size reduction
+        self.emit('declare double @optimization_speedup(i64)')                  # get speedup
+        self.emit('declare i64 @optimization_pruned_gates(i64)')                # get pruned gates
+        self.emit('declare i64 @optimization_original_gates(i64)')              # get original gates
+        self.emit('declare void @optimization_stats_free(i64)')                 # free stats
+
+        self.emit('; Phase 5: Superposition Memory Model')
+        self.emit('; 5.1 WeightedRef Type')
+        self.emit('declare void @wref_registry_init()')                        # initialize registry
+        self.emit('declare void @wref_set_mode(i64)')                          # set execution mode
+        self.emit('declare i64 @wref_get_mode()')                              # get execution mode
+        self.emit('declare void @wref_set_weight_threshold(double)')           # set weight threshold
+        self.emit('declare double @wref_get_weight_threshold()')               # get weight threshold
+        self.emit('declare i64 @wref_new(i64, double, i64)')                   # create weighted ref
+        self.emit('declare i64 @wref_ptr(i64)')                                # get pointer
+        self.emit('declare double @wref_weight(i64)')                          # get weight
+        self.emit('declare void @wref_set_weight(i64, double)')                # set weight
+        self.emit('declare i64 @wref_is_allocated(i64)')                       # check if allocated
+        self.emit('declare i64 @wref_state(i64)')                              # get state
+        self.emit('declare void @wref_retain(i64)')                            # increment ref count
+        self.emit('declare void @wref_release(i64)')                           # decrement ref count
+        self.emit('declare void @wref_collapse(i64)')                          # collapse superposition
+        self.emit('declare i64 @wref_count()')                                 # total wref count
+        self.emit('declare i64 @wref_allocated_count()')                       # allocated count
+        self.emit('declare i64 @wref_bytes_allocated()')                       # total bytes
+        self.emit('; 5.2 Lazy Execution Mode')
+        self.emit('declare i64 @lazy_context_new(double)')                     # create lazy context
+        self.emit('declare i64 @lazy_add_branch(i64, double)')                 # add branch (returns id)
+        self.emit('declare i64 @lazy_should_execute(i64, i64)')                # check if should execute
+        self.emit('declare void @lazy_mark_executed(i64, i64)')                # mark as executed
+        self.emit('declare i64 @lazy_dominant_branch(i64)')                    # get dominant branch
+        self.emit('declare double @lazy_branch_weight(i64, i64)')              # get branch weight
+        self.emit('declare i64 @lazy_branch_count(i64)')                       # count branches
+        self.emit('declare i64 @lazy_executed_count(i64)')                     # count executed
+        self.emit('declare void @lazy_context_free(i64)')                      # free context
+        self.emit('; 5.3 Speculative Execution Mode')
+        self.emit('declare i64 @speculative_context_new(i64, double)')         # create speculative ctx
+        self.emit('declare i64 @speculative_add_branch(i64, double, i64)')     # add branch (weight, size)
+        self.emit('declare void @speculative_set_result(i64, i64, i64)')       # set branch result
+        self.emit('declare i64 @speculative_get_result(i64, i64)')             # get branch result
+        self.emit('declare double @speculative_weighted_result(i64)')          # get weighted result
+        self.emit('declare i64 @speculative_gc(i64)')                          # gc low weight branches
+        self.emit('declare i64 @speculative_branch_count(i64)')                # count branches
+        self.emit('declare i64 @speculative_memory_used(i64)')                 # memory used
+        self.emit('declare void @speculative_context_free(i64)')               # free context
+        self.emit('; 5.4 Checkpoint Execution Mode')
+        self.emit('declare i64 @ckpt_context_new(i64)')                        # create checkpoint ctx
+        self.emit('declare i64 @ckpt_save(i64)')                               # save checkpoint
+        self.emit('declare i64 @ckpt_restore(i64, i64)')                       # restore checkpoint
+        self.emit('declare i64 @ckpt_branch_start(i64, i64)')                  # start branch
+        self.emit('declare void @ckpt_branch_end(i64)')                        # end branch
+        self.emit('declare i64 @ckpt_current(i64)')                            # get current checkpoint
+        self.emit('declare i64 @ckpt_count(i64)')                              # count checkpoints
+        self.emit('declare i64 @ckpt_memory_used(i64)')                        # memory used
+        self.emit('declare void @ckpt_context_free(i64)')                      # free context
+        self.emit('; 5.5 Weighted GC Algorithm')
+        self.emit('declare void @wref_gc(double)')                             # run weighted GC
+        self.emit('declare i64 @wref_gc_last_collected()')                     # last collected count
+        self.emit('declare i64 @wref_gc_last_bytes()')                         # last bytes freed
+        self.emit('declare i64 @wref_gc_total_runs()')                         # total GC runs
+        self.emit('declare i64 @wref_gc_total_collected()')                    # total collected
+        self.emit('declare i64 @wref_gc_total_bytes()')                        # total bytes freed
 
         self.emit('; Phase 4: Tool System')
         self.emit('declare i64 @tool_registry_new()')                  # create registry
@@ -4730,6 +5097,8 @@ class CodeGen:
                 self.generate_hive(item)
             elif item['type'] == 'AnimaDef':
                 self.generate_anima(item)
+            elif item['type'] == 'NeuralGateDef':
+                self.generate_neural_gate(item)
 
         # Generate pending generic instantiations
         while self.pending_instantiations:
@@ -6119,6 +6488,156 @@ class CodeGen:
         self.emit('  call i64 @anima_memory_close(i64 %self)')
         self.emit('  ret void')
         self.emit('}')
+        self.emit('')
+
+    def generate_neural_gate(self, gate_def):
+        """Generate code for a neural gate definition.
+
+        Neural gates compile to two paths:
+        - Training mode: sigmoid/softmax relaxation for gradient flow
+        - Inference mode: discrete branch (zero overhead)
+
+        The runtime checks a global training_mode flag to select the path.
+        """
+        gate_name = gate_def['name']
+        params = gate_def['params']
+        return_type = gate_def.get('return_type', 'bool')
+        body = gate_def['body']
+        hardware_target = gate_def.get('hardware_target', 'auto')
+        anima_binding = gate_def.get('anima_binding')
+        requires_clause = gate_def.get('requires')
+        ensures_clause = gate_def.get('ensures')
+        fallback_block = gate_def.get('fallback')
+
+        # Register this as a neural gate for proper type handling in calls
+        self.neural_gates.add(gate_name)
+
+        self.emit(f'; Neural Gate: {gate_name}')
+        self.emit(f'; Hardware target: {hardware_target}')
+        if anima_binding:
+            self.emit(f'; Bound to anima: {anima_binding}')
+        self.emit('')
+
+        # Map return type to LLVM type
+        llvm_ret = 'double' if return_type in ['f64', 'bool'] else 'i64'
+
+        # Build parameter list
+        param_strs = []
+        for i, (pname, ptype) in enumerate(params):
+            llvm_type = 'double' if ptype == 'f64' else 'i64'
+            param_strs.append(f'{llvm_type} %{pname}')
+
+        params_str = ', '.join(param_strs)
+
+        # Generate the main gate function
+        self.emit(f'define {llvm_ret} @"{gate_name}"({params_str}) {{')
+        self.emit('entry:')
+
+        # Check training mode - call runtime function to get mode
+        self.emit('  ; Check if we are in training mode')
+        self.emit('  %training_mode = call i64 @neural_get_training_mode()')
+        self.emit('  %is_training = icmp eq i64 %training_mode, 1')
+        self.emit('  br i1 %is_training, label %training_path, label %inference_path')
+        self.emit('')
+
+        # Training path - soft/differentiable execution
+        self.emit('training_path:')
+        self.emit('  ; Training mode: use soft sigmoid relaxation')
+
+        # For the body, we evaluate it and apply sigmoid relaxation
+        # Allocate locals for parameters (so generate_expr can load them)
+        self.locals = {}
+        self.local_types = {}
+        for pname, ptype in params:
+            local_ptr = f'%local.train.{pname}'
+            llvm_type = 'double' if ptype == 'f64' else 'i64'
+            self.emit(f'  {local_ptr} = alloca {llvm_type}')
+            if ptype == 'f64':
+                self.emit(f'  store double %{pname}, ptr {local_ptr}')
+            else:
+                self.emit(f'  store i64 %{pname}, ptr {local_ptr}')
+            self.locals[pname] = local_ptr
+            self.local_types[pname] = ptype
+        self.next_id = 0
+
+        # Generate body expression for training mode
+        # The body typically contains a comparison like "confidence > 0.7"
+        # We transform this to sigmoid((confidence - 0.7) * temperature)
+        result_expr = None
+        if body:
+            # Get the expression from the block - either the trailing expr or last statement
+            result_expr = body.get('expr')
+            if not result_expr and body.get('stmts'):
+                last_stmt = body['stmts'][-1]
+                if last_stmt.get('type') == 'ExprStmt':
+                    result_expr = last_stmt.get('expr')
+                elif last_stmt.get('type') == 'ReturnStmt':
+                    result_expr = last_stmt.get('value')
+
+        if result_expr:
+            # Generate the expression
+            train_result = self.generate_expr(result_expr)
+
+            # Result is i64 (0 or 1 for comparisons), convert to double via sigmoid
+            self.emit(f'  ; Convert result to soft probability')
+            self.emit(f'  %train_double = sitofp i64 {train_result} to double')
+            self.emit(f'  ; Apply sigmoid for smooth gradient')
+            self.emit(f'  %train_soft = call double @neural_sigmoid(double %train_double)')
+            self.emit(f'  br label %merge')
+        else:
+            self.emit(f'  %train_soft = call double @neural_sigmoid(double 0.0)')
+            self.emit(f'  br label %merge')
+
+        self.emit('')
+
+        # Inference path - hard discrete execution
+        self.emit('inference_path:')
+        self.emit('  ; Inference mode: use hard discrete comparison')
+
+        # Allocate locals for parameters for inference path
+        self.locals = {}
+        for pname, ptype in params:
+            local_ptr = f'%local.infer.{pname}'
+            llvm_type = 'double' if ptype == 'f64' else 'i64'
+            self.emit(f'  {local_ptr} = alloca {llvm_type}')
+            if ptype == 'f64':
+                self.emit(f'  store double %{pname}, ptr {local_ptr}')
+            else:
+                self.emit(f'  store i64 %{pname}, ptr {local_ptr}')
+            self.locals[pname] = local_ptr
+
+        # Generate body again for inference mode (reuse result_expr from above)
+        if result_expr:
+            infer_result = self.generate_expr(result_expr)
+            self.emit(f'  ; Result is i64 (0 or 1), convert to double')
+            self.emit(f'  %infer_double = sitofp i64 {infer_result} to double')
+            self.emit(f'  br label %merge')
+        else:
+            self.emit(f'  %infer_double = sitofp i64 0 to double')
+            self.emit(f'  br label %merge')
+
+        self.emit('')
+
+        # Merge paths
+        self.emit('merge:')
+        self.emit('  %result = phi double [ %train_soft, %training_path ], [ %infer_double, %inference_path ]')
+        self.emit('  ret double %result')
+        self.emit('}')
+        self.emit('')
+
+        # Generate gate registration function (for runtime tracking)
+        self.emit(f'define i64 @"{gate_name}_register"() {{')
+        self.emit('entry:')
+        # Create a gate struct with: id, threshold (default 0.5), gradient accumulator
+        self.emit(f'  %name_ptr = call ptr @intrinsic_string_new(ptr getelementptr([{len(gate_name)+1} x i8], [{len(gate_name)+1} x i8]* @.str.gate.{gate_name}, i64 0, i64 0))')
+        self.emit(f'  %name_str = ptrtoint ptr %name_ptr to i64')
+        self.emit(f'  %gate = call i64 @neural_gate_new(i64 0, double 5.0e-1, i64 0, i64 %name_str)')
+        self.emit('  ret i64 %gate')
+        self.emit('}')
+        self.emit('')
+
+        # Generate string constant for gate name
+        self.emit(f'@.str.gate.{gate_name} = private constant [{len(gate_name)+1} x i8] c"{gate_name}\\00"')
         self.emit('')
 
     def generate_block(self, block):
@@ -7858,6 +8377,192 @@ class CodeGen:
                 'toml_stringify': (['i64'], 'i64'),
                 'toml_table_new': ([], 'i64'),
                 'toml_free': (['i64'], 'void'),
+                # Neural IR: Neural Gate functions
+                'neural_get_training_mode': ([], 'i64'),
+                'neural_set_training_mode': (['i64'], 'void'),
+                'neural_get_temperature': ([], 'double'),
+                'neural_set_temperature': (['double'], 'void'),
+                'neural_sigmoid': (['double'], 'double'),
+                'neural_tanh': (['double'], 'double'),
+                'neural_relu': (['double'], 'double'),
+                'neural_gate_new': (['i64', 'double', 'i64', 'i64'], 'i64'),
+                'neural_gate_threshold': (['i64'], 'double'),
+                'neural_gate_set_threshold': (['i64', 'double'], 'void'),
+                'neural_gate_add_gradient': (['i64', 'double'], 'void'),
+                'neural_gate_gradient': (['i64'], 'double'),
+                'neural_gate_zero_grad': (['i64'], 'void'),
+                'neural_gate_update': (['i64', 'double'], 'void'),
+                # Neural IR: Autograd functions
+                'grad_tape_new': ([], 'i64'),
+                'grad_tape_set_training': (['i64', 'i64'], 'void'),
+                'grad_tape_set_temperature': (['i64', 'double'], 'void'),
+                'grad_tape_temperature': (['i64'], 'double'),
+                'grad_tape_free': (['i64'], 'void'),
+                'grad_input': (['double', 'i64'], 'i64'),
+                'grad_value_get': (['i64'], 'double'),
+                'grad_value_grad': (['i64'], 'double'),
+                'grad_add': (['i64', 'i64'], 'i64'),
+                'grad_sub': (['i64', 'i64'], 'i64'),
+                'grad_mul': (['i64', 'i64'], 'i64'),
+                'grad_div': (['i64', 'i64'], 'i64'),
+                'grad_neg': (['i64'], 'i64'),
+                'grad_gt': (['i64', 'i64', 'i64'], 'i64'),
+                'grad_lt': (['i64', 'i64', 'i64'], 'i64'),
+                'grad_ge': (['i64', 'i64', 'i64'], 'i64'),
+                'grad_le': (['i64', 'i64', 'i64'], 'i64'),
+                'backward': (['i64'], 'void'),
+                'anneal_exponential': (['double', 'double', 'i64'], 'double'),
+                'anneal_linear': (['i64', 'double'], 'void'),
+                'gumbel_softmax': (['i64', 'double', 'i64'], 'i64'),
+                'gumbel_softmax_hard': (['i64', 'double', 'i64'], 'i64'),
+                # Neural IR: Contract Verification functions
+                'contract_set_min_confidence': (['double'], 'void'),
+                'contract_get_min_confidence': ([], 'double'),
+                'contract_set_panic_mode': (['i64'], 'void'),
+                'contract_get_panic_mode': ([], 'i64'),
+                'contract_result_ok': ([], 'i64'),
+                'contract_result_fail': (['i64', 'double', 'double', 'double', 'i64'], 'i64'),
+                'contract_result_satisfied': (['i64'], 'i64'),
+                'contract_result_violation_type': (['i64'], 'i64'),
+                'contract_result_actual': (['i64'], 'double'),
+                'contract_result_message': (['i64'], 'i64'),
+                'contract_result_free': (['i64'], 'void'),
+                'contract_check_requires': (['double', 'double', 'i64'], 'i64'),
+                'contract_check_ensures': (['double', 'double', 'i64'], 'i64'),
+                'contract_check_invariant': (['double', 'double', 'i64'], 'i64'),
+                'contract_check_confidence': (['double', 'double', 'double', 'i64'], 'i64'),
+                'contract_handle_violation': (['i64'], 'void'),
+                'contract_in_range': (['double', 'double', 'double'], 'i64'),
+                'neural_gate_with_contract': (['i64', 'double', 'double', 'double', 'double'], 'double'),
+                # Phase 3: Hardware-Aware Compilation
+                'device_registry_init': ([], 'void'),
+                'device_register': (['i64', 'i64', 'i64', 'i64', 'double', 'double'], 'i64'),
+                'device_get': (['i64'], 'i64'),
+                'device_type': (['i64'], 'i64'),
+                'device_name': (['i64'], 'i64'),
+                'device_available': (['i64'], 'i64'),
+                'device_set_default': (['i64'], 'void'),
+                'device_get_default': ([], 'i64'),
+                'device_count': ([], 'i64'),
+                'gate_bind_device': (['i64', 'i64'], 'i64'),
+                'gate_get_device': (['i64'], 'i64'),
+                'gate_has_explicit_binding': (['i64'], 'i64'),
+                'gate_set_op_type': (['i64', 'i64'], 'void'),
+                'graph_new': ([], 'i64'),
+                'graph_add_node': (['i64', 'i64', 'i64', 'double'], 'i64'),
+                'graph_add_edge': (['i64', 'i64', 'i64'], 'void'),
+                'graph_partition': (['i64'], 'void'),
+                'graph_partition_count': (['i64'], 'i64'),
+                'graph_partition_device': (['i64', 'i64'], 'i64'),
+                'graph_partition_node_count': (['i64', 'i64'], 'i64'),
+                'graph_partition_cost': (['i64', 'i64'], 'double'),
+                'graph_free': (['i64'], 'void'),
+                'transfer_queue_init': ([], 'void'),
+                'transfer_queue_add': (['i64', 'i64', 'i64', 'i64', 'i64', 'i64'], 'i64'),
+                'transfer_execute': (['i64'], 'void'),
+                'transfer_is_complete': (['i64'], 'i64'),
+                'transfer_time_ms': (['i64'], 'double'),
+                'transfer_sync_all': ([], 'void'),
+                'kernel_create': (['i64', 'i64'], 'i64'),
+                'kernel_set_function': (['i64', 'i64'], 'void'),
+                'kernel_execute': (['i64', 'i64', 'i64', 'i64', 'i64'], 'double'),
+                'kernel_free': (['i64'], 'void'),
+                'neural_gate_execute_on_device': (['i64', 'double', 'i64'], 'double'),
+                # Phase 4: Structural Pruning (Neural IR)
+                'activation_tracker_init': ([], 'void'),
+                'activation_tracking_set_enabled': (['i64'], 'void'),
+                'activation_tracking_enabled': ([], 'i64'),
+                'activation_record': (['i64', 'double'], 'void'),
+                'activation_stats_get': (['i64'], 'i64'),
+                'activation_rate_get': (['i64'], 'double'),
+                'activation_count_get': (['i64'], 'i64'),
+                'activation_mean_get': (['i64'], 'double'),
+                'activation_epoch_advance': ([], 'void'),
+                'activation_epoch_current': ([], 'i64'),
+                'activation_gate_count': ([], 'i64'),
+                'activation_stats_reset': ([], 'void'),
+                'pruning_context_new': (['double', 'double', 'i64'], 'i64'),
+                'pruning_add_gate': (['i64', 'i64', 'double'], 'void'),
+                'pruning_analyze_activations': (['i64'], 'void'),
+                'pruning_execute': (['i64'], 'i64'),
+                'pruning_pruned_count': (['i64'], 'i64'),
+                'pruning_total_count': (['i64'], 'i64'),
+                'pruning_ratio': (['i64'], 'double'),
+                'pruning_is_pruned': (['i64', 'i64'], 'i64'),
+                'pruning_reason': (['i64', 'i64'], 'i64'),
+                'pruning_context_free': (['i64'], 'void'),
+                'dead_path_analyzer_new': (['i64'], 'i64'),
+                'dead_path_add_edge': (['i64', 'i64', 'i64'], 'void'),
+                'dead_path_mark_entry': (['i64', 'i64'], 'void'),
+                'dead_path_propagate': (['i64'], 'void'),
+                'dead_path_dead_count': (['i64'], 'i64'),
+                'dead_path_reachable_count': (['i64'], 'i64'),
+                'dead_path_is_dead': (['i64', 'i64'], 'i64'),
+                'dead_path_analyzer_free': (['i64'], 'void'),
+                'structured_pruner_new': (['double'], 'i64'),
+                'structured_pruner_execute': (['i64'], 'i64'),
+                'structured_pruner_pruned_count': (['i64'], 'i64'),
+                'structured_pruner_total_count': (['i64'], 'i64'),
+                'structured_pruner_is_pruned': (['i64', 'i64'], 'i64'),
+                'structured_pruner_importance': (['i64', 'i64'], 'double'),
+                'structured_pruner_free': (['i64'], 'void'),
+                'optimization_stats_calculate': (['i64', 'i64', 'i64'], 'i64'),
+                'optimization_size_reduction': (['i64'], 'double'),
+                'optimization_speedup': (['i64'], 'double'),
+                'optimization_pruned_gates': (['i64'], 'i64'),
+                'optimization_original_gates': (['i64'], 'i64'),
+                'optimization_stats_free': (['i64'], 'void'),
+                # Phase 5: Superposition Memory Model
+                'wref_registry_init': ([], 'void'),
+                'wref_set_mode': (['i64'], 'void'),
+                'wref_get_mode': ([], 'i64'),
+                'wref_set_weight_threshold': (['double'], 'void'),
+                'wref_get_weight_threshold': ([], 'double'),
+                'wref_new': (['i64', 'double', 'i64'], 'i64'),
+                'wref_ptr': (['i64'], 'i64'),
+                'wref_weight': (['i64'], 'double'),
+                'wref_set_weight': (['i64', 'double'], 'void'),
+                'wref_is_allocated': (['i64'], 'i64'),
+                'wref_state': (['i64'], 'i64'),
+                'wref_retain': (['i64'], 'void'),
+                'wref_release': (['i64'], 'void'),
+                'wref_collapse': (['i64'], 'void'),
+                'wref_count': ([], 'i64'),
+                'wref_allocated_count': ([], 'i64'),
+                'wref_bytes_allocated': ([], 'i64'),
+                'lazy_context_new': (['double'], 'i64'),
+                'lazy_add_branch': (['i64', 'double'], 'i64'),
+                'lazy_should_execute': (['i64', 'i64'], 'i64'),
+                'lazy_mark_executed': (['i64', 'i64'], 'void'),
+                'lazy_dominant_branch': (['i64'], 'i64'),
+                'lazy_branch_weight': (['i64', 'i64'], 'double'),
+                'lazy_branch_count': (['i64'], 'i64'),
+                'lazy_executed_count': (['i64'], 'i64'),
+                'lazy_context_free': (['i64'], 'void'),
+                'speculative_context_new': (['i64', 'double'], 'i64'),
+                'speculative_add_branch': (['i64', 'double', 'i64'], 'i64'),
+                'speculative_set_result': (['i64', 'i64', 'i64'], 'void'),
+                'speculative_get_result': (['i64', 'i64'], 'i64'),
+                'speculative_weighted_result': (['i64'], 'double'),
+                'speculative_gc': (['i64'], 'i64'),
+                'speculative_branch_count': (['i64'], 'i64'),
+                'speculative_memory_used': (['i64'], 'i64'),
+                'speculative_context_free': (['i64'], 'void'),
+                'ckpt_context_new': (['i64'], 'i64'),
+                'ckpt_save': (['i64'], 'i64'),
+                'ckpt_restore': (['i64', 'i64'], 'i64'),
+                'ckpt_branch_start': (['i64', 'i64'], 'i64'),
+                'ckpt_branch_end': (['i64'], 'void'),
+                'ckpt_current': (['i64'], 'i64'),
+                'ckpt_count': (['i64'], 'i64'),
+                'ckpt_memory_used': (['i64'], 'i64'),
+                'ckpt_context_free': (['i64'], 'void'),
+                'wref_gc': (['double'], 'void'),
+                'wref_gc_last_collected': ([], 'i64'),
+                'wref_gc_last_bytes': ([], 'i64'),
+                'wref_gc_total_runs': ([], 'i64'),
+                'wref_gc_total_collected': ([], 'i64'),
+                'wref_gc_total_bytes': ([], 'i64'),
             }
 
             if func_name in intrinsic_types:
@@ -7952,10 +8657,27 @@ class CodeGen:
                     self.emit(f'  {temp} = call i64 {fn_ptr}({args_str})')
                     return temp
                 else:
-                    # User-defined function - assume all i64
-                    args_str = ', '.join(f'i64 {a}' for a in args)
-                    self.emit(f'  {temp} = call i64 @"{func_name}"({args_str})')
-                    return temp
+                    # Check if this is a neural gate (uses double types)
+                    if func_name in self.neural_gates:
+                        # Neural gates take f64 params and return double
+                        # Args are i64 bit representations of doubles
+                        double_args = []
+                        for a in args:
+                            # Bitcast i64 to double for the call
+                            dbl_temp = self.new_temp()
+                            self.emit(f'  {dbl_temp} = bitcast i64 {a} to double')
+                            double_args.append(f'double {dbl_temp}')
+                        args_str = ', '.join(double_args)
+                        dbl_result = self.new_temp()
+                        self.emit(f'  {dbl_result} = call double @"{func_name}"({args_str})')
+                        # Bitcast result back to i64 for storage
+                        self.emit(f'  {temp} = bitcast double {dbl_result} to i64')
+                        return temp
+                    else:
+                        # User-defined function - assume all i64
+                        args_str = ', '.join(f'i64 {a}' for a in args)
+                        self.emit(f'  {temp} = call i64 @"{func_name}"({args_str})')
+                        return temp
 
         if expr_type == 'IfExpr':
             cond = self.generate_expr(expr['condition'])
