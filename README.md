@@ -276,7 +276,13 @@ simplex-lang/
 
 ## Release History
 
-### v0.5.1 (2026-01-07) - Type Aliases
+### v0.5.1 (2026-01-07) - Type Aliases & License Change
+
+**License Change:**
+- Changed from MIT to AGPL-3.0-or-later WITH Simplex-Runtime-Exception
+- Programs written IN Simplex remain unaffected (use any license you want)
+- Protects the compiler/runtime from proprietary forks without contributing back
+- See [LICENSE-CHANGE-NOTICE.md](LICENSE-CHANGE-NOTICE.md) for details
 
 **Type Alias Support:**
 - New `type Name = ExistingType;` syntax for type aliases
@@ -445,7 +451,15 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-[MIT License](LICENSE)
+As of version 0.5.1, Simplex is licensed under **AGPL-3.0-or-later WITH Simplex-Runtime-Exception**.
+
+**What this means:**
+- **Programs you write IN Simplex** can use any license you want (MIT, Apache, proprietary, etc.)
+- **The Simplex compiler/runtime** is AGPL-3.0 - modifications must be shared if distributed or run as a network service
+
+Versions 0.5.0 and earlier remain under the MIT License.
+
+See [LICENSE](LICENSE), [RUNTIME-EXCEPTION](RUNTIME-EXCEPTION), and [LICENSE-CHANGE-NOTICE.md](LICENSE-CHANGE-NOTICE.md) for details.
 
 ## Credits
 
