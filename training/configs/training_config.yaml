@@ -1,0 +1,93 @@
+# Simplex Cognitive Model Training Configuration
+
+# Base model
+model:
+  name: "Qwen/Qwen3-8B"
+  revision: "main"
+  torch_dtype: "bfloat16"
+  trust_remote_code: true
+
+# LoRA configuration
+lora:
+  r: 16
+  lora_alpha: 32
+  target_modules:
+    - "q_proj"
+    - "v_proj"
+  lora_dropout: 0.05
+  bias: "none"
+  task_type: "CAUSAL_LM"
+
+# Training parameters
+training:
+  # General
+  output_dir: "./outputs"
+  num_train_epochs: 3
+  per_device_train_batch_size: 4
+  per_device_eval_batch_size: 4
+  gradient_accumulation_steps: 4
+
+  # Optimizer
+  learning_rate: 2.0e-4
+  weight_decay: 0.01
+  warmup_ratio: 0.03
+  lr_scheduler_type: "cosine"
+
+  # Memory optimization
+  gradient_checkpointing: true
+  optim: "adamw_8bit"
+
+  # Logging
+  logging_steps: 10
+  save_steps: 500
+  eval_steps: 500
+  save_total_limit: 3
+
+  # Precision
+  bf16: true
+  tf32: true
+
+# Data configuration
+data:
+  max_seq_length: 4096
+  train_split: 0.9
+  seed: 42
+
+# Stage-specific configurations
+stages:
+  context_protocol:
+    num_examples: 100000
+    description: "Train model to understand Simplex memory context format"
+
+  confidence_calibration:
+    num_examples: 50000
+    target_ece: 0.05  # Expected Calibration Error target
+    description: "Train model for calibrated confidence outputs"
+
+  belief_revision:
+    num_examples: 50000
+    description: "Train model to update beliefs given new evidence"
+
+  specialist_adapters:
+    summarization:
+      r: 16
+      dataset: "cnn_dailymail"
+    entity_extraction:
+      r: 16
+      dataset: "conll2003"
+    sentiment:
+      r: 8
+      dataset: "sst2"
+    code:
+      r: 32
+      target_modules: ["q_proj", "k_proj", "v_proj"]
+      dataset: "codeparrot/github-code"
+    reasoning:
+      r: 16
+      dataset: "gsm8k"
+
+# Wandb configuration
+wandb:
+  project: "simplex-cognitive"
+  entity: null  # Set to your wandb entity
+  tags: ["qwen3", "cognitive", "simplex"]
