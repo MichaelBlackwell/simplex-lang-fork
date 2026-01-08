@@ -1,5 +1,9 @@
-// Standalone minimal runtime for bootstrap_mini
-// Self-contained with no external dependencies
+// Simplex Standalone Runtime
+// Minimal C runtime for bootstrap compiler - self-contained with no external dependencies
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under MIT License - see LICENSE file
+// https://github.com/senuamedia/simplex
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -171,6 +175,12 @@ void* intrinsic_vec_get(SxVec* vec, int64_t index) {
         return NULL;
     }
     return vec->items[index];
+}
+
+void intrinsic_vec_free(SxVec* vec) {
+    if (!vec) return;
+    if (vec->items) free(vec->items);
+    free(vec);
 }
 
 int64_t intrinsic_vec_len(SxVec* vec) {
@@ -16559,6 +16569,3292 @@ void specialist_memory_close(int64_t mem_ptr) {
     pthread_mutex_destroy(&mem->lock);
     free(mem);
 }
+
+// --------------------------------------------------------------------------
+// 29.5.5 Neural IR: Neural Gate Support
+// --------------------------------------------------------------------------
+// Neural gates are differentiable control flow constructs for training.
+// In training mode, comparisons use sigmoid relaxation for gradient flow.
+// In inference mode, comparisons are discrete (zero overhead).
+
+// Global training state
+static int64_t g_neural_training_mode = 0;  // 0 = inference, 1 = training
+static double g_neural_temperature = 1.0;   // Temperature for Gumbel-Softmax
+
+int64_t neural_get_training_mode(void) {
+    return g_neural_training_mode;
+}
+
+void neural_set_training_mode(int64_t mode) {
+    g_neural_training_mode = mode;
+}
+
+double neural_get_temperature(void) {
+    return g_neural_temperature;
+}
+
+void neural_set_temperature(double temp) {
+    g_neural_temperature = temp > 0.01 ? temp : 0.01;
+}
+
+double neural_sigmoid(double x) {
+    return 1.0 / (1.0 + exp(-x * g_neural_temperature));
+}
+
+double neural_tanh(double x) {
+    return tanh(x);
+}
+
+double neural_relu(double x) {
+    return x > 0 ? x : 0;
+}
+
+// Neural gate structure
+typedef struct NeuralGate {
+    int64_t id;
+    double threshold;
+    double gradient;
+    int64_t anima_binding;  // Pointer to bound anima, or 0
+    char* name;
+} NeuralGate;
+
+int64_t neural_gate_new(int64_t id, double threshold, int64_t anima_binding, int64_t name_ptr) {
+    NeuralGate* gate = (NeuralGate*)calloc(1, sizeof(NeuralGate));
+    if (!gate) return 0;
+    gate->id = id;
+    gate->threshold = threshold;
+    gate->gradient = 0.0;
+    gate->anima_binding = anima_binding;
+    SxString* name_str = (SxString*)name_ptr;
+    gate->name = name_str ? strdup(name_str->data) : strdup("unnamed");
+    return (int64_t)gate;
+}
+
+double neural_gate_threshold(int64_t gate_ptr) {
+    NeuralGate* gate = (NeuralGate*)gate_ptr;
+    return gate ? gate->threshold : 0.5;
+}
+
+void neural_gate_set_threshold(int64_t gate_ptr, double threshold) {
+    NeuralGate* gate = (NeuralGate*)gate_ptr;
+    if (gate) gate->threshold = threshold;
+}
+
+void neural_gate_add_gradient(int64_t gate_ptr, double grad) {
+    NeuralGate* gate = (NeuralGate*)gate_ptr;
+    if (gate) gate->gradient += grad;
+}
+
+double neural_gate_gradient(int64_t gate_ptr) {
+    NeuralGate* gate = (NeuralGate*)gate_ptr;
+    return gate ? gate->gradient : 0.0;
+}
+
+void neural_gate_zero_grad(int64_t gate_ptr) {
+    NeuralGate* gate = (NeuralGate*)gate_ptr;
+    if (gate) gate->gradient = 0.0;
+}
+
+void neural_gate_update(int64_t gate_ptr, double learning_rate) {
+    NeuralGate* gate = (NeuralGate*)gate_ptr;
+    if (gate) {
+        gate->threshold -= learning_rate * gate->gradient;
+        // Clamp threshold to [0, 1]
+        if (gate->threshold < 0.0) gate->threshold = 0.0;
+        if (gate->threshold > 1.0) gate->threshold = 1.0;
+        gate->gradient = 0.0;
+    }
+}
+
+// --------------------------------------------------------------------------
+// 29.5.6 Neural IR: Autograd Support
+// --------------------------------------------------------------------------
+// Eager-mode automatic differentiation for neural gates.
+
+typedef enum GradOp {
+    GRAD_OP_INPUT = 0,
+    GRAD_OP_ADD = 1,
+    GRAD_OP_SUB = 2,
+    GRAD_OP_MUL = 3,
+    GRAD_OP_DIV = 4,
+    GRAD_OP_NEG = 5,
+    GRAD_OP_SIGMOID = 6,
+    GRAD_OP_TANH = 7,
+    GRAD_OP_RELU = 8,
+    GRAD_OP_GT = 9,
+    GRAD_OP_LT = 10,
+    GRAD_OP_GE = 11,
+    GRAD_OP_LE = 12,
+} GradOp;
+
+typedef struct GradValue {
+    double value;
+    double grad;
+    GradOp op;
+    struct GradValue* left;
+    struct GradValue* right;
+    int64_t tape;
+} GradValue;
+
+typedef struct GradTape {
+    int64_t training_mode;
+    double temperature;
+    GradValue** nodes;
+    int64_t node_count;
+    int64_t node_capacity;
+} GradTape;
+
+int64_t grad_tape_new(void) {
+    GradTape* tape = (GradTape*)calloc(1, sizeof(GradTape));
+    if (!tape) return 0;
+    tape->training_mode = 1;
+    tape->temperature = 1.0;
+    tape->node_capacity = 64;
+    tape->nodes = (GradValue**)calloc(tape->node_capacity, sizeof(GradValue*));
+    return (int64_t)tape;
+}
+
+void grad_tape_set_training(int64_t tape_ptr, int64_t mode) {
+    GradTape* tape = (GradTape*)tape_ptr;
+    if (tape) tape->training_mode = mode;
+}
+
+void grad_tape_set_temperature(int64_t tape_ptr, double temp) {
+    GradTape* tape = (GradTape*)tape_ptr;
+    if (tape) tape->temperature = temp > 0.01 ? temp : 0.01;
+}
+
+double grad_tape_temperature(int64_t tape_ptr) {
+    GradTape* tape = (GradTape*)tape_ptr;
+    return tape ? tape->temperature : 1.0;
+}
+
+void grad_tape_free(int64_t tape_ptr) {
+    GradTape* tape = (GradTape*)tape_ptr;
+    if (!tape) return;
+    // Free all nodes in the tape
+    for (int64_t i = 0; i < tape->node_count; i++) {
+        if (tape->nodes[i]) {
+            free(tape->nodes[i]);
+        }
+    }
+    if (tape->nodes) free(tape->nodes);
+    free(tape);
+}
+
+static void grad_tape_add_node(GradTape* tape, GradValue* node) {
+    if (!tape || !node) return;
+    if (tape->node_count >= tape->node_capacity) {
+        tape->node_capacity *= 2;
+        tape->nodes = (GradValue**)realloc(tape->nodes, tape->node_capacity * sizeof(GradValue*));
+    }
+    tape->nodes[tape->node_count++] = node;
+    node->tape = (int64_t)tape;
+}
+
+int64_t grad_input(double value, int64_t tape_ptr) {
+    GradTape* tape = (GradTape*)tape_ptr;
+    GradValue* node = (GradValue*)calloc(1, sizeof(GradValue));
+    if (!node) return 0;
+    node->value = value;
+    node->grad = 0.0;
+    node->op = GRAD_OP_INPUT;
+    node->left = NULL;
+    node->right = NULL;
+    if (tape) grad_tape_add_node(tape, node);
+    return (int64_t)node;
+}
+
+double grad_value_get(int64_t node_ptr) {
+    GradValue* node = (GradValue*)node_ptr;
+    return node ? node->value : 0.0;
+}
+
+double grad_value_grad(int64_t node_ptr) {
+    GradValue* node = (GradValue*)node_ptr;
+    return node ? node->grad : 0.0;
+}
+
+int64_t grad_add(int64_t a_ptr, int64_t b_ptr) {
+    GradValue* a = (GradValue*)a_ptr;
+    GradValue* b = (GradValue*)b_ptr;
+    if (!a || !b) return 0;
+    GradValue* result = (GradValue*)calloc(1, sizeof(GradValue));
+    if (!result) return 0;
+    result->value = a->value + b->value;
+    result->grad = 0.0;
+    result->op = GRAD_OP_ADD;
+    result->left = a;
+    result->right = b;
+    if (a->tape) grad_tape_add_node((GradTape*)a->tape, result);
+    return (int64_t)result;
+}
+
+int64_t grad_sub(int64_t a_ptr, int64_t b_ptr) {
+    GradValue* a = (GradValue*)a_ptr;
+    GradValue* b = (GradValue*)b_ptr;
+    if (!a || !b) return 0;
+    GradValue* result = (GradValue*)calloc(1, sizeof(GradValue));
+    if (!result) return 0;
+    result->value = a->value - b->value;
+    result->grad = 0.0;
+    result->op = GRAD_OP_SUB;
+    result->left = a;
+    result->right = b;
+    if (a->tape) grad_tape_add_node((GradTape*)a->tape, result);
+    return (int64_t)result;
+}
+
+int64_t grad_mul(int64_t a_ptr, int64_t b_ptr) {
+    GradValue* a = (GradValue*)a_ptr;
+    GradValue* b = (GradValue*)b_ptr;
+    if (!a || !b) return 0;
+    GradValue* result = (GradValue*)calloc(1, sizeof(GradValue));
+    if (!result) return 0;
+    result->value = a->value * b->value;
+    result->grad = 0.0;
+    result->op = GRAD_OP_MUL;
+    result->left = a;
+    result->right = b;
+    if (a->tape) grad_tape_add_node((GradTape*)a->tape, result);
+    return (int64_t)result;
+}
+
+int64_t grad_div(int64_t a_ptr, int64_t b_ptr) {
+    GradValue* a = (GradValue*)a_ptr;
+    GradValue* b = (GradValue*)b_ptr;
+    if (!a || !b || b->value == 0.0) return 0;
+    GradValue* result = (GradValue*)calloc(1, sizeof(GradValue));
+    if (!result) return 0;
+    result->value = a->value / b->value;
+    result->grad = 0.0;
+    result->op = GRAD_OP_DIV;
+    result->left = a;
+    result->right = b;
+    if (a->tape) grad_tape_add_node((GradTape*)a->tape, result);
+    return (int64_t)result;
+}
+
+int64_t grad_neg(int64_t a_ptr) {
+    GradValue* a = (GradValue*)a_ptr;
+    if (!a) return 0;
+    GradValue* result = (GradValue*)calloc(1, sizeof(GradValue));
+    if (!result) return 0;
+    result->value = -a->value;
+    result->grad = 0.0;
+    result->op = GRAD_OP_NEG;
+    result->left = a;
+    result->right = NULL;
+    if (a->tape) grad_tape_add_node((GradTape*)a->tape, result);
+    return (int64_t)result;
+}
+
+// Soft comparisons for differentiable control flow
+int64_t grad_gt(int64_t a_ptr, int64_t b_ptr, int64_t tape_ptr) {
+    GradValue* a = (GradValue*)a_ptr;
+    GradValue* b = (GradValue*)b_ptr;
+    GradTape* tape = (GradTape*)tape_ptr;
+    if (!a || !b) return 0;
+    GradValue* result = (GradValue*)calloc(1, sizeof(GradValue));
+    if (!result) return 0;
+
+    // In training mode: sigmoid((a - b) * temperature)
+    // In inference mode: a > b ? 1.0 : 0.0
+    if (tape && tape->training_mode) {
+        double diff = a->value - b->value;
+        result->value = 1.0 / (1.0 + exp(-diff * tape->temperature));
+    } else {
+        result->value = a->value > b->value ? 1.0 : 0.0;
+    }
+    result->grad = 0.0;
+    result->op = GRAD_OP_GT;
+    result->left = a;
+    result->right = b;
+    if (tape) grad_tape_add_node(tape, result);
+    return (int64_t)result;
+}
+
+int64_t grad_lt(int64_t a_ptr, int64_t b_ptr, int64_t tape_ptr) {
+    return grad_gt(b_ptr, a_ptr, tape_ptr);  // a < b ≡ b > a
+}
+
+int64_t grad_ge(int64_t a_ptr, int64_t b_ptr, int64_t tape_ptr) {
+    // a >= b ≡ !(a < b) ≡ !(b > a)
+    int64_t lt_result = grad_lt(a_ptr, b_ptr, tape_ptr);
+    GradValue* lt_node = (GradValue*)lt_result;
+    if (lt_node) lt_node->value = 1.0 - lt_node->value;
+    return lt_result;
+}
+
+int64_t grad_le(int64_t a_ptr, int64_t b_ptr, int64_t tape_ptr) {
+    // a <= b ≡ !(a > b)
+    int64_t gt_result = grad_gt(a_ptr, b_ptr, tape_ptr);
+    GradValue* gt_node = (GradValue*)gt_result;
+    if (gt_node) gt_node->value = 1.0 - gt_node->value;
+    return gt_result;
+}
+
+// Backward pass - compute gradients via backpropagation
+static void backward_node(GradValue* node) {
+    if (!node) return;
+    switch (node->op) {
+        case GRAD_OP_INPUT:
+            break;
+        case GRAD_OP_ADD:
+            if (node->left) node->left->grad += node->grad;
+            if (node->right) node->right->grad += node->grad;
+            break;
+        case GRAD_OP_SUB:
+            if (node->left) node->left->grad += node->grad;
+            if (node->right) node->right->grad -= node->grad;
+            break;
+        case GRAD_OP_MUL:
+            if (node->left && node->right) {
+                node->left->grad += node->grad * node->right->value;
+                node->right->grad += node->grad * node->left->value;
+            }
+            break;
+        case GRAD_OP_DIV:
+            if (node->left && node->right && node->right->value != 0.0) {
+                node->left->grad += node->grad / node->right->value;
+                node->right->grad -= node->grad * node->left->value / (node->right->value * node->right->value);
+            }
+            break;
+        case GRAD_OP_NEG:
+            if (node->left) node->left->grad -= node->grad;
+            break;
+        case GRAD_OP_SIGMOID:
+            // d/dx sigmoid(x) = sigmoid(x) * (1 - sigmoid(x))
+            if (node->left) {
+                double s = node->value;
+                node->left->grad += node->grad * s * (1.0 - s);
+            }
+            break;
+        case GRAD_OP_GT:
+        case GRAD_OP_LT:
+        case GRAD_OP_GE:
+        case GRAD_OP_LE:
+            // Gradient of sigmoid comparison
+            if (node->left && node->right) {
+                double s = node->value;
+                double grad_s = s * (1.0 - s);
+                node->left->grad += node->grad * grad_s;
+                node->right->grad -= node->grad * grad_s;
+            }
+            break;
+        default:
+            break;
+    }
+}
+
+void backward(int64_t node_ptr) {
+    GradValue* node = (GradValue*)node_ptr;
+    if (!node) return;
+
+    GradTape* tape = (GradTape*)node->tape;
+    if (!tape) return;
+
+    // Set output gradient to 1
+    node->grad = 1.0;
+
+    // Backward through all nodes in reverse order
+    for (int64_t i = tape->node_count - 1; i >= 0; i--) {
+        backward_node(tape->nodes[i]);
+    }
+}
+
+void anneal_exponential_tape(int64_t tape_ptr, double decay) {
+    GradTape* tape = (GradTape*)tape_ptr;
+    if (tape) {
+        tape->temperature *= decay;
+        if (tape->temperature < 0.01) tape->temperature = 0.01;
+    }
+}
+
+// Standalone exponential annealing: returns new_temp = initial * decay^steps
+double anneal_exponential(double initial_temp, double decay, int64_t steps) {
+    double temp = initial_temp;
+    for (int64_t i = 0; i < steps; i++) {
+        temp *= decay;
+    }
+    if (temp < 0.01) temp = 0.01;
+    return temp;
+}
+
+void anneal_linear(int64_t tape_ptr, double step) {
+    GradTape* tape = (GradTape*)tape_ptr;
+    if (tape) {
+        tape->temperature -= step;
+        if (tape->temperature < 0.01) tape->temperature = 0.01;
+    }
+}
+
+// Sample from Gumbel(0, 1) distribution
+// g = -log(-log(uniform(0,1)))
+static double sample_gumbel_noise(void) {
+    double u = (double)rand() / (double)RAND_MAX;
+    // Clamp to avoid log(0)
+    if (u < 1e-20) u = 1e-20;
+    if (u > 1.0 - 1e-20) u = 1.0 - 1e-20;
+    return -log(-log(u));
+}
+
+// Gumbel-Softmax for differentiable categorical sampling
+// Implements: softmax((logits + gumbel_noise) / temperature)
+// Reference: Jang et al., "Categorical Reparameterization with Gumbel-Softmax" (2017)
+int64_t gumbel_softmax(int64_t logits_ptr, double temperature, int64_t tape_ptr) {
+    SxVec* logits = (SxVec*)logits_ptr;
+    if (!logits || logits->len == 0) return 0;
+
+    SxVec* result = intrinsic_vec_new();
+    double max_val = -INFINITY;
+    double sum = 0.0;
+
+    // Ensure minimum temperature for numerical stability
+    if (temperature < 0.01) temperature = 0.01;
+
+    // Allocate temp arrays for perturbed logits
+    double* perturbed = (double*)malloc(logits->len * sizeof(double));
+    if (!perturbed) return 0;
+
+    // Step 1: Add Gumbel noise to logits and find max for stability
+    for (size_t i = 0; i < logits->len; i++) {
+        double val;
+        memcpy(&val, &logits->items[i], sizeof(double));
+        // Add Gumbel noise: g_i = -log(-log(u)) where u ~ Uniform(0,1)
+        double gumbel_noise = sample_gumbel_noise();
+        perturbed[i] = (val + gumbel_noise) / temperature;
+        if (perturbed[i] > max_val) max_val = perturbed[i];
+    }
+
+    // Step 2: Compute softmax with numerical stability (subtract max)
+    for (size_t i = 0; i < logits->len; i++) {
+        double exp_val = exp(perturbed[i] - max_val);
+        perturbed[i] = exp_val;
+        sum += exp_val;
+    }
+
+    // Step 3: Normalize and store in result
+    for (size_t i = 0; i < logits->len; i++) {
+        perturbed[i] /= sum;
+        // Store the double value as a pointer (bit cast)
+        void* ptr;
+        memcpy(&ptr, &perturbed[i], sizeof(double));
+        intrinsic_vec_push(result, ptr);
+    }
+
+    free(perturbed);
+    return (int64_t)result;
+}
+
+// Straight-Through Gumbel-Softmax
+// Returns one-hot vector in forward pass, uses soft gradients in backward
+// Reference: Bengio et al., "Estimating or Propagating Gradients Through Stochastic Neurons" (2013)
+int64_t gumbel_softmax_hard(int64_t logits_ptr, double temperature, int64_t tape_ptr) {
+    SxVec* logits = (SxVec*)logits_ptr;
+    if (!logits || logits->len == 0) return 0;
+
+    // First compute soft Gumbel-Softmax for gradients
+    int64_t soft_result = gumbel_softmax(logits_ptr, temperature, tape_ptr);
+    SxVec* soft = (SxVec*)soft_result;
+    if (!soft) return 0;
+
+    // Find argmax from soft result
+    size_t argmax_idx = 0;
+    double max_prob = -INFINITY;
+    for (size_t i = 0; i < soft->len; i++) {
+        double prob;
+        memcpy(&prob, &soft->items[i], sizeof(double));
+        if (prob > max_prob) {
+            max_prob = prob;
+            argmax_idx = i;
+        }
+    }
+
+    // Create one-hot result (straight-through in forward)
+    SxVec* result = intrinsic_vec_new();
+    for (size_t i = 0; i < soft->len; i++) {
+        double val = (i == argmax_idx) ? 1.0 : 0.0;
+        void* ptr;
+        memcpy(&ptr, &val, sizeof(double));
+        intrinsic_vec_push(result, ptr);
+    }
+
+    // In a full autograd implementation, we would store soft_result
+    // for backward pass gradient computation. For now, free it.
+    // TODO: Track soft_result in tape for proper gradient computation
+    intrinsic_vec_free(soft);
+
+    return (int64_t)result;
+}
+
+// --------------------------------------------------------------------------
+// 29.5.7 Neural IR: Contract Verification
+// --------------------------------------------------------------------------
+// Contracts provide safety guarantees for neural gates:
+// - requires: preconditions that must hold before gate execution
+// - ensures: postconditions that must hold after gate execution
+// - invariant: properties that must hold throughout
+// - fallback: alternative paths when contracts fail
+
+typedef enum ContractViolationType {
+    CONTRACT_OK = 0,
+    CONTRACT_REQUIRES_FAILED = 1,
+    CONTRACT_ENSURES_FAILED = 2,
+    CONTRACT_INVARIANT_FAILED = 3,
+    CONTRACT_CONFIDENCE_LOW = 4,
+} ContractViolationType;
+
+typedef struct ContractResult {
+    int64_t satisfied;        // 1 if all contracts satisfied, 0 otherwise
+    ContractViolationType violation_type;
+    double actual_value;      // The actual value that caused violation
+    double expected_min;      // Expected minimum bound
+    double expected_max;      // Expected maximum bound
+    char* message;            // Human-readable violation message
+} ContractResult;
+
+// Global contract settings
+static double g_contract_min_confidence = 0.0;  // Default: no minimum
+static int64_t g_contract_panic_on_fail = 0;    // Default: return fallback
+
+void contract_set_min_confidence(double min_conf) {
+    g_contract_min_confidence = min_conf;
+}
+
+double contract_get_min_confidence(void) {
+    return g_contract_min_confidence;
+}
+
+void contract_set_panic_mode(int64_t panic) {
+    g_contract_panic_on_fail = panic;
+}
+
+int64_t contract_get_panic_mode(void) {
+    return g_contract_panic_on_fail;
+}
+
+// Create a new contract result (satisfied)
+int64_t contract_result_ok(void) {
+    ContractResult* result = (ContractResult*)calloc(1, sizeof(ContractResult));
+    if (!result) return 0;
+    result->satisfied = 1;
+    result->violation_type = CONTRACT_OK;
+    result->message = strdup("Contract satisfied");
+    return (int64_t)result;
+}
+
+// Create a new contract result (failed)
+int64_t contract_result_fail(int64_t violation_type, double actual, double expected_min, double expected_max, int64_t msg_ptr) {
+    ContractResult* result = (ContractResult*)calloc(1, sizeof(ContractResult));
+    if (!result) return 0;
+    result->satisfied = 0;
+    result->violation_type = (ContractViolationType)violation_type;
+    result->actual_value = actual;
+    result->expected_min = expected_min;
+    result->expected_max = expected_max;
+    SxString* msg = (SxString*)msg_ptr;
+    result->message = msg ? strdup(msg->data) : strdup("Contract violated");
+    return (int64_t)result;
+}
+
+// Check contract result
+int64_t contract_result_satisfied(int64_t result_ptr) {
+    ContractResult* result = (ContractResult*)result_ptr;
+    return result ? result->satisfied : 0;
+}
+
+int64_t contract_result_violation_type(int64_t result_ptr) {
+    ContractResult* result = (ContractResult*)result_ptr;
+    return result ? (int64_t)result->violation_type : 0;
+}
+
+double contract_result_actual(int64_t result_ptr) {
+    ContractResult* result = (ContractResult*)result_ptr;
+    return result ? result->actual_value : 0.0;
+}
+
+int64_t contract_result_message(int64_t result_ptr) {
+    ContractResult* result = (ContractResult*)result_ptr;
+    if (!result || !result->message) return 0;
+    return (int64_t)intrinsic_string_new(result->message);
+}
+
+void contract_result_free(int64_t result_ptr) {
+    ContractResult* result = (ContractResult*)result_ptr;
+    if (result) {
+        if (result->message) free(result->message);
+        free(result);
+    }
+}
+
+// Check requires clause (precondition)
+// Returns contract result
+int64_t contract_check_requires(double condition, double min_confidence, int64_t msg_ptr) {
+    // In training mode with soft comparisons, condition is [0,1]
+    // In inference mode, condition is 0 or 1
+    if (condition >= min_confidence && condition >= g_contract_min_confidence) {
+        return contract_result_ok();
+    }
+    return contract_result_fail(CONTRACT_REQUIRES_FAILED, condition, min_confidence, 1.0, msg_ptr);
+}
+
+// Check ensures clause (postcondition)
+int64_t contract_check_ensures(double condition, double min_confidence, int64_t msg_ptr) {
+    if (condition >= min_confidence && condition >= g_contract_min_confidence) {
+        return contract_result_ok();
+    }
+    return contract_result_fail(CONTRACT_ENSURES_FAILED, condition, min_confidence, 1.0, msg_ptr);
+}
+
+// Check invariant clause
+int64_t contract_check_invariant(double condition, double min_confidence, int64_t msg_ptr) {
+    if (condition >= min_confidence && condition >= g_contract_min_confidence) {
+        return contract_result_ok();
+    }
+    return contract_result_fail(CONTRACT_INVARIANT_FAILED, condition, min_confidence, 1.0, msg_ptr);
+}
+
+// Check confidence bound for neural gate output
+int64_t contract_check_confidence(double confidence, double min_bound, double max_bound, int64_t msg_ptr) {
+    if (confidence >= min_bound && confidence <= max_bound) {
+        return contract_result_ok();
+    }
+    return contract_result_fail(CONTRACT_CONFIDENCE_LOW, confidence, min_bound, max_bound, msg_ptr);
+}
+
+// Handle contract violation - either panic or log and continue
+void contract_handle_violation(int64_t result_ptr) {
+    ContractResult* result = (ContractResult*)result_ptr;
+    if (!result || result->satisfied) return;
+
+    // Log the violation
+    fprintf(stderr, "CONTRACT VIOLATION [type=%d]: %s\n",
+            result->violation_type,
+            result->message ? result->message : "unknown");
+    fprintf(stderr, "  actual=%.4f, expected=[%.4f, %.4f]\n",
+            result->actual_value, result->expected_min, result->expected_max);
+
+    if (g_contract_panic_on_fail) {
+        fprintf(stderr, "PANIC: Contract violation in strict mode\n");
+        exit(1);
+    }
+}
+
+// Range contract for checking value bounds
+int64_t contract_in_range(double value, double min_val, double max_val) {
+    if (value >= min_val && value <= max_val) {
+        return contract_result_ok();
+    }
+    return contract_result_fail(CONTRACT_INVARIANT_FAILED, value, min_val, max_val, 0);
+}
+
+// Neural gate with contract verification
+// Returns: gate output if contracts pass, fallback_value if contracts fail
+double neural_gate_with_contract(int64_t gate_ptr, double input, double fallback_value,
+                                  double requires_conf, double ensures_conf) {
+    NeuralGate* gate = (NeuralGate*)gate_ptr;
+    if (!gate) return fallback_value;
+
+    // Check precondition (input in valid range)
+    int64_t pre_result = contract_check_requires(input >= 0.0 ? 1.0 : 0.0, requires_conf, 0);
+    if (!contract_result_satisfied(pre_result)) {
+        contract_handle_violation(pre_result);
+        contract_result_free(pre_result);
+        return fallback_value;
+    }
+    contract_result_free(pre_result);
+
+    // Compute gate output
+    double output;
+    if (g_neural_training_mode) {
+        // Training: soft sigmoid-based decision
+        output = neural_sigmoid(input - gate->threshold);
+    } else {
+        // Inference: discrete decision
+        output = input > gate->threshold ? 1.0 : 0.0;
+    }
+
+    // Check postcondition (output is valid probability)
+    int64_t post_result = contract_check_ensures(output >= 0.0 && output <= 1.0 ? 1.0 : 0.0, ensures_conf, 0);
+    if (!contract_result_satisfied(post_result)) {
+        contract_handle_violation(post_result);
+        contract_result_free(post_result);
+        return fallback_value;
+    }
+    contract_result_free(post_result);
+
+    return output;
+}
+
+// ==========================================================================
+// Phase 3: Hardware-Aware Compilation
+// ==========================================================================
+// This phase implements graph partitioning, device targeting, and cross-device
+// data marshalling for neural gates. Gates can be annotated with @cpu, @gpu,
+// or @npu to control placement, or automatically placed based on operation type.
+
+// --------------------------------------------------------------------------
+// 3.1 Device Target Enumeration
+// --------------------------------------------------------------------------
+
+typedef enum DeviceTarget {
+    DEVICE_CPU = 0,      // CPU execution (default for control flow)
+    DEVICE_GPU = 1,      // GPU execution (batch tensor operations)
+    DEVICE_NPU = 2,      // NPU execution (neural inference accelerator)
+    DEVICE_AUTO = 3,     // Automatic placement by compiler
+    DEVICE_ANY = 4       // Can run on any device
+} DeviceTarget;
+
+typedef enum OperationType {
+    OP_TYPE_CONTROL_FLOW = 0,   // Branching, conditionals
+    OP_TYPE_TENSOR_OPS = 1,     // Matrix multiply, convolution
+    OP_TYPE_MEMORY_BOUND = 2,   // I/O, memory access
+    OP_TYPE_NEURAL_INFER = 3,   // Neural network inference
+    OP_TYPE_SCALAR_MATH = 4,    // Simple arithmetic
+    OP_TYPE_REDUCTION = 5       // Aggregations, reductions
+} OperationType;
+
+typedef struct DeviceCapabilities {
+    int64_t id;
+    DeviceTarget type;
+    char* name;
+    int64_t compute_units;       // Number of compute units
+    int64_t memory_bytes;        // Available memory
+    double bandwidth_gbps;       // Memory bandwidth
+    double flops_per_sec;        // Floating point operations/sec
+    int64_t supports_fp16;       // Half precision support
+    int64_t supports_int8;       // INT8 quantization support
+    int64_t available;           // Device is available
+} DeviceCapabilities;
+
+// Global device registry
+#define MAX_DEVICES 16
+static DeviceCapabilities g_devices[MAX_DEVICES];
+static int64_t g_device_count = 0;
+static int64_t g_default_device = DEVICE_CPU;
+static pthread_mutex_t g_device_lock = PTHREAD_MUTEX_INITIALIZER;
+
+// Initialize device registry
+void device_registry_init(void) {
+    pthread_mutex_lock(&g_device_lock);
+    if (g_device_count == 0) {
+        // Always register CPU
+        g_devices[0].id = 0;
+        g_devices[0].type = DEVICE_CPU;
+        g_devices[0].name = strdup("cpu0");
+        g_devices[0].compute_units = 8;  // Assume 8 cores
+        g_devices[0].memory_bytes = 16L * 1024 * 1024 * 1024;  // 16GB
+        g_devices[0].bandwidth_gbps = 50.0;
+        g_devices[0].flops_per_sec = 100e9;  // 100 GFLOPS
+        g_devices[0].supports_fp16 = 1;
+        g_devices[0].supports_int8 = 1;
+        g_devices[0].available = 1;
+        g_device_count = 1;
+    }
+    pthread_mutex_unlock(&g_device_lock);
+}
+
+// Register a new device
+int64_t device_register(int64_t device_type, int64_t name_ptr, int64_t compute_units,
+                        int64_t memory_bytes, double bandwidth, double flops) {
+    pthread_mutex_lock(&g_device_lock);
+    if (g_device_count >= MAX_DEVICES) {
+        pthread_mutex_unlock(&g_device_lock);
+        return -1;
+    }
+
+    int64_t id = g_device_count;
+    g_devices[id].id = id;
+    g_devices[id].type = (DeviceTarget)device_type;
+    g_devices[id].name = name_ptr ? strdup((char*)name_ptr) : strdup("unknown");
+    g_devices[id].compute_units = compute_units;
+    g_devices[id].memory_bytes = memory_bytes;
+    g_devices[id].bandwidth_gbps = bandwidth;
+    g_devices[id].flops_per_sec = flops;
+    g_devices[id].supports_fp16 = 1;
+    g_devices[id].supports_int8 = 1;
+    g_devices[id].available = 1;
+    g_device_count++;
+
+    pthread_mutex_unlock(&g_device_lock);
+    return id;
+}
+
+// Get device by ID
+int64_t device_get(int64_t device_id) {
+    if (device_id < 0 || device_id >= g_device_count) return 0;
+    return (int64_t)&g_devices[device_id];
+}
+
+// Get device type
+int64_t device_type(int64_t device_ptr) {
+    if (!device_ptr) return DEVICE_CPU;
+    DeviceCapabilities* dev = (DeviceCapabilities*)device_ptr;
+    return dev->type;
+}
+
+// Get device name
+int64_t device_name(int64_t device_ptr) {
+    if (!device_ptr) return 0;
+    DeviceCapabilities* dev = (DeviceCapabilities*)device_ptr;
+    return (int64_t)dev->name;
+}
+
+// Check device availability
+int64_t device_available(int64_t device_ptr) {
+    if (!device_ptr) return 0;
+    DeviceCapabilities* dev = (DeviceCapabilities*)device_ptr;
+    return dev->available;
+}
+
+// Set default device
+void device_set_default(int64_t device_type) {
+    g_default_device = device_type;
+}
+
+// Get default device
+int64_t device_get_default(void) {
+    return g_default_device;
+}
+
+// Count registered devices
+int64_t device_count(void) {
+    return g_device_count;
+}
+
+// --------------------------------------------------------------------------
+// 3.2 Neural Gate Device Annotations
+// --------------------------------------------------------------------------
+
+typedef struct GateDeviceBinding {
+    int64_t gate_id;
+    DeviceTarget target;
+    int64_t explicit_binding;    // 1 if user-specified, 0 if auto
+    OperationType op_type;
+    double estimated_flops;
+    double memory_requirement;
+} GateDeviceBinding;
+
+#define MAX_GATE_BINDINGS 1024
+static GateDeviceBinding g_gate_bindings[MAX_GATE_BINDINGS];
+static int64_t g_gate_binding_count = 0;
+
+// Bind a gate to a specific device
+int64_t gate_bind_device(int64_t gate_id, int64_t device_type) {
+    if (g_gate_binding_count >= MAX_GATE_BINDINGS) return 0;
+
+    // Check if binding already exists
+    for (int64_t i = 0; i < g_gate_binding_count; i++) {
+        if (g_gate_bindings[i].gate_id == gate_id) {
+            g_gate_bindings[i].target = (DeviceTarget)device_type;
+            g_gate_bindings[i].explicit_binding = 1;
+            return 1;
+        }
+    }
+
+    // Create new binding
+    g_gate_bindings[g_gate_binding_count].gate_id = gate_id;
+    g_gate_bindings[g_gate_binding_count].target = (DeviceTarget)device_type;
+    g_gate_bindings[g_gate_binding_count].explicit_binding = 1;
+    g_gate_bindings[g_gate_binding_count].op_type = OP_TYPE_SCALAR_MATH;
+    g_gate_bindings[g_gate_binding_count].estimated_flops = 0;
+    g_gate_bindings[g_gate_binding_count].memory_requirement = 0;
+    g_gate_binding_count++;
+
+    return 1;
+}
+
+// Get gate device binding
+int64_t gate_get_device(int64_t gate_id) {
+    for (int64_t i = 0; i < g_gate_binding_count; i++) {
+        if (g_gate_bindings[i].gate_id == gate_id) {
+            return g_gate_bindings[i].target;
+        }
+    }
+    return g_default_device;
+}
+
+// Check if gate has explicit binding
+int64_t gate_has_explicit_binding(int64_t gate_id) {
+    for (int64_t i = 0; i < g_gate_binding_count; i++) {
+        if (g_gate_bindings[i].gate_id == gate_id) {
+            return g_gate_bindings[i].explicit_binding;
+        }
+    }
+    return 0;
+}
+
+// Set gate operation type (for auto-placement)
+void gate_set_op_type(int64_t gate_id, int64_t op_type) {
+    for (int64_t i = 0; i < g_gate_binding_count; i++) {
+        if (g_gate_bindings[i].gate_id == gate_id) {
+            g_gate_bindings[i].op_type = (OperationType)op_type;
+            return;
+        }
+    }
+    // Create binding if it doesn't exist
+    if (g_gate_binding_count < MAX_GATE_BINDINGS) {
+        g_gate_bindings[g_gate_binding_count].gate_id = gate_id;
+        g_gate_bindings[g_gate_binding_count].target = DEVICE_AUTO;
+        g_gate_bindings[g_gate_binding_count].explicit_binding = 0;
+        g_gate_bindings[g_gate_binding_count].op_type = (OperationType)op_type;
+        g_gate_binding_count++;
+    }
+}
+
+// --------------------------------------------------------------------------
+// 3.3 Graph Partitioning Algorithm
+// --------------------------------------------------------------------------
+
+typedef struct GraphNode {
+    int64_t id;
+    int64_t gate_id;
+    DeviceTarget assigned_device;
+    OperationType op_type;
+    double cost;                 // Execution cost
+    int64_t* dependencies;       // Array of dependency node IDs
+    int64_t dep_count;
+    int64_t* dependents;         // Nodes that depend on this
+    int64_t dependent_count;
+    int64_t scheduled;           // Already scheduled?
+    int64_t partition_id;        // Which partition this belongs to
+} GraphNode;
+
+typedef struct GraphPartition {
+    int64_t id;
+    DeviceTarget device;
+    int64_t* node_ids;
+    int64_t node_count;
+    int64_t capacity;
+    double total_cost;
+} GraphPartition;
+
+typedef struct ComputeGraph {
+    GraphNode* nodes;
+    int64_t node_count;
+    int64_t capacity;
+    GraphPartition* partitions;
+    int64_t partition_count;
+    int64_t partition_capacity;
+} ComputeGraph;
+
+// Create a new compute graph
+int64_t graph_new(void) {
+    ComputeGraph* g = (ComputeGraph*)calloc(1, sizeof(ComputeGraph));
+    if (!g) return 0;
+
+    g->capacity = 64;
+    g->nodes = (GraphNode*)calloc(g->capacity, sizeof(GraphNode));
+    g->partition_capacity = 8;
+    g->partitions = (GraphPartition*)calloc(g->partition_capacity, sizeof(GraphPartition));
+
+    return (int64_t)g;
+}
+
+// Add a node to the graph
+int64_t graph_add_node(int64_t graph_ptr, int64_t gate_id, int64_t op_type, double cost) {
+    ComputeGraph* g = (ComputeGraph*)graph_ptr;
+    if (!g) return -1;
+
+    if (g->node_count >= g->capacity) {
+        g->capacity *= 2;
+        g->nodes = (GraphNode*)realloc(g->nodes, g->capacity * sizeof(GraphNode));
+    }
+
+    int64_t id = g->node_count;
+    g->nodes[id].id = id;
+    g->nodes[id].gate_id = gate_id;
+    g->nodes[id].assigned_device = DEVICE_AUTO;
+    g->nodes[id].op_type = (OperationType)op_type;
+    g->nodes[id].cost = cost;
+    g->nodes[id].dependencies = NULL;
+    g->nodes[id].dep_count = 0;
+    g->nodes[id].dependents = NULL;
+    g->nodes[id].dependent_count = 0;
+    g->nodes[id].scheduled = 0;
+    g->nodes[id].partition_id = -1;
+    g->node_count++;
+
+    return id;
+}
+
+// Add a dependency edge
+void graph_add_edge(int64_t graph_ptr, int64_t from_node, int64_t to_node) {
+    ComputeGraph* g = (ComputeGraph*)graph_ptr;
+    if (!g || from_node < 0 || from_node >= g->node_count ||
+        to_node < 0 || to_node >= g->node_count) return;
+
+    // Add to_node as dependency of from_node
+    GraphNode* node = &g->nodes[from_node];
+    node->dependencies = (int64_t*)realloc(node->dependencies,
+                                           (node->dep_count + 1) * sizeof(int64_t));
+    node->dependencies[node->dep_count++] = to_node;
+
+    // Add from_node as dependent of to_node
+    GraphNode* dep = &g->nodes[to_node];
+    dep->dependents = (int64_t*)realloc(dep->dependents,
+                                        (dep->dependent_count + 1) * sizeof(int64_t));
+    dep->dependents[dep->dependent_count++] = from_node;
+}
+
+// Automatic device placement heuristics
+DeviceTarget auto_place_node(GraphNode* node) {
+    switch (node->op_type) {
+        case OP_TYPE_CONTROL_FLOW:
+            // Control flow runs on CPU (branching)
+            return DEVICE_CPU;
+
+        case OP_TYPE_TENSOR_OPS:
+            // Tensor operations prefer GPU
+            return DEVICE_GPU;
+
+        case OP_TYPE_MEMORY_BOUND:
+            // Memory-bound ops stay on CPU (I/O)
+            return DEVICE_CPU;
+
+        case OP_TYPE_NEURAL_INFER:
+            // Neural inference prefers NPU if available, else GPU
+            for (int64_t i = 0; i < g_device_count; i++) {
+                if (g_devices[i].type == DEVICE_NPU && g_devices[i].available) {
+                    return DEVICE_NPU;
+                }
+            }
+            // Fall back to GPU
+            for (int64_t i = 0; i < g_device_count; i++) {
+                if (g_devices[i].type == DEVICE_GPU && g_devices[i].available) {
+                    return DEVICE_GPU;
+                }
+            }
+            return DEVICE_CPU;
+
+        case OP_TYPE_SCALAR_MATH:
+            // Simple math on CPU
+            return DEVICE_CPU;
+
+        case OP_TYPE_REDUCTION:
+            // Reductions can go on GPU if large enough
+            if (node->cost > 1000.0) {
+                return DEVICE_GPU;
+            }
+            return DEVICE_CPU;
+
+        default:
+            return DEVICE_CPU;
+    }
+}
+
+// Partition the graph by device
+void graph_partition(int64_t graph_ptr) {
+    ComputeGraph* g = (ComputeGraph*)graph_ptr;
+    if (!g || g->node_count == 0) return;
+
+    // First, assign devices to all nodes
+    for (int64_t i = 0; i < g->node_count; i++) {
+        GraphNode* node = &g->nodes[i];
+
+        // Check for explicit binding
+        if (gate_has_explicit_binding(node->gate_id)) {
+            node->assigned_device = (DeviceTarget)gate_get_device(node->gate_id);
+        } else {
+            // Auto-place based on operation type
+            node->assigned_device = auto_place_node(node);
+        }
+    }
+
+    // Create partitions for each device type
+    // Count nodes per device
+    int64_t cpu_count = 0, gpu_count = 0, npu_count = 0;
+    for (int64_t i = 0; i < g->node_count; i++) {
+        switch (g->nodes[i].assigned_device) {
+            case DEVICE_CPU: cpu_count++; break;
+            case DEVICE_GPU: gpu_count++; break;
+            case DEVICE_NPU: npu_count++; break;
+            default: cpu_count++; break;
+        }
+    }
+
+    // Create partitions
+    g->partition_count = 0;
+
+    if (cpu_count > 0) {
+        GraphPartition* p = &g->partitions[g->partition_count];
+        p->id = g->partition_count;
+        p->device = DEVICE_CPU;
+        p->node_ids = (int64_t*)malloc(cpu_count * sizeof(int64_t));
+        p->node_count = 0;
+        p->capacity = cpu_count;
+        p->total_cost = 0;
+        g->partition_count++;
+    }
+
+    if (gpu_count > 0) {
+        GraphPartition* p = &g->partitions[g->partition_count];
+        p->id = g->partition_count;
+        p->device = DEVICE_GPU;
+        p->node_ids = (int64_t*)malloc(gpu_count * sizeof(int64_t));
+        p->node_count = 0;
+        p->capacity = gpu_count;
+        p->total_cost = 0;
+        g->partition_count++;
+    }
+
+    if (npu_count > 0) {
+        GraphPartition* p = &g->partitions[g->partition_count];
+        p->id = g->partition_count;
+        p->device = DEVICE_NPU;
+        p->node_ids = (int64_t*)malloc(npu_count * sizeof(int64_t));
+        p->node_count = 0;
+        p->capacity = npu_count;
+        p->total_cost = 0;
+        g->partition_count++;
+    }
+
+    // Assign nodes to partitions
+    for (int64_t i = 0; i < g->node_count; i++) {
+        GraphNode* node = &g->nodes[i];
+
+        // Find matching partition
+        for (int64_t j = 0; j < g->partition_count; j++) {
+            if (g->partitions[j].device == node->assigned_device ||
+                (node->assigned_device != DEVICE_CPU &&
+                 node->assigned_device != DEVICE_GPU &&
+                 node->assigned_device != DEVICE_NPU &&
+                 g->partitions[j].device == DEVICE_CPU)) {
+
+                GraphPartition* p = &g->partitions[j];
+                p->node_ids[p->node_count++] = i;
+                p->total_cost += node->cost;
+                node->partition_id = j;
+                break;
+            }
+        }
+    }
+}
+
+// Get number of partitions
+int64_t graph_partition_count(int64_t graph_ptr) {
+    ComputeGraph* g = (ComputeGraph*)graph_ptr;
+    if (!g) return 0;
+    return g->partition_count;
+}
+
+// Get partition device type
+int64_t graph_partition_device(int64_t graph_ptr, int64_t partition_id) {
+    ComputeGraph* g = (ComputeGraph*)graph_ptr;
+    if (!g || partition_id < 0 || partition_id >= g->partition_count) return DEVICE_CPU;
+    return g->partitions[partition_id].device;
+}
+
+// Get partition node count
+int64_t graph_partition_node_count(int64_t graph_ptr, int64_t partition_id) {
+    ComputeGraph* g = (ComputeGraph*)graph_ptr;
+    if (!g || partition_id < 0 || partition_id >= g->partition_count) return 0;
+    return g->partitions[partition_id].node_count;
+}
+
+// Get partition total cost
+double graph_partition_cost(int64_t graph_ptr, int64_t partition_id) {
+    ComputeGraph* g = (ComputeGraph*)graph_ptr;
+    if (!g || partition_id < 0 || partition_id >= g->partition_count) return 0.0;
+    return g->partitions[partition_id].total_cost;
+}
+
+// Free compute graph
+void graph_free(int64_t graph_ptr) {
+    ComputeGraph* g = (ComputeGraph*)graph_ptr;
+    if (!g) return;
+
+    for (int64_t i = 0; i < g->node_count; i++) {
+        free(g->nodes[i].dependencies);
+        free(g->nodes[i].dependents);
+    }
+    free(g->nodes);
+
+    for (int64_t i = 0; i < g->partition_count; i++) {
+        free(g->partitions[i].node_ids);
+    }
+    free(g->partitions);
+
+    free(g);
+}
+
+// --------------------------------------------------------------------------
+// 3.4 Cross-Device Data Marshalling
+// --------------------------------------------------------------------------
+
+typedef enum TransferDirection {
+    TRANSFER_HOST_TO_DEVICE = 0,
+    TRANSFER_DEVICE_TO_HOST = 1,
+    TRANSFER_DEVICE_TO_DEVICE = 2
+} TransferDirection;
+
+typedef struct DataTransfer {
+    int64_t id;
+    void* src_ptr;
+    void* dst_ptr;
+    int64_t size_bytes;
+    DeviceTarget src_device;
+    DeviceTarget dst_device;
+    int64_t async;               // Async transfer?
+    int64_t completed;           // Transfer done?
+    double transfer_time_ms;     // Actual transfer time
+} DataTransfer;
+
+typedef struct TransferQueue {
+    DataTransfer* transfers;
+    int64_t count;
+    int64_t capacity;
+    int64_t next_id;
+    pthread_mutex_t lock;
+} TransferQueue;
+
+static TransferQueue g_transfer_queue = {0};
+
+// Initialize transfer queue
+void transfer_queue_init(void) {
+    if (g_transfer_queue.transfers == NULL) {
+        g_transfer_queue.capacity = 256;
+        g_transfer_queue.transfers = (DataTransfer*)calloc(g_transfer_queue.capacity,
+                                                           sizeof(DataTransfer));
+        g_transfer_queue.count = 0;
+        g_transfer_queue.next_id = 1;
+        pthread_mutex_init(&g_transfer_queue.lock, NULL);
+    }
+}
+
+// Queue a data transfer
+int64_t transfer_queue_add(int64_t src_ptr, int64_t dst_ptr, int64_t size_bytes,
+                           int64_t src_device, int64_t dst_device, int64_t async) {
+    transfer_queue_init();
+
+    pthread_mutex_lock(&g_transfer_queue.lock);
+
+    if (g_transfer_queue.count >= g_transfer_queue.capacity) {
+        g_transfer_queue.capacity *= 2;
+        g_transfer_queue.transfers = (DataTransfer*)realloc(
+            g_transfer_queue.transfers,
+            g_transfer_queue.capacity * sizeof(DataTransfer));
+    }
+
+    int64_t id = g_transfer_queue.next_id++;
+    DataTransfer* t = &g_transfer_queue.transfers[g_transfer_queue.count++];
+    t->id = id;
+    t->src_ptr = (void*)src_ptr;
+    t->dst_ptr = (void*)dst_ptr;
+    t->size_bytes = size_bytes;
+    t->src_device = (DeviceTarget)src_device;
+    t->dst_device = (DeviceTarget)dst_device;
+    t->async = async;
+    t->completed = 0;
+    t->transfer_time_ms = 0;
+
+    pthread_mutex_unlock(&g_transfer_queue.lock);
+
+    return id;
+}
+
+// Execute a data transfer (simulated for CPU-only, real impl would use CUDA/etc)
+void transfer_execute(int64_t transfer_id) {
+    pthread_mutex_lock(&g_transfer_queue.lock);
+
+    DataTransfer* t = NULL;
+    for (int64_t i = 0; i < g_transfer_queue.count; i++) {
+        if (g_transfer_queue.transfers[i].id == transfer_id) {
+            t = &g_transfer_queue.transfers[i];
+            break;
+        }
+    }
+
+    if (t && !t->completed) {
+        // Simulate transfer (in real impl, would use device-specific APIs)
+        // For CPU-to-CPU, just memcpy
+        if (t->src_device == DEVICE_CPU && t->dst_device == DEVICE_CPU) {
+            memcpy(t->dst_ptr, t->src_ptr, t->size_bytes);
+        } else {
+            // For GPU/NPU, would call CUDA/OpenCL/etc APIs
+            // For now, simulate with memcpy
+            memcpy(t->dst_ptr, t->src_ptr, t->size_bytes);
+        }
+
+        // Estimate transfer time based on bandwidth
+        double bandwidth_bps = 50e9;  // 50 GB/s default
+        t->transfer_time_ms = (t->size_bytes / bandwidth_bps) * 1000.0;
+        t->completed = 1;
+    }
+
+    pthread_mutex_unlock(&g_transfer_queue.lock);
+}
+
+// Check if transfer is complete
+int64_t transfer_is_complete(int64_t transfer_id) {
+    pthread_mutex_lock(&g_transfer_queue.lock);
+
+    int64_t result = 0;
+    for (int64_t i = 0; i < g_transfer_queue.count; i++) {
+        if (g_transfer_queue.transfers[i].id == transfer_id) {
+            result = g_transfer_queue.transfers[i].completed;
+            break;
+        }
+    }
+
+    pthread_mutex_unlock(&g_transfer_queue.lock);
+    return result;
+}
+
+// Get transfer time
+double transfer_time_ms(int64_t transfer_id) {
+    pthread_mutex_lock(&g_transfer_queue.lock);
+
+    double result = 0;
+    for (int64_t i = 0; i < g_transfer_queue.count; i++) {
+        if (g_transfer_queue.transfers[i].id == transfer_id) {
+            result = g_transfer_queue.transfers[i].transfer_time_ms;
+            break;
+        }
+    }
+
+    pthread_mutex_unlock(&g_transfer_queue.lock);
+    return result;
+}
+
+// Execute all pending transfers
+void transfer_sync_all(void) {
+    pthread_mutex_lock(&g_transfer_queue.lock);
+
+    for (int64_t i = 0; i < g_transfer_queue.count; i++) {
+        DataTransfer* t = &g_transfer_queue.transfers[i];
+        if (!t->completed) {
+            if (t->src_ptr && t->dst_ptr && t->size_bytes > 0) {
+                memcpy(t->dst_ptr, t->src_ptr, t->size_bytes);
+            }
+            t->completed = 1;
+        }
+    }
+
+    pthread_mutex_unlock(&g_transfer_queue.lock);
+}
+
+// --------------------------------------------------------------------------
+// 3.5 Device-Aware Neural Gate Execution
+// --------------------------------------------------------------------------
+
+typedef struct DeviceKernel {
+    int64_t id;
+    char* name;
+    DeviceTarget device;
+    void* kernel_ptr;            // Function pointer or kernel handle
+    int64_t input_count;
+    int64_t output_count;
+} DeviceKernel;
+
+// Create a device kernel (stub for future GPU/NPU implementation)
+int64_t kernel_create(int64_t name_ptr, int64_t device_type) {
+    DeviceKernel* k = (DeviceKernel*)calloc(1, sizeof(DeviceKernel));
+    if (!k) return 0;
+
+    static int64_t next_id = 1;
+    k->id = next_id++;
+    k->name = name_ptr ? strdup((char*)name_ptr) : strdup("unnamed");
+    k->device = (DeviceTarget)device_type;
+    k->kernel_ptr = NULL;
+    k->input_count = 0;
+    k->output_count = 0;
+
+    return (int64_t)k;
+}
+
+// Set kernel function pointer
+void kernel_set_function(int64_t kernel_ptr, int64_t func_ptr) {
+    DeviceKernel* k = (DeviceKernel*)kernel_ptr;
+    if (k) {
+        k->kernel_ptr = (void*)func_ptr;
+    }
+}
+
+// Execute kernel on device
+double kernel_execute(int64_t kernel_ptr, int64_t input_ptr, int64_t input_count,
+                      int64_t output_ptr, int64_t output_count) {
+    DeviceKernel* k = (DeviceKernel*)kernel_ptr;
+    if (!k || !k->kernel_ptr) return 0.0;
+
+    // For CPU, directly call the function
+    if (k->device == DEVICE_CPU) {
+        typedef double (*KernelFunc)(double*, int64_t, double*, int64_t);
+        KernelFunc func = (KernelFunc)k->kernel_ptr;
+        return func((double*)input_ptr, input_count, (double*)output_ptr, output_count);
+    }
+
+    // For GPU/NPU, would launch kernel (not implemented yet)
+    // Return 0.0 as placeholder
+    return 0.0;
+}
+
+// Free kernel
+void kernel_free(int64_t kernel_ptr) {
+    DeviceKernel* k = (DeviceKernel*)kernel_ptr;
+    if (k) {
+        free(k->name);
+        free(k);
+    }
+}
+
+// Execute neural gate on specific device
+double neural_gate_execute_on_device(int64_t gate_ptr, double input, int64_t device_type) {
+    NeuralGate* gate = (NeuralGate*)gate_ptr;
+    if (!gate) return 0.0;
+
+    // Check if we need to transfer data
+    DeviceTarget current_device = DEVICE_CPU;  // Data always starts on CPU
+    DeviceTarget target_device = (DeviceTarget)device_type;
+
+    // For CPU execution, just run directly
+    if (target_device == DEVICE_CPU || target_device == DEVICE_AUTO) {
+        if (g_neural_training_mode) {
+            return neural_sigmoid(input - gate->threshold);
+        } else {
+            return input > gate->threshold ? 1.0 : 0.0;
+        }
+    }
+
+    // For GPU/NPU, would marshall data and execute on device
+    // For now, fall back to CPU execution
+    if (g_neural_training_mode) {
+        return neural_sigmoid(input - gate->threshold);
+    } else {
+        return input > gate->threshold ? 1.0 : 0.0;
+    }
+}
+
+// Batch execute gates (for GPU efficiency)
+void neural_gate_batch_execute(int64_t* gate_ptrs, double* inputs, double* outputs,
+                               int64_t count, int64_t device_type) {
+    // For GPU, batch execution is much more efficient
+    // For CPU, just loop
+    for (int64_t i = 0; i < count; i++) {
+        outputs[i] = neural_gate_execute_on_device(gate_ptrs[i], inputs[i], device_type);
+    }
+}
+
+// --------------------------------------------------------------------------
+// End of Phase 3: Hardware-Aware Compilation
+// --------------------------------------------------------------------------
+
+// ==========================================================================
+// Phase 4: Structural Pruning
+// ==========================================================================
+// This phase implements pruning strategies to remove unused or low-importance
+// neural gates after training, reducing binary size and improving inference speed.
+
+// --------------------------------------------------------------------------
+// 4.1 Activation Statistics Collection
+// --------------------------------------------------------------------------
+
+typedef struct GateActivationStats {
+    int64_t gate_id;
+    int64_t total_activations;      // Total times gate was evaluated
+    int64_t positive_activations;   // Times gate fired (output > 0.5)
+    double activation_rate;         // positive / total
+    double mean_output;             // Average output value
+    double variance_output;         // Variance of output
+    double max_output;              // Maximum output seen
+    double min_output;              // Minimum output seen
+    double sum_output;              // For computing mean
+    double sum_sq_output;           // For computing variance
+    int64_t last_activation_epoch;  // Last epoch this gate was active
+    int64_t consecutive_zero_epochs;// Epochs with zero activations
+} GateActivationStats;
+
+typedef struct ActivationTracker {
+    GateActivationStats* stats;
+    int64_t count;
+    int64_t capacity;
+    int64_t current_epoch;
+    int64_t tracking_enabled;
+    pthread_mutex_t lock;
+} ActivationTracker;
+
+static ActivationTracker g_activation_tracker = {0};
+
+// Initialize activation tracker
+void activation_tracker_init(void) {
+    pthread_mutex_lock(&g_activation_tracker.lock);
+    if (g_activation_tracker.stats == NULL) {
+        g_activation_tracker.capacity = 1024;
+        g_activation_tracker.stats = (GateActivationStats*)calloc(
+            g_activation_tracker.capacity, sizeof(GateActivationStats));
+        g_activation_tracker.count = 0;
+        g_activation_tracker.current_epoch = 0;
+        g_activation_tracker.tracking_enabled = 1;
+    }
+    pthread_mutex_unlock(&g_activation_tracker.lock);
+}
+
+// Enable/disable activation tracking
+void activation_tracking_set_enabled(int64_t enabled) {
+    g_activation_tracker.tracking_enabled = enabled;
+}
+
+// Get tracking enabled status
+int64_t activation_tracking_enabled(void) {
+    return g_activation_tracker.tracking_enabled;
+}
+
+// Find or create stats for a gate
+static GateActivationStats* get_or_create_stats(int64_t gate_id) {
+    for (int64_t i = 0; i < g_activation_tracker.count; i++) {
+        if (g_activation_tracker.stats[i].gate_id == gate_id) {
+            return &g_activation_tracker.stats[i];
+        }
+    }
+
+    // Create new entry
+    if (g_activation_tracker.count >= g_activation_tracker.capacity) {
+        g_activation_tracker.capacity *= 2;
+        g_activation_tracker.stats = (GateActivationStats*)realloc(
+            g_activation_tracker.stats,
+            g_activation_tracker.capacity * sizeof(GateActivationStats));
+    }
+
+    GateActivationStats* stats = &g_activation_tracker.stats[g_activation_tracker.count++];
+    memset(stats, 0, sizeof(GateActivationStats));
+    stats->gate_id = gate_id;
+    stats->min_output = 1.0;  // Will be updated on first activation
+    return stats;
+}
+
+// Record a gate activation
+void activation_record(int64_t gate_id, double output) {
+    if (!g_activation_tracker.tracking_enabled) return;
+
+    pthread_mutex_lock(&g_activation_tracker.lock);
+
+    GateActivationStats* stats = get_or_create_stats(gate_id);
+    stats->total_activations++;
+
+    if (output > 0.5) {
+        stats->positive_activations++;
+    }
+
+    stats->sum_output += output;
+    stats->sum_sq_output += output * output;
+
+    if (output > stats->max_output) stats->max_output = output;
+    if (output < stats->min_output) stats->min_output = output;
+
+    stats->last_activation_epoch = g_activation_tracker.current_epoch;
+
+    // Update activation rate
+    if (stats->total_activations > 0) {
+        stats->activation_rate = (double)stats->positive_activations / stats->total_activations;
+        stats->mean_output = stats->sum_output / stats->total_activations;
+
+        // Variance = E[X^2] - E[X]^2
+        double mean_sq = stats->sum_sq_output / stats->total_activations;
+        stats->variance_output = mean_sq - (stats->mean_output * stats->mean_output);
+    }
+
+    pthread_mutex_unlock(&g_activation_tracker.lock);
+}
+
+// Get activation stats for a gate
+int64_t activation_stats_get(int64_t gate_id) {
+    pthread_mutex_lock(&g_activation_tracker.lock);
+
+    for (int64_t i = 0; i < g_activation_tracker.count; i++) {
+        if (g_activation_tracker.stats[i].gate_id == gate_id) {
+            pthread_mutex_unlock(&g_activation_tracker.lock);
+            return (int64_t)&g_activation_tracker.stats[i];
+        }
+    }
+
+    pthread_mutex_unlock(&g_activation_tracker.lock);
+    return 0;
+}
+
+// Get activation rate for a gate
+double activation_rate_get(int64_t gate_id) {
+    int64_t stats_ptr = activation_stats_get(gate_id);
+    if (!stats_ptr) return 0.0;
+    GateActivationStats* stats = (GateActivationStats*)stats_ptr;
+    return stats->activation_rate;
+}
+
+// Get total activations for a gate
+int64_t activation_count_get(int64_t gate_id) {
+    int64_t stats_ptr = activation_stats_get(gate_id);
+    if (!stats_ptr) return 0;
+    GateActivationStats* stats = (GateActivationStats*)stats_ptr;
+    return stats->total_activations;
+}
+
+// Get mean output for a gate
+double activation_mean_get(int64_t gate_id) {
+    int64_t stats_ptr = activation_stats_get(gate_id);
+    if (!stats_ptr) return 0.0;
+    GateActivationStats* stats = (GateActivationStats*)stats_ptr;
+    return stats->mean_output;
+}
+
+// Advance to next epoch
+void activation_epoch_advance(void) {
+    pthread_mutex_lock(&g_activation_tracker.lock);
+
+    g_activation_tracker.current_epoch++;
+
+    // Update consecutive zero epochs for gates not activated this epoch
+    for (int64_t i = 0; i < g_activation_tracker.count; i++) {
+        GateActivationStats* stats = &g_activation_tracker.stats[i];
+        if (stats->last_activation_epoch < g_activation_tracker.current_epoch - 1) {
+            stats->consecutive_zero_epochs++;
+        } else {
+            stats->consecutive_zero_epochs = 0;
+        }
+    }
+
+    pthread_mutex_unlock(&g_activation_tracker.lock);
+}
+
+// Get current epoch
+int64_t activation_epoch_current(void) {
+    return g_activation_tracker.current_epoch;
+}
+
+// Get number of tracked gates
+int64_t activation_gate_count(void) {
+    return g_activation_tracker.count;
+}
+
+// Reset all activation statistics
+void activation_stats_reset(void) {
+    pthread_mutex_lock(&g_activation_tracker.lock);
+
+    for (int64_t i = 0; i < g_activation_tracker.count; i++) {
+        GateActivationStats* stats = &g_activation_tracker.stats[i];
+        stats->total_activations = 0;
+        stats->positive_activations = 0;
+        stats->activation_rate = 0;
+        stats->mean_output = 0;
+        stats->variance_output = 0;
+        stats->max_output = 0;
+        stats->min_output = 1.0;
+        stats->sum_output = 0;
+        stats->sum_sq_output = 0;
+    }
+
+    pthread_mutex_unlock(&g_activation_tracker.lock);
+}
+
+// --------------------------------------------------------------------------
+// 4.2 Weight Magnitude Pruning
+// --------------------------------------------------------------------------
+
+typedef enum PruningReason {
+    PRUNE_NONE = 0,
+    PRUNE_WEIGHT_MAGNITUDE = 1,    // |weight| < threshold
+    PRUNE_LOW_ACTIVATION = 2,       // activation rate < threshold
+    PRUNE_ZERO_GRADIENT = 3,        // gradient consistently zero
+    PRUNE_DEAD_PATH = 4,            // unreachable after other pruning
+    PRUNE_MANUAL = 5                // user explicitly pruned
+} PruningReason;
+
+typedef struct PruningCandidate {
+    int64_t gate_id;
+    PruningReason reason;
+    double score;                   // Lower = more likely to prune
+    int64_t should_prune;           // Final decision
+    int64_t pruned;                 // Already pruned?
+} PruningCandidate;
+
+typedef struct PruningContext {
+    PruningCandidate* candidates;
+    int64_t count;
+    int64_t capacity;
+    double weight_threshold;        // |weight| < this = prune
+    double activation_threshold;    // activation rate < this = prune
+    int64_t zero_gradient_epochs;   // epochs with zero gradient = prune
+    int64_t pruned_count;           // Number pruned so far
+    int64_t total_gates;            // Total gates before pruning
+} PruningContext;
+
+// Create a new pruning context
+int64_t pruning_context_new(double weight_threshold, double activation_threshold,
+                            int64_t zero_gradient_epochs) {
+    PruningContext* ctx = (PruningContext*)calloc(1, sizeof(PruningContext));
+    if (!ctx) return 0;
+
+    ctx->capacity = 256;
+    ctx->candidates = (PruningCandidate*)calloc(ctx->capacity, sizeof(PruningCandidate));
+    ctx->weight_threshold = weight_threshold > 0 ? weight_threshold : 0.01;
+    ctx->activation_threshold = activation_threshold > 0 ? activation_threshold : 0.001;
+    ctx->zero_gradient_epochs = zero_gradient_epochs > 0 ? zero_gradient_epochs : 5;
+
+    return (int64_t)ctx;
+}
+
+// Add a gate to pruning analysis
+void pruning_add_gate(int64_t ctx_ptr, int64_t gate_id, double weight) {
+    PruningContext* ctx = (PruningContext*)ctx_ptr;
+    if (!ctx) return;
+
+    if (ctx->count >= ctx->capacity) {
+        ctx->capacity *= 2;
+        ctx->candidates = (PruningCandidate*)realloc(
+            ctx->candidates, ctx->capacity * sizeof(PruningCandidate));
+    }
+
+    PruningCandidate* cand = &ctx->candidates[ctx->count++];
+    cand->gate_id = gate_id;
+    cand->reason = PRUNE_NONE;
+    cand->score = 1.0;  // Default: don't prune
+    cand->should_prune = 0;
+    cand->pruned = 0;
+
+    ctx->total_gates++;
+
+    // Check weight magnitude
+    double abs_weight = weight < 0 ? -weight : weight;
+    if (abs_weight < ctx->weight_threshold) {
+        cand->reason = PRUNE_WEIGHT_MAGNITUDE;
+        cand->score = abs_weight / ctx->weight_threshold;  // 0-1, lower = prune
+        cand->should_prune = 1;
+    }
+}
+
+// Analyze activation statistics for pruning
+void pruning_analyze_activations(int64_t ctx_ptr) {
+    PruningContext* ctx = (PruningContext*)ctx_ptr;
+    if (!ctx) return;
+
+    for (int64_t i = 0; i < ctx->count; i++) {
+        PruningCandidate* cand = &ctx->candidates[i];
+        if (cand->should_prune) continue;  // Already marked
+
+        double rate = activation_rate_get(cand->gate_id);
+        if (rate < ctx->activation_threshold) {
+            cand->reason = PRUNE_LOW_ACTIVATION;
+            cand->score = rate / ctx->activation_threshold;
+            cand->should_prune = 1;
+        }
+    }
+}
+
+// Analyze gradient statistics for pruning
+void pruning_analyze_gradients(int64_t ctx_ptr, int64_t* gate_ids, double* gradients, int64_t count) {
+    PruningContext* ctx = (PruningContext*)ctx_ptr;
+    if (!ctx) return;
+
+    for (int64_t i = 0; i < count; i++) {
+        int64_t gate_id = gate_ids[i];
+        double grad = gradients[i];
+        double abs_grad = grad < 0 ? -grad : grad;
+
+        // Find candidate
+        for (int64_t j = 0; j < ctx->count; j++) {
+            if (ctx->candidates[j].gate_id == gate_id) {
+                PruningCandidate* cand = &ctx->candidates[j];
+                if (!cand->should_prune && abs_grad < 1e-10) {
+                    // Check if this gate has had zero gradient for many epochs
+                    int64_t stats_ptr = activation_stats_get(gate_id);
+                    if (stats_ptr) {
+                        GateActivationStats* stats = (GateActivationStats*)stats_ptr;
+                        if (stats->consecutive_zero_epochs >= ctx->zero_gradient_epochs) {
+                            cand->reason = PRUNE_ZERO_GRADIENT;
+                            cand->score = 0.0;
+                            cand->should_prune = 1;
+                        }
+                    }
+                }
+                break;
+            }
+        }
+    }
+}
+
+// Execute pruning - mark gates as pruned
+int64_t pruning_execute(int64_t ctx_ptr) {
+    PruningContext* ctx = (PruningContext*)ctx_ptr;
+    if (!ctx) return 0;
+
+    int64_t pruned = 0;
+    for (int64_t i = 0; i < ctx->count; i++) {
+        if (ctx->candidates[i].should_prune && !ctx->candidates[i].pruned) {
+            ctx->candidates[i].pruned = 1;
+            pruned++;
+        }
+    }
+
+    ctx->pruned_count = pruned;
+    return pruned;
+}
+
+// Get number of pruned gates
+int64_t pruning_pruned_count(int64_t ctx_ptr) {
+    PruningContext* ctx = (PruningContext*)ctx_ptr;
+    if (!ctx) return 0;
+    return ctx->pruned_count;
+}
+
+// Get total gates analyzed
+int64_t pruning_total_count(int64_t ctx_ptr) {
+    PruningContext* ctx = (PruningContext*)ctx_ptr;
+    if (!ctx) return 0;
+    return ctx->total_gates;
+}
+
+// Get pruning ratio (pruned / total)
+double pruning_ratio(int64_t ctx_ptr) {
+    PruningContext* ctx = (PruningContext*)ctx_ptr;
+    if (!ctx || ctx->total_gates == 0) return 0.0;
+    return (double)ctx->pruned_count / ctx->total_gates;
+}
+
+// Check if a gate is pruned
+int64_t pruning_is_pruned(int64_t ctx_ptr, int64_t gate_id) {
+    PruningContext* ctx = (PruningContext*)ctx_ptr;
+    if (!ctx) return 0;
+
+    for (int64_t i = 0; i < ctx->count; i++) {
+        if (ctx->candidates[i].gate_id == gate_id) {
+            return ctx->candidates[i].pruned;
+        }
+    }
+    return 0;
+}
+
+// Get pruning reason for a gate
+int64_t pruning_reason(int64_t ctx_ptr, int64_t gate_id) {
+    PruningContext* ctx = (PruningContext*)ctx_ptr;
+    if (!ctx) return PRUNE_NONE;
+
+    for (int64_t i = 0; i < ctx->count; i++) {
+        if (ctx->candidates[i].gate_id == gate_id) {
+            return ctx->candidates[i].reason;
+        }
+    }
+    return PRUNE_NONE;
+}
+
+// Free pruning context
+void pruning_context_free(int64_t ctx_ptr) {
+    PruningContext* ctx = (PruningContext*)ctx_ptr;
+    if (!ctx) return;
+    free(ctx->candidates);
+    free(ctx);
+}
+
+// --------------------------------------------------------------------------
+// 4.3 Dead Path Elimination
+// --------------------------------------------------------------------------
+
+typedef struct DeadPathAnalyzer {
+    int64_t* reachable_gates;       // Gates that are reachable
+    int64_t reachable_count;
+    int64_t* dead_gates;            // Gates that are dead
+    int64_t dead_count;
+    int64_t capacity;
+    int64_t* adjacency;             // Adjacency list (flattened)
+    int64_t* adj_offsets;           // Start offset for each gate
+    int64_t adj_count;
+    int64_t gate_count;
+} DeadPathAnalyzer;
+
+// Create dead path analyzer
+int64_t dead_path_analyzer_new(int64_t gate_count) {
+    DeadPathAnalyzer* dpa = (DeadPathAnalyzer*)calloc(1, sizeof(DeadPathAnalyzer));
+    if (!dpa) return 0;
+
+    dpa->capacity = gate_count > 0 ? gate_count : 256;
+    dpa->reachable_gates = (int64_t*)calloc(dpa->capacity, sizeof(int64_t));
+    dpa->dead_gates = (int64_t*)calloc(dpa->capacity, sizeof(int64_t));
+    dpa->adj_offsets = (int64_t*)calloc(dpa->capacity + 1, sizeof(int64_t));
+    dpa->adjacency = (int64_t*)calloc(dpa->capacity * 4, sizeof(int64_t));  // Assume avg 4 edges
+    dpa->gate_count = gate_count;
+
+    return (int64_t)dpa;
+}
+
+// Add edge to analyzer
+void dead_path_add_edge(int64_t dpa_ptr, int64_t from_gate, int64_t to_gate) {
+    DeadPathAnalyzer* dpa = (DeadPathAnalyzer*)dpa_ptr;
+    if (!dpa) return;
+
+    // Simple adjacency list append (would need proper building in practice)
+    if (dpa->adj_count < dpa->capacity * 4) {
+        dpa->adjacency[dpa->adj_count++] = (from_gate << 32) | to_gate;
+    }
+}
+
+// Mark gate as entry point (always reachable)
+void dead_path_mark_entry(int64_t dpa_ptr, int64_t gate_id) {
+    DeadPathAnalyzer* dpa = (DeadPathAnalyzer*)dpa_ptr;
+    if (!dpa || dpa->reachable_count >= dpa->capacity) return;
+
+    // Check not already marked
+    for (int64_t i = 0; i < dpa->reachable_count; i++) {
+        if (dpa->reachable_gates[i] == gate_id) return;
+    }
+
+    dpa->reachable_gates[dpa->reachable_count++] = gate_id;
+}
+
+// Propagate reachability
+void dead_path_propagate(int64_t dpa_ptr) {
+    DeadPathAnalyzer* dpa = (DeadPathAnalyzer*)dpa_ptr;
+    if (!dpa) return;
+
+    // BFS from entry points
+    int64_t queue_start = 0;
+
+    while (queue_start < dpa->reachable_count) {
+        int64_t current = dpa->reachable_gates[queue_start++];
+
+        // Find all edges from current
+        for (int64_t i = 0; i < dpa->adj_count; i++) {
+            int64_t from = dpa->adjacency[i] >> 32;
+            int64_t to = dpa->adjacency[i] & 0xFFFFFFFF;
+
+            if (from == current) {
+                // Check if 'to' is already reachable
+                int64_t found = 0;
+                for (int64_t j = 0; j < dpa->reachable_count; j++) {
+                    if (dpa->reachable_gates[j] == to) {
+                        found = 1;
+                        break;
+                    }
+                }
+
+                if (!found && dpa->reachable_count < dpa->capacity) {
+                    dpa->reachable_gates[dpa->reachable_count++] = to;
+                }
+            }
+        }
+    }
+}
+
+// Find dead paths (gates not reachable)
+void dead_path_find_dead(int64_t dpa_ptr, int64_t* all_gates, int64_t all_count) {
+    DeadPathAnalyzer* dpa = (DeadPathAnalyzer*)dpa_ptr;
+    if (!dpa) return;
+
+    dpa->dead_count = 0;
+
+    for (int64_t i = 0; i < all_count; i++) {
+        int64_t gate = all_gates[i];
+        int64_t is_reachable = 0;
+
+        for (int64_t j = 0; j < dpa->reachable_count; j++) {
+            if (dpa->reachable_gates[j] == gate) {
+                is_reachable = 1;
+                break;
+            }
+        }
+
+        if (!is_reachable && dpa->dead_count < dpa->capacity) {
+            dpa->dead_gates[dpa->dead_count++] = gate;
+        }
+    }
+}
+
+// Get number of dead gates
+int64_t dead_path_dead_count(int64_t dpa_ptr) {
+    DeadPathAnalyzer* dpa = (DeadPathAnalyzer*)dpa_ptr;
+    if (!dpa) return 0;
+    return dpa->dead_count;
+}
+
+// Get number of reachable gates
+int64_t dead_path_reachable_count(int64_t dpa_ptr) {
+    DeadPathAnalyzer* dpa = (DeadPathAnalyzer*)dpa_ptr;
+    if (!dpa) return 0;
+    return dpa->reachable_count;
+}
+
+// Check if gate is dead
+int64_t dead_path_is_dead(int64_t dpa_ptr, int64_t gate_id) {
+    DeadPathAnalyzer* dpa = (DeadPathAnalyzer*)dpa_ptr;
+    if (!dpa) return 0;
+
+    for (int64_t i = 0; i < dpa->dead_count; i++) {
+        if (dpa->dead_gates[i] == gate_id) return 1;
+    }
+    return 0;
+}
+
+// Free analyzer
+void dead_path_analyzer_free(int64_t dpa_ptr) {
+    DeadPathAnalyzer* dpa = (DeadPathAnalyzer*)dpa_ptr;
+    if (!dpa) return;
+
+    free(dpa->reachable_gates);
+    free(dpa->dead_gates);
+    free(dpa->adjacency);
+    free(dpa->adj_offsets);
+    free(dpa);
+}
+
+// --------------------------------------------------------------------------
+// 4.4 Structured Pruning (Subgraph Removal)
+// --------------------------------------------------------------------------
+
+typedef struct PrunedSubgraph {
+    int64_t* gate_ids;
+    int64_t count;
+    int64_t capacity;
+    double total_weight;            // Sum of weights in subgraph
+    double importance_score;        // Higher = more important
+} PrunedSubgraph;
+
+typedef struct StructuredPruner {
+    PrunedSubgraph* subgraphs;
+    int64_t subgraph_count;
+    int64_t capacity;
+    double importance_threshold;    // Subgraphs below this get pruned
+    int64_t* pruned_subgraph_ids;
+    int64_t pruned_count;
+} StructuredPruner;
+
+// Create structured pruner
+int64_t structured_pruner_new(double importance_threshold) {
+    StructuredPruner* sp = (StructuredPruner*)calloc(1, sizeof(StructuredPruner));
+    if (!sp) return 0;
+
+    sp->capacity = 64;
+    sp->subgraphs = (PrunedSubgraph*)calloc(sp->capacity, sizeof(PrunedSubgraph));
+    sp->pruned_subgraph_ids = (int64_t*)calloc(sp->capacity, sizeof(int64_t));
+    sp->importance_threshold = importance_threshold > 0 ? importance_threshold : 0.01;
+
+    return (int64_t)sp;
+}
+
+// Add a subgraph to analyze
+int64_t structured_pruner_add_subgraph(int64_t sp_ptr, int64_t* gate_ids, int64_t count,
+                                       double total_weight) {
+    StructuredPruner* sp = (StructuredPruner*)sp_ptr;
+    if (!sp) return -1;
+
+    if (sp->subgraph_count >= sp->capacity) {
+        sp->capacity *= 2;
+        sp->subgraphs = (PrunedSubgraph*)realloc(
+            sp->subgraphs, sp->capacity * sizeof(PrunedSubgraph));
+        sp->pruned_subgraph_ids = (int64_t*)realloc(
+            sp->pruned_subgraph_ids, sp->capacity * sizeof(int64_t));
+    }
+
+    int64_t id = sp->subgraph_count;
+    PrunedSubgraph* sg = &sp->subgraphs[sp->subgraph_count++];
+
+    sg->capacity = count;
+    sg->gate_ids = (int64_t*)malloc(count * sizeof(int64_t));
+    memcpy(sg->gate_ids, gate_ids, count * sizeof(int64_t));
+    sg->count = count;
+    sg->total_weight = total_weight;
+
+    // Calculate importance based on weight and activation
+    double activation_sum = 0;
+    for (int64_t i = 0; i < count; i++) {
+        activation_sum += activation_rate_get(gate_ids[i]);
+    }
+    double avg_activation = count > 0 ? activation_sum / count : 0;
+
+    // Importance = weight * activation
+    sg->importance_score = (total_weight < 0 ? -total_weight : total_weight) * avg_activation;
+
+    return id;
+}
+
+// Execute structured pruning
+int64_t structured_pruner_execute(int64_t sp_ptr) {
+    StructuredPruner* sp = (StructuredPruner*)sp_ptr;
+    if (!sp) return 0;
+
+    sp->pruned_count = 0;
+
+    for (int64_t i = 0; i < sp->subgraph_count; i++) {
+        if (sp->subgraphs[i].importance_score < sp->importance_threshold) {
+            sp->pruned_subgraph_ids[sp->pruned_count++] = i;
+        }
+    }
+
+    return sp->pruned_count;
+}
+
+// Get number of pruned subgraphs
+int64_t structured_pruner_pruned_count(int64_t sp_ptr) {
+    StructuredPruner* sp = (StructuredPruner*)sp_ptr;
+    if (!sp) return 0;
+    return sp->pruned_count;
+}
+
+// Get total subgraphs
+int64_t structured_pruner_total_count(int64_t sp_ptr) {
+    StructuredPruner* sp = (StructuredPruner*)sp_ptr;
+    if (!sp) return 0;
+    return sp->subgraph_count;
+}
+
+// Check if subgraph is pruned
+int64_t structured_pruner_is_pruned(int64_t sp_ptr, int64_t subgraph_id) {
+    StructuredPruner* sp = (StructuredPruner*)sp_ptr;
+    if (!sp) return 0;
+
+    for (int64_t i = 0; i < sp->pruned_count; i++) {
+        if (sp->pruned_subgraph_ids[i] == subgraph_id) return 1;
+    }
+    return 0;
+}
+
+// Get importance score for subgraph
+double structured_pruner_importance(int64_t sp_ptr, int64_t subgraph_id) {
+    StructuredPruner* sp = (StructuredPruner*)sp_ptr;
+    if (!sp || subgraph_id < 0 || subgraph_id >= sp->subgraph_count) return 0.0;
+    return sp->subgraphs[subgraph_id].importance_score;
+}
+
+// Free structured pruner
+void structured_pruner_free(int64_t sp_ptr) {
+    StructuredPruner* sp = (StructuredPruner*)sp_ptr;
+    if (!sp) return;
+
+    for (int64_t i = 0; i < sp->subgraph_count; i++) {
+        free(sp->subgraphs[i].gate_ids);
+    }
+    free(sp->subgraphs);
+    free(sp->pruned_subgraph_ids);
+    free(sp);
+}
+
+// --------------------------------------------------------------------------
+// 4.5 Binary Size Optimization
+// --------------------------------------------------------------------------
+
+typedef struct OptimizationStats {
+    int64_t original_gates;
+    int64_t pruned_gates;
+    int64_t original_edges;
+    int64_t pruned_edges;
+    int64_t original_subgraphs;
+    int64_t pruned_subgraphs;
+    double estimated_size_reduction;   // 0.0 to 1.0
+    double estimated_speedup;          // 1.0 = no change, 2.0 = 2x faster
+} OptimizationStats;
+
+// Calculate optimization statistics
+int64_t optimization_stats_calculate(int64_t pruning_ctx, int64_t dead_path_ctx,
+                                     int64_t structured_ctx) {
+    OptimizationStats* stats = (OptimizationStats*)calloc(1, sizeof(OptimizationStats));
+    if (!stats) return 0;
+
+    // Get pruning stats
+    if (pruning_ctx) {
+        PruningContext* pc = (PruningContext*)pruning_ctx;
+        stats->original_gates = pc->total_gates;
+        stats->pruned_gates = pc->pruned_count;
+    }
+
+    // Get dead path stats
+    if (dead_path_ctx) {
+        DeadPathAnalyzer* dpa = (DeadPathAnalyzer*)dead_path_ctx;
+        stats->pruned_gates += dpa->dead_count;
+    }
+
+    // Get structured pruning stats
+    if (structured_ctx) {
+        StructuredPruner* sp = (StructuredPruner*)structured_ctx;
+        stats->original_subgraphs = sp->subgraph_count;
+        stats->pruned_subgraphs = sp->pruned_count;
+
+        // Count gates in pruned subgraphs
+        for (int64_t i = 0; i < sp->pruned_count; i++) {
+            int64_t sg_id = sp->pruned_subgraph_ids[i];
+            stats->pruned_gates += sp->subgraphs[sg_id].count;
+        }
+    }
+
+    // Estimate size reduction
+    if (stats->original_gates > 0) {
+        stats->estimated_size_reduction =
+            (double)stats->pruned_gates / stats->original_gates;
+    }
+
+    // Estimate speedup (fewer gates = faster, but diminishing returns)
+    double remaining = 1.0 - stats->estimated_size_reduction;
+    if (remaining > 0) {
+        stats->estimated_speedup = 1.0 / remaining;
+        // Cap at realistic speedup
+        if (stats->estimated_speedup > 10.0) stats->estimated_speedup = 10.0;
+    } else {
+        stats->estimated_speedup = 1.0;
+    }
+
+    return (int64_t)stats;
+}
+
+// Get estimated size reduction
+double optimization_size_reduction(int64_t stats_ptr) {
+    OptimizationStats* stats = (OptimizationStats*)stats_ptr;
+    if (!stats) return 0.0;
+    return stats->estimated_size_reduction;
+}
+
+// Get estimated speedup
+double optimization_speedup(int64_t stats_ptr) {
+    OptimizationStats* stats = (OptimizationStats*)stats_ptr;
+    if (!stats) return 1.0;
+    return stats->estimated_speedup;
+}
+
+// Get pruned gate count
+int64_t optimization_pruned_gates(int64_t stats_ptr) {
+    OptimizationStats* stats = (OptimizationStats*)stats_ptr;
+    if (!stats) return 0;
+    return stats->pruned_gates;
+}
+
+// Get original gate count
+int64_t optimization_original_gates(int64_t stats_ptr) {
+    OptimizationStats* stats = (OptimizationStats*)stats_ptr;
+    if (!stats) return 0;
+    return stats->original_gates;
+}
+
+// Free optimization stats
+void optimization_stats_free(int64_t stats_ptr) {
+    OptimizationStats* stats = (OptimizationStats*)stats_ptr;
+    free(stats);
+}
+
+// --------------------------------------------------------------------------
+// End of Phase 4: Structural Pruning
+// --------------------------------------------------------------------------
+
+// ==========================================================================
+// Phase 5: Superposition Memory Model
+// ==========================================================================
+// This phase implements weighted references and execution modes for handling
+// probabilistic branching in neural programs without memory leaks.
+
+// --------------------------------------------------------------------------
+// 5.1 WeightedRef Type Implementation
+// --------------------------------------------------------------------------
+
+typedef enum ExecutionMode {
+    EXEC_MODE_LAZY = 0,         // Allocate only dominant path
+    EXEC_MODE_SPECULATIVE = 1,  // Allocate all, weight, GC unused
+    EXEC_MODE_CHECKPOINT = 2,   // Snapshot/restore for exact gradients
+    EXEC_MODE_POOLED = 3        // Pre-allocate max, reuse
+} ExecutionMode;
+
+typedef enum WeightedRefState {
+    WREF_UNALLOCATED = 0,       // Not yet allocated
+    WREF_ALLOCATED = 1,         // Currently allocated
+    WREF_COLLAPSED = 2,         // Collapsed to definite value
+    WREF_FREED = 3              // Already freed
+} WeightedRefState;
+
+typedef struct WeightedRef {
+    int64_t id;
+    void* ptr;                  // Actual pointer
+    double weight;              // Probability weight (0.0 to 1.0)
+    int64_t size_bytes;         // Size of allocation
+    WeightedRefState state;
+    int64_t ref_count;          // Reference count
+    int64_t branch_id;          // Which branch this belongs to
+    int64_t parent_id;          // Parent weighted ref (for hierarchy)
+    struct WeightedRef* next;   // For linked list in registry
+} WeightedRef;
+
+typedef struct WeightedRefRegistry {
+    WeightedRef* head;
+    int64_t count;
+    int64_t next_id;
+    double gc_threshold;        // Weight below which to GC
+    int64_t total_allocated;    // Total bytes allocated
+    int64_t budget_bytes;       // Memory budget (0 = unlimited)
+    ExecutionMode mode;
+    pthread_mutex_t lock;
+} WeightedRefRegistry;
+
+static WeightedRefRegistry g_wref_registry = {0};
+
+// Initialize weighted ref registry
+void wref_registry_init(void) {
+    pthread_mutex_lock(&g_wref_registry.lock);
+    if (g_wref_registry.next_id == 0) {
+        g_wref_registry.head = NULL;
+        g_wref_registry.count = 0;
+        g_wref_registry.next_id = 1;
+        g_wref_registry.gc_threshold = 0.01;  // GC when weight < 1%
+        g_wref_registry.total_allocated = 0;
+        g_wref_registry.budget_bytes = 0;  // Unlimited
+        g_wref_registry.mode = EXEC_MODE_LAZY;
+    }
+    pthread_mutex_unlock(&g_wref_registry.lock);
+}
+
+// Set execution mode
+void wref_set_mode(int64_t mode) {
+    g_wref_registry.mode = (ExecutionMode)mode;
+}
+
+// Get execution mode
+int64_t wref_get_mode(void) {
+    return g_wref_registry.mode;
+}
+
+// Set GC threshold
+void wref_set_gc_threshold(double threshold) {
+    g_wref_registry.gc_threshold = threshold;
+}
+
+// Get GC threshold
+double wref_get_gc_threshold(void) {
+    return g_wref_registry.gc_threshold;
+}
+
+// Set memory budget
+void wref_set_budget(int64_t budget_bytes) {
+    g_wref_registry.budget_bytes = budget_bytes;
+}
+
+// Get memory budget
+int64_t wref_get_budget(void) {
+    return g_wref_registry.budget_bytes;
+}
+
+// Get total allocated
+int64_t wref_total_allocated(void) {
+    return g_wref_registry.total_allocated;
+}
+
+// Alias: wref_bytes_allocated (same as wref_total_allocated)
+int64_t wref_bytes_allocated(void) {
+    return g_wref_registry.total_allocated;
+}
+
+// Alias: wref_set_weight_threshold (same as wref_set_gc_threshold)
+void wref_set_weight_threshold(double threshold) {
+    g_wref_registry.gc_threshold = threshold;
+}
+
+// Alias: wref_get_weight_threshold (same as wref_get_gc_threshold)
+double wref_get_weight_threshold(void) {
+    return g_wref_registry.gc_threshold;
+}
+
+// Create a new weighted reference
+int64_t wref_new(int64_t size_bytes, double weight, int64_t branch_id) {
+    wref_registry_init();
+
+    pthread_mutex_lock(&g_wref_registry.lock);
+
+    // Check budget in speculative mode
+    if (g_wref_registry.mode == EXEC_MODE_SPECULATIVE &&
+        g_wref_registry.budget_bytes > 0 &&
+        g_wref_registry.total_allocated + size_bytes > g_wref_registry.budget_bytes) {
+        pthread_mutex_unlock(&g_wref_registry.lock);
+        return 0;  // Over budget
+    }
+
+    // In lazy mode, only allocate if weight > threshold
+    if (g_wref_registry.mode == EXEC_MODE_LAZY && weight < g_wref_registry.gc_threshold) {
+        pthread_mutex_unlock(&g_wref_registry.lock);
+        return 0;  // Weight too low for lazy mode
+    }
+
+    WeightedRef* wref = (WeightedRef*)calloc(1, sizeof(WeightedRef));
+    if (!wref) {
+        pthread_mutex_unlock(&g_wref_registry.lock);
+        return 0;
+    }
+
+    wref->id = g_wref_registry.next_id++;
+    wref->size_bytes = size_bytes;
+    wref->weight = weight;
+    wref->branch_id = branch_id;
+    wref->parent_id = 0;
+    wref->ref_count = 1;
+
+    // Allocate memory based on mode
+    if (g_wref_registry.mode == EXEC_MODE_LAZY) {
+        // Lazy: allocate immediately if weight is high enough
+        wref->ptr = calloc(1, size_bytes);
+        wref->state = wref->ptr ? WREF_ALLOCATED : WREF_UNALLOCATED;
+    } else if (g_wref_registry.mode == EXEC_MODE_SPECULATIVE) {
+        // Speculative: always allocate
+        wref->ptr = calloc(1, size_bytes);
+        wref->state = wref->ptr ? WREF_ALLOCATED : WREF_UNALLOCATED;
+    } else if (g_wref_registry.mode == EXEC_MODE_CHECKPOINT) {
+        // Checkpoint: allocate for gradient tracking
+        wref->ptr = calloc(1, size_bytes);
+        wref->state = wref->ptr ? WREF_ALLOCATED : WREF_UNALLOCATED;
+    } else if (g_wref_registry.mode == EXEC_MODE_POOLED) {
+        // Pooled: allocate from pool (simplified: just allocate)
+        wref->ptr = calloc(1, size_bytes);
+        wref->state = wref->ptr ? WREF_ALLOCATED : WREF_UNALLOCATED;
+    }
+
+    if (wref->state == WREF_ALLOCATED) {
+        g_wref_registry.total_allocated += size_bytes;
+    }
+
+    // Add to registry
+    wref->next = g_wref_registry.head;
+    g_wref_registry.head = wref;
+    g_wref_registry.count++;
+
+    pthread_mutex_unlock(&g_wref_registry.lock);
+
+    return (int64_t)wref;
+}
+
+// Get pointer from weighted ref
+int64_t wref_ptr(int64_t wref_id) {
+    WeightedRef* wref = (WeightedRef*)wref_id;
+    if (!wref || wref->state != WREF_ALLOCATED) return 0;
+    return (int64_t)wref->ptr;
+}
+
+// Get weight of weighted ref
+double wref_weight(int64_t wref_id) {
+    WeightedRef* wref = (WeightedRef*)wref_id;
+    if (!wref) return 0.0;
+    return wref->weight;
+}
+
+// Update weight of weighted ref
+void wref_set_weight(int64_t wref_id, double weight) {
+    WeightedRef* wref = (WeightedRef*)wref_id;
+    if (!wref) return;
+
+    pthread_mutex_lock(&g_wref_registry.lock);
+    wref->weight = weight;
+
+    // In lazy mode, free if weight drops below threshold
+    if (g_wref_registry.mode == EXEC_MODE_LAZY &&
+        weight < g_wref_registry.gc_threshold &&
+        wref->state == WREF_ALLOCATED) {
+        free(wref->ptr);
+        wref->ptr = NULL;
+        g_wref_registry.total_allocated -= wref->size_bytes;
+        wref->state = WREF_FREED;
+    }
+
+    pthread_mutex_unlock(&g_wref_registry.lock);
+}
+
+// Check if weighted ref is allocated
+int64_t wref_is_allocated(int64_t wref_id) {
+    WeightedRef* wref = (WeightedRef*)wref_id;
+    if (!wref) return 0;
+    return wref->state == WREF_ALLOCATED ? 1 : 0;
+}
+
+// Get state of weighted ref
+int64_t wref_state(int64_t wref_id) {
+    WeightedRef* wref = (WeightedRef*)wref_id;
+    if (!wref) return WREF_UNALLOCATED;
+    return wref->state;
+}
+
+// Increment reference count
+void wref_retain(int64_t wref_id) {
+    WeightedRef* wref = (WeightedRef*)wref_id;
+    if (!wref) return;
+    __sync_fetch_and_add(&wref->ref_count, 1);
+}
+
+// Decrement reference count (may free)
+void wref_release(int64_t wref_id) {
+    WeightedRef* wref = (WeightedRef*)wref_id;
+    if (!wref) return;
+
+    int64_t new_count = __sync_sub_and_fetch(&wref->ref_count, 1);
+    if (new_count <= 0 && wref->state == WREF_ALLOCATED) {
+        pthread_mutex_lock(&g_wref_registry.lock);
+        free(wref->ptr);
+        wref->ptr = NULL;
+        g_wref_registry.total_allocated -= wref->size_bytes;
+        wref->state = WREF_FREED;
+        pthread_mutex_unlock(&g_wref_registry.lock);
+    }
+}
+
+// Get reference count
+int64_t wref_ref_count(int64_t wref_id) {
+    WeightedRef* wref = (WeightedRef*)wref_id;
+    if (!wref) return 0;
+    return wref->ref_count;
+}
+
+// Collapse superposition to single value (observation)
+void wref_collapse(int64_t wref_id) {
+    WeightedRef* wref = (WeightedRef*)wref_id;
+    if (!wref) return;
+
+    pthread_mutex_lock(&g_wref_registry.lock);
+    if (wref->state == WREF_ALLOCATED) {
+        wref->state = WREF_COLLAPSED;
+        wref->weight = 1.0;  // Now definite
+    }
+    pthread_mutex_unlock(&g_wref_registry.lock);
+}
+
+// Get count of weighted refs
+int64_t wref_count(void) {
+    return g_wref_registry.count;
+}
+
+// --------------------------------------------------------------------------
+// 5.2 Lazy Execution Mode
+// --------------------------------------------------------------------------
+
+typedef struct LazyBranch {
+    int64_t id;
+    double weight;
+    int64_t executed;           // Has this branch been executed?
+    int64_t wref_id;            // Associated weighted ref
+    void* result;               // Cached result
+    int64_t result_size;
+} LazyBranch;
+
+typedef struct LazyContext {
+    LazyBranch* branches;
+    int64_t count;
+    int64_t capacity;
+    double threshold;           // Only execute if weight > threshold
+    int64_t dominant_branch;    // Branch with highest weight
+} LazyContext;
+
+// Create lazy execution context
+int64_t lazy_context_new(double threshold) {
+    LazyContext* ctx = (LazyContext*)calloc(1, sizeof(LazyContext));
+    if (!ctx) return 0;
+
+    ctx->capacity = 16;
+    ctx->branches = (LazyBranch*)calloc(ctx->capacity, sizeof(LazyBranch));
+    ctx->threshold = threshold > 0 ? threshold : 0.5;
+    ctx->dominant_branch = -1;
+
+    return (int64_t)ctx;
+}
+
+// Add a branch to lazy context
+int64_t lazy_add_branch(int64_t ctx_ptr, double weight) {
+    LazyContext* ctx = (LazyContext*)ctx_ptr;
+    if (!ctx) return -1;
+
+    if (ctx->count >= ctx->capacity) {
+        ctx->capacity *= 2;
+        ctx->branches = (LazyBranch*)realloc(ctx->branches,
+                                              ctx->capacity * sizeof(LazyBranch));
+    }
+
+    int64_t id = ctx->count;
+    LazyBranch* branch = &ctx->branches[ctx->count++];
+    branch->id = id;
+    branch->weight = weight;
+    branch->executed = 0;
+    branch->wref_id = 0;
+    branch->result = NULL;
+    branch->result_size = 0;
+
+    // Update dominant branch
+    if (ctx->dominant_branch < 0 || weight > ctx->branches[ctx->dominant_branch].weight) {
+        ctx->dominant_branch = id;
+    }
+
+    return id;
+}
+
+// Check if branch should execute (lazy mode)
+int64_t lazy_should_execute(int64_t ctx_ptr, int64_t branch_id) {
+    LazyContext* ctx = (LazyContext*)ctx_ptr;
+    if (!ctx || branch_id < 0 || branch_id >= ctx->count) return 0;
+
+    // In lazy mode, only execute if weight > threshold
+    return ctx->branches[branch_id].weight >= ctx->threshold ? 1 : 0;
+}
+
+// Mark branch as executed
+void lazy_mark_executed(int64_t ctx_ptr, int64_t branch_id) {
+    LazyContext* ctx = (LazyContext*)ctx_ptr;
+    if (!ctx || branch_id < 0 || branch_id >= ctx->count) return;
+    ctx->branches[branch_id].executed = 1;
+}
+
+// Get dominant branch
+int64_t lazy_dominant_branch(int64_t ctx_ptr) {
+    LazyContext* ctx = (LazyContext*)ctx_ptr;
+    if (!ctx) return -1;
+    return ctx->dominant_branch;
+}
+
+// Get branch weight
+double lazy_branch_weight(int64_t ctx_ptr, int64_t branch_id) {
+    LazyContext* ctx = (LazyContext*)ctx_ptr;
+    if (!ctx || branch_id < 0 || branch_id >= ctx->count) return 0.0;
+    return ctx->branches[branch_id].weight;
+}
+
+// Check if branch was executed
+int64_t lazy_was_executed(int64_t ctx_ptr, int64_t branch_id) {
+    LazyContext* ctx = (LazyContext*)ctx_ptr;
+    if (!ctx || branch_id < 0 || branch_id >= ctx->count) return 0;
+    return ctx->branches[branch_id].executed;
+}
+
+// Get branch count
+int64_t lazy_branch_count(int64_t ctx_ptr) {
+    LazyContext* ctx = (LazyContext*)ctx_ptr;
+    if (!ctx) return 0;
+    return ctx->count;
+}
+
+// Get executed count
+int64_t lazy_executed_count(int64_t ctx_ptr) {
+    LazyContext* ctx = (LazyContext*)ctx_ptr;
+    if (!ctx) return 0;
+    int64_t count = 0;
+    for (int64_t i = 0; i < ctx->count; i++) {
+        if (ctx->branches[i].executed) count++;
+    }
+    return count;
+}
+
+// Free lazy context
+void lazy_context_free(int64_t ctx_ptr) {
+    LazyContext* ctx = (LazyContext*)ctx_ptr;
+    if (!ctx) return;
+
+    for (int64_t i = 0; i < ctx->count; i++) {
+        if (ctx->branches[i].result) {
+            free(ctx->branches[i].result);
+        }
+    }
+    free(ctx->branches);
+    free(ctx);
+}
+
+// --------------------------------------------------------------------------
+// 5.3 Speculative Execution Mode
+// --------------------------------------------------------------------------
+
+typedef struct SpeculativeBranch {
+    int64_t id;
+    double weight;
+    int64_t wref_id;            // Weighted ref for this branch
+    void* result;
+    int64_t result_size;
+    double weighted_contribution;  // weight * result (for aggregation)
+} SpeculativeBranch;
+
+typedef struct SpeculativeContext {
+    SpeculativeBranch* branches;
+    int64_t count;
+    int64_t capacity;
+    int64_t budget_bytes;       // Memory budget
+    int64_t used_bytes;         // Currently used
+    double min_weight;          // Minimum weight to keep
+} SpeculativeContext;
+
+// Create speculative execution context
+int64_t speculative_context_new(int64_t budget_bytes, double min_weight) {
+    SpeculativeContext* ctx = (SpeculativeContext*)calloc(1, sizeof(SpeculativeContext));
+    if (!ctx) return 0;
+
+    ctx->capacity = 16;
+    ctx->branches = (SpeculativeBranch*)calloc(ctx->capacity, sizeof(SpeculativeBranch));
+    ctx->budget_bytes = budget_bytes;
+    ctx->min_weight = min_weight > 0 ? min_weight : 0.01;
+
+    return (int64_t)ctx;
+}
+
+// Add a branch to speculative context
+int64_t speculative_add_branch(int64_t ctx_ptr, double weight, int64_t result_size) {
+    SpeculativeContext* ctx = (SpeculativeContext*)ctx_ptr;
+    if (!ctx) return -1;
+
+    // Check budget
+    if (ctx->budget_bytes > 0 && ctx->used_bytes + result_size > ctx->budget_bytes) {
+        return -1;  // Over budget
+    }
+
+    if (ctx->count >= ctx->capacity) {
+        ctx->capacity *= 2;
+        ctx->branches = (SpeculativeBranch*)realloc(ctx->branches,
+                                                     ctx->capacity * sizeof(SpeculativeBranch));
+    }
+
+    int64_t id = ctx->count;
+    SpeculativeBranch* branch = &ctx->branches[ctx->count++];
+    branch->id = id;
+    branch->weight = weight;
+    branch->result = calloc(1, result_size);
+    branch->result_size = result_size;
+    branch->wref_id = 0;
+    branch->weighted_contribution = 0;
+
+    ctx->used_bytes += result_size;
+
+    return id;
+}
+
+// Get result pointer for branch
+int64_t speculative_result_ptr(int64_t ctx_ptr, int64_t branch_id) {
+    SpeculativeContext* ctx = (SpeculativeContext*)ctx_ptr;
+    if (!ctx || branch_id < 0 || branch_id >= ctx->count) return 0;
+    return (int64_t)ctx->branches[branch_id].result;
+}
+
+// Set weighted contribution
+void speculative_set_contribution(int64_t ctx_ptr, int64_t branch_id, double contribution) {
+    SpeculativeContext* ctx = (SpeculativeContext*)ctx_ptr;
+    if (!ctx || branch_id < 0 || branch_id >= ctx->count) return;
+    ctx->branches[branch_id].weighted_contribution = contribution;
+}
+
+// Aggregate weighted results (returns weighted sum)
+double speculative_aggregate(int64_t ctx_ptr) {
+    SpeculativeContext* ctx = (SpeculativeContext*)ctx_ptr;
+    if (!ctx) return 0.0;
+
+    double total = 0.0;
+    double weight_sum = 0.0;
+
+    for (int64_t i = 0; i < ctx->count; i++) {
+        total += ctx->branches[i].weighted_contribution * ctx->branches[i].weight;
+        weight_sum += ctx->branches[i].weight;
+    }
+
+    return weight_sum > 0 ? total / weight_sum : 0.0;
+}
+
+// GC low-weight branches
+int64_t speculative_gc(int64_t ctx_ptr) {
+    SpeculativeContext* ctx = (SpeculativeContext*)ctx_ptr;
+    if (!ctx) return 0;
+
+    int64_t freed = 0;
+    for (int64_t i = 0; i < ctx->count; i++) {
+        if (ctx->branches[i].weight < ctx->min_weight && ctx->branches[i].result) {
+            free(ctx->branches[i].result);
+            ctx->used_bytes -= ctx->branches[i].result_size;
+            ctx->branches[i].result = NULL;
+            ctx->branches[i].result_size = 0;
+            freed++;
+        }
+    }
+
+    return freed;
+}
+
+// Get used bytes
+int64_t speculative_used_bytes(int64_t ctx_ptr) {
+    SpeculativeContext* ctx = (SpeculativeContext*)ctx_ptr;
+    if (!ctx) return 0;
+    return ctx->used_bytes;
+}
+
+// Get branch count
+int64_t speculative_branch_count(int64_t ctx_ptr) {
+    SpeculativeContext* ctx = (SpeculativeContext*)ctx_ptr;
+    if (!ctx) return 0;
+    return ctx->count;
+}
+
+// Free speculative context
+void speculative_context_free(int64_t ctx_ptr) {
+    SpeculativeContext* ctx = (SpeculativeContext*)ctx_ptr;
+    if (!ctx) return;
+
+    for (int64_t i = 0; i < ctx->count; i++) {
+        if (ctx->branches[i].result) {
+            free(ctx->branches[i].result);
+        }
+    }
+    free(ctx->branches);
+    free(ctx);
+}
+
+// Set result for branch (stores an i64 value)
+void speculative_set_result(int64_t ctx_ptr, int64_t branch_id, int64_t result) {
+    SpeculativeContext* ctx = (SpeculativeContext*)ctx_ptr;
+    if (!ctx || branch_id < 0 || branch_id >= ctx->count) return;
+    if (!ctx->branches[branch_id].result) return;
+    *(int64_t*)ctx->branches[branch_id].result = result;
+    ctx->branches[branch_id].weighted_contribution = (double)result;
+}
+
+// Get result for branch
+int64_t speculative_get_result(int64_t ctx_ptr, int64_t branch_id) {
+    SpeculativeContext* ctx = (SpeculativeContext*)ctx_ptr;
+    if (!ctx || branch_id < 0 || branch_id >= ctx->count) return 0;
+    if (!ctx->branches[branch_id].result) return 0;
+    return *(int64_t*)ctx->branches[branch_id].result;
+}
+
+// Get weighted average result
+double speculative_weighted_result(int64_t ctx_ptr) {
+    SpeculativeContext* ctx = (SpeculativeContext*)ctx_ptr;
+    if (!ctx) return 0.0;
+
+    double total = 0.0;
+    double weight_sum = 0.0;
+
+    for (int64_t i = 0; i < ctx->count; i++) {
+        if (ctx->branches[i].result) {
+            int64_t val = *(int64_t*)ctx->branches[i].result;
+            total += (double)val * ctx->branches[i].weight;
+            weight_sum += ctx->branches[i].weight;
+        }
+    }
+
+    return weight_sum > 0 ? total / weight_sum : 0.0;
+}
+
+// Get memory used (alias for speculative_used_bytes)
+int64_t speculative_memory_used(int64_t ctx_ptr) {
+    return speculative_used_bytes(ctx_ptr);
+}
+
+// --------------------------------------------------------------------------
+// 5.4 Checkpoint Execution Mode
+// --------------------------------------------------------------------------
+
+typedef struct CheckpointState {
+    int64_t id;
+    void* data;                 // Snapshot of state
+    int64_t size_bytes;
+    int64_t branch_id;          // Which branch this is for
+    double gradient;            // Accumulated gradient
+    struct CheckpointState* next;
+} CheckpointState;
+
+typedef struct CheckpointContext {
+    CheckpointState* head;
+    int64_t count;
+    int64_t next_id;
+    int64_t current_branch;
+    void* base_state;           // Original state before branching
+    int64_t base_size;
+} CheckpointContext;
+
+// Create checkpoint context
+int64_t checkpoint_context_new(void) {
+    CheckpointContext* ctx = (CheckpointContext*)calloc(1, sizeof(CheckpointContext));
+    if (!ctx) return 0;
+
+    ctx->next_id = 1;
+    ctx->current_branch = -1;
+
+    return (int64_t)ctx;
+}
+
+// Save checkpoint (snapshot current state)
+int64_t checkpoint_save(int64_t ctx_ptr, int64_t data_ptr, int64_t size_bytes, int64_t branch_id) {
+    CheckpointContext* ctx = (CheckpointContext*)ctx_ptr;
+    if (!ctx) return 0;
+
+    CheckpointState* state = (CheckpointState*)calloc(1, sizeof(CheckpointState));
+    if (!state) return 0;
+
+    state->id = ctx->next_id++;
+    state->size_bytes = size_bytes;
+    state->branch_id = branch_id;
+    state->gradient = 0.0;
+
+    // Copy state data
+    state->data = malloc(size_bytes);
+    if (!state->data) {
+        free(state);
+        return 0;
+    }
+    memcpy(state->data, (void*)data_ptr, size_bytes);
+
+    // Add to list
+    state->next = ctx->head;
+    ctx->head = state;
+    ctx->count++;
+
+    return state->id;
+}
+
+// Restore from checkpoint
+int64_t checkpoint_restore(int64_t ctx_ptr, int64_t checkpoint_id, int64_t dest_ptr) {
+    CheckpointContext* ctx = (CheckpointContext*)ctx_ptr;
+    if (!ctx) return 0;
+
+    // Find checkpoint
+    for (CheckpointState* s = ctx->head; s; s = s->next) {
+        if (s->id == checkpoint_id) {
+            memcpy((void*)dest_ptr, s->data, s->size_bytes);
+            ctx->current_branch = s->branch_id;
+            return 1;
+        }
+    }
+
+    return 0;  // Not found
+}
+
+// Set base state (before branching)
+void checkpoint_set_base(int64_t ctx_ptr, int64_t data_ptr, int64_t size_bytes) {
+    CheckpointContext* ctx = (CheckpointContext*)ctx_ptr;
+    if (!ctx) return;
+
+    if (ctx->base_state) {
+        free(ctx->base_state);
+    }
+
+    ctx->base_state = malloc(size_bytes);
+    if (ctx->base_state) {
+        memcpy(ctx->base_state, (void*)data_ptr, size_bytes);
+        ctx->base_size = size_bytes;
+    }
+}
+
+// Restore to base state
+int64_t checkpoint_restore_base(int64_t ctx_ptr, int64_t dest_ptr) {
+    CheckpointContext* ctx = (CheckpointContext*)ctx_ptr;
+    if (!ctx || !ctx->base_state) return 0;
+
+    memcpy((void*)dest_ptr, ctx->base_state, ctx->base_size);
+    ctx->current_branch = -1;
+    return 1;
+}
+
+// Add gradient for checkpoint
+void checkpoint_add_gradient(int64_t ctx_ptr, int64_t checkpoint_id, double gradient) {
+    CheckpointContext* ctx = (CheckpointContext*)ctx_ptr;
+    if (!ctx) return;
+
+    for (CheckpointState* s = ctx->head; s; s = s->next) {
+        if (s->id == checkpoint_id) {
+            s->gradient += gradient;
+            return;
+        }
+    }
+}
+
+// Get gradient for checkpoint
+double checkpoint_get_gradient(int64_t ctx_ptr, int64_t checkpoint_id) {
+    CheckpointContext* ctx = (CheckpointContext*)ctx_ptr;
+    if (!ctx) return 0.0;
+
+    for (CheckpointState* s = ctx->head; s; s = s->next) {
+        if (s->id == checkpoint_id) {
+            return s->gradient;
+        }
+    }
+    return 0.0;
+}
+
+// Get current branch
+int64_t checkpoint_current_branch(int64_t ctx_ptr) {
+    CheckpointContext* ctx = (CheckpointContext*)ctx_ptr;
+    if (!ctx) return -1;
+    return ctx->current_branch;
+}
+
+// Get checkpoint count
+int64_t checkpoint_count(int64_t ctx_ptr) {
+    CheckpointContext* ctx = (CheckpointContext*)ctx_ptr;
+    if (!ctx) return 0;
+    return ctx->count;
+}
+
+// Free checkpoint context
+void checkpoint_context_free(int64_t ctx_ptr) {
+    CheckpointContext* ctx = (CheckpointContext*)ctx_ptr;
+    if (!ctx) return;
+
+    CheckpointState* s = ctx->head;
+    while (s) {
+        CheckpointState* next = s->next;
+        free(s->data);
+        free(s);
+        s = next;
+    }
+
+    if (ctx->base_state) {
+        free(ctx->base_state);
+    }
+    free(ctx);
+}
+
+// --------------------------------------------------------------------------
+// 5.4b Simplified Checkpoint Wrappers for Phase 5 Tests
+// --------------------------------------------------------------------------
+
+// Simple checkpoint context (wraps the existing one)
+int64_t ckpt_context_new(int64_t max_size) {
+    (void)max_size;  // Size is per-checkpoint in full impl
+    return checkpoint_context_new();
+}
+
+// Save checkpoint (simplified - uses a small dummy state)
+static int64_t g_ckpt_dummy_state = 0;
+int64_t ckpt_save(int64_t ctx_ptr) {
+    g_ckpt_dummy_state++;
+    return checkpoint_save(ctx_ptr, (int64_t)&g_ckpt_dummy_state, sizeof(int64_t), g_ckpt_dummy_state);
+}
+
+// Restore checkpoint
+int64_t ckpt_restore(int64_t ctx_ptr, int64_t checkpoint_id) {
+    int64_t dummy;
+    return checkpoint_restore(ctx_ptr, checkpoint_id, (int64_t)&dummy);
+}
+
+// Start branch execution
+int64_t ckpt_branch_start(int64_t ctx_ptr, int64_t checkpoint_id) {
+    CheckpointContext* ctx = (CheckpointContext*)ctx_ptr;
+    if (!ctx) return -1;
+    ctx->current_branch = checkpoint_id;
+    return checkpoint_id;
+}
+
+// End branch execution
+void ckpt_branch_end(int64_t ctx_ptr) {
+    CheckpointContext* ctx = (CheckpointContext*)ctx_ptr;
+    if (ctx) ctx->current_branch = -1;
+}
+
+// Get current checkpoint
+int64_t ckpt_current(int64_t ctx_ptr) {
+    return checkpoint_current_branch(ctx_ptr);
+}
+
+// Get checkpoint count
+int64_t ckpt_count(int64_t ctx_ptr) {
+    return checkpoint_count(ctx_ptr);
+}
+
+// Get memory used by checkpoints
+int64_t ckpt_memory_used(int64_t ctx_ptr) {
+    CheckpointContext* ctx = (CheckpointContext*)ctx_ptr;
+    if (!ctx) return 0;
+    int64_t total = ctx->base_size;
+    for (CheckpointState* s = ctx->head; s; s = s->next) {
+        total += s->size_bytes;
+    }
+    return total;
+}
+
+// Free checkpoint context
+void ckpt_context_free(int64_t ctx_ptr) {
+    checkpoint_context_free(ctx_ptr);
+}
+
+// --------------------------------------------------------------------------
+// 5.5 Weighted GC Algorithm
+// --------------------------------------------------------------------------
+
+typedef struct WeightedGCStats {
+    int64_t total_refs;
+    int64_t freed_refs;
+    int64_t freed_bytes;
+    double avg_weight_freed;
+    int64_t retained_refs;
+    int64_t retained_bytes;
+} WeightedGCStats;
+
+// Global GC tracking stats
+static int64_t g_gc_last_collected = 0;
+static int64_t g_gc_last_bytes = 0;
+static int64_t g_gc_total_runs = 0;
+static int64_t g_gc_total_collected = 0;
+static int64_t g_gc_total_bytes = 0;
+
+// Run weighted GC pass with threshold parameter
+void wref_gc(double threshold) {
+    wref_registry_init();
+
+    pthread_mutex_lock(&g_wref_registry.lock);
+
+    int64_t freed = 0;
+    int64_t freed_bytes = 0;
+    WeightedRef* prev = NULL;
+    WeightedRef* curr = g_wref_registry.head;
+
+    while (curr) {
+        WeightedRef* next = curr->next;
+
+        // Free if weight below threshold and not collapsed
+        if (curr->weight < threshold &&
+            curr->state == WREF_ALLOCATED &&
+            curr->ref_count <= 0) {
+
+            // Track freed bytes before freeing
+            freed_bytes += curr->size_bytes;
+
+            // Free the data
+            free(curr->ptr);
+            g_wref_registry.total_allocated -= curr->size_bytes;
+            curr->state = WREF_FREED;
+            freed++;
+
+            // Remove from list
+            if (prev) {
+                prev->next = next;
+            } else {
+                g_wref_registry.head = next;
+            }
+            g_wref_registry.count--;
+            free(curr);
+        } else {
+            prev = curr;
+        }
+
+        curr = next;
+    }
+
+    pthread_mutex_unlock(&g_wref_registry.lock);
+
+    // Update stats
+    g_gc_last_collected = freed;
+    g_gc_last_bytes = freed_bytes;
+    g_gc_total_runs++;
+    g_gc_total_collected += freed;
+    g_gc_total_bytes += freed_bytes;
+}
+
+// Get last GC collected count
+int64_t wref_gc_last_collected(void) {
+    return g_gc_last_collected;
+}
+
+// Get last GC bytes freed
+int64_t wref_gc_last_bytes(void) {
+    return g_gc_last_bytes;
+}
+
+// Get total GC runs
+int64_t wref_gc_total_runs(void) {
+    return g_gc_total_runs;
+}
+
+// Get total collected across all runs
+int64_t wref_gc_total_collected(void) {
+    return g_gc_total_collected;
+}
+
+// Get total bytes freed across all runs
+int64_t wref_gc_total_bytes(void) {
+    return g_gc_total_bytes;
+}
+
+// Get GC statistics
+int64_t wref_gc_stats(void) {
+    WeightedGCStats* stats = (WeightedGCStats*)calloc(1, sizeof(WeightedGCStats));
+    if (!stats) return 0;
+
+    pthread_mutex_lock(&g_wref_registry.lock);
+
+    double weight_sum = 0;
+    int64_t low_weight_count = 0;
+
+    for (WeightedRef* w = g_wref_registry.head; w; w = w->next) {
+        stats->total_refs++;
+
+        if (w->weight < g_wref_registry.gc_threshold) {
+            if (w->state == WREF_ALLOCATED) {
+                stats->freed_bytes += w->size_bytes;
+            }
+            weight_sum += w->weight;
+            low_weight_count++;
+        } else {
+            stats->retained_refs++;
+            if (w->state == WREF_ALLOCATED) {
+                stats->retained_bytes += w->size_bytes;
+            }
+        }
+    }
+
+    stats->freed_refs = low_weight_count;
+    stats->avg_weight_freed = low_weight_count > 0 ? weight_sum / low_weight_count : 0;
+
+    pthread_mutex_unlock(&g_wref_registry.lock);
+
+    return (int64_t)stats;
+}
+
+// Get freed refs from stats
+int64_t wref_gc_stats_freed_refs(int64_t stats_ptr) {
+    WeightedGCStats* stats = (WeightedGCStats*)stats_ptr;
+    if (!stats) return 0;
+    return stats->freed_refs;
+}
+
+// Get freed bytes from stats
+int64_t wref_gc_stats_freed_bytes(int64_t stats_ptr) {
+    WeightedGCStats* stats = (WeightedGCStats*)stats_ptr;
+    if (!stats) return 0;
+    return stats->freed_bytes;
+}
+
+// Get retained refs from stats
+int64_t wref_gc_stats_retained_refs(int64_t stats_ptr) {
+    WeightedGCStats* stats = (WeightedGCStats*)stats_ptr;
+    if (!stats) return 0;
+    return stats->retained_refs;
+}
+
+// Get retained bytes from stats
+int64_t wref_gc_stats_retained_bytes(int64_t stats_ptr) {
+    WeightedGCStats* stats = (WeightedGCStats*)stats_ptr;
+    if (!stats) return 0;
+    return stats->retained_bytes;
+}
+
+// Free GC stats
+void wref_gc_stats_free(int64_t stats_ptr) {
+    free((void*)stats_ptr);
+}
+
+// Force full GC (ignore thresholds, free all non-collapsed)
+int64_t wref_gc_full(void) {
+    pthread_mutex_lock(&g_wref_registry.lock);
+
+    int64_t freed = 0;
+    WeightedRef* prev = NULL;
+    WeightedRef* curr = g_wref_registry.head;
+
+    while (curr) {
+        WeightedRef* next = curr->next;
+
+        // Free if not collapsed and refcount is zero
+        if (curr->state == WREF_ALLOCATED &&
+            curr->state != WREF_COLLAPSED &&
+            curr->ref_count <= 0) {
+
+            free(curr->ptr);
+            g_wref_registry.total_allocated -= curr->size_bytes;
+            curr->state = WREF_FREED;
+            freed++;
+
+            if (prev) {
+                prev->next = next;
+            } else {
+                g_wref_registry.head = next;
+            }
+            g_wref_registry.count--;
+            free(curr);
+        } else {
+            prev = curr;
+        }
+
+        curr = next;
+    }
+
+    pthread_mutex_unlock(&g_wref_registry.lock);
+
+    return freed;
+}
+
+// --------------------------------------------------------------------------
+// End of Phase 5: Superposition Memory Model
+// --------------------------------------------------------------------------
 
 // --------------------------------------------------------------------------
 // 29.6 Anima Cognitive Memory System

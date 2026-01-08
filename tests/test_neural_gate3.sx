@@ -1,0 +1,69 @@
+// Neural gate test - step by step
+
+neural_gate simple_gate(x: f64) -> bool {
+    x > 0.5
+}
+
+fn main() -> i64 {
+    println("Test 1: Basic neural gate");
+
+    // Set inference mode
+    neural_set_training_mode(0);
+
+    // Call the neural gate
+    let result: f64 = simple_gate(0.8);
+    if result > 0.5 {
+        println("Test 1 PASS");
+    } else {
+        println("Test 1 FAIL");
+        return 1;
+    }
+
+    println("");
+    println("Test 2: Sigmoid function");
+    let s: f64 = neural_sigmoid(0.0);
+    if s > 0.49 && s < 0.51 {
+        println("Test 2 PASS: sigmoid(0) = 0.5");
+    } else {
+        println("Test 2 FAIL");
+        return 1;
+    }
+
+    println("");
+    println("Test 3: Temperature");
+    neural_set_temperature(5.0);
+    let t: f64 = neural_get_temperature();
+    if t > 4.9 && t < 5.1 {
+        println("Test 3 PASS");
+    } else {
+        println("Test 3 FAIL");
+        return 1;
+    }
+
+    println("");
+    println("Test 4: Gradient tape");
+    let tape: i64 = grad_tape_new();
+    if tape != 0 {
+        println("Test 4a PASS: tape created");
+    } else {
+        println("Test 4a FAIL");
+        return 1;
+    }
+
+    grad_tape_set_training(tape, 1);
+    grad_tape_set_temperature(tape, 3.0);
+    let t2: f64 = grad_tape_temperature(tape);
+    if t2 > 2.9 && t2 < 3.1 {
+        println("Test 4b PASS: tape temperature set");
+    } else {
+        println("Test 4b FAIL");
+        return 1;
+    }
+
+    grad_tape_free(tape);
+    println("Test 4c PASS: tape freed");
+
+    println("");
+    println("ALL TESTS PASSED");
+    0
+}
