@@ -1,19 +1,20 @@
 # Simplex Test Coverage
 
-**Version:** 0.5.0
-**Last Updated:** v0.5.0 Release
+**Version:** 0.7.0
+**Last Updated:** v0.7.0 Release
 
 ## Coverage Summary
 
 | Category | Tests | Features Covered | Coverage |
 |----------|-------|------------------|----------|
-| Language | 37 | Core syntax, types, async | High |
+| Language | 42 | Core syntax, types, async, neural gates | High |
 | Standard Library | 11 | Collections, I/O, HTTP | Medium |
 | Runtime | 6 | Actors, async, networking | Medium |
-| AI/Cognitive | 29 | Anima, Hive, SLM | High |
-| Toolchain | 13 | Compiler, sxpm | Medium |
-| Integration | 7 | End-to-end scenarios | High |
-| **Total** | **103+** | - | - |
+| AI/Cognitive | 38 | Anima, Hive, SLM, learning | High |
+| Learning | 23 | Tensor, optim, safety, distributed | High |
+| Toolchain | 15 | Compiler, sxpm, neural IR | Medium |
+| Integration | 12 | End-to-end scenarios, learning | High |
+| **Total** | **147+** | - | - |
 
 ## Language Tests Coverage
 
@@ -58,6 +59,16 @@
 |-----------|------------------|
 | `test_imports.sx` | `use` statements, module imports |
 | `test_visibility.sx` | `pub`, private by default |
+
+### Neural (`tests/language/neural/`) - v0.6.0
+
+| Test File | Features Covered |
+|-----------|------------------|
+| `test_neural_gate.sx` | `neural_gate` keyword, basic gates |
+| `test_gumbel_softmax.sx` | Gumbel-Softmax differentiable sampling |
+| `test_differentiable_control.sx` | Differentiable if/match |
+| `test_contracts.sx` | `requires`, `ensures`, `fallback` |
+| `test_hardware_targeting.sx` | `@cpu`, `@gpu`, `@npu` annotations |
 
 ## Standard Library Coverage
 
@@ -135,10 +146,117 @@
 | `test_model_provisioning_workflow.sx` | Model discovery → inference |
 | `test_todo_app.sx` | Real-world todo application |
 | `test_data_pipeline.sx` | Data processing workflow |
+| `test_e2e_online_learning.sx` | End-to-end real-time learning |
+| `test_multi_hive_sync.sx` | Federated learning across hives |
+| `test_learning_with_safety.sx` | Learning with safety constraints |
+
+## Learning Library Coverage (v0.7.0)
+
+### Tensor (`tests/learning/tensor/`)
+
+| Test File | Features Covered |
+|-----------|------------------|
+| `test_tensor_ops.sx` | Create, reshape, slice, element-wise ops |
+| `test_autograd.sx` | Backward pass, gradient computation |
+| `test_batch_matmul.sx` | Batched matrix multiplication, broadcasting |
+| `test_activations.sx` | ReLU, sigmoid, tanh, softmax, GELU |
+| `test_loss_functions.sx` | MSE, cross-entropy, Huber loss |
+
+### Optimizers (`tests/learning/optim/`)
+
+| Test File | Features Covered |
+|-----------|------------------|
+| `test_streaming_sgd.sx` | Streaming SGD, momentum, weight decay |
+| `test_streaming_adam.sx` | Streaming Adam, accumulation steps |
+| `test_adamw.sx` | AdamW with decoupled weight decay |
+| `test_gradient_clipping.sx` | Clip by norm, clip by value |
+| `test_schedulers.sx` | Learning rate schedulers |
+
+### Safety (`tests/learning/safety/`)
+
+| Test File | Features Covered |
+|-----------|------------------|
+| `test_safety_bounds.sx` | Min/max bounds, NaN/Inf detection |
+| `test_safe_fallback.sx` | Default, LastGood, Function, Checkpoint |
+| `test_constraints.sx` | Soft/hard constraints, constraint manager |
+| `test_safe_learner.sx` | SafeLearner with validation |
+
+### Distributed (`tests/learning/distributed/`)
+
+| Test File | Features Covered |
+|-----------|------------------|
+| `test_federated.sx` | FedAvg, WeightedAvg, Median, TrimmedMean |
+| `test_distillation.sx` | Teacher-student, self-distillation |
+| `test_beliefs.sx` | Belief conflict resolution strategies |
+| `test_hive_coordinator.sx` | HiveLearningCoordinator orchestration |
+| `test_gradient_sync.sx` | Ring all-reduce, tree all-reduce |
+
+### Runtime (`tests/learning/runtime/`)
+
+| Test File | Features Covered |
+|-----------|------------------|
+| `test_online_learner.sx` | OnlineLearner forward/learn loop |
+| `test_checkpointing.sx` | Checkpoint save/restore |
+| `test_metrics.sx` | Training metrics, logging |
+| `test_experience_replay.sx` | Replay buffer, sampling |
+
+## v0.7.0 New Test Coverage
+
+Tests added specifically for v0.7.0 Real-Time Learning features:
+
+### simplex-learning Library
+- Complete tensor operations with autograd (23 tests)
+- Streaming optimizers with gradient accumulation
+- Safety constraints and fallback strategies
+- Federated learning with 6 aggregation strategies
+- Knowledge distillation (teacher-student, self-distillation)
+- Belief conflict resolution (8 resolution strategies)
+- Hive learning coordinator
+
+### AI/Cognitive Learning Integration
+- `tests/ai/learning/test_specialist_online_learning.sx`
+  - Specialists that learn during inference
+  - Feedback signal processing
+  - Safe learning with fallbacks
+- `tests/ai/learning/test_hive_federated_learning.sx`
+  - Multi-specialist gradient aggregation
+  - Belief synchronization
+  - Distributed checkpointing
+
+## v0.6.0 New Test Coverage
+
+Tests added specifically for v0.6.0 Neural IR features:
+
+### Neural Gates
+- `tests/language/neural/test_neural_gate.sx`
+  - `neural_gate` keyword syntax
+  - Training vs inference mode
+  - Gradient flow through gates
+
+### Differentiable Control Flow
+- `tests/language/neural/test_differentiable_control.sx`
+  - Gumbel-Softmax sampling
+  - Temperature annealing
+  - Straight-through estimator
+
+### Contract Logic
+- `tests/language/neural/test_contracts.sx`
+  - `requires` preconditions
+  - `ensures` postconditions
+  - `fallback` handlers
+  - Confidence thresholds
+
+### Toolchain Neural IR
+- `tests/toolchain/neural_ir/test_training_mode.sx`
+  - Differentiable compilation
+  - Autograd integration
+- `tests/toolchain/neural_ir/test_inference_mode.sx`
+  - Discrete compilation
+  - Dead path elimination
 
 ## v0.5.0 New Test Coverage
 
-Tests added specifically for v0.5.0 features:
+Tests added specifically for v0.5.0 SLM Provisioning features:
 
 ### SLM Provisioning
 - `tests/toolchain/sxpm/test_model_commands.sx`
@@ -183,8 +301,9 @@ Areas with limited or no test coverage:
 |------|--------|----------|
 | Distributed actors | Stub only | High |
 | Network protocols | Basic only | Medium |
-| GPU acceleration | Not tested | Low |
+| GPU acceleration | Not tested | Medium |
 | Cross-platform | macOS only | Medium |
+| MPI/NCCL integration | Simulated | Low |
 
 ## Running Coverage Report
 
@@ -197,15 +316,17 @@ sxpm test --coverage --format html --output coverage/
 
 # View coverage for specific category
 sxpm test --coverage --category ai
+sxpm test --coverage --category learning
 ```
 
 ## Coverage Goals
 
 | Category | Current | Target |
 |----------|---------|--------|
-| Language | 85% | 95% |
+| Language | 90% | 95% |
 | Standard Library | 70% | 90% |
 | Runtime | 60% | 80% |
-| AI/Cognitive | 80% | 95% |
-| Toolchain | 65% | 85% |
-| Integration | 75% | 90% |
+| AI/Cognitive | 85% | 95% |
+| Learning | 80% | 95% |
+| Toolchain | 70% | 85% |
+| Integration | 80% | 90% |

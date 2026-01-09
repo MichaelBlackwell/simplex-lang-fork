@@ -1,6 +1,6 @@
 # Cognitive Hive AI Architecture
 
-**Version 0.5.0**
+**Version 0.7.0**
 
 **The future of AI is not one giant mind, but a swarm of specialists.**
 
@@ -689,6 +689,134 @@ specialist Synthesizer {
 
 ---
 
+## Real-Time Learning Integration (v0.7.0)
+
+Hives can now learn and adapt during runtime using the `simplex-learning` library.
+
+### Learning-Enabled Specialists
+
+```simplex
+use simplex_learning::{OnlineLearner, StreamingAdam, SafeFallback};
+
+specialist AdaptiveAnalyzer {
+    model: "simplex-cognitive-7b",
+    learner: OnlineLearner,
+
+    fn init() {
+        self.learner = OnlineLearner::new(self.params())
+            .optimizer(StreamingAdam::new(0.001))
+            .fallback(SafeFallback::with_default(Analysis::unknown()));
+    }
+
+    receive Analyze(code: String) -> Analysis {
+        let result = infer("Analyze: " + code);
+        result
+    }
+
+    receive Feedback(analysis: Analysis, correct: bool) {
+        // Learn from user feedback in real-time
+        let signal = FeedbackSignal::from_binary(correct);
+        self.learner.learn(&signal);
+    }
+}
+```
+
+### Federated Learning Across Specialists
+
+```simplex
+use simplex_learning::distributed::{HiveLearningCoordinator, HiveLearningConfig};
+
+hive LearningHive {
+    specialists: [SecurityAnalyzer, QualityReviewer, PerfOptimizer],
+    slm: "simplex-cognitive-7b",
+    mnemonic: { ... },
+
+    // Learning coordinator for distributed training
+    learning: HiveLearningCoordinator::new(
+        HiveLearningConfig::builder()
+            .sync_interval(100)
+            .checkpoint_interval(1000)
+            .aggregation(AggregationStrategy::FedAvg)
+            .belief_resolution(ConflictResolution::EvidenceWeighted)
+            .build()
+    ),
+}
+```
+
+### Belief Conflict Resolution
+
+When specialists develop conflicting beliefs through learning:
+
+```simplex
+use simplex_learning::distributed::{HiveBeliefManager, ConflictResolution};
+
+// In the hive coordinator
+let belief_manager = HiveBeliefManager::new(ConflictResolution::BayesianCombination);
+
+// Specialists submit learned beliefs
+belief_manager.submit_belief(Belief::new("code_style_preference", 0.8, "security"));
+belief_manager.submit_belief(Belief::new("code_style_preference", 0.6, "quality"));
+
+// Get consensus for the hive
+let consensus = belief_manager.consensus("code_style_preference");
+hive.mnemonic.update_belief("code_style_preference", consensus);
+```
+
+### Knowledge Distillation Between Specialists
+
+```simplex
+use simplex_learning::distributed::{KnowledgeDistiller, SelfDistillation};
+
+// More experienced specialist teaches newer ones
+let distiller = KnowledgeDistiller::new(DistillationConfig {
+    temperature: 2.0,
+    alpha: 0.5,
+});
+
+// Senior specialist provides soft targets
+let senior_output = ask(hive.SeniorAnalyzer, Analyze(code));
+
+// Junior specialist learns from senior
+let junior_loss = distiller.distillation_loss(
+    &junior_output,
+    &senior_output,
+    &ground_truth,
+);
+junior.learner.backward(&junior_loss);
+```
+
+### Safe Learning with Fallbacks
+
+```simplex
+use simplex_learning::safety::{SafeLearner, SafeFallback, ConstraintManager};
+
+specialist SafeAnalyzer {
+    learner: SafeLearner,
+
+    fn init() {
+        let constraints = ConstraintManager::new()
+            .add_soft(MaxLatency("latency", 100.0))
+            .add_hard(NoLossExplosion("loss", 1000.0));
+
+        self.learner = SafeLearner::new(
+            OnlineLearner::new(self.params()),
+            SafeFallback::last_good()
+        )
+        .with_constraints(constraints)
+        .max_failures(3);
+    }
+
+    receive Analyze(code: String) -> Analysis {
+        match self.learner.try_forward(&code) {
+            Ok(result) => result,
+            Err(_) => Analysis::unknown()  // Safe fallback
+        }
+    }
+}
+```
+
+---
+
 ## Shared Memory
 
 Specialists can share context through hive memory:
@@ -1038,8 +1166,10 @@ hive ResilientHive {
 | `router` | Direct tasks to appropriate specialists |
 | `ensemble` | Combine multiple specialist outputs |
 | `consensus` | Resolve disagreements between specialists |
+| `learner` | Online learning for adaptive specialists (v0.7.0) |
+| `coordinator` | Orchestrate federated learning across hive (v0.7.0) |
 
-### v0.5.0 Architecture Summary
+### v0.7.0 Architecture Summary
 
 ```
 Per-Hive SLM Architecture:
@@ -1047,6 +1177,13 @@ Per-Hive SLM Architecture:
   - HiveMnemonic for shared consciousness
   - Specialist Anima for individual memory
   - Three-tier hierarchy: Divine → Hive → Specialist
+
+Real-Time Learning (v0.7.0):
+  - OnlineLearner for adaptive specialists
+  - Federated learning across hive members
+  - Knowledge distillation between specialists
+  - Belief conflict resolution
+  - Safe learning with fallbacks
 
 Model Sizes:
   - simplex-cognitive-7b: 4.1 GB (primary reasoning)
@@ -1063,6 +1200,8 @@ The Cognitive Hive architecture enables Simplex programs to leverage AI at scale
 - **Per-hive SLM sharing**: 10 specialists share 1 model (not 10 models)
 - **Memory efficiency**: 8-12 GB for a full hive vs 80+ GB per-specialist
 - **Shared consciousness**: HiveMnemonic creates collective knowledge
+- **Real-time learning**: Specialists adapt during runtime (v0.7.0)
+- **Federated training**: Coordinate learning across specialists (v0.7.0)
 - **Cost efficiency**: Run on commodity hardware
 - **Low latency**: Local inference, no API round-trips
 - **High reliability**: Fault-tolerant specialist swarm
@@ -1071,8 +1210,8 @@ The Cognitive Hive architecture enables Simplex programs to leverage AI at scale
 
 ---
 
-*"Many minds, one model, shared consciousness."*
+*"Many minds, one model, shared consciousness, continuous learning."*
 
 ---
 
-*See also: [SLM Provisioning](13-slm-provisioning.md) | [The Anima](12-anima.md) | [AI Integration](07-ai-integration.md) | [Swarm Computing](06-swarm-computing.md) | [Cost Optimization](08-cost-optimization.md)*
+*See also: [SLM Provisioning](13-slm-provisioning.md) | [The Anima](12-anima.md) | [AI Integration](07-ai-integration.md) | [Neural IR](14-neural-ir.md) | [Real-Time Learning](15-real-time-learning.md) | [Swarm Computing](06-swarm-computing.md) | [Cost Optimization](08-cost-optimization.md)*
