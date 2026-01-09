@@ -1,30 +1,87 @@
-// Test: Match pattern binding extraction
+// Phase 36 Test: C2.1 - Match pattern binding extraction
 
 enum Option<T> {
     Some(T),
     None
 }
 
-fn extract_value(opt: Option<i64>) -> i64 {
+enum Result<T, E> {
+    Ok(T),
+    Err(E)
+}
+
+fn test_option_match() -> i64 {
+    let opt: Option<i64> = Some(42);
     match opt {
-        Option::Some(x) => x,
-        Option::None => 0,
+        Some(x) => x,      // x must be bound to 42
+        None => 0
+    }
+}
+
+fn test_nested_match() -> i64 {
+    let opt: Option<Option<i64>> = Some(Some(100));
+    match opt {
+        Some(Some(x)) => x,
+        Some(None) => -1,
+        None => -2
+    }
+}
+
+fn test_result_match() -> i64 {
+    let res: Result<i64, i64> = Ok(55);
+    match res {
+        Ok(val) => val,
+        Err(e) => e * -1
+    }
+}
+
+fn test_tuple_match() -> i64 {
+    let pair: (i64, i64) = (10, 20);
+    match pair {
+        (a, b) => a + b
+    }
+}
+
+struct Point { x: i64, y: i64 }
+
+fn test_struct_match() -> i64 {
+    let p = Point { x: 5, y: 7 };
+    match p {
+        Point { x, y } => x + y
     }
 }
 
 fn main() -> i64 {
-    let some_val: Option<i64> = Option::Some(42);
-    let none_val: Option<i64> = Option::None;
-    
-    let r1 = extract_value(some_val);
-    if r1 == 42 {
-        println("PASS: extracted Some(42)");
+    print("Testing C2.1: Match pattern binding extraction");
+
+    let r1: i64 = test_option_match();
+    if r1 != 42 {
+        print("FAIL: Option match binding");
+        return 1;
     }
-    
-    let r2 = extract_value(none_val);
-    if r2 == 0 {
-        println("PASS: None returned default");
+    print("  PASS: Option Some(x) binding");
+
+    let r2: i64 = test_result_match();
+    if r2 != 55 {
+        print("FAIL: Result match binding");
+        return 1;
     }
-    
+    print("  PASS: Result Ok(val) binding");
+
+    let r3: i64 = test_tuple_match();
+    if r3 != 30 {
+        print("FAIL: Tuple match binding");
+        return 1;
+    }
+    print("  PASS: Tuple (a, b) binding");
+
+    let r4: i64 = test_nested_match();
+    if r4 != 100 {
+        print("FAIL: Nested match binding");
+        return 1;
+    }
+    print("  PASS: Nested Some(Some(x)) binding");
+
+    print("All C2.1 tests passed!");
     0
 }

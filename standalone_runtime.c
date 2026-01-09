@@ -18444,6 +18444,134 @@ void pruning_context_free(int64_t ctx_ptr) {
 }
 
 // --------------------------------------------------------------------------
+// 4.2.1 Simple Weight Magnitude Pruning API (Phase 4 completion)
+// --------------------------------------------------------------------------
+// A simple, user-friendly API for weight magnitude pruning that wraps
+// the more complex PruningContext infrastructure.
+
+// Global gate weight registry
+typedef struct GateWeightEntry {
+    int64_t gate_id;
+    double weight;
+    int64_t pruned;  // 0 = active, 1 = pruned
+    char* name;
+} GateWeightEntry;
+
+static GateWeightEntry* g_gate_weights = NULL;
+static int64_t g_gate_weight_count = 0;
+static int64_t g_gate_weight_capacity = 0;
+
+// Register a gate's weight for later pruning
+void neural_register_gate_weight(int64_t gate_id, double weight, int64_t name_ptr) {
+    // Ensure capacity
+    if (g_gate_weight_count >= g_gate_weight_capacity) {
+        int64_t new_cap = g_gate_weight_capacity == 0 ? 64 : g_gate_weight_capacity * 2;
+        g_gate_weights = (GateWeightEntry*)realloc(g_gate_weights, new_cap * sizeof(GateWeightEntry));
+        g_gate_weight_capacity = new_cap;
+    }
+
+    // Check if gate already registered, update if so
+    for (int64_t i = 0; i < g_gate_weight_count; i++) {
+        if (g_gate_weights[i].gate_id == gate_id) {
+            g_gate_weights[i].weight = weight;
+            return;
+        }
+    }
+
+    // Add new entry
+    g_gate_weights[g_gate_weight_count].gate_id = gate_id;
+    g_gate_weights[g_gate_weight_count].weight = weight;
+    g_gate_weights[g_gate_weight_count].pruned = 0;
+    g_gate_weights[g_gate_weight_count].name = name_ptr ? (char*)name_ptr : NULL;
+    g_gate_weight_count++;
+}
+
+// Update a gate's weight (e.g., after training)
+void neural_update_gate_weight(int64_t gate_id, double new_weight) {
+    for (int64_t i = 0; i < g_gate_weight_count; i++) {
+        if (g_gate_weights[i].gate_id == gate_id) {
+            g_gate_weights[i].weight = new_weight;
+            return;
+        }
+    }
+}
+
+// Get a gate's current weight
+double neural_get_gate_weight(int64_t gate_id) {
+    for (int64_t i = 0; i < g_gate_weight_count; i++) {
+        if (g_gate_weights[i].gate_id == gate_id) {
+            return g_gate_weights[i].weight;
+        }
+    }
+    return 1.0;  // Default weight
+}
+
+// Simple weight magnitude pruning: prune gates where |weight| < threshold
+// Returns the number of gates pruned
+int64_t neural_prune_by_weight_magnitude(double threshold) {
+    int64_t pruned_count = 0;
+
+    for (int64_t i = 0; i < g_gate_weight_count; i++) {
+        if (g_gate_weights[i].pruned) continue;  // Already pruned
+
+        double abs_weight = g_gate_weights[i].weight;
+        if (abs_weight < 0) abs_weight = -abs_weight;
+
+        if (abs_weight < threshold) {
+            g_gate_weights[i].pruned = 1;
+            pruned_count++;
+        }
+    }
+
+    return pruned_count;
+}
+
+// Check if a gate has been pruned
+int64_t neural_is_gate_pruned(int64_t gate_id) {
+    for (int64_t i = 0; i < g_gate_weight_count; i++) {
+        if (g_gate_weights[i].gate_id == gate_id) {
+            return g_gate_weights[i].pruned;
+        }
+    }
+    return 0;  // Not found = not pruned
+}
+
+// Get total number of registered gates
+int64_t neural_get_gate_count(void) {
+    return g_gate_weight_count;
+}
+
+// Get number of pruned gates
+int64_t neural_get_pruned_gate_count(void) {
+    int64_t count = 0;
+    for (int64_t i = 0; i < g_gate_weight_count; i++) {
+        if (g_gate_weights[i].pruned) count++;
+    }
+    return count;
+}
+
+// Get pruning ratio (pruned / total)
+double neural_get_pruning_ratio(void) {
+    if (g_gate_weight_count == 0) return 0.0;
+    return (double)neural_get_pruned_gate_count() / (double)g_gate_weight_count;
+}
+
+// Reset all pruning flags (unpruned all gates)
+void neural_reset_pruning(void) {
+    for (int64_t i = 0; i < g_gate_weight_count; i++) {
+        g_gate_weights[i].pruned = 0;
+    }
+}
+
+// Clear all registered gates
+void neural_clear_gate_registry(void) {
+    free(g_gate_weights);
+    g_gate_weights = NULL;
+    g_gate_weight_count = 0;
+    g_gate_weight_capacity = 0;
+}
+
+// --------------------------------------------------------------------------
 // 4.3 Dead Path Elimination
 // --------------------------------------------------------------------------
 

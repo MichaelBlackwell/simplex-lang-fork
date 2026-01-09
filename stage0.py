@@ -2478,6 +2478,10 @@ class CodeGen:
         self.functions = set()
         # Track neural gates (use double types instead of i64)
         self.neural_gates = set()
+        # Neural gate contracts for static analysis (Phase 2)
+        self.neural_gate_contracts = {}  # gate_name -> {'requires': expr, 'ensures': expr, 'params': [(name, type)]}
+        self.static_warnings = []  # List of static analysis warnings
+        self.static_errors = []    # List of static analysis errors (fatal)
         # Visibility enforcement (34.3.1)
         self.public_items = {}  # module_name -> set of public item names
         self.item_visibility = {}  # (module_name, item_name) -> bool (is_pub)
@@ -2511,6 +2515,267 @@ class CodeGen:
     def visibility_error(self, from_module, target_module, item_name):
         """Generate visibility error message."""
         return f"Error: '{item_name}' in module '{target_module}' is private and cannot be accessed from '{from_module}'"
+
+    # ========== Phase 2: Static Contract Analysis ==========
+
+    def register_neural_gate_contract(self, gate_name, params, requires_clause, ensures_clause):
+        """Register a neural gate's contract for static analysis."""
+        self.neural_gate_contracts[gate_name] = {
+            'params': params,  # List of (name, type) tuples
+            'requires': requires_clause,  # AST expression or None
+            'ensures': ensures_clause,  # AST expression or None
+        }
+
+    def static_analyze_contracts(self, items):
+        """Perform static analysis on neural gate contracts.
+
+        This pass identifies:
+        1. Literal arguments that violate requires clauses
+        2. Obvious type mismatches
+        3. Unreachable ensures conditions
+
+        Runs before code generation to catch errors early.
+        """
+        # First pass: collect all neural gate definitions and their contracts
+        for item in items:
+            if item.get('type') == 'NeuralGateDef':
+                self.register_neural_gate_contract(
+                    item['name'],
+                    item['params'],
+                    item.get('requires'),
+                    item.get('ensures')
+                )
+
+        # Second pass: analyze call sites
+        self._analyze_call_sites(items)
+
+        # Report any findings
+        self._report_static_analysis()
+
+    def _analyze_call_sites(self, items):
+        """Recursively analyze all call sites in the AST."""
+        for item in items:
+            self._analyze_item(item)
+
+    def _analyze_item(self, item):
+        """Analyze a single AST item for contract violations."""
+        if not item:
+            return
+
+        item_type = item.get('type')
+
+        if item_type == 'FnDef':
+            self._analyze_block(item.get('body'))
+        elif item_type == 'NeuralGateDef':
+            self._analyze_block(item.get('body'))
+        elif item_type in ('ActorDef', 'SpecialistDef'):
+            for method in item.get('methods', []):
+                self._analyze_block(method.get('body'))
+            for handler in item.get('handlers', []):
+                self._analyze_block(handler.get('body'))
+
+    def _analyze_block(self, block):
+        """Analyze a block for call sites."""
+        if not block:
+            return
+
+        for stmt in block.get('stmts', []):
+            self._analyze_stmt(stmt)
+
+        if block.get('expr'):
+            self._analyze_expr(block['expr'])
+
+    def _analyze_stmt(self, stmt):
+        """Analyze a statement for call sites."""
+        if not stmt:
+            return
+
+        stmt_type = stmt.get('type')
+
+        if stmt_type == 'LetStmt':
+            self._analyze_expr(stmt.get('value'))
+        elif stmt_type == 'AssignStmt':
+            self._analyze_expr(stmt.get('value'))
+        elif stmt_type == 'ExprStmt':
+            self._analyze_expr(stmt.get('expr'))
+        elif stmt_type == 'ReturnStmt':
+            self._analyze_expr(stmt.get('value'))
+        elif stmt_type == 'IfStmt':
+            self._analyze_expr(stmt.get('cond'))
+            self._analyze_block(stmt.get('then'))
+            self._analyze_block(stmt.get('else'))
+        elif stmt_type == 'WhileStmt':
+            self._analyze_expr(stmt.get('cond'))
+            self._analyze_block(stmt.get('body'))
+        elif stmt_type == 'ForStmt':
+            self._analyze_expr(stmt.get('iter'))
+            self._analyze_block(stmt.get('body'))
+        elif stmt_type == 'MatchStmt':
+            self._analyze_expr(stmt.get('expr'))
+            for arm in stmt.get('arms', []):
+                self._analyze_expr(arm.get('guard'))
+                self._analyze_block(arm.get('body'))
+
+    def _analyze_expr(self, expr):
+        """Analyze an expression for neural gate calls with literal arguments."""
+        if not expr:
+            return
+
+        expr_type = expr.get('type')
+
+        if expr_type == 'CallExpr':
+            # Check for callee (some forms) or func (more common form)
+            func_ref = expr.get('callee') or expr.get('func')
+            func_name = None
+
+            if isinstance(func_ref, dict):
+                # Callee is an expression (e.g., IdentExpr)
+                if func_ref.get('type') in ('Ident', 'IdentExpr'):
+                    func_name = func_ref.get('name')
+            elif isinstance(func_ref, str):
+                # func is a string name directly
+                func_name = func_ref
+
+            if func_name and func_name in self.neural_gate_contracts:
+                self._check_contract_at_callsite(func_name, expr.get('args', []))
+
+            # Analyze arguments recursively
+            for arg in expr.get('args', []):
+                self._analyze_expr(arg)
+
+        elif expr_type == 'BinaryExpr':
+            self._analyze_expr(expr.get('left'))
+            self._analyze_expr(expr.get('right'))
+        elif expr_type == 'UnaryExpr':
+            self._analyze_expr(expr.get('operand'))
+        elif expr_type == 'IfExpr':
+            self._analyze_expr(expr.get('cond'))
+            self._analyze_block(expr.get('then'))
+            self._analyze_block(expr.get('else'))
+        elif expr_type == 'BlockExpr':
+            self._analyze_block(expr.get('block'))
+        elif expr_type == 'MatchExpr':
+            self._analyze_expr(expr.get('expr'))
+            for arm in expr.get('arms', []):
+                self._analyze_expr(arm.get('body'))
+
+    def _check_contract_at_callsite(self, gate_name, args):
+        """Check if literal arguments at a call site violate the gate's contracts."""
+        contract = self.neural_gate_contracts[gate_name]
+        requires = contract.get('requires')
+        params = contract.get('params', [])
+
+        if not requires:
+            return  # No requires clause to check
+
+        # Build a map of param_name -> literal_value for literal arguments
+        literal_values = {}
+        for i, arg in enumerate(args):
+            if i < len(params):
+                param_name = params[i][0]
+                lit_val = self._get_literal_value(arg)
+                if lit_val is not None:
+                    literal_values[param_name] = lit_val
+
+        # If we have literal values, try to evaluate the requires clause
+        if literal_values:
+            violation = self._evaluate_requires_clause(requires, literal_values)
+            if violation:
+                self.static_warnings.append(
+                    f"Static contract violation: call to neural_gate '{gate_name}' "
+                    f"with {violation}"
+                )
+
+    def _get_literal_value(self, expr):
+        """Extract a literal value from an expression, or None if not a literal."""
+        if not expr:
+            return None
+
+        expr_type = expr.get('type')
+
+        if expr_type in ('Int', 'IntExpr'):
+            return ('int', expr.get('value', 0))
+        elif expr_type in ('Float', 'FloatExpr'):
+            try:
+                return ('float', float(expr.get('value', 0.0)))
+            except:
+                return None
+        elif expr_type in ('Bool', 'BoolExpr'):
+            return ('bool', expr.get('value', False))
+        elif expr_type == 'UnaryExpr' and expr.get('op') == '-':
+            # Handle negation of literals
+            inner = self._get_literal_value(expr.get('operand'))
+            if inner:
+                return (inner[0], -inner[1])
+
+        return None
+
+    def _evaluate_requires_clause(self, requires, literal_values):
+        """Try to statically evaluate a requires clause.
+
+        Returns a violation message if the clause is definitely false,
+        or None if it passes or cannot be determined.
+        """
+        if not requires:
+            return None
+
+        req_type = requires.get('type')
+
+        # Handle: x > threshold
+        if req_type == 'BinaryExpr':
+            op = requires.get('op')
+            left = requires.get('left')
+            right = requires.get('right')
+
+            # Get param name from left side
+            left_val = None
+            left_name = None
+            if left and left.get('type') in ('Ident', 'IdentExpr'):
+                left_name = left.get('name')
+                if left_name in literal_values:
+                    left_val = literal_values[left_name][1]
+
+            # Get threshold from right side
+            right_val = None
+            right_lit = self._get_literal_value(right)
+            if right_lit:
+                right_val = right_lit[1]
+
+            # Evaluate the comparison if we have both values
+            if left_val is not None and right_val is not None:
+                passed = False
+                if op == '>':
+                    passed = left_val > right_val
+                elif op == '>=':
+                    passed = left_val >= right_val
+                elif op == '<':
+                    passed = left_val < right_val
+                elif op == '<=':
+                    passed = left_val <= right_val
+                elif op == '==':
+                    passed = left_val == right_val
+                elif op == '!=':
+                    passed = left_val != right_val
+
+                if not passed:
+                    return f"requires '{left_name} {op} {right_val}' violated: {left_name}={left_val}"
+
+        return None
+
+    def _report_static_analysis(self):
+        """Report static analysis findings."""
+        import sys
+
+        for warning in self.static_warnings:
+            print(f"Warning: {warning}", file=sys.stderr)
+
+        for error in self.static_errors:
+            print(f"Error: {error}", file=sys.stderr)
+
+        if self.static_errors:
+            raise RuntimeError(f"Static analysis found {len(self.static_errors)} error(s)")
+
+    # ========== End Phase 2 Static Analysis ==========
 
     def new_temp(self):
         t = f"%t{self.temp_counter}"
@@ -3127,6 +3392,9 @@ class CodeGen:
         # Initialize prelude
         self.init_prelude()
 
+        # Phase 2: Run static contract analysis before code generation
+        self.static_analyze_contracts(items)
+
         # Header
         self.emit('; ModuleID = "simplex_program"')
         self.emit('target triple = "x86_64-apple-macosx15.0.0"')
@@ -3570,6 +3838,17 @@ class CodeGen:
         self.emit('declare i64 @pruning_is_pruned(i64, i64)')                   # check if pruned
         self.emit('declare i64 @pruning_reason(i64, i64)')                      # get pruning reason
         self.emit('declare void @pruning_context_free(i64)')                    # free context
+        self.emit('; 4.2.1 Simple Weight Magnitude Pruning API')
+        self.emit('declare void @neural_register_gate_weight(i64, double, i64)')  # register gate weight
+        self.emit('declare void @neural_update_gate_weight(i64, double)')         # update weight
+        self.emit('declare double @neural_get_gate_weight(i64)')                  # get weight
+        self.emit('declare i64 @neural_prune_by_weight_magnitude(double)')        # prune by threshold
+        self.emit('declare i64 @neural_is_gate_pruned(i64)')                      # check if pruned
+        self.emit('declare i64 @neural_get_gate_count()')                         # total gates
+        self.emit('declare i64 @neural_get_pruned_gate_count()')                  # pruned count
+        self.emit('declare double @neural_get_pruning_ratio()')                   # pruning ratio
+        self.emit('declare void @neural_reset_pruning()')                         # reset pruning
+        self.emit('declare void @neural_clear_gate_registry()')                   # clear registry
         self.emit('; 4.3 Dead Path Elimination')
         self.emit('declare i64 @dead_path_analyzer_new(i64)')                   # create analyzer
         self.emit('declare void @dead_path_add_edge(i64, i64, i64)')            # add edge
@@ -8491,6 +8770,17 @@ class CodeGen:
                 'pruning_is_pruned': (['i64', 'i64'], 'i64'),
                 'pruning_reason': (['i64', 'i64'], 'i64'),
                 'pruning_context_free': (['i64'], 'void'),
+                # Simple Weight Magnitude Pruning API (4.2.1)
+                'neural_register_gate_weight': (['i64', 'double', 'i64'], 'void'),
+                'neural_update_gate_weight': (['i64', 'double'], 'void'),
+                'neural_get_gate_weight': (['i64'], 'double'),
+                'neural_prune_by_weight_magnitude': (['double'], 'i64'),
+                'neural_is_gate_pruned': (['i64'], 'i64'),
+                'neural_get_gate_count': ([], 'i64'),
+                'neural_get_pruned_gate_count': ([], 'i64'),
+                'neural_get_pruning_ratio': ([], 'double'),
+                'neural_reset_pruning': ([], 'void'),
+                'neural_clear_gate_registry': ([], 'void'),
                 'dead_path_analyzer_new': (['i64'], 'i64'),
                 'dead_path_add_edge': (['i64', 'i64', 'i64'], 'void'),
                 'dead_path_mark_entry': (['i64', 'i64'], 'void'),
