@@ -1058,13 +1058,20 @@ def gen_spam_detection():
 
 Return: spam/not_spam with confidence."""
 
+    spam_indicators = """- Excessive capitalization
+- Urgency language ("NOW", "LIMITED TIME")
+- Too-good-to-be-true claims"""
+    ham_indicators = """- Professional tone
+- Specific context/reference
+- No suspicious links or claims"""
+
     response = f"""**Spam Detection Result**
 
 **Classification:** {'SPAM' if msg[1] else 'NOT SPAM'}
 **Confidence:** {msg[2]:.0%}
 
 **Indicators:**
-{f'- Excessive capitalization\n- Urgency language ("NOW", "LIMITED TIME")\n- Too-good-to-be-true claims' if msg[1] else '- Professional tone\n- Specific context/reference\n- No suspicious links or claims'}
+{spam_indicators if msg[1] else ham_indicators}
 
 **Action:** {'Block/Filter' if msg[1] else 'Deliver to inbox'}
 
@@ -1419,10 +1426,10 @@ def train_specialist_lora(
     """Train a specialist LoRA adapter."""
     try:
         import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments
+        from transformers import AutoModelForCausalLM, AutoTokenizer
         from peft import LoraConfig, get_peft_model
         from datasets import load_dataset
-        from trl import SFTTrainer
+        from trl import SFTTrainer, SFTConfig
     except ImportError as e:
         print(f"Training requires PyTorch and transformers: {e}")
         print("Run with --generate-only to only generate data")
@@ -1464,8 +1471,8 @@ def train_specialist_lora(
     # Load data
     dataset = load_dataset("json", data_files=data_path, split="train")
 
-    # Training args
-    training_args = TrainingArguments(
+    # Training config (using SFTConfig instead of TrainingArguments)
+    training_config = SFTConfig(
         output_dir=output_dir,
         num_train_epochs=3 if not local_test else 1,
         max_steps=10 if local_test else -1,
@@ -1477,15 +1484,14 @@ def train_specialist_lora(
         save_steps=500,
         bf16=torch.cuda.is_available(),
         report_to="none",
+        max_length=2048,
     )
 
     trainer = SFTTrainer(
         model=model,
-        args=training_args,
+        args=training_config,
         train_dataset=dataset,
-        tokenizer=tokenizer,
-        dataset_text_field="text",
-        max_seq_length=2048,
+        processing_class=tokenizer,
     )
 
     trainer.train()
