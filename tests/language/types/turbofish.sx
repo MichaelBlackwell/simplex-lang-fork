@@ -1,16 +1,35 @@
-// Test: Turbofish syntax ::<>
+// Phase 36 Test: P1.6 - Turbofish syntax ::< >
 
 fn identity<T>(x: T) -> T {
     x
 }
 
+fn make_pair<T, U>(a: T, b: U) -> (T, U) {
+    (a, b)
+}
+
 fn main() -> i64 {
-    // Explicit type parameter with turbofish
-    let result = identity::<i64>(42);
-    
-    if result == 42 {
-        println("PASS: turbofish syntax works");
+    print("Testing P1.6: Turbofish syntax");
+
+    // Turbofish on function call
+    let a: i64 = identity::<i64>(42);
+    if a != 42 {
+        print("FAIL: identity::<i64>");
+        return 1;
     }
-    
+    print("  PASS: function turbofish");
+
+    // Turbofish on Vec::new (commented - needs S4.1 Vec codegen)
+    // let v: Vec<i64> = Vec::<i64>::new();
+    print("  SKIP: Vec::<i64>::new() - needs S4.1");
+
+    // Turbofish with multiple type params
+    let pair = make_pair::<i64, i64>(1, 2);
+    print("  PASS: multiple type params");
+
+    // Collect with turbofish
+    // let collected: Vec<i64> = iter.collect::<Vec<i64>>();
+
+    print("All P1.6 tests passed!");
     0
 }

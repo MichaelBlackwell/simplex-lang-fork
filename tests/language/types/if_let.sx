@@ -1,25 +1,51 @@
-// Test: if-let pattern matching
+// Phase 36 Test: C2.3 - if-let return types
 
 enum Option<T> {
     None,
     Some(T),
 }
 
-fn main() -> i64 {
-    let opt: Option<i64> = Option::Some(42);
-    
-    if let Option::Some(x) = opt {
-        if x == 42 {
-            println("PASS: if-let extracted value");
-        }
-    }
-    
-    let none: Option<i64> = Option::None;
-    if let Option::Some(y) = none {
-        println("FAIL: should not match None");
+fn get_some() -> Option<i64> {
+    Some(42)
+}
+
+fn get_none() -> Option<i64> {
+    None
+}
+
+fn test_if_let_some() -> i64 {
+    if let Some(x) = get_some() {
+        x
     } else {
-        println("PASS: if-let else branch for None");
+        0
     }
-    
+}
+
+fn test_if_let_none() -> i64 {
+    if let Some(x) = get_none() {
+        x
+    } else {
+        -1
+    }
+}
+
+fn main() -> i64 {
+    print("Testing C2.3: if-let return types");
+
+    let r1: i64 = test_if_let_some();
+    if r1 != 42 {
+        print("FAIL: if let Some");
+        return 1;
+    }
+    print("  PASS: if let Some(x)");
+
+    let r2: i64 = test_if_let_none();
+    if r2 != -1 {
+        print("FAIL: if let None branch");
+        return 2;
+    }
+    print("  PASS: if let else branch");
+
+    print("All C2.3 tests passed!");
     0
 }

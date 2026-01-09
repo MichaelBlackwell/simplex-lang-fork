@@ -264,6 +264,12 @@ type WeightedRef<T> = {
 3. Runtime confidence checking
 4. Graceful degradation when contracts fail
 
+**Implementation Notes** (added 2026-01-09):
+- Static analysis runs during compilation via `static_analyze_contracts()` in stage0.py
+- Checks literal arguments against requires clauses at compile time
+- Emits warnings like: `Warning: Static contract violation: call to neural_gate 'strict_gate' with requires 'x > 0.5' violated: x=0.3`
+- Runtime checks via `contract_check_requires()`, `contract_check_ensures()`, etc.
+
 **Success Criteria**:
 - [x] Contracts compile and enforce
 - [x] Static analyzer catches obvious violations
@@ -300,6 +306,16 @@ type WeightedRef<T> = {
 2. Activation statistics collection
 3. Dead path elimination
 4. Binary size optimization
+
+**Implementation Notes** (added 2026-01-09):
+- Simple Weight Magnitude Pruning API added to standalone_runtime.c:
+  - `neural_register_gate_weight(gate_id, weight, name_ptr)` - register a gate's weight
+  - `neural_update_gate_weight(gate_id, new_weight)` - update weight after training
+  - `neural_prune_by_weight_magnitude(threshold)` - prune gates where |weight| < threshold
+  - `neural_is_gate_pruned(gate_id)` - check if a gate was pruned
+  - `neural_get_pruning_ratio()` - get ratio of pruned/total gates
+- Declarations added to stage0.py for Simplex code to call these functions
+- Tests verify correct pruning behavior (see tests/test_weight_magnitude_pruning.sx)
 
 **Success Criteria**:
 - [x] Pruned binary within 2x of equivalent C
