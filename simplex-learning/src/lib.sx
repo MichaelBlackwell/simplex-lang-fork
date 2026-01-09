@@ -1,0 +1,105 @@
+// simplex-learning: Real-time Continuous Learning for Simplex
+//
+// This library enables neural gates and specialists to learn and improve
+// during execution. The boundary between code and model dissolves.
+//
+// Core modules:
+//   - tensor:      Tensor operations with autograd
+//   - optim:       Streaming optimizers
+//   - memory:      Experience replay, forgetting prevention
+//   - feedback:    Feedback collection and attribution
+//   - calibration: Confidence calibration
+//   - safety:      Safe learning constraints
+//   - distributed: Hive-wide coordinated learning
+//   - runtime:     Learning loop and checkpointing
+
+pub mod tensor;
+pub mod optim;
+pub mod memory;
+pub mod feedback;
+pub mod calibration;
+pub mod safety;
+pub mod distributed;
+pub mod runtime;
+
+// Re-export core types for convenience
+pub use tensor::Tensor;
+pub use optim::{StreamingAdam, StreamingSGD, LearningRateScheduler};
+pub use memory::{ReplayBuffer, EWC, MAS};
+pub use feedback::{FeedbackChannel, FeedbackAggregator, AttributionMethod};
+pub use calibration::{OnlineCalibration, CalibrationState, TemperatureScaling, ECE, BrierScore};
+pub use safety::{Constraint, SoftConstraint, HardConstraint, SafetyBounds, SafeFallback};
+pub use distributed::{FederatedLearner, GradientSync, KnowledgeDistiller};
+pub use runtime::{ContinuousLearner, LearnerConfig, MetricsCollector, CheckpointManager};
+
+/// Library version
+pub const VERSION: &str = "0.1.0";
+
+/// Configuration for the @learning annotation
+pub struct LearningAnnotation {
+    /// Learning rate (default: 0.0001)
+    pub rate: f64,
+
+    /// Optimizer to use
+    pub optimizer: OptimizerConfig,
+
+    /// Replay buffer configuration (optional)
+    pub replay: Option<ReplayConfig>,
+
+    /// Feedback channel name
+    pub feedback: Option<String>,
+
+    /// Calibration settings
+    pub calibration: Option<CalibrationConfig>,
+
+    /// Learning constraints
+    pub constraints: Vec<Constraint>,
+
+    /// Checkpoint interval
+    pub checkpoint: Option<Duration>,
+}
+
+/// Optimizer configuration
+pub enum OptimizerConfig {
+    SGD { momentum: f64 },
+    Adam { beta1: f64, beta2: f64, weight_decay: f64 },
+    AdamW { beta1: f64, beta2: f64, weight_decay: f64 },
+}
+
+/// Replay buffer configuration
+pub struct ReplayConfig {
+    pub buffer_size: usize,
+    pub sample_ratio: f64,
+    pub strategy: SamplingStrategy,
+}
+
+/// Calibration configuration
+pub struct CalibrationConfig {
+    pub target_ece: f64,
+    pub temperature_lr: f64,
+}
+
+/// Sampling strategy for replay buffer
+pub enum SamplingStrategy {
+    Uniform,
+    Stratified { key: String },
+    Prioritized { alpha: f64, beta: f64 },
+}
+
+impl Default for LearningAnnotation {
+    fn default() -> Self {
+        LearningAnnotation {
+            rate: 0.0001,
+            optimizer: OptimizerConfig::AdamW {
+                beta1: 0.9,
+                beta2: 0.999,
+                weight_decay: 0.01,
+            },
+            replay: None,
+            feedback: None,
+            calibration: None,
+            constraints: Vec::new(),
+            checkpoint: None,
+        }
+    }
+}

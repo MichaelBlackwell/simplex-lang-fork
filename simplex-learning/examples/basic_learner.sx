@@ -1,0 +1,91 @@
+// Basic continuous learning example
+//
+// Demonstrates the core continuous learning loop with
+// real-time feedback integration.
+
+use simplex_learning::tensor::Tensor;
+use simplex_learning::runtime::{ContinuousLearner, LearnerConfig, LearningEvent};
+use simplex_learning::safety::{SafetyBounds, GradientBounds};
+
+fn main() {
+    // Initialize parameters for a simple model
+    let params = vec![
+        Tensor::randn(&[64, 32]),  // Layer 1 weights
+        Tensor::zeros(&[64]),      // Layer 1 bias
+        Tensor::randn(&[32, 10]),  // Layer 2 weights
+        Tensor::zeros(&[32]),      // Layer 2 bias
+    ];
+
+    // Configure the learner
+    let config = LearnerConfig {
+        learning_rate: 0.001,
+        batch_size: 1,  // Online learning
+        use_replay: true,
+        replay_buffer_size: 1000,
+        use_ewc: true,
+        ewc_lambda: 0.4,
+        use_calibration: true,
+        target_ece: 0.05,
+        safety_bounds: SafetyBounds {
+            gradient: GradientBounds::max_norm(1.0),
+            ..Default::default()
+        },
+        checkpoint_frequency: 100,
+        ..Default::default()
+    };
+
+    // Create the learner with event callback
+    let mut learner = ContinuousLearner::new(config, params)
+        .on_event(|event| {
+            match event {
+                LearningEvent::StepComplete { step, loss, .. } => {
+                    if step % 10 == 0 {
+                        println!("Step {}: loss = {:.4}", step, loss);
+                    }
+                }
+                LearningEvent::CheckpointSaved { step, path } => {
+                    println!("Checkpoint saved at step {} to {}", step, path);
+                }
+                LearningEvent::ConstraintViolated { constraint, .. } => {
+                    println!("Warning: constraint violated: {}", constraint);
+                }
+                _ => {}
+            }
+        });
+
+    // Start learning
+    learner.start();
+
+    // Simulate continuous learning loop
+    for i in 0..1000 {
+        // Simulate incoming data
+        let input = Tensor::randn(&[32]);
+        let target = Tensor::randn(&[10]);
+
+        // Simulate model forward pass (simplified)
+        let output = Tensor::randn(&[10]);
+
+        // Simulate feedback (e.g., from downstream task or user)
+        let feedback = if i % 10 == 0 { 0.8 } else { -0.2 };
+
+        // Learn from this example
+        let metrics = learner.learn(&input, &output, &target, feedback);
+
+        // Check convergence
+        if i % 100 == 0 {
+            let summary = learner.metrics().summary();
+            if summary.is_converging() {
+                println!("Learning is converging at step {}", i);
+            }
+        }
+    }
+
+    // Print final summary
+    let summary = learner.metrics().summary();
+    println!("\nFinal Summary:");
+    println!("  Total steps: {}", summary.total_steps);
+    println!("  Mean loss: {:.4}", summary.mean_loss);
+    println!("  Min loss: {:.4}", summary.min_loss);
+    println!("  Mean ECE: {:.4}", summary.mean_ece);
+    println!("  Constraint violations: {}", summary.constraint_violations);
+}

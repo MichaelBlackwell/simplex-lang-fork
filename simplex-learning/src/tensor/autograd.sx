@@ -1,0 +1,532 @@
+// Automatic differentiation via Neural IR integration
+//
+// This module provides gradient computation that integrates with
+// Neural IR's differentiable execution (TASK-001).
+
+use super::tensor::{Tensor, Shape, TensorError};
+use std::collections::HashMap;
+
+/// Gradient tape for recording operations
+/// In training mode, operations are recorded for backward pass
+pub struct GradientTape {
+    /// Stack of operations for backpropagation
+    operations: Vec<TapeEntry>,
+
+    /// Whether recording is enabled
+    recording: bool,
+
+    /// Map from tensor id to gradient
+    gradients: HashMap<u64, Tensor>,
+}
+
+/// Entry in the gradient tape
+struct TapeEntry {
+    /// Output tensor id
+    output_id: u64,
+
+    /// Input tensor ids
+    input_ids: Vec<u64>,
+
+    /// Backward function
+    backward_fn: BackwardFn,
+
+    /// Cached values needed for backward
+    cache: Vec<Tensor>,
+}
+
+/// Backward function type
+type BackwardFn = fn(grad_output: &Tensor, cache: &[Tensor]) -> Vec<Tensor>;
+
+impl GradientTape {
+    /// Create a new gradient tape
+    pub fn new() -> Self {
+        GradientTape {
+            operations: Vec::new(),
+            recording: true,
+            gradients: HashMap::new(),
+        }
+    }
+
+    /// Start recording operations
+    pub fn start(&mut self) {
+        self.recording = true;
+    }
+
+    /// Stop recording operations
+    pub fn stop(&mut self) {
+        self.recording = false;
+    }
+
+    /// Check if recording
+    pub fn is_recording(&self) -> bool {
+        self.recording
+    }
+
+    /// Record an operation
+    pub fn record(
+        &mut self,
+        output_id: u64,
+        input_ids: Vec<u64>,
+        backward_fn: BackwardFn,
+        cache: Vec<Tensor>,
+    ) {
+        if self.recording {
+            self.operations.push(TapeEntry {
+                output_id,
+                input_ids,
+                backward_fn,
+                cache,
+            });
+        }
+    }
+
+    /// Clear the tape
+    pub fn clear(&mut self) {
+        self.operations.clear();
+        self.gradients.clear();
+    }
+
+    /// Get gradient for a tensor
+    pub fn gradient(&self, tensor_id: u64) -> Option<&Tensor> {
+        self.gradients.get(&tensor_id)
+    }
+}
+
+/// Thread-local gradient tape
+thread_local! {
+    static GRADIENT_TAPE: std::cell::RefCell<Option<GradientTape>> =
+        std::cell::RefCell::new(None);
+
+    static GRAD_ENABLED: std::cell::RefCell<bool> =
+        std::cell::RefCell::new(true);
+
+    /// Registry mapping tensor IDs to tensor references
+    /// Used to populate gradients back into tensors after backward pass
+    static TENSOR_REGISTRY: std::cell::RefCell<HashMap<u64, Tensor>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// Register a tensor with the autograd system
+pub fn register_tensor(id: u64, tensor: Tensor) {
+    TENSOR_REGISTRY.with(|registry| {
+        registry.borrow_mut().insert(id, tensor);
+    });
+}
+
+/// Get a registered tensor by ID
+pub fn get_registered_tensor(id: u64) -> Option<Tensor> {
+    TENSOR_REGISTRY.with(|registry| {
+        registry.borrow().get(&id).map(|t| t.clone())
+    })
+}
+
+/// Clear the tensor registry
+pub fn clear_registry() {
+    TENSOR_REGISTRY.with(|registry| {
+        registry.borrow_mut().clear();
+    });
+}
+
+/// Check if gradients are enabled
+pub fn is_grad_enabled() -> bool {
+    GRAD_ENABLED.with(|enabled| *enabled.borrow())
+}
+
+/// Set gradient enabled state
+pub fn set_grad_enabled(enabled: bool) {
+    GRAD_ENABLED.with(|e| *e.borrow_mut() = enabled);
+}
+
+/// Get or create the global gradient tape
+pub fn get_tape() -> Option<GradientTape> {
+    GRADIENT_TAPE.with(|tape| tape.borrow().clone())
+}
+
+/// Set the global gradient tape
+pub fn set_tape(new_tape: Option<GradientTape>) {
+    GRADIENT_TAPE.with(|tape| {
+        *tape.borrow_mut() = new_tape;
+    });
+}
+
+/// Record operation to tape if recording
+pub fn record_op(
+    output_id: u64,
+    input_ids: Vec<u64>,
+    backward_fn: BackwardFn,
+    cache: Vec<Tensor>,
+) {
+    GRADIENT_TAPE.with(|tape| {
+        if let Some(ref mut t) = *tape.borrow_mut() {
+            t.record(output_id, input_ids, backward_fn, cache);
+        }
+    });
+}
+
+/// Computation node in the autograd graph
+pub struct ComputationNode {
+    /// Unique tensor ID
+    pub id: u64,
+
+    /// Input node IDs
+    pub inputs: Vec<u64>,
+
+    /// Backward function
+    pub backward_fn: Option<BackwardFn>,
+
+    /// Cached tensors for backward
+    pub cache: Vec<Tensor>,
+
+    /// Whether this requires grad
+    pub requires_grad: bool,
+}
+
+/// Computation graph for autograd
+pub struct ComputationGraph {
+    /// All nodes in the graph
+    nodes: HashMap<u64, ComputationNode>,
+
+    /// Gradients computed during backward
+    grads: HashMap<u64, Tensor>,
+}
+
+impl ComputationGraph {
+    /// Create new computation graph
+    pub fn new() -> Self {
+        ComputationGraph {
+            nodes: HashMap::new(),
+            grads: HashMap::new(),
+        }
+    }
+
+    /// Add a node
+    pub fn add_node(&mut self, node: ComputationNode) {
+        self.nodes.insert(node.id, node);
+    }
+
+    /// Run backward pass from output node
+    pub fn backward(&mut self, output_id: u64, grad_output: Tensor) {
+        // Initialize output gradient
+        self.grads.insert(output_id, grad_output);
+
+        // Topological sort (reverse order)
+        let sorted = self.topological_sort(output_id);
+
+        // Process nodes in reverse order
+        for node_id in sorted.iter().rev() {
+            if let Some(node) = self.nodes.get(node_id) {
+                if let Some(grad) = self.grads.get(node_id) {
+                    if let Some(backward_fn) = node.backward_fn {
+                        let input_grads = backward_fn(grad, &node.cache);
+
+                        // Accumulate gradients to inputs
+                        for (input_id, input_grad) in node.inputs.iter().zip(input_grads.iter()) {
+                            self.accumulate_grad(*input_id, input_grad);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Accumulate gradient for a tensor
+    fn accumulate_grad(&mut self, tensor_id: u64, grad: &Tensor) {
+        if let Some(existing) = self.grads.get_mut(&tensor_id) {
+            // Add to existing gradient
+            for i in 0..existing.numel().min(grad.numel()) {
+                existing.set(i, existing.get(i) + grad.get(i));
+            }
+        } else {
+            self.grads.insert(tensor_id, grad.clone());
+        }
+    }
+
+    /// Topological sort starting from output
+    fn topological_sort(&self, output_id: u64) -> Vec<u64> {
+        let mut visited = std::collections::HashSet::new();
+        let mut result = Vec::new();
+
+        self.dfs(output_id, &mut visited, &mut result);
+
+        result
+    }
+
+    fn dfs(&self, node_id: u64, visited: &mut std::collections::HashSet<u64>, result: &mut Vec<u64>) {
+        if visited.contains(&node_id) {
+            return;
+        }
+        visited.insert(node_id);
+
+        if let Some(node) = self.nodes.get(&node_id) {
+            for &input_id in &node.inputs {
+                self.dfs(input_id, visited, result);
+            }
+        }
+
+        result.push(node_id);
+    }
+
+    /// Get gradient for a tensor
+    pub fn get_grad(&self, tensor_id: u64) -> Option<&Tensor> {
+        self.grads.get(&tensor_id)
+    }
+}
+
+/// Global computation graph
+thread_local! {
+    static COMPUTATION_GRAPH: std::cell::RefCell<ComputationGraph> =
+        std::cell::RefCell::new(ComputationGraph::new());
+}
+
+/// Add node to global computation graph
+pub fn add_computation_node(node: ComputationNode) {
+    COMPUTATION_GRAPH.with(|graph| {
+        graph.borrow_mut().add_node(node);
+    });
+}
+
+/// Run backward on global computation graph
+pub fn run_backward(output_id: u64, grad_output: Tensor) {
+    COMPUTATION_GRAPH.with(|graph| {
+        graph.borrow_mut().backward(output_id, grad_output);
+    });
+}
+
+/// Get gradient from global computation graph
+pub fn get_grad(tensor_id: u64) -> Option<Tensor> {
+    COMPUTATION_GRAPH.with(|graph| {
+        graph.borrow().get_grad(tensor_id).map(|t| t.clone())
+    })
+}
+
+/// Clear global computation graph
+pub fn clear_graph() {
+    COMPUTATION_GRAPH.with(|graph| {
+        *graph.borrow_mut() = ComputationGraph::new();
+    });
+}
+
+/// Execute backward pass from a scalar loss
+pub fn backward(loss: &Tensor) -> Result<(), TensorError> {
+    if loss.numel() != 1 {
+        return Err(TensorError::InvalidShape {
+            reason: "backward() requires scalar loss".to_string(),
+        });
+    }
+
+    // Initialize gradient of loss as 1.0
+    let grad_output = Tensor::scalar(1.0);
+
+    // Get loss tensor ID (would be stored in tensor in full implementation)
+    // For now, use tape-based backward
+    GRADIENT_TAPE.with(|tape| {
+        if let Some(ref mut t) = *tape.borrow_mut() {
+            // Process operations in reverse order
+            let ops: Vec<_> = t.operations.drain(..).collect();
+            let mut grads: HashMap<u64, Tensor> = HashMap::new();
+
+            // Assume last operation produced the loss
+            if let Some(last_op) = ops.last() {
+                grads.insert(last_op.output_id, grad_output);
+            }
+
+            // Process in reverse
+            for op in ops.iter().rev() {
+                if let Some(grad) = grads.get(&op.output_id) {
+                    let input_grads = (op.backward_fn)(grad, &op.cache);
+
+                    for (input_id, input_grad) in op.input_ids.iter().zip(input_grads.iter()) {
+                        if let Some(existing) = grads.get_mut(input_id) {
+                            for i in 0..existing.numel().min(input_grad.numel()) {
+                                existing.set(i, existing.get(i) + input_grad.get(i));
+                            }
+                        } else {
+                            grads.insert(*input_id, input_grad.clone());
+                        }
+                    }
+                }
+            }
+
+            t.gradients = grads;
+        }
+    });
+
+    Ok(())
+}
+
+/// Context manager for no_grad (disables gradient tracking)
+pub struct NoGradGuard {
+    previous_state: bool,
+}
+
+impl NoGradGuard {
+    pub fn new() -> Self {
+        let previous = is_grad_enabled();
+        set_grad_enabled(false);
+        NoGradGuard {
+            previous_state: previous,
+        }
+    }
+}
+
+impl Drop for NoGradGuard {
+    fn drop(&mut self) {
+        // Restore previous gradient tracking state
+        set_grad_enabled(self.previous_state);
+    }
+}
+
+/// Execute code without gradient tracking
+pub fn no_grad<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    let _guard = NoGradGuard::new();
+    f()
+}
+
+/// Check numerical gradient against analytical gradient
+pub fn check_gradient(
+    f: fn(&Tensor) -> Tensor,
+    x: &Tensor,
+    eps: f64,
+) -> Result<f64, TensorError> {
+    let analytical = {
+        let mut x_grad = x.clone().requires_grad_();
+        let y = f(&x_grad);
+        backward(&y)?;
+        x_grad.grad().ok_or(TensorError::GradientNotAvailable)?.clone()
+    };
+
+    // Compute numerical gradient
+    let mut max_diff = 0.0;
+
+    for i in 0..x.numel() {
+        // f(x + eps)
+        let mut x_plus = x.clone();
+        x_plus.set(i, x.get(i) + eps);
+        let y_plus = f(&x_plus).item()?;
+
+        // f(x - eps)
+        let mut x_minus = x.clone();
+        x_minus.set(i, x.get(i) - eps);
+        let y_minus = f(&x_minus).item()?;
+
+        // Numerical gradient
+        let numerical = (y_plus - y_minus) / (2.0 * eps);
+
+        // Compare
+        let diff = (analytical.get(i) - numerical).abs();
+        max_diff = max_diff.max(diff);
+    }
+
+    Ok(max_diff)
+}
+
+// ==================== Backward Functions ====================
+
+/// Backward for addition
+pub fn add_backward(grad_output: &Tensor, _cache: &[Tensor]) -> Vec<Tensor> {
+    // Gradient flows through unchanged to both inputs
+    vec![grad_output.clone(), grad_output.clone()]
+}
+
+/// Backward for multiplication
+pub fn mul_backward(grad_output: &Tensor, cache: &[Tensor]) -> Vec<Tensor> {
+    let a = &cache[0];
+    let b = &cache[1];
+
+    // d(a*b)/da = b, d(a*b)/db = a
+    let grad_a = super::ops::mul(grad_output, b).unwrap();
+    let grad_b = super::ops::mul(grad_output, a).unwrap();
+
+    vec![grad_a, grad_b]
+}
+
+/// Backward for matmul
+pub fn matmul_backward(grad_output: &Tensor, cache: &[Tensor]) -> Vec<Tensor> {
+    let a = &cache[0];
+    let b = &cache[1];
+
+    // d(A @ B)/dA = grad_output @ B^T
+    // d(A @ B)/dB = A^T @ grad_output
+    let b_t = b.t().unwrap();
+    let a_t = a.t().unwrap();
+
+    let grad_a = super::ops::matmul(grad_output, &b_t).unwrap();
+    let grad_b = super::ops::matmul(&a_t, grad_output).unwrap();
+
+    vec![grad_a, grad_b]
+}
+
+/// Backward for ReLU
+pub fn relu_backward(grad_output: &Tensor, cache: &[Tensor]) -> Vec<Tensor> {
+    let input = &cache[0];
+
+    let mut grad_input = grad_output.clone();
+    for i in 0..input.numel() {
+        if input.get(i) <= 0.0 {
+            grad_input.set(i, 0.0);
+        }
+    }
+
+    vec![grad_input]
+}
+
+/// Backward for sigmoid
+pub fn sigmoid_backward(grad_output: &Tensor, cache: &[Tensor]) -> Vec<Tensor> {
+    let output = &cache[0]; // sigmoid output
+
+    // d(sigmoid)/dx = sigmoid * (1 - sigmoid)
+    let mut grad_input = Tensor::zeros(Shape::new(output.shape().dims().to_vec()));
+
+    for i in 0..output.numel() {
+        let s = output.get(i);
+        grad_input.set(i, grad_output.get(i) * s * (1.0 - s));
+    }
+
+    vec![grad_input]
+}
+
+/// Backward for tanh
+pub fn tanh_backward(grad_output: &Tensor, cache: &[Tensor]) -> Vec<Tensor> {
+    let output = &cache[0]; // tanh output
+
+    // d(tanh)/dx = 1 - tanh^2
+    let mut grad_input = Tensor::zeros(Shape::new(output.shape().dims().to_vec()));
+
+    for i in 0..output.numel() {
+        let t = output.get(i);
+        grad_input.set(i, grad_output.get(i) * (1.0 - t * t));
+    }
+
+    vec![grad_input]
+}
+
+/// Backward for softmax
+pub fn softmax_backward(grad_output: &Tensor, cache: &[Tensor]) -> Vec<Tensor> {
+    let output = &cache[0]; // softmax output
+    let last_dim = output.shape().dim(output.ndims() - 1);
+    let batch_size = output.numel() / last_dim;
+
+    let mut grad_input = Tensor::zeros(Shape::new(output.shape().dims().to_vec()));
+
+    for b in 0..batch_size {
+        let offset = b * last_dim;
+
+        // Compute sum of (grad_output * output) for this batch
+        let mut dot = 0.0;
+        for i in 0..last_dim {
+            dot += grad_output.get(offset + i) * output.get(offset + i);
+        }
+
+        // grad_input = output * (grad_output - dot)
+        for i in 0..last_dim {
+            let s = output.get(offset + i);
+            let g = grad_output.get(offset + i);
+            grad_input.set(offset + i, s * (g - dot));
+        }
+    }
+
+    vec![grad_input]
+}

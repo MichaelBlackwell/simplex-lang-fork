@@ -1,0 +1,289 @@
+// Stochastic Gradient Descent with momentum
+//
+// Classic optimizer with optional momentum and weight decay.
+
+use super::{Optimizer, OptimizerState, ParamState};
+use crate::tensor::{Tensor, Shape};
+
+/// Standard SGD optimizer
+pub struct SGD {
+    /// Parameters to optimize
+    params: Vec<Tensor>,
+
+    /// Learning rate
+    lr: f64,
+
+    /// Momentum coefficient
+    momentum: f64,
+
+    /// Weight decay (L2 regularization)
+    weight_decay: f64,
+
+    /// Dampening for momentum
+    dampening: f64,
+
+    /// Whether to use Nesterov momentum
+    nesterov: bool,
+
+    /// Momentum buffers (one per parameter)
+    momentum_buffer: Vec<Option<Tensor>>,
+
+    /// Step count
+    step_count: u64,
+}
+
+impl SGD {
+    /// Create a new SGD optimizer
+    pub fn new(params: Vec<Tensor>, lr: f64) -> Self {
+        let num_params = params.len();
+        SGD {
+            params,
+            lr,
+            momentum: 0.0,
+            weight_decay: 0.0,
+            dampening: 0.0,
+            nesterov: false,
+            momentum_buffer: vec![None; num_params],
+            step_count: 0,
+        }
+    }
+
+    /// Set momentum
+    pub fn momentum(mut self, momentum: f64) -> Self {
+        self.momentum = momentum;
+        self
+    }
+
+    /// Set weight decay
+    pub fn weight_decay(mut self, weight_decay: f64) -> Self {
+        self.weight_decay = weight_decay;
+        self
+    }
+
+    /// Set dampening
+    pub fn dampening(mut self, dampening: f64) -> Self {
+        self.dampening = dampening;
+        self
+    }
+
+    /// Enable Nesterov momentum
+    pub fn nesterov(mut self, nesterov: bool) -> Self {
+        self.nesterov = nesterov;
+        self
+    }
+}
+
+impl Optimizer for SGD {
+    fn step(&mut self) {
+        self.step_count += 1;
+
+        for (i, param) in self.params.iter_mut().enumerate() {
+            let grad = match param.grad() {
+                Some(g) => g.clone(),
+                None => continue,
+            };
+
+            // Apply weight decay
+            let mut d_p = if self.weight_decay != 0.0 {
+                let decay = crate::tensor::ops::scale(param, self.weight_decay);
+                crate::tensor::ops::add(&grad, &decay).unwrap()
+            } else {
+                grad
+            };
+
+            // Apply momentum
+            if self.momentum != 0.0 {
+                let buf = if let Some(ref buf) = self.momentum_buffer[i] {
+                    // buf = momentum * buf + (1 - dampening) * d_p
+                    let scaled_buf = crate::tensor::ops::scale(buf, self.momentum);
+                    let scaled_dp = crate::tensor::ops::scale(&d_p, 1.0 - self.dampening);
+                    crate::tensor::ops::add(&scaled_buf, &scaled_dp).unwrap()
+                } else {
+                    d_p.clone()
+                };
+
+                self.momentum_buffer[i] = Some(buf.clone());
+
+                d_p = if self.nesterov {
+                    // d_p = d_p + momentum * buf
+                    let scaled_buf = crate::tensor::ops::scale(&buf, self.momentum);
+                    crate::tensor::ops::add(&d_p, &scaled_buf).unwrap()
+                } else {
+                    buf
+                };
+            }
+
+            // Update parameter: param = param - lr * d_p
+            let update = crate::tensor::ops::scale(&d_p, -self.lr);
+            let new_param = crate::tensor::ops::add(param, &update).unwrap();
+
+            // Copy new values into param
+            for j in 0..param.numel() {
+                param.set(j, new_param.get(j));
+            }
+        }
+    }
+
+    fn zero_grad(&mut self) {
+        for param in &mut self.params {
+            param.zero_grad();
+        }
+    }
+
+    fn learning_rate(&self) -> f64 {
+        self.lr
+    }
+
+    fn set_learning_rate(&mut self, lr: f64) {
+        self.lr = lr;
+    }
+
+    fn parameters(&self) -> &[Tensor] {
+        &self.params
+    }
+
+    fn parameters_mut(&mut self) -> &mut [Tensor] {
+        &mut self.params
+    }
+
+    fn state_dict(&self) -> OptimizerState {
+        let param_states = self.momentum_buffer.iter()
+            .enumerate()
+            .map(|(i, buf)| ParamState {
+                name: format!("param_{}", i),
+                momentum: buf.clone(),
+                variance: None,
+                extra: Vec::new(),
+            })
+            .collect();
+
+        OptimizerState {
+            step: self.step_count,
+            lr: self.lr,
+            param_states,
+        }
+    }
+
+    fn load_state_dict(&mut self, state: OptimizerState) {
+        self.step_count = state.step;
+        self.lr = state.lr;
+
+        for (i, ps) in state.param_states.into_iter().enumerate() {
+            if i < self.momentum_buffer.len() {
+                self.momentum_buffer[i] = ps.momentum;
+            }
+        }
+    }
+}
+
+/// Streaming SGD for online learning
+/// Adapts learning rate based on gradient statistics
+pub struct StreamingSGD {
+    /// Base SGD optimizer
+    base: SGD,
+
+    /// Running gradient mean
+    grad_mean: Vec<Tensor>,
+
+    /// Running gradient variance
+    grad_var: Vec<Tensor>,
+
+    /// Smoothing factor for statistics
+    beta: f64,
+
+    /// Minimum learning rate
+    lr_min: f64,
+
+    /// Maximum learning rate
+    lr_max: f64,
+}
+
+impl StreamingSGD {
+    /// Create a new streaming SGD optimizer
+    pub fn new(params: Vec<Tensor>, lr: f64) -> Self {
+        let num_params = params.len();
+        let grad_mean = params.iter()
+            .map(|p| Tensor::zeros(Shape::new(p.shape().dims().to_vec())))
+            .collect();
+        let grad_var = params.iter()
+            .map(|p| Tensor::ones(Shape::new(p.shape().dims().to_vec())))
+            .collect();
+
+        StreamingSGD {
+            base: SGD::new(params, lr),
+            grad_mean,
+            grad_var,
+            beta: 0.99,
+            lr_min: 1e-6,
+            lr_max: 1.0,
+        }
+    }
+
+    /// Set smoothing factor
+    pub fn beta(mut self, beta: f64) -> Self {
+        self.beta = beta;
+        self
+    }
+
+    /// Set learning rate bounds
+    pub fn lr_bounds(mut self, min: f64, max: f64) -> Self {
+        self.lr_min = min;
+        self.lr_max = max;
+        self
+    }
+
+    /// Update running statistics
+    fn update_stats(&mut self) {
+        for (i, param) in self.base.params.iter().enumerate() {
+            if let Some(grad) = param.grad() {
+                // Update mean: mean = beta * mean + (1 - beta) * grad
+                for j in 0..grad.numel() {
+                    let old_mean = self.grad_mean[i].get(j);
+                    let new_mean = self.beta * old_mean + (1.0 - self.beta) * grad.get(j);
+                    self.grad_mean[i].set(j, new_mean);
+
+                    // Update variance
+                    let old_var = self.grad_var[i].get(j);
+                    let diff = grad.get(j) - new_mean;
+                    let new_var = self.beta * old_var + (1.0 - self.beta) * diff * diff;
+                    self.grad_var[i].set(j, new_var);
+                }
+            }
+        }
+    }
+}
+
+impl Optimizer for StreamingSGD {
+    fn step(&mut self) {
+        self.update_stats();
+        self.base.step();
+    }
+
+    fn zero_grad(&mut self) {
+        self.base.zero_grad();
+    }
+
+    fn learning_rate(&self) -> f64 {
+        self.base.learning_rate()
+    }
+
+    fn set_learning_rate(&mut self, lr: f64) {
+        self.base.set_learning_rate(lr.clamp(self.lr_min, self.lr_max));
+    }
+
+    fn parameters(&self) -> &[Tensor] {
+        self.base.parameters()
+    }
+
+    fn parameters_mut(&mut self) -> &mut [Tensor] {
+        self.base.parameters_mut()
+    }
+
+    fn state_dict(&self) -> OptimizerState {
+        self.base.state_dict()
+    }
+
+    fn load_state_dict(&mut self, state: OptimizerState) {
+        self.base.load_state_dict(state);
+    }
+}

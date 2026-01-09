@@ -1,0 +1,46 @@
+// Backend module: Execution backends for tensor operations
+//
+// Provides CPU and GPU backends for tensor operations.
+// The backend is selected at compile time via features.
+
+pub mod cpu;
+
+#[cfg(feature = "gpu")]
+pub mod gpu;
+
+use super::tensor::{Tensor, Shape, TensorError};
+
+/// Trait for tensor operation backends
+pub trait Backend {
+    /// Backend name
+    fn name(&self) -> &str;
+
+    /// Check if backend is available
+    fn is_available(&self) -> bool;
+
+    /// Matrix multiplication
+    fn matmul(&self, a: &Tensor, b: &Tensor) -> Result<Tensor, TensorError>;
+
+    /// Element-wise addition
+    fn add(&self, a: &Tensor, b: &Tensor) -> Result<Tensor, TensorError>;
+
+    /// Element-wise multiplication
+    fn mul(&self, a: &Tensor, b: &Tensor) -> Result<Tensor, TensorError>;
+
+    /// Softmax
+    fn softmax(&self, x: &Tensor) -> Tensor;
+
+    /// Layer normalization
+    fn layer_norm(&self, x: &Tensor, weight: Option<&Tensor>, bias: Option<&Tensor>, eps: f64) -> Tensor;
+}
+
+/// Get the default backend
+pub fn default_backend() -> Box<dyn Backend> {
+    Box::new(cpu::CpuBackend::new())
+}
+
+/// Re-export CpuBackend
+pub use cpu::CpuBackend;
+
+#[cfg(feature = "gpu")]
+pub use gpu::GpuBackend;

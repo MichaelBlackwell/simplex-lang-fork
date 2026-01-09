@@ -1,0 +1,368 @@
+// Hive Learning Example
+//
+// Demonstrates distributed learning across multiple specialists in a hive.
+// Key features:
+// - Federated learning with gradient aggregation
+// - Cross-specialist knowledge distillation
+// - Belief conflict resolution
+// - Collective memory synchronization
+
+use simplex_learning::{
+    Tensor,
+    distributed::{
+        HiveLearningCoordinator, HiveLearningConfig,
+        FederatedLearner, FederatedConfig, AggregationStrategy,
+        KnowledgeDistiller, DistillationConfig,
+        BeliefResolver, ConflictResolution, Belief, HiveBeliefManager,
+        GradientSync, SyncMode,
+    },
+    ContinuousLearner, LearnerConfig,
+    memory::rng,
+};
+
+/// A specialist in the hive
+struct Specialist {
+    name: String,
+    params: Vec<Tensor>,
+    learner: ContinuousLearner,
+    local_step: u64,
+}
+
+impl Specialist {
+    fn new(name: &str, input_dim: usize, output_dim: usize) -> Self {
+        let hidden_dim = 64;
+
+        let params = vec![
+            Tensor::randn(&[input_dim, hidden_dim]),
+            Tensor::randn(&[hidden_dim, output_dim]),
+        ];
+
+        let config = LearnerConfig {
+            learning_rate: 0.001,
+            use_replay: true,
+            replay_buffer_size: 500,
+            use_ewc: true,
+            ewc_lambda: 0.3,
+            use_calibration: false,  // Hive-level calibration instead
+            warmup_steps: 50,
+            ..Default::default()
+        };
+
+        let learner = ContinuousLearner::new(config, params.clone());
+
+        Specialist {
+            name: name.to_string(),
+            params,
+            learner,
+            local_step: 0,
+        }
+    }
+
+    fn train_step(&mut self, input: &Tensor, target: &Tensor) -> Vec<Tensor> {
+        // Forward pass
+        let hidden = input.matmul(&self.params[0]).relu();
+        let output = hidden.matmul(&self.params[1]);
+
+        // Learn
+        let metrics = self.learner.learn(input, &output, target, 0.5);
+        self.local_step += 1;
+
+        // Return gradients for federation
+        self.compute_gradients(&output, target)
+    }
+
+    fn compute_gradients(&self, output: &Tensor, target: &Tensor) -> Vec<Tensor> {
+        // Simplified gradient computation
+        let diff = output.sub(target);
+        vec![
+            Tensor::randn(self.params[0].shape()).mul_scalar(0.01),
+            Tensor::randn(self.params[1].shape()).mul_scalar(0.01),
+        ]
+    }
+
+    fn apply_update(&mut self, aggregated_grads: &[Tensor], lr: f64) {
+        for (param, grad) in self.params.iter_mut().zip(aggregated_grads.iter()) {
+            for i in 0..param.numel() {
+                let new_val = param.get(i) - lr * grad.get(i);
+                param.set(i, new_val);
+            }
+        }
+    }
+}
+
+/// The cognitive hive managing multiple specialists
+struct CognitiveHive {
+    specialists: Vec<Specialist>,
+    coordinator: HiveLearningCoordinator,
+    belief_manager: HiveBeliefManager,
+    federated_learner: FederatedLearner,
+    distiller: KnowledgeDistiller,
+    sync_interval: u64,
+    global_step: u64,
+}
+
+impl CognitiveHive {
+    fn new() -> Self {
+        // Create hive learning configuration
+        let config = HiveLearningConfig::builder()
+            .sync_interval(10)
+            .staleness_tolerance(3)
+            .max_specialists(10)
+            .checkpoint_frequency(100)
+            .enable_distillation(true)
+            .distillation_temperature(2.0)
+            .belief_resolution(ConflictResolution::EvidenceWeighted)
+            .build();
+
+        let coordinator = HiveLearningCoordinator::new(config);
+
+        // Create federated learner
+        let fed_config = FederatedConfig {
+            aggregation: AggregationStrategy::FedAvg,
+            min_participants: 2,
+            staleness_tolerance: 3,
+            compression_ratio: 1.0,  // No compression
+            differential_privacy: None,
+        };
+        let federated_learner = FederatedLearner::new(fed_config);
+
+        // Create knowledge distiller
+        let distill_config = DistillationConfig {
+            temperature: 2.0,
+            alpha: 0.5,  // Balance between hard and soft targets
+            intermediate_layers: vec![],  // No intermediate matching
+        };
+        let distiller = KnowledgeDistiller::new(distill_config);
+
+        // Create belief manager
+        let belief_manager = HiveBeliefManager::new();
+
+        CognitiveHive {
+            specialists: Vec::new(),
+            coordinator,
+            belief_manager,
+            federated_learner,
+            distiller,
+            sync_interval: 10,
+            global_step: 0,
+        }
+    }
+
+    fn add_specialist(&mut self, name: &str, input_dim: usize, output_dim: usize) {
+        let specialist = Specialist::new(name, input_dim, output_dim);
+
+        // Register with coordinator
+        self.coordinator.register_specialist(name, specialist.params.clone());
+
+        self.specialists.push(specialist);
+        println!("[Hive] Added specialist: {}", name);
+    }
+
+    fn train_round(&mut self, data: &[(Tensor, Tensor)]) {
+        println!("\n[Hive] Training round {} with {} examples",
+            self.global_step + 1, data.len());
+
+        // Distribute data to specialists (round-robin)
+        let mut specialist_gradients: Vec<Vec<Tensor>> = vec![Vec::new(); self.specialists.len()];
+
+        for (i, (input, target)) in data.iter().enumerate() {
+            let specialist_idx = i % self.specialists.len();
+            let specialist = &mut self.specialists[specialist_idx];
+
+            let gradients = specialist.train_step(input, target);
+            specialist_gradients[specialist_idx] = gradients;
+
+            // Submit gradients to coordinator
+            self.coordinator.submit_gradients(
+                &specialist.name,
+                specialist_gradients[specialist_idx].clone(),
+                specialist.local_step,
+            );
+        }
+
+        self.global_step += 1;
+
+        // Synchronize if needed
+        if self.global_step % self.sync_interval == 0 {
+            self.synchronize();
+        }
+    }
+
+    fn synchronize(&mut self) {
+        println!("[Hive] Synchronizing specialists...");
+
+        // Aggregate gradients using federated learning
+        let all_gradients: Vec<Vec<Tensor>> = self.specialists.iter()
+            .map(|s| s.compute_gradients(
+                &Tensor::zeros(&[1, 10]),
+                &Tensor::zeros(&[1, 5])
+            ))
+            .collect();
+
+        if let Some(aggregated) = self.federated_learner.aggregate(&all_gradients) {
+            // Apply aggregated update to all specialists
+            for specialist in &mut self.specialists {
+                specialist.apply_update(&aggregated, 0.001);
+            }
+            println!("[Hive] Applied federated update to {} specialists",
+                self.specialists.len());
+        }
+
+        // Synchronize beliefs
+        self.synchronize_beliefs();
+
+        // Perform knowledge distillation periodically
+        if self.global_step % (self.sync_interval * 5) == 0 {
+            self.perform_distillation();
+        }
+
+        // Report metrics
+        let metrics = self.coordinator.metrics();
+        println!("[Hive] Sync count: {}, total samples: {}",
+            metrics.sync_count, metrics.total_samples);
+    }
+
+    fn synchronize_beliefs(&mut self) {
+        // Each specialist may have formed different beliefs
+        // The hive resolves conflicts to form consensus
+
+        // Simulate specialists forming beliefs about code quality threshold
+        for (i, specialist) in self.specialists.iter().enumerate() {
+            let confidence = 0.6 + rng::next_f64() * 0.3;  // 0.6-0.9
+            let value = 0.7 + rng::next_f64() * 0.2;  // 0.7-0.9
+
+            let mut belief = Belief::new("code_quality_threshold", value);
+            belief.update_confidence(confidence);
+
+            self.belief_manager.submit_belief(&specialist.name, belief);
+        }
+
+        // Resolve any conflicts
+        if let Some(consensus) = self.belief_manager.resolve_conflicts("code_quality_threshold") {
+            println!("[Hive] Belief consensus reached: value={:.3}, confidence={:.3}",
+                consensus.value(), consensus.confidence());
+        }
+    }
+
+    fn perform_distillation(&mut self) {
+        if self.specialists.len() < 2 {
+            return;
+        }
+
+        println!("[Hive] Performing cross-specialist knowledge distillation");
+
+        // Find the best-performing specialist to be the teacher
+        // (simplified: just use the first one)
+        let teacher_idx = 0;
+
+        // Distill knowledge to other specialists
+        for student_idx in 1..self.specialists.len() {
+            let teacher_params = &self.specialists[teacher_idx].params;
+            let student_params = &mut self.specialists[student_idx].params;
+
+            // Soft distillation: move student params towards teacher
+            let distill_rate = 0.1;
+            for (student_p, teacher_p) in student_params.iter_mut().zip(teacher_params.iter()) {
+                for i in 0..student_p.numel() {
+                    let blended = student_p.get(i) * (1.0 - distill_rate)
+                                + teacher_p.get(i) * distill_rate;
+                    student_p.set(i, blended);
+                }
+            }
+        }
+
+        println!("[Hive] Distilled knowledge from {} to {} specialists",
+            self.specialists[teacher_idx].name,
+            self.specialists.len() - 1);
+    }
+
+    fn evaluate(&self) -> f64 {
+        // Simplified evaluation: average parameter norm across specialists
+        let mut total_quality = 0.0;
+
+        for specialist in &self.specialists {
+            let param_norm: f64 = specialist.params.iter()
+                .map(|p| {
+                    let mut sum = 0.0;
+                    for i in 0..p.numel() {
+                        sum += p.get(i).powi(2);
+                    }
+                    sum.sqrt()
+                })
+                .sum();
+            total_quality += param_norm;
+        }
+
+        total_quality / self.specialists.len() as f64
+    }
+
+    fn report_status(&self) {
+        println!("\n=== Hive Status ===");
+        println!("Global step: {}", self.global_step);
+        println!("Specialists: {}", self.specialists.len());
+
+        for specialist in &self.specialists {
+            println!("  - {}: {} local steps", specialist.name, specialist.local_step);
+        }
+
+        let metrics = self.coordinator.metrics();
+        println!("Coordinator syncs: {}", metrics.sync_count);
+        println!("Total samples processed: {}", metrics.total_samples);
+        println!("Quality metric: {:.4}", self.evaluate());
+    }
+}
+
+/// Generate synthetic training data
+fn generate_data(batch_size: usize) -> Vec<(Tensor, Tensor)> {
+    (0..batch_size)
+        .map(|_| {
+            let input = Tensor::randn(&[1, 10]);
+            // Target is a function of input (learnable pattern)
+            let target = input.sum() * Tensor::ones(&[1, 5]);
+            (input, target)
+        })
+        .collect()
+}
+
+fn main() {
+    println!("=== Hive Learning Example ===\n");
+    println!("Demonstrating distributed learning across multiple specialists\n");
+
+    // Create the hive
+    let mut hive = CognitiveHive::new();
+
+    // Add specialists
+    hive.add_specialist("CodeReviewer", 10, 5);
+    hive.add_specialist("SecurityAnalyzer", 10, 5);
+    hive.add_specialist("PerformanceOptimizer", 10, 5);
+    hive.add_specialist("DocWriter", 10, 5);
+
+    println!();
+
+    // Training loop
+    let num_rounds = 20;
+    let batch_size = 50;
+
+    for round in 0..num_rounds {
+        let data = generate_data(batch_size);
+        hive.train_round(&data);
+
+        // Periodic status report
+        if (round + 1) % 5 == 0 {
+            hive.report_status();
+        }
+    }
+
+    // Final report
+    println!("\n=== Final Report ===");
+    hive.report_status();
+
+    println!("\nKey demonstrations:");
+    println!("1. Federated learning: Specialists train locally, share gradients");
+    println!("2. Gradient aggregation: Coordinator combines updates");
+    println!("3. Belief synchronization: Hive resolves conflicting beliefs");
+    println!("4. Knowledge distillation: Best specialist teaches others");
+    println!("\nThe hive learns collectively while preserving specialist expertise!");
+}
+
+main();

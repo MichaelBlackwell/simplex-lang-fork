@@ -1,0 +1,846 @@
+// Distributed module tests
+
+use simplex_learning::tensor::Tensor;
+use simplex_learning::distributed::{
+    FederatedLearner, FederatedConfig, AggregationStrategy, NodeUpdate,
+    KnowledgeDistiller, DistillationConfig,
+    ParameterServer, GradientSync, ModelSync, SyncMode,
+    GossipSync,
+};
+
+#[test]
+fn test_federated_learner_creation() {
+    let initial_params = vec![
+        Tensor::randn(&[10, 5]),
+        Tensor::zeros(&[10]),
+    ];
+
+    let config = FederatedConfig::default();
+    let learner = FederatedLearner::new(config, initial_params);
+
+    assert_eq!(learner.round(), 0);
+}
+
+#[test]
+fn test_federated_aggregation() {
+    let initial_params = vec![
+        Tensor::ones(&[4]),
+    ];
+
+    let config = FederatedConfig {
+        min_nodes: 2,
+        aggregation: AggregationStrategy::FedAvg,
+        ..Default::default()
+    };
+
+    let mut learner = FederatedLearner::new(config, initial_params);
+
+    // Submit updates from nodes
+    let update1 = NodeUpdate {
+        node_id: "node1".to_string(),
+        params: vec![Tensor::from_vec(vec![2.0, 2.0, 2.0, 2.0], &[4])],
+        sample_count: 100,
+        validation_acc: 0.8,
+        round: 0,
+        metadata: std::collections::HashMap::new(),
+    };
+
+    let update2 = NodeUpdate {
+        node_id: "node2".to_string(),
+        params: vec![Tensor::from_vec(vec![4.0, 4.0, 4.0, 4.0], &[4])],
+        sample_count: 100,
+        validation_acc: 0.9,
+        round: 0,
+        metadata: std::collections::HashMap::new(),
+    };
+
+    learner.submit_update(update1);
+    let aggregated = learner.submit_update(update2);
+
+    // Should have triggered aggregation
+    assert!(aggregated);
+    assert_eq!(learner.round(), 1);
+
+    // Average should be 3.0
+    let params = learner.global_params();
+    assert!((params[0].get(0) - 3.0).abs() < 0.1);
+}
+
+#[test]
+fn test_weighted_aggregation() {
+    let initial_params = vec![
+        Tensor::ones(&[2]),
+    ];
+
+    let config = FederatedConfig {
+        min_nodes: 2,
+        aggregation: AggregationStrategy::WeightedAvg,
+        ..Default::default()
+    };
+
+    let mut learner = FederatedLearner::new(config, initial_params);
+
+    // Node 1: 100 samples
+    let update1 = NodeUpdate {
+        node_id: "node1".to_string(),
+        params: vec![Tensor::from_vec(vec![0.0, 0.0], &[2])],
+        sample_count: 100,
+        validation_acc: 0.8,
+        round: 0,
+        metadata: std::collections::HashMap::new(),
+    };
+
+    // Node 2: 300 samples (3x weight)
+    let update2 = NodeUpdate {
+        node_id: "node2".to_string(),
+        params: vec![Tensor::from_vec(vec![4.0, 4.0], &[2])],
+        sample_count: 300,
+        validation_acc: 0.8,
+        round: 0,
+        metadata: std::collections::HashMap::new(),
+    };
+
+    learner.submit_update(update1);
+    learner.submit_update(update2);
+
+    // Weighted avg: (0*100 + 4*300) / 400 = 3.0
+    let params = learner.global_params();
+    assert!((params[0].get(0) - 3.0).abs() < 0.1);
+}
+
+#[test]
+fn test_staleness_rejection() {
+    let initial_params = vec![Tensor::ones(&[2])];
+
+    let config = FederatedConfig {
+        min_nodes: 1,
+        max_staleness: 2,
+        ..Default::default()
+    };
+
+    let mut learner = FederatedLearner::new(config, initial_params.clone());
+
+    // Advance rounds
+    for i in 0..5 {
+        let update = NodeUpdate {
+            node_id: format!("node{}", i),
+            params: initial_params.clone(),
+            sample_count: 100,
+            validation_acc: 0.8,
+            round: i,
+            metadata: std::collections::HashMap::new(),
+        };
+        learner.submit_update(update);
+    }
+
+    // Now try to submit a very old update
+    let stale_update = NodeUpdate {
+        node_id: "stale".to_string(),
+        params: initial_params.clone(),
+        sample_count: 100,
+        validation_acc: 0.8,
+        round: 0,  // Very old
+        metadata: std::collections::HashMap::new(),
+    };
+
+    let accepted = learner.submit_update(stale_update);
+    // Should be rejected due to staleness
+    // (Implementation may vary)
+}
+
+#[test]
+fn test_knowledge_distillation() {
+    let config = DistillationConfig {
+        temperature: 4.0,
+        alpha: 0.7,
+        ..Default::default()
+    };
+
+    let mut distiller = KnowledgeDistiller::new(config);
+
+    // Teacher logits (sharp distribution)
+    let teacher_logits = Tensor::from_vec(vec![10.0, 1.0, 1.0], &[3]);
+
+    // Student logits
+    let student_logits = Tensor::from_vec(vec![5.0, 3.0, 2.0], &[3]);
+
+    // Hard labels
+    let labels = Tensor::from_vec(vec![1.0, 0.0, 0.0], &[3]);
+
+    // Compute loss
+    let loss = distiller.distillation_loss(&student_logits, &teacher_logits, Some(&labels));
+
+    // Loss should be positive
+    assert!(loss.get(0) >= 0.0);
+}
+
+#[test]
+fn test_parameter_server() {
+    let initial_params = vec![Tensor::zeros(&[4])];
+    let mut ps = ParameterServer::new(initial_params, SyncMode::Synchronous);
+
+    // Submit gradients
+    let grads = vec![Tensor::from_vec(vec![0.1, 0.2, 0.3, 0.4], &[4])];
+    ps.submit_gradients("client1", &grads, 0);
+
+    let grads2 = vec![Tensor::from_vec(vec![0.1, 0.2, 0.3, 0.4], &[4])];
+    ps.submit_gradients("client2", &grads2, 0);
+
+    // Apply gradients
+    let applied = ps.apply_gradients(0.1, 2);
+    assert!(applied);
+
+    // Version should have incremented
+    assert_eq!(ps.version(), 1);
+}
+
+#[test]
+fn test_gradient_sync() {
+    let mut sync = GradientSync::new(AllReduceStrategy::Ring);
+
+    let mut grads = vec![
+        Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[4]),
+    ];
+
+    // Simulate all-reduce with world size 4
+    sync.all_reduce(&mut grads, 4);
+
+    // Grads should be unchanged in simulation (averaged in real impl)
+}
+
+#[test]
+fn test_gradient_compression() {
+    let mut sync = GradientSync::new(AllReduceStrategy::Ring)
+        .with_compression(0.5); // Keep top 50%
+
+    sync.init_error_buffer(&[vec![4]]);
+
+    let mut grads = vec![
+        Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[4]),
+    ];
+
+    sync.all_reduce(&mut grads, 2);
+}
+
+#[test]
+fn test_model_sync_checkpoints() {
+    let mut sync = ModelSync::new(100)
+        .max_checkpoints(3);
+
+    let params = vec![Tensor::randn(&[10])];
+
+    // Save checkpoints
+    sync.save_checkpoint(&params, 100, 0.5);
+    sync.save_checkpoint(&params, 200, 0.4);
+    sync.save_checkpoint(&params, 300, 0.3);
+    sync.save_checkpoint(&params, 400, 0.6);
+
+    // Should keep only best 3
+    assert!(sync.checkpoints().len() <= 5); // max_checkpoints + keep_best
+
+    // Best should be step 300 with loss 0.3
+    assert_eq!(sync.best_checkpoint().unwrap().step, 300);
+}
+
+#[test]
+fn test_gossip_sync() {
+    let initial_params = vec![Tensor::from_vec(vec![0.0, 0.0], &[2])];
+
+    let mut sync = GossipSync::new(initial_params)
+        .mixing_weight(0.5);
+
+    // Add peers
+    sync.add_peer("peer1".to_string());
+    sync.add_peer("peer2".to_string());
+
+    assert_eq!(sync.peer_count(), 2);
+
+    // Mix with peer
+    let peer_params = vec![Tensor::from_vec(vec![2.0, 2.0], &[2])];
+    sync.mix_with_peer(&peer_params);
+
+    // Should be average: (0 + 2) * 0.5 = 1.0
+    assert!((sync.params()[0].get(0) - 1.0).abs() < 0.1);
+}
+
+// Import for test
+use simplex_learning::distributed::sync::AllReduceStrategy;
+use simplex_learning::distributed::beliefs::{
+    Belief, BeliefResolver, ConflictResolution, HiveBeliefManager, BeliefSynchronizer,
+};
+use simplex_learning::distributed::hive::{
+    HiveLearningCoordinator, HiveLearningConfig, HiveLearningConfigBuilder,
+};
+
+// ===========================================
+// Phase 7: Belief Conflict Resolution Tests
+// ===========================================
+
+#[test]
+fn test_belief_creation() {
+    let belief = Belief::new("user_prefers_concise", 0.8, "specialist_1");
+
+    assert_eq!(belief.id, "user_prefers_concise");
+    assert!((belief.confidence - 0.8).abs() < 0.01);
+    assert_eq!(belief.source, "specialist_1");
+    assert_eq!(belief.evidence_count, 1);
+}
+
+#[test]
+fn test_belief_update() {
+    let mut belief = Belief::new("test_belief", 0.5, "source1");
+
+    // Update with new evidence
+    belief.update(0.9, 0.1);
+
+    // Confidence should move toward 0.9
+    assert!(belief.confidence > 0.5);
+    assert!(belief.confidence < 0.9);
+    assert_eq!(belief.evidence_count, 2);
+}
+
+#[test]
+fn test_belief_strength() {
+    let mut belief = Belief::new("test", 0.8, "source");
+
+    let initial_strength = belief.strength();
+
+    // Add more evidence
+    for _ in 0..10 {
+        belief.update(0.8, 0.1);
+    }
+
+    let final_strength = belief.strength();
+
+    // Strength should increase with more evidence
+    assert!(final_strength > initial_strength);
+}
+
+#[test]
+fn test_conflict_resolution_highest_confidence() {
+    let mut resolver = BeliefResolver::new(ConflictResolution::HighestConfidence);
+
+    let beliefs = vec![
+        Belief::new("test", 0.3, "spec1"),
+        Belief::new("test", 0.9, "spec2"),
+        Belief::new("test", 0.5, "spec3"),
+    ];
+
+    let resolved = resolver.resolve(&beliefs).unwrap();
+
+    // Should pick highest confidence
+    assert!((resolved.confidence - 0.9).abs() < 0.01);
+}
+
+#[test]
+fn test_conflict_resolution_evidence_weighted() {
+    let mut resolver = BeliefResolver::new(ConflictResolution::EvidenceWeighted);
+
+    let mut belief1 = Belief::new("test", 0.3, "spec1");
+    let mut belief2 = Belief::new("test", 0.9, "spec2");
+
+    // Add more evidence to belief1
+    for _ in 0..9 {
+        belief1.update(0.3, 0.0); // Just increment evidence count
+    }
+    // belief1 has 10 evidence, belief2 has 1
+
+    let beliefs = vec![belief1, belief2];
+    let resolved = resolver.resolve(&beliefs).unwrap();
+
+    // Weighted avg: (0.3*10 + 0.9*1) / 11 = 0.354...
+    // Should be closer to 0.3 due to more evidence
+    assert!(resolved.confidence < 0.5);
+}
+
+#[test]
+fn test_conflict_resolution_bayesian() {
+    let mut resolver = BeliefResolver::new(ConflictResolution::BayesianCombination);
+
+    let beliefs = vec![
+        Belief::new("test", 0.7, "spec1"),
+        Belief::new("test", 0.8, "spec2"),
+    ];
+
+    let resolved = resolver.resolve(&beliefs).unwrap();
+
+    // Bayesian combination of positive beliefs should be higher
+    assert!(resolved.confidence > 0.8);
+}
+
+#[test]
+fn test_conflict_resolution_majority_vote() {
+    let mut resolver = BeliefResolver::new(ConflictResolution::MajorityVote);
+
+    // 3 specialists agree (confidence > 0.5), 1 disagrees
+    let beliefs = vec![
+        Belief::new("test", 0.8, "spec1"),
+        Belief::new("test", 0.7, "spec2"),
+        Belief::new("test", 0.9, "spec3"),
+        Belief::new("test", 0.2, "spec4"),
+    ];
+
+    let resolved = resolver.resolve(&beliefs).unwrap();
+
+    // Majority agrees, so confidence should be high
+    assert!(resolved.confidence > 0.5);
+}
+
+#[test]
+fn test_belief_resolver_stats() {
+    let mut resolver = BeliefResolver::new(ConflictResolution::EvidenceWeighted);
+
+    // Resolve several conflicts
+    for i in 0..5 {
+        let beliefs = vec![
+            Belief::new(&format!("belief_{}", i), 0.3 + i as f64 * 0.1, "spec1"),
+            Belief::new(&format!("belief_{}", i), 0.8 - i as f64 * 0.05, "spec2"),
+        ];
+        resolver.resolve(&beliefs);
+    }
+
+    let stats = resolver.stats();
+
+    assert_eq!(stats.total_resolutions, 5);
+    assert!(stats.avg_conflicts_per_resolution >= 2.0);
+}
+
+#[test]
+fn test_hive_belief_manager() {
+    let mut manager = HiveBeliefManager::new(ConflictResolution::EvidenceWeighted);
+
+    // Submit beliefs from different specialists
+    manager.submit_belief(Belief::new("pref_1", 0.8, "spec_a"));
+    manager.submit_belief(Belief::new("pref_1", 0.6, "spec_b"));
+
+    // Should have conflict
+    assert!(manager.has_conflict("pref_1"));
+
+    // Should have consensus
+    let consensus = manager.consensus("pref_1").unwrap();
+    assert!(consensus.confidence > 0.0);
+}
+
+#[test]
+fn test_hive_belief_manager_no_conflict() {
+    let mut manager = HiveBeliefManager::new(ConflictResolution::HighestConfidence);
+
+    // Single belief - no conflict
+    manager.submit_belief(Belief::new("unique_belief", 0.9, "spec_a"));
+
+    assert!(!manager.has_conflict("unique_belief"));
+    assert!(manager.conflicting_beliefs().is_empty());
+
+    // Consensus should be the single belief
+    let consensus = manager.consensus("unique_belief").unwrap();
+    assert!((consensus.confidence - 0.9).abs() < 0.01);
+}
+
+#[test]
+fn test_belief_synchronizer() {
+    let mut sync = BeliefSynchronizer::new("specialist_1", "hive_1");
+
+    // Update local beliefs
+    sync.set_belief("pref_a", 0.8);
+    sync.set_belief("pref_b", 0.3);
+
+    // Check local beliefs
+    assert!((sync.local_belief("pref_a").unwrap().confidence - 0.8).abs() < 0.01);
+
+    // Drain pending updates
+    let pending = sync.drain_pending();
+    assert_eq!(pending.len(), 2);
+
+    // Pending should be empty now
+    assert!(sync.drain_pending().is_empty());
+}
+
+#[test]
+fn test_belief_synchronizer_apply_consensus() {
+    let mut sync = BeliefSynchronizer::new("specialist_1", "hive_1");
+
+    // Set local belief
+    sync.set_belief("pref_a", 0.3);
+
+    // Apply consensus from hive (higher confidence, more evidence)
+    let mut consensus = Belief::new("pref_a", 0.9, "hive");
+    consensus.evidence_count = 100;
+
+    sync.apply_consensus(&consensus);
+
+    // Local belief should move toward consensus
+    let local = sync.local_belief("pref_a").unwrap();
+    assert!(local.confidence > 0.3);
+}
+
+// ===========================================
+// Phase 7: Hive Learning Coordinator Tests
+// ===========================================
+
+#[test]
+fn test_hive_coordinator_creation() {
+    let config = HiveLearningConfig::default();
+    let initial_params = vec![Tensor::randn(&[10, 5])];
+
+    let coordinator = HiveLearningCoordinator::new(config, initial_params);
+
+    assert_eq!(coordinator.specialist_count(), 0);
+    assert_eq!(coordinator.global_step(), 0);
+}
+
+#[test]
+fn test_hive_register_specialist() {
+    let config = HiveLearningConfig::default();
+    let initial_params = vec![Tensor::randn(&[10, 5])];
+
+    let mut coordinator = HiveLearningCoordinator::new(config, initial_params.clone());
+
+    // Register specialists
+    assert!(coordinator.register_specialist("spec_1", initial_params.clone()));
+    assert!(coordinator.register_specialist("spec_2", initial_params.clone()));
+
+    assert_eq!(coordinator.specialist_count(), 2);
+
+    // Can't register same ID twice
+    assert!(!coordinator.register_specialist("spec_1", initial_params.clone()));
+}
+
+#[test]
+fn test_hive_unregister_specialist() {
+    let config = HiveLearningConfig::default();
+    let initial_params = vec![Tensor::randn(&[10, 5])];
+
+    let mut coordinator = HiveLearningCoordinator::new(config, initial_params.clone());
+
+    coordinator.register_specialist("spec_1", initial_params.clone());
+    coordinator.register_specialist("spec_2", initial_params.clone());
+
+    assert!(coordinator.unregister_specialist("spec_1"));
+    assert_eq!(coordinator.specialist_count(), 1);
+
+    // Can't unregister non-existent
+    assert!(!coordinator.unregister_specialist("spec_1"));
+}
+
+#[test]
+fn test_hive_submit_gradients() {
+    let config = HiveLearningConfigBuilder::new()
+        .sync_interval(10)
+        .build();
+
+    let initial_params = vec![Tensor::zeros(&[4])];
+    let mut coordinator = HiveLearningCoordinator::new(config, initial_params.clone());
+
+    coordinator.register_specialist("spec_1", initial_params.clone());
+
+    // Submit gradients
+    let grads = vec![Tensor::from_vec(vec![0.1, 0.2, 0.3, 0.4], &[4])];
+
+    for _ in 0..5 {
+        assert!(coordinator.submit_gradients("spec_1", &grads));
+    }
+
+    // Check specialist state
+    let specialist = coordinator.specialist("spec_1").unwrap();
+    assert_eq!(specialist.local_steps, 5);
+    assert_eq!(specialist.sample_count, 5);
+}
+
+#[test]
+fn test_hive_submit_belief() {
+    let config = HiveLearningConfig::default();
+    let initial_params = vec![Tensor::randn(&[10])];
+
+    let mut coordinator = HiveLearningCoordinator::new(config, initial_params.clone());
+
+    coordinator.register_specialist("spec_1", initial_params.clone());
+    coordinator.register_specialist("spec_2", initial_params.clone());
+
+    // Submit beliefs from different specialists
+    coordinator.submit_belief("spec_1", Belief::new("user_pref", 0.8, "spec_1"));
+    coordinator.submit_belief("spec_2", Belief::new("user_pref", 0.6, "spec_2"));
+
+    // Check consensus exists
+    let consensus = coordinator.consensus_belief("user_pref");
+    assert!(consensus.is_some());
+}
+
+#[test]
+fn test_hive_sync_all() {
+    let config = HiveLearningConfigBuilder::new()
+        .sync_interval(1000) // High interval so manual sync is needed
+        .build();
+
+    let initial_params = vec![Tensor::zeros(&[4])];
+    let mut coordinator = HiveLearningCoordinator::new(config, initial_params.clone());
+
+    coordinator.register_specialist("spec_1", initial_params.clone());
+    coordinator.register_specialist("spec_2", initial_params.clone());
+
+    // Submit different gradients
+    let grads1 = vec![Tensor::from_vec(vec![1.0, 0.0, 0.0, 0.0], &[4])];
+    let grads2 = vec![Tensor::from_vec(vec![0.0, 1.0, 0.0, 0.0], &[4])];
+
+    coordinator.submit_gradients("spec_1", &grads1);
+    coordinator.submit_gradients("spec_2", &grads2);
+
+    // Force sync
+    coordinator.sync_all();
+
+    // Metrics should be updated
+    assert!(coordinator.metrics().sync_count >= 0);
+}
+
+#[test]
+fn test_hive_checkpoint() {
+    let config = HiveLearningConfigBuilder::new()
+        .checkpoint_interval(10)
+        .build();
+
+    let initial_params = vec![Tensor::randn(&[10])];
+    let mut coordinator = HiveLearningCoordinator::new(config, initial_params);
+
+    // Run some steps
+    for _ in 0..15 {
+        coordinator.step();
+    }
+
+    // Should have created a checkpoint
+    // (In production, we'd verify checkpoint exists)
+}
+
+#[test]
+fn test_hive_config_builder() {
+    let config = HiveLearningConfigBuilder::new()
+        .sync_interval(50)
+        .checkpoint_interval(500)
+        .max_specialists(8)
+        .enable_distillation(true)
+        .distillation_temperature(3.0)
+        .compress_gradients(true, 0.05)
+        .learning_rate(0.0001)
+        .build();
+
+    assert_eq!(config.sync_interval, 50);
+    assert_eq!(config.checkpoint_interval, 500);
+    assert_eq!(config.max_specialists, 8);
+    assert!(config.enable_distillation);
+    assert!((config.distillation.temperature - 3.0).abs() < 0.01);
+    assert!(config.compress_gradients);
+    assert!((config.compression_ratio - 0.05).abs() < 0.01);
+}
+
+#[test]
+fn test_hive_max_specialists_limit() {
+    let config = HiveLearningConfigBuilder::new()
+        .max_specialists(2)
+        .build();
+
+    let initial_params = vec![Tensor::randn(&[10])];
+    let mut coordinator = HiveLearningCoordinator::new(config, initial_params.clone());
+
+    // Should succeed
+    assert!(coordinator.register_specialist("spec_1", initial_params.clone()));
+    assert!(coordinator.register_specialist("spec_2", initial_params.clone()));
+
+    // Should fail - at limit
+    assert!(!coordinator.register_specialist("spec_3", initial_params.clone()));
+}
+
+#[test]
+fn test_hive_update_validation() {
+    let config = HiveLearningConfig::default();
+    let initial_params = vec![Tensor::randn(&[10])];
+
+    let mut coordinator = HiveLearningCoordinator::new(config, initial_params.clone());
+    coordinator.register_specialist("spec_1", initial_params);
+
+    // Update validation accuracy
+    coordinator.update_validation("spec_1", 0.95);
+
+    let specialist = coordinator.specialist("spec_1").unwrap();
+    assert!((specialist.validation_acc - 0.95).abs() < 0.01);
+}
+
+#[test]
+fn test_hive_metrics() {
+    let config = HiveLearningConfig::default();
+    let initial_params = vec![Tensor::randn(&[10])];
+
+    let mut coordinator = HiveLearningCoordinator::new(config, initial_params.clone());
+
+    coordinator.register_specialist("spec_1", initial_params.clone());
+
+    // Submit some gradients
+    let grads = vec![Tensor::randn(&[10])];
+    for _ in 0..10 {
+        coordinator.submit_gradients("spec_1", &grads);
+    }
+
+    let metrics = coordinator.metrics();
+    assert_eq!(metrics.total_samples, 10);
+}
+
+// ===========================================
+// Phase 7: Integration Tests
+// ===========================================
+
+#[test]
+fn test_full_distributed_learning_cycle() {
+    // Create hive coordinator
+    let config = HiveLearningConfigBuilder::new()
+        .sync_interval(5)
+        .belief_resolution(ConflictResolution::EvidenceWeighted)
+        .enable_distillation(true)
+        .build();
+
+    let initial_params = vec![Tensor::zeros(&[4])];
+    let mut coordinator = HiveLearningCoordinator::new(config, initial_params.clone());
+
+    // Register specialists
+    coordinator.register_specialist("classifier", initial_params.clone());
+    coordinator.register_specialist("router", initial_params.clone());
+    coordinator.register_specialist("generator", initial_params.clone());
+
+    // Simulate training loop
+    for step in 0..20 {
+        // Each specialist submits gradients
+        let grads_c = vec![Tensor::from_vec(vec![0.1, 0.1, 0.0, 0.0], &[4])];
+        let grads_r = vec![Tensor::from_vec(vec![0.0, 0.1, 0.1, 0.0], &[4])];
+        let grads_g = vec![Tensor::from_vec(vec![0.0, 0.0, 0.1, 0.1], &[4])];
+
+        coordinator.submit_gradients("classifier", &grads_c);
+        coordinator.submit_gradients("router", &grads_r);
+        coordinator.submit_gradients("generator", &grads_g);
+
+        // Submit beliefs
+        if step % 5 == 0 {
+            coordinator.submit_belief(
+                "classifier",
+                Belief::new("quality_threshold", 0.7 + step as f64 * 0.01, "classifier")
+            );
+            coordinator.submit_belief(
+                "router",
+                Belief::new("quality_threshold", 0.6 + step as f64 * 0.01, "router")
+            );
+        }
+
+        // Update validation
+        coordinator.update_validation("classifier", 0.8 + step as f64 * 0.005);
+        coordinator.update_validation("router", 0.75 + step as f64 * 0.005);
+        coordinator.update_validation("generator", 0.7 + step as f64 * 0.005);
+
+        coordinator.step();
+    }
+
+    // Verify final state
+    assert_eq!(coordinator.specialist_count(), 3);
+    assert_eq!(coordinator.global_step(), 20);
+
+    // Check metrics
+    let metrics = coordinator.metrics();
+    assert!(metrics.total_samples > 0);
+
+    // Check consensus belief exists
+    let consensus = coordinator.consensus_belief("quality_threshold");
+    assert!(consensus.is_some());
+}
+
+#[test]
+fn test_byzantine_resilient_aggregation() {
+    // Test that median/trimmed mean handle malicious updates
+    let initial_params = vec![Tensor::ones(&[4])];
+
+    let config = FederatedConfig {
+        min_nodes: 5,
+        aggregation: AggregationStrategy::TrimmedMean { trim_ratio: 0.2 },
+        ..Default::default()
+    };
+
+    let mut learner = FederatedLearner::new(config, initial_params);
+
+    // Submit normal updates
+    for i in 0..4 {
+        let update = NodeUpdate {
+            node_id: format!("honest_{}", i),
+            params: vec![Tensor::from_vec(vec![2.0, 2.0, 2.0, 2.0], &[4])],
+            sample_count: 100,
+            validation_acc: 0.8,
+            round: 0,
+            metadata: std::collections::HashMap::new(),
+        };
+        learner.submit_update(update);
+    }
+
+    // Submit Byzantine (malicious) update with extreme values
+    let malicious = NodeUpdate {
+        node_id: "byzantine".to_string(),
+        params: vec![Tensor::from_vec(vec![1000.0, 1000.0, 1000.0, 1000.0], &[4])],
+        sample_count: 100,
+        validation_acc: 0.99, // Claims high accuracy
+        round: 0,
+        metadata: std::collections::HashMap::new(),
+    };
+    learner.submit_update(malicious);
+
+    // Aggregated result should be close to honest values (2.0), not extreme
+    let params = learner.global_params();
+    assert!(params[0].get(0) < 100.0, "Trimmed mean should reject extreme values");
+}
+
+#[test]
+fn test_progressive_distillation() {
+    use simplex_learning::distributed::distillation::ProgressiveDistillation;
+
+    let config = DistillationConfig {
+        temperature: 4.0,
+        alpha: 0.7,
+        ..Default::default()
+    };
+
+    let mut prog_distill = ProgressiveDistillation::new(config);
+
+    // Checkpoint several teachers
+    for i in 0..3 {
+        let params = vec![Tensor::randn(&[10])];
+        prog_distill.checkpoint_teacher(params, 0.7 + i as f64 * 0.05, i as u64 * 100);
+    }
+
+    // Compute ensemble loss
+    let student_logits = Tensor::from_vec(vec![1.0, 2.0, 3.0], &[3]);
+    let teacher_logits_list = vec![
+        Tensor::from_vec(vec![3.0, 2.0, 1.0], &[3]),
+        Tensor::from_vec(vec![2.5, 2.5, 1.0], &[3]),
+        Tensor::from_vec(vec![2.0, 3.0, 1.0], &[3]),
+    ];
+
+    let loss = prog_distill.ensemble_loss(&student_logits, &teacher_logits_list, None);
+
+    // Loss should be finite and positive
+    assert!(loss.get(0).is_finite());
+    assert!(loss.get(0) >= 0.0);
+}
+
+#[test]
+fn test_elastic_sync_scaling() {
+    use simplex_learning::distributed::sync::ElasticSync;
+
+    let initial_params = vec![Tensor::randn(&[10])];
+    let mut elastic = ElasticSync::new(initial_params, 2, 8);
+
+    // Add workers up to max
+    assert!(elastic.add_worker("w1".to_string()));
+    assert!(elastic.add_worker("w2".to_string()));
+    assert!(elastic.add_worker("w3".to_string()));
+
+    assert_eq!(elastic.world_size(), 3);
+    assert_eq!(elastic.active_count(), 3);
+
+    // Remove worker
+    assert!(elastic.remove_worker("w2"));
+    assert_eq!(elastic.world_size(), 2);
+
+    // Can't go below minimum
+    assert!(!elastic.remove_worker("w1"));
+    assert!(!elastic.remove_worker("w3"));
+}

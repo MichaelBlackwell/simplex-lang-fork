@@ -1,0 +1,663 @@
+// Tensor operations: mathematical operations with autograd support
+//
+// All operations support automatic differentiation when inputs have
+// requires_grad enabled.
+
+use super::tensor::{Tensor, Shape, TensorError};
+use super::autograd::{
+    record_op, is_grad_enabled, register_tensor,
+    add_backward, mul_backward, matmul_backward,
+    relu_backward, sigmoid_backward, tanh_backward, softmax_backward,
+};
+
+// ==================== Element-wise Operations ====================
+
+/// Element-wise addition
+pub fn add(a: &Tensor, b: &Tensor) -> Result<Tensor, TensorError> {
+    let shape = a.shape().broadcast_with(b.shape())
+        .ok_or(TensorError::ShapeMismatch {
+            expected: a.shape().clone(),
+            got: b.shape().clone(),
+        })?;
+
+    let mut data = Vec::with_capacity(shape.numel());
+
+    // Simple case: same shape
+    if a.shape().dims() == b.shape().dims() {
+        for i in 0..a.numel() {
+            data.push(a.get(i) + b.get(i));
+        }
+    } else {
+        // Broadcasting case
+        for i in 0..shape.numel() {
+            let ai = i % a.numel();
+            let bi = i % b.numel();
+            data.push(a.get(ai) + b.get(bi));
+        }
+    }
+
+    let mut result = Tensor::new(data, shape)?;
+
+    // Record for autograd if gradient tracking enabled
+    if is_grad_enabled() && (a.requires_grad() || b.requires_grad()) {
+        result.set_requires_grad(true);
+
+        // Register tensors with autograd system
+        register_tensor(a.id(), a.clone());
+        register_tensor(b.id(), b.clone());
+        register_tensor(result.id(), result.clone());
+
+        record_op(result.id(), vec![a.id(), b.id()], add_backward, vec![a.clone(), b.clone()]);
+    }
+
+    Ok(result)
+}
+
+/// Element-wise subtraction
+pub fn sub(a: &Tensor, b: &Tensor) -> Result<Tensor, TensorError> {
+    let shape = a.shape().broadcast_with(b.shape())
+        .ok_or(TensorError::ShapeMismatch {
+            expected: a.shape().clone(),
+            got: b.shape().clone(),
+        })?;
+
+    let mut data = Vec::with_capacity(shape.numel());
+
+    if a.shape().dims() == b.shape().dims() {
+        for i in 0..a.numel() {
+            data.push(a.get(i) - b.get(i));
+        }
+    } else {
+        for i in 0..shape.numel() {
+            let ai = i % a.numel();
+            let bi = i % b.numel();
+            data.push(a.get(ai) - b.get(bi));
+        }
+    }
+
+    let mut result = Tensor::new(data, shape)?;
+
+    if a.requires_grad() || b.requires_grad() {
+        result.set_requires_grad(true);
+    }
+
+    Ok(result)
+}
+
+/// Element-wise multiplication
+pub fn mul(a: &Tensor, b: &Tensor) -> Result<Tensor, TensorError> {
+    let shape = a.shape().broadcast_with(b.shape())
+        .ok_or(TensorError::ShapeMismatch {
+            expected: a.shape().clone(),
+            got: b.shape().clone(),
+        })?;
+
+    let mut data = Vec::with_capacity(shape.numel());
+
+    if a.shape().dims() == b.shape().dims() {
+        for i in 0..a.numel() {
+            data.push(a.get(i) * b.get(i));
+        }
+    } else {
+        for i in 0..shape.numel() {
+            let ai = i % a.numel();
+            let bi = i % b.numel();
+            data.push(a.get(ai) * b.get(bi));
+        }
+    }
+
+    let mut result = Tensor::new(data, shape)?;
+
+    // Record for autograd
+    if is_grad_enabled() && (a.requires_grad() || b.requires_grad()) {
+        result.set_requires_grad(true);
+
+        register_tensor(a.id(), a.clone());
+        register_tensor(b.id(), b.clone());
+        register_tensor(result.id(), result.clone());
+
+        record_op(result.id(), vec![a.id(), b.id()], mul_backward, vec![a.clone(), b.clone()]);
+    }
+
+    Ok(result)
+}
+
+/// Element-wise division
+pub fn div(a: &Tensor, b: &Tensor) -> Result<Tensor, TensorError> {
+    let shape = a.shape().broadcast_with(b.shape())
+        .ok_or(TensorError::ShapeMismatch {
+            expected: a.shape().clone(),
+            got: b.shape().clone(),
+        })?;
+
+    let mut data = Vec::with_capacity(shape.numel());
+
+    if a.shape().dims() == b.shape().dims() {
+        for i in 0..a.numel() {
+            data.push(a.get(i) / b.get(i));
+        }
+    } else {
+        for i in 0..shape.numel() {
+            let ai = i % a.numel();
+            let bi = i % b.numel();
+            data.push(a.get(ai) / b.get(bi));
+        }
+    }
+
+    let mut result = Tensor::new(data, shape)?;
+
+    if a.requires_grad() || b.requires_grad() {
+        result.set_requires_grad(true);
+    }
+
+    Ok(result)
+}
+
+/// Scalar multiplication
+pub fn scale(a: &Tensor, scalar: f64) -> Tensor {
+    let data: Vec<f64> = a.data().iter().map(|x| x * scalar).collect();
+
+    let mut result = Tensor::new(data, Shape::new(a.shape().dims().to_vec())).unwrap();
+
+    if a.requires_grad() {
+        result.set_requires_grad(true);
+    }
+
+    result
+}
+
+// ==================== Matrix Operations ====================
+
+/// Matrix multiplication
+/// For 2D tensors: standard matmul
+/// For higher dims: batch matmul
+pub fn matmul(a: &Tensor, b: &Tensor) -> Result<Tensor, TensorError> {
+    // Check dimensions
+    if a.ndims() < 2 || b.ndims() < 2 {
+        return Err(TensorError::InvalidShape {
+            reason: "matmul requires at least 2D tensors".to_string(),
+        });
+    }
+
+    let a_rows = a.shape().dim(a.ndims() - 2);
+    let a_cols = a.shape().dim(a.ndims() - 1);
+    let b_rows = b.shape().dim(b.ndims() - 2);
+    let b_cols = b.shape().dim(b.ndims() - 1);
+
+    if a_cols != b_rows {
+        return Err(TensorError::ShapeMismatch {
+            expected: Shape::new(vec![a_rows, a_cols]),
+            got: Shape::new(vec![b_rows, b_cols]),
+        });
+    }
+
+    // Simple 2D matmul
+    if a.ndims() == 2 && b.ndims() == 2 {
+        let mut data = vec![0.0; a_rows * b_cols];
+
+        for i in 0..a_rows {
+            for j in 0..b_cols {
+                let mut sum = 0.0;
+                for k in 0..a_cols {
+                    sum += a.get(i * a_cols + k) * b.get(k * b_cols + j);
+                }
+                data[i * b_cols + j] = sum;
+            }
+        }
+
+        let mut result = Tensor::new(data, Shape::matrix(a_rows, b_cols))?;
+
+        // Record for autograd
+        if is_grad_enabled() && (a.requires_grad() || b.requires_grad()) {
+            result.set_requires_grad(true);
+
+            register_tensor(a.id(), a.clone());
+            register_tensor(b.id(), b.clone());
+            register_tensor(result.id(), result.clone());
+
+            record_op(result.id(), vec![a.id(), b.id()], matmul_backward, vec![a.clone(), b.clone()]);
+        }
+
+        return Ok(result);
+    }
+
+    // Batch matmul for >2D tensors
+    // A: [..., M, K], B: [..., K, N] -> [..., M, N]
+
+    // Get batch dimensions
+    let a_batch_dims: Vec<usize> = a.shape().dims()[..a.ndims() - 2].to_vec();
+    let b_batch_dims: Vec<usize> = b.shape().dims()[..b.ndims() - 2].to_vec();
+
+    // Compute broadcast batch shape
+    let batch_shape = broadcast_batch_shape(&a_batch_dims, &b_batch_dims)?;
+    let batch_size: usize = batch_shape.iter().product();
+
+    // Result shape: batch_shape + [M, N]
+    let mut result_shape = batch_shape.clone();
+    result_shape.push(a_rows);
+    result_shape.push(b_cols);
+
+    // Compute strides for batch indexing
+    let a_batch_strides = compute_batch_strides(&a_batch_dims, &batch_shape);
+    let b_batch_strides = compute_batch_strides(&b_batch_dims, &batch_shape);
+
+    // Matrix sizes
+    let a_matrix_size = a_rows * a_cols;
+    let b_matrix_size = b_rows * b_cols;
+    let result_matrix_size = a_rows * b_cols;
+
+    // Allocate result
+    let mut data = vec![0.0; batch_size * result_matrix_size];
+
+    // Iterate over batch indices
+    for batch_idx in 0..batch_size {
+        // Convert flat batch index to multi-dimensional index
+        let batch_coords = flat_to_coords(batch_idx, &batch_shape);
+
+        // Get corresponding indices in A and B (with broadcasting)
+        let a_batch_idx = coords_to_flat_broadcast(&batch_coords, &a_batch_dims, &a_batch_strides);
+        let b_batch_idx = coords_to_flat_broadcast(&batch_coords, &b_batch_dims, &b_batch_strides);
+
+        // Offsets into the data arrays
+        let a_offset = a_batch_idx * a_matrix_size;
+        let b_offset = b_batch_idx * b_matrix_size;
+        let result_offset = batch_idx * result_matrix_size;
+
+        // Standard 2D matmul for this batch element
+        for i in 0..a_rows {
+            for j in 0..b_cols {
+                let mut sum = 0.0;
+                for k in 0..a_cols {
+                    sum += a.get(a_offset + i * a_cols + k) * b.get(b_offset + k * b_cols + j);
+                }
+                data[result_offset + i * b_cols + j] = sum;
+            }
+        }
+    }
+
+    let mut result = Tensor::new(data, Shape::new(result_shape))?;
+
+    // Record for autograd
+    if is_grad_enabled() && (a.requires_grad() || b.requires_grad()) {
+        result.set_requires_grad(true);
+
+        register_tensor(a.id(), a.clone());
+        register_tensor(b.id(), b.clone());
+        register_tensor(result.id(), result.clone());
+
+        record_op(result.id(), vec![a.id(), b.id()], matmul_backward, vec![a.clone(), b.clone()]);
+    }
+
+    Ok(result)
+}
+
+/// Compute broadcast batch shape from two batch dimension lists
+fn broadcast_batch_shape(a_dims: &[usize], b_dims: &[usize]) -> Result<Vec<usize>, TensorError> {
+    let max_len = a_dims.len().max(b_dims.len());
+    let mut result = vec![1; max_len];
+
+    // Align from the right
+    for i in 0..max_len {
+        let a_idx = if i < a_dims.len() { a_dims.len() - 1 - i } else { usize::MAX };
+        let b_idx = if i < b_dims.len() { b_dims.len() - 1 - i } else { usize::MAX };
+
+        let a_dim = if a_idx != usize::MAX { a_dims[a_idx] } else { 1 };
+        let b_dim = if b_idx != usize::MAX { b_dims[b_idx] } else { 1 };
+
+        if a_dim == b_dim {
+            result[max_len - 1 - i] = a_dim;
+        } else if a_dim == 1 {
+            result[max_len - 1 - i] = b_dim;
+        } else if b_dim == 1 {
+            result[max_len - 1 - i] = a_dim;
+        } else {
+            return Err(TensorError::ShapeMismatch {
+                expected: Shape::new(a_dims.to_vec()),
+                got: Shape::new(b_dims.to_vec()),
+            });
+        }
+    }
+
+    Ok(result)
+}
+
+/// Compute strides for batch broadcasting
+fn compute_batch_strides(dims: &[usize], broadcast_shape: &[usize]) -> Vec<usize> {
+    let mut strides = vec![0; broadcast_shape.len()];
+    let offset = broadcast_shape.len() - dims.len();
+
+    let mut stride = 1;
+    for i in (0..dims.len()).rev() {
+        if dims[i] > 1 {
+            strides[offset + i] = stride;
+        }
+        stride *= dims[i];
+    }
+
+    strides
+}
+
+/// Convert flat index to coordinates
+fn flat_to_coords(flat_idx: usize, shape: &[usize]) -> Vec<usize> {
+    let mut coords = vec![0; shape.len()];
+    let mut remaining = flat_idx;
+
+    for i in (0..shape.len()).rev() {
+        coords[i] = remaining % shape[i];
+        remaining /= shape[i];
+    }
+
+    coords
+}
+
+/// Convert coordinates to flat index with broadcasting
+fn coords_to_flat_broadcast(coords: &[usize], dims: &[usize], strides: &[usize]) -> usize {
+    let offset = coords.len() - dims.len();
+    let mut flat_idx = 0;
+
+    for i in 0..dims.len() {
+        let coord = coords[offset + i];
+        // If dimension is 1, it's broadcast so use 0
+        let actual_coord = if dims[i] == 1 { 0 } else { coord };
+        flat_idx += actual_coord * strides[offset + i];
+    }
+
+    flat_idx
+}
+
+// ==================== Activation Functions ====================
+
+/// Rectified Linear Unit (ReLU)
+pub fn relu(x: &Tensor) -> Tensor {
+    let data: Vec<f64> = x.data().iter().map(|&v| v.max(0.0)).collect();
+
+    let mut result = Tensor::new(data, Shape::new(x.shape().dims().to_vec())).unwrap();
+
+    // Record for autograd
+    if is_grad_enabled() && x.requires_grad() {
+        result.set_requires_grad(true);
+
+        register_tensor(x.id(), x.clone());
+        register_tensor(result.id(), result.clone());
+
+        record_op(result.id(), vec![x.id()], relu_backward, vec![x.clone()]);
+    }
+
+    result
+}
+
+/// Sigmoid activation: 1 / (1 + exp(-x))
+pub fn sigmoid(x: &Tensor) -> Tensor {
+    let data: Vec<f64> = x.data().iter().map(|&v| 1.0 / (1.0 + (-v).exp())).collect();
+
+    let mut result = Tensor::new(data, Shape::new(x.shape().dims().to_vec())).unwrap();
+
+    // Record for autograd (cache output for backward)
+    if is_grad_enabled() && x.requires_grad() {
+        result.set_requires_grad(true);
+
+        register_tensor(x.id(), x.clone());
+        register_tensor(result.id(), result.clone());
+
+        record_op(result.id(), vec![x.id()], sigmoid_backward, vec![result.clone()]);
+    }
+
+    result
+}
+
+/// Hyperbolic tangent
+pub fn tanh(x: &Tensor) -> Tensor {
+    let data: Vec<f64> = x.data().iter().map(|&v| v.tanh()).collect();
+
+    let mut result = Tensor::new(data, Shape::new(x.shape().dims().to_vec())).unwrap();
+
+    // Record for autograd (cache output for backward)
+    if is_grad_enabled() && x.requires_grad() {
+        result.set_requires_grad(true);
+
+        register_tensor(x.id(), x.clone());
+        register_tensor(result.id(), result.clone());
+
+        record_op(result.id(), vec![x.id()], tanh_backward, vec![result.clone()]);
+    }
+
+    result
+}
+
+/// GELU activation (Gaussian Error Linear Unit)
+pub fn gelu(x: &Tensor) -> Tensor {
+    // Approximation: 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+    let sqrt_2_over_pi = (2.0 / std::f64::consts::PI).sqrt();
+
+    let data: Vec<f64> = x.data().iter().map(|&v| {
+        let inner = sqrt_2_over_pi * (v + 0.044715 * v.powi(3));
+        0.5 * v * (1.0 + inner.tanh())
+    }).collect();
+
+    let mut result = Tensor::new(data, Shape::new(x.shape().dims().to_vec())).unwrap();
+
+    if x.requires_grad() {
+        result.set_requires_grad(true);
+    }
+
+    result
+}
+
+/// Softmax over last dimension
+pub fn softmax(x: &Tensor) -> Tensor {
+    if x.ndims() == 0 {
+        return Tensor::scalar(1.0);
+    }
+
+    let last_dim = x.shape().dim(x.ndims() - 1);
+    let batch_size = x.numel() / last_dim;
+
+    let mut data = vec![0.0; x.numel()];
+
+    for b in 0..batch_size {
+        let offset = b * last_dim;
+
+        // Find max for numerical stability
+        let mut max_val = f64::NEG_INFINITY;
+        for i in 0..last_dim {
+            max_val = max_val.max(x.get(offset + i));
+        }
+
+        // Compute exp and sum
+        let mut sum = 0.0;
+        for i in 0..last_dim {
+            let exp_val = (x.get(offset + i) - max_val).exp();
+            data[offset + i] = exp_val;
+            sum += exp_val;
+        }
+
+        // Normalize
+        for i in 0..last_dim {
+            data[offset + i] /= sum;
+        }
+    }
+
+    let mut result = Tensor::new(data, Shape::new(x.shape().dims().to_vec())).unwrap();
+
+    // Record for autograd (cache output for backward)
+    if is_grad_enabled() && x.requires_grad() {
+        result.set_requires_grad(true);
+
+        register_tensor(x.id(), x.clone());
+        register_tensor(result.id(), result.clone());
+
+        record_op(result.id(), vec![x.id()], softmax_backward, vec![result.clone()]);
+    }
+
+    result
+}
+
+/// Log softmax (more numerically stable for cross-entropy)
+pub fn log_softmax(x: &Tensor) -> Tensor {
+    let last_dim = x.shape().dim(x.ndims() - 1);
+    let batch_size = x.numel() / last_dim;
+
+    let mut data = vec![0.0; x.numel()];
+
+    for b in 0..batch_size {
+        let offset = b * last_dim;
+
+        // Find max for numerical stability
+        let mut max_val = f64::NEG_INFINITY;
+        for i in 0..last_dim {
+            max_val = max_val.max(x.get(offset + i));
+        }
+
+        // Compute log-sum-exp
+        let mut sum_exp = 0.0;
+        for i in 0..last_dim {
+            sum_exp += (x.get(offset + i) - max_val).exp();
+        }
+        let log_sum_exp = max_val + sum_exp.ln();
+
+        // Compute log softmax
+        for i in 0..last_dim {
+            data[offset + i] = x.get(offset + i) - log_sum_exp;
+        }
+    }
+
+    let mut result = Tensor::new(data, Shape::new(x.shape().dims().to_vec())).unwrap();
+
+    if x.requires_grad() {
+        result.set_requires_grad(true);
+    }
+
+    result
+}
+
+// ==================== Normalization ====================
+
+/// Layer normalization over last dimension
+pub fn layer_norm(x: &Tensor, weight: Option<&Tensor>, bias: Option<&Tensor>, eps: f64) -> Tensor {
+    let last_dim = x.shape().dim(x.ndims() - 1);
+    let batch_size = x.numel() / last_dim;
+
+    let mut data = vec![0.0; x.numel()];
+
+    for b in 0..batch_size {
+        let offset = b * last_dim;
+
+        // Compute mean
+        let mut mean = 0.0;
+        for i in 0..last_dim {
+            mean += x.get(offset + i);
+        }
+        mean /= last_dim as f64;
+
+        // Compute variance
+        let mut var = 0.0;
+        for i in 0..last_dim {
+            let diff = x.get(offset + i) - mean;
+            var += diff * diff;
+        }
+        var /= last_dim as f64;
+
+        // Normalize
+        let std = (var + eps).sqrt();
+        for i in 0..last_dim {
+            let mut normalized = (x.get(offset + i) - mean) / std;
+
+            // Apply weight and bias if provided
+            if let Some(w) = weight {
+                normalized *= w.get(i);
+            }
+            if let Some(b) = bias {
+                normalized += b.get(i);
+            }
+
+            data[offset + i] = normalized;
+        }
+    }
+
+    let mut result = Tensor::new(data, Shape::new(x.shape().dims().to_vec())).unwrap();
+
+    if x.requires_grad() {
+        result.set_requires_grad(true);
+    }
+
+    result
+}
+
+// ==================== Loss Functions ====================
+
+/// Mean squared error loss
+pub fn mse_loss(pred: &Tensor, target: &Tensor) -> Result<Tensor, TensorError> {
+    let diff = sub(pred, target)?;
+    let squared = mul(&diff, &diff)?;
+    Ok(squared.mean())
+}
+
+/// Cross entropy loss (with log_softmax)
+///
+/// Supports two target formats:
+/// 1. One-hot encoded: targets same shape as logits, multiply and sum
+/// 2. Class indices: targets is 1D with class indices (int as f64)
+///
+/// For batch inputs [batch_size, num_classes], returns scalar loss.
+pub fn cross_entropy_loss(logits: &Tensor, targets: &Tensor) -> Result<Tensor, TensorError> {
+    let log_probs = log_softmax(logits);
+
+    // Determine target format by comparing shapes
+    if logits.shape() == targets.shape() {
+        // One-hot encoded targets: -sum(targets * log_probs) / batch_size
+        let mut total_loss = 0.0;
+        for i in 0..log_probs.numel() {
+            total_loss -= targets.get(i) * log_probs.get(i);
+        }
+
+        // Average over batch if 2D
+        let batch_size = if logits.ndims() >= 2 {
+            logits.shape().dim(0) as f64
+        } else {
+            1.0
+        };
+
+        Ok(Tensor::scalar(total_loss / batch_size))
+    } else if targets.ndims() == 1 && logits.ndims() == 2 {
+        // Class indices: targets[i] is the class index for sample i
+        let batch_size = logits.shape().dim(0);
+        let num_classes = logits.shape().dim(1);
+
+        let mut total_loss = 0.0;
+        for i in 0..batch_size {
+            let target_class = targets.get(i) as usize;
+            if target_class < num_classes {
+                // Get log probability at target class
+                let log_prob = log_probs.get(i * num_classes + target_class);
+                total_loss -= log_prob;
+            }
+        }
+
+        Ok(Tensor::scalar(total_loss / batch_size as f64))
+    } else {
+        // Fallback: treat as element-wise
+        let mut total_loss = 0.0;
+        let n = log_probs.numel().min(targets.numel());
+        for i in 0..n {
+            let target_class = targets.get(i) as usize;
+            if target_class < log_probs.numel() {
+                total_loss -= log_probs.get(target_class);
+            }
+        }
+        Ok(Tensor::scalar(total_loss / n as f64))
+    }
+}
+
+/// Binary cross entropy loss
+pub fn binary_cross_entropy(pred: &Tensor, target: &Tensor, eps: f64) -> Result<Tensor, TensorError> {
+    let mut data = vec![0.0; pred.numel()];
+
+    for i in 0..pred.numel() {
+        let p = pred.get(i).clamp(eps, 1.0 - eps);
+        let t = target.get(i);
+        data[i] = -(t * p.ln() + (1.0 - t) * (1.0 - p).ln());
+    }
+
+    let loss = Tensor::new(data, Shape::new(pred.shape().dims().to_vec()))?;
+    Ok(loss.mean())
+}

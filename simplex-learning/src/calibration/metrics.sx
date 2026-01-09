@@ -1,0 +1,308 @@
+// Calibration metrics
+//
+// Metrics for measuring how well-calibrated a model's confidence is.
+
+use crate::tensor::Tensor;
+
+/// Expected Calibration Error (ECE)
+///
+/// Measures the average gap between confidence and accuracy across bins.
+/// Lower is better. Target: < 0.05
+pub struct ECE {
+    /// Number of bins
+    num_bins: usize,
+
+    /// Bin boundaries
+    bin_boundaries: Vec<f64>,
+
+    /// Per-bin statistics
+    bins: Vec<BinStats>,
+}
+
+struct BinStats {
+    sum_confidence: f64,
+    sum_correct: f64,
+    count: usize,
+}
+
+impl ECE {
+    /// Create with specified number of bins
+    pub fn new(num_bins: usize) -> Self {
+        let mut bin_boundaries = Vec::with_capacity(num_bins + 1);
+        for i in 0..=num_bins {
+            bin_boundaries.push(i as f64 / num_bins as f64);
+        }
+
+        let bins = (0..num_bins).map(|_| BinStats {
+            sum_confidence: 0.0,
+            sum_correct: 0.0,
+            count: 0,
+        }).collect();
+
+        ECE {
+            num_bins,
+            bin_boundaries,
+            bins,
+        }
+    }
+
+    /// Add a prediction
+    pub fn add(&mut self, confidence: f64, correct: bool) {
+        let bin_idx = self.get_bin(confidence);
+        self.bins[bin_idx].sum_confidence += confidence;
+        self.bins[bin_idx].sum_correct += if correct { 1.0 } else { 0.0 };
+        self.bins[bin_idx].count += 1;
+    }
+
+    /// Get bin index for a confidence value
+    fn get_bin(&self, confidence: f64) -> usize {
+        let idx = (confidence * self.num_bins as f64) as usize;
+        idx.min(self.num_bins - 1)
+    }
+
+    /// Compute ECE
+    pub fn compute(&self) -> f64 {
+        let total_samples: usize = self.bins.iter().map(|b| b.count).sum();
+        if total_samples == 0 {
+            return 0.0;
+        }
+
+        let mut ece = 0.0;
+        for bin in &self.bins {
+            if bin.count > 0 {
+                let avg_confidence = bin.sum_confidence / bin.count as f64;
+                let accuracy = bin.sum_correct / bin.count as f64;
+                let weight = bin.count as f64 / total_samples as f64;
+                ece += weight * (accuracy - avg_confidence).abs();
+            }
+        }
+
+        ece
+    }
+
+    /// Reset statistics
+    pub fn reset(&mut self) {
+        for bin in &mut self.bins {
+            bin.sum_confidence = 0.0;
+            bin.sum_correct = 0.0;
+            bin.count = 0;
+        }
+    }
+
+    /// Get per-bin statistics for reliability diagram
+    pub fn get_bins(&self) -> Vec<(f64, f64, usize)> {
+        self.bins.iter().map(|b| {
+            let avg_conf = if b.count > 0 { b.sum_confidence / b.count as f64 } else { 0.0 };
+            let accuracy = if b.count > 0 { b.sum_correct / b.count as f64 } else { 0.0 };
+            (avg_conf, accuracy, b.count)
+        }).collect()
+    }
+}
+
+/// Compute ECE from predictions and targets
+pub fn compute_ece(predictions: &Tensor, targets: &Tensor, num_bins: usize) -> f64 {
+    let mut ece = ECE::new(num_bins);
+
+    // Assuming predictions are probabilities and targets are one-hot or indices
+    let batch_size = predictions.numel() / predictions.shape().dim(predictions.ndims() - 1);
+    let num_classes = predictions.shape().dim(predictions.ndims() - 1);
+
+    for i in 0..batch_size {
+        // Find predicted class and confidence
+        let offset = i * num_classes;
+        let mut max_prob = 0.0;
+        let mut pred_class = 0;
+
+        for j in 0..num_classes {
+            let prob = predictions.get(offset + j);
+            if prob > max_prob {
+                max_prob = prob;
+                pred_class = j;
+            }
+        }
+
+        // Get target class
+        let target_class = if targets.numel() == batch_size {
+            // Index targets
+            targets.get(i) as usize
+        } else {
+            // One-hot targets
+            let mut tc = 0;
+            for j in 0..num_classes {
+                if targets.get(i * num_classes + j) > 0.5 {
+                    tc = j;
+                    break;
+                }
+            }
+            tc
+        };
+
+        let correct = pred_class == target_class;
+        ece.add(max_prob, correct);
+    }
+
+    ece.compute()
+}
+
+/// Brier Score
+///
+/// Mean squared error of probability estimates.
+/// Lower is better.
+pub struct BrierScore {
+    sum_squared_error: f64,
+    count: usize,
+}
+
+impl BrierScore {
+    /// Create new Brier score tracker
+    pub fn new() -> Self {
+        BrierScore {
+            sum_squared_error: 0.0,
+            count: 0,
+        }
+    }
+
+    /// Add a prediction (binary case)
+    pub fn add(&mut self, probability: f64, actual: bool) {
+        let target = if actual { 1.0 } else { 0.0 };
+        let error = probability - target;
+        self.sum_squared_error += error * error;
+        self.count += 1;
+    }
+
+    /// Add a prediction (multi-class case)
+    pub fn add_multiclass(&mut self, probabilities: &[f64], target_class: usize) {
+        for (i, &prob) in probabilities.iter().enumerate() {
+            let target = if i == target_class { 1.0 } else { 0.0 };
+            let error = prob - target;
+            self.sum_squared_error += error * error;
+        }
+        self.count += 1;
+    }
+
+    /// Compute Brier score
+    pub fn compute(&self) -> f64 {
+        if self.count == 0 {
+            0.0
+        } else {
+            self.sum_squared_error / self.count as f64
+        }
+    }
+
+    /// Reset
+    pub fn reset(&mut self) {
+        self.sum_squared_error = 0.0;
+        self.count = 0;
+    }
+}
+
+/// Calibration curve data
+pub struct CalibrationCurve {
+    /// Bin centers (x-axis: predicted probability)
+    pub bin_centers: Vec<f64>,
+
+    /// Actual accuracy per bin (y-axis)
+    pub accuracies: Vec<f64>,
+
+    /// Sample counts per bin
+    pub counts: Vec<usize>,
+}
+
+impl CalibrationCurve {
+    /// Create from ECE bins
+    pub fn from_ece(ece: &ECE) -> Self {
+        let bins = ece.get_bins();
+        let num_bins = bins.len();
+
+        let mut bin_centers = Vec::with_capacity(num_bins);
+        let mut accuracies = Vec::with_capacity(num_bins);
+        let mut counts = Vec::with_capacity(num_bins);
+
+        for (i, (_, accuracy, count)) in bins.iter().enumerate() {
+            let center = (i as f64 + 0.5) / num_bins as f64;
+            bin_centers.push(center);
+            accuracies.push(*accuracy);
+            counts.push(*count);
+        }
+
+        CalibrationCurve {
+            bin_centers,
+            accuracies,
+            counts,
+        }
+    }
+}
+
+/// Reliability diagram (visual calibration)
+pub struct ReliabilityDiagram {
+    /// Calibration curve data
+    curve: CalibrationCurve,
+
+    /// ECE value
+    ece: f64,
+
+    /// Brier score
+    brier: f64,
+}
+
+impl ReliabilityDiagram {
+    /// Create from ECE and Brier score
+    pub fn new(ece_tracker: &ECE, brier_tracker: &BrierScore) -> Self {
+        ReliabilityDiagram {
+            curve: CalibrationCurve::from_ece(ece_tracker),
+            ece: ece_tracker.compute(),
+            brier: brier_tracker.compute(),
+        }
+    }
+
+    /// Get ECE
+    pub fn ece(&self) -> f64 {
+        self.ece
+    }
+
+    /// Get Brier score
+    pub fn brier(&self) -> f64 {
+        self.brier
+    }
+
+    /// Format as text for logging
+    pub fn to_string(&self) -> String {
+        let mut s = String::new();
+        s.push_str(&format!("ECE: {:.4}, Brier: {:.4}\n", self.ece, self.brier));
+        s.push_str("Bin      | Predicted | Actual   | Count\n");
+        s.push_str("---------+-----------+----------+------\n");
+
+        for i in 0..self.curve.bin_centers.len() {
+            let predicted = self.curve.bin_centers[i];
+            let actual = self.curve.accuracies[i];
+            let count = self.curve.counts[i];
+
+            if count > 0 {
+                s.push_str(&format!(
+                    "{:.1}-{:.1}  | {:.3}     | {:.3}    | {}\n",
+                    predicted - 0.05, predicted + 0.05,
+                    predicted, actual, count
+                ));
+            }
+        }
+
+        s
+    }
+}
+
+/// Maximum Calibration Error (MCE)
+///
+/// Maximum gap between confidence and accuracy across bins.
+pub fn compute_mce(ece_tracker: &ECE) -> f64 {
+    let bins = ece_tracker.get_bins();
+    let mut max_error = 0.0;
+
+    for (avg_conf, accuracy, count) in bins {
+        if count > 0 {
+            let error = (accuracy - avg_conf).abs();
+            max_error = max_error.max(error);
+        }
+    }
+
+    max_error
+}

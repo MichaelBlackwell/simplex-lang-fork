@@ -1,0 +1,677 @@
+// Experience replay buffer for continuous learning
+//
+// Stores past experiences and samples them during training to prevent
+// catastrophic forgetting.
+
+use std::collections::VecDeque;
+use crate::tensor::Tensor;
+
+/// Configuration for replay buffer
+pub struct ReplayConfig {
+    /// Maximum buffer size
+    pub capacity: usize,
+
+    /// Ratio of replayed examples to new examples
+    pub replay_ratio: f64,
+
+    /// Sampling strategy
+    pub strategy: SamplingStrategy,
+}
+
+impl Default for ReplayConfig {
+    fn default() -> Self {
+        ReplayConfig {
+            capacity: 10000,
+            replay_ratio: 0.2,
+            strategy: SamplingStrategy::Uniform,
+        }
+    }
+}
+
+/// Sampling strategy for replay buffer
+pub enum SamplingStrategy {
+    /// Uniform random sampling
+    Uniform,
+
+    /// Sample proportional to priority
+    Prioritized { alpha: f64, beta: f64 },
+
+    /// Stratified sampling by category
+    Stratified,
+
+    /// Sample recent examples more often
+    RecencyBiased { decay: f64 },
+}
+
+/// A single experience in the buffer
+pub struct Experience<I, O, S> {
+    /// Input data
+    pub input: I,
+
+    /// Output/action taken
+    pub output: O,
+
+    /// Feedback signal received
+    pub signal: S,
+
+    /// Priority for prioritized replay
+    pub priority: f64,
+
+    /// Timestamp (step number)
+    pub timestamp: u64,
+
+    /// Optional category for stratified sampling
+    pub category: Option<String>,
+}
+
+/// Experience replay buffer
+pub struct ReplayBuffer<I, O, S> {
+    /// Stored experiences
+    buffer: VecDeque<Experience<I, O, S>>,
+
+    /// Maximum capacity
+    capacity: usize,
+
+    /// Current step counter
+    step: u64,
+
+    /// Configuration
+    config: ReplayConfig,
+
+    /// Sum of priorities (for prioritized sampling)
+    priority_sum: f64,
+}
+
+impl<I: Clone, O: Clone, S: Clone> ReplayBuffer<I, O, S> {
+    /// Create a new replay buffer
+    pub fn new(capacity: usize) -> Self {
+        ReplayBuffer {
+            buffer: VecDeque::with_capacity(capacity),
+            capacity,
+            step: 0,
+            config: ReplayConfig::default(),
+            priority_sum: 0.0,
+        }
+    }
+
+    /// Create with configuration
+    pub fn with_config(config: ReplayConfig) -> Self {
+        let capacity = config.capacity;
+        ReplayBuffer {
+            buffer: VecDeque::with_capacity(capacity),
+            capacity,
+            step: 0,
+            config,
+            priority_sum: 0.0,
+        }
+    }
+
+    /// Add experience to buffer
+    pub fn add(&mut self, input: I, output: O, signal: S) {
+        self.add_with_priority(input, output, signal, 1.0, None)
+    }
+
+    /// Add experience with priority and category
+    pub fn add_with_priority(
+        &mut self,
+        input: I,
+        output: O,
+        signal: S,
+        priority: f64,
+        category: Option<String>,
+    ) {
+        self.step += 1;
+
+        let exp = Experience {
+            input,
+            output,
+            signal,
+            priority,
+            timestamp: self.step,
+            category,
+        };
+
+        // Remove oldest if at capacity
+        if self.buffer.len() >= self.capacity {
+            if let Some(old) = self.buffer.pop_front() {
+                self.priority_sum -= old.priority;
+            }
+        }
+
+        self.priority_sum += priority;
+        self.buffer.push_back(exp);
+    }
+
+    /// Sample a batch of experiences
+    pub fn sample(&self, batch_size: usize) -> Vec<&Experience<I, O, S>> {
+        if self.buffer.is_empty() {
+            return Vec::new();
+        }
+
+        match &self.config.strategy {
+            SamplingStrategy::Uniform => self.sample_uniform(batch_size),
+            SamplingStrategy::Prioritized { alpha, beta } => {
+                self.sample_prioritized(batch_size, *alpha, *beta)
+            }
+            SamplingStrategy::Stratified => self.sample_stratified(batch_size),
+            SamplingStrategy::RecencyBiased { decay } => {
+                self.sample_recency_biased(batch_size, *decay)
+            }
+        }
+    }
+
+    /// Uniform random sampling
+    fn sample_uniform(&self, batch_size: usize) -> Vec<&Experience<I, O, S>> {
+        let mut samples = Vec::with_capacity(batch_size);
+        let len = self.buffer.len();
+
+        for _ in 0..batch_size {
+            let idx = random_range(len);
+            samples.push(&self.buffer[idx]);
+        }
+
+        samples
+    }
+
+    /// Prioritized sampling (PER)
+    fn sample_prioritized(&self, batch_size: usize, alpha: f64, _beta: f64) -> Vec<&Experience<I, O, S>> {
+        let mut samples = Vec::with_capacity(batch_size);
+
+        for _ in 0..batch_size {
+            let target = random_f64() * self.priority_sum;
+            let mut cumsum = 0.0;
+
+            for exp in &self.buffer {
+                cumsum += exp.priority.powf(alpha);
+                if cumsum >= target {
+                    samples.push(exp);
+                    break;
+                }
+            }
+        }
+
+        // Fill remaining with uniform if needed
+        while samples.len() < batch_size && !self.buffer.is_empty() {
+            let idx = random_range(self.buffer.len());
+            samples.push(&self.buffer[idx]);
+        }
+
+        samples
+    }
+
+    /// Stratified sampling by category
+    fn sample_stratified(&self, batch_size: usize) -> Vec<&Experience<I, O, S>> {
+        // Group by category
+        let mut categories: std::collections::HashMap<Option<String>, Vec<&Experience<I, O, S>>> =
+            std::collections::HashMap::new();
+
+        for exp in &self.buffer {
+            categories.entry(exp.category.clone()).or_insert_with(Vec::new).push(exp);
+        }
+
+        // Sample equally from each category
+        let mut samples = Vec::with_capacity(batch_size);
+        let per_category = (batch_size / categories.len().max(1)).max(1);
+
+        for (_cat, exps) in &categories {
+            for _ in 0..per_category {
+                if samples.len() >= batch_size {
+                    break;
+                }
+                let idx = random_range(exps.len());
+                samples.push(exps[idx]);
+            }
+        }
+
+        samples
+    }
+
+    /// Recency-biased sampling
+    fn sample_recency_biased(&self, batch_size: usize, decay: f64) -> Vec<&Experience<I, O, S>> {
+        let mut samples = Vec::with_capacity(batch_size);
+        let len = self.buffer.len();
+
+        for _ in 0..batch_size {
+            // Exponential distribution favoring recent experiences
+            let u = random_f64();
+            let idx = ((1.0 - u.powf(decay)) * len as f64) as usize;
+            let idx = idx.min(len - 1);
+            samples.push(&self.buffer[len - 1 - idx]);
+        }
+
+        samples
+    }
+
+    /// Update priority of an experience
+    pub fn update_priority(&mut self, idx: usize, new_priority: f64) {
+        if idx < self.buffer.len() {
+            self.priority_sum -= self.buffer[idx].priority;
+            self.buffer[idx].priority = new_priority;
+            self.priority_sum += new_priority;
+        }
+    }
+
+    /// Get buffer size
+    pub fn len(&self) -> usize {
+        self.buffer.len()
+    }
+
+    /// Check if buffer is empty
+    pub fn is_empty(&self) -> bool {
+        self.buffer.is_empty()
+    }
+
+    /// Get capacity
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Clear the buffer
+    pub fn clear(&mut self) {
+        self.buffer.clear();
+        self.priority_sum = 0.0;
+    }
+
+    /// Get replay ratio
+    pub fn replay_ratio(&self) -> f64 {
+        self.config.replay_ratio
+    }
+
+    /// Calculate number of replay samples for a batch
+    pub fn replay_batch_size(&self, new_batch_size: usize) -> usize {
+        ((new_batch_size as f64) * self.config.replay_ratio) as usize
+    }
+}
+
+// Use our RNG module
+use super::rng::{random_usize, random_f64, random_range, Rng};
+
+/// Reservoir sampling for streaming data
+pub struct ReservoirBuffer<T> {
+    /// Stored items
+    buffer: Vec<T>,
+
+    /// Maximum capacity
+    capacity: usize,
+
+    /// Items seen
+    count: u64,
+}
+
+impl<T: Clone> ReservoirBuffer<T> {
+    /// Create new reservoir buffer
+    pub fn new(capacity: usize) -> Self {
+        ReservoirBuffer {
+            buffer: Vec::with_capacity(capacity),
+            capacity,
+            count: 0,
+        }
+    }
+
+    /// Add item using reservoir sampling
+    pub fn add(&mut self, item: T) {
+        self.count += 1;
+
+        if self.buffer.len() < self.capacity {
+            self.buffer.push(item);
+        } else {
+            // Replace with probability capacity/count
+            let idx = random_range(self.count as usize);
+            if idx < self.capacity {
+                self.buffer[idx] = item;
+            }
+        }
+    }
+
+    /// Get all items
+    pub fn items(&self) -> &[T] {
+        &self.buffer
+    }
+
+    /// Get buffer size
+    pub fn len(&self) -> usize {
+        self.buffer.len()
+    }
+
+    /// Items seen
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+}
+
+// ==================== Tensor-Based Replay Buffer ====================
+
+/// Experience with tensor inputs/outputs for neural network training
+pub struct TensorExperience {
+    /// Input tensor
+    pub input: Tensor,
+
+    /// Target/label tensor
+    pub target: Tensor,
+
+    /// Loss value when this experience was stored
+    pub loss: f64,
+
+    /// Priority for prioritized replay
+    pub priority: f64,
+
+    /// Timestamp
+    pub timestamp: u64,
+
+    /// Task ID (for multi-task learning)
+    pub task_id: Option<usize>,
+}
+
+impl TensorExperience {
+    /// Create new tensor experience
+    pub fn new(input: Tensor, target: Tensor, loss: f64) -> Self {
+        TensorExperience {
+            input,
+            target,
+            loss,
+            priority: loss.abs() + 1e-6, // Higher loss = higher priority
+            timestamp: 0,
+            task_id: None,
+        }
+    }
+
+    /// Create with task ID
+    pub fn with_task(input: Tensor, target: Tensor, loss: f64, task_id: usize) -> Self {
+        TensorExperience {
+            input,
+            target,
+            loss,
+            priority: loss.abs() + 1e-6,
+            timestamp: 0,
+            task_id: Some(task_id),
+        }
+    }
+}
+
+/// Replay buffer specialized for tensor data
+///
+/// Provides efficient storage and sampling for neural network training
+/// with support for prioritized experience replay (PER).
+pub struct TensorReplayBuffer {
+    /// Stored experiences
+    buffer: VecDeque<TensorExperience>,
+
+    /// Maximum capacity
+    capacity: usize,
+
+    /// Current step counter
+    step: u64,
+
+    /// Configuration
+    config: ReplayConfig,
+
+    /// Sum of priorities (for PER)
+    priority_sum: f64,
+
+    /// Max priority seen (for new samples)
+    max_priority: f64,
+
+    /// RNG for sampling
+    rng: Rng,
+}
+
+impl TensorReplayBuffer {
+    /// Create new tensor replay buffer
+    pub fn new(capacity: usize) -> Self {
+        TensorReplayBuffer {
+            buffer: VecDeque::with_capacity(capacity),
+            capacity,
+            step: 0,
+            config: ReplayConfig::default(),
+            priority_sum: 0.0,
+            max_priority: 1.0,
+            rng: Rng::from_entropy(),
+        }
+    }
+
+    /// Create with configuration
+    pub fn with_config(config: ReplayConfig) -> Self {
+        let capacity = config.capacity;
+        TensorReplayBuffer {
+            buffer: VecDeque::with_capacity(capacity),
+            capacity,
+            step: 0,
+            config,
+            priority_sum: 0.0,
+            max_priority: 1.0,
+            rng: Rng::from_entropy(),
+        }
+    }
+
+    /// Add experience to buffer
+    pub fn add(&mut self, input: Tensor, target: Tensor, loss: f64) {
+        self.step += 1;
+
+        let mut exp = TensorExperience::new(input, target, loss);
+        exp.timestamp = self.step;
+        exp.priority = self.max_priority; // New experiences get max priority
+
+        // Remove oldest if at capacity
+        if self.buffer.len() >= self.capacity {
+            if let Some(old) = self.buffer.pop_front() {
+                self.priority_sum -= old.priority;
+            }
+        }
+
+        self.priority_sum += exp.priority;
+        self.buffer.push_back(exp);
+    }
+
+    /// Add experience with task ID
+    pub fn add_with_task(&mut self, input: Tensor, target: Tensor, loss: f64, task_id: usize) {
+        self.step += 1;
+
+        let mut exp = TensorExperience::with_task(input, target, loss, task_id);
+        exp.timestamp = self.step;
+        exp.priority = self.max_priority;
+
+        if self.buffer.len() >= self.capacity {
+            if let Some(old) = self.buffer.pop_front() {
+                self.priority_sum -= old.priority;
+            }
+        }
+
+        self.priority_sum += exp.priority;
+        self.buffer.push_back(exp);
+    }
+
+    /// Sample a batch of experiences
+    pub fn sample(&mut self, batch_size: usize) -> Vec<(usize, &TensorExperience)> {
+        if self.buffer.is_empty() {
+            return Vec::new();
+        }
+
+        match &self.config.strategy {
+            SamplingStrategy::Uniform => self.sample_uniform(batch_size),
+            SamplingStrategy::Prioritized { alpha, beta } => {
+                self.sample_prioritized(batch_size, *alpha, *beta)
+            }
+            SamplingStrategy::Stratified => self.sample_by_task(batch_size),
+            SamplingStrategy::RecencyBiased { decay } => {
+                self.sample_recency(batch_size, *decay)
+            }
+        }
+    }
+
+    /// Uniform sampling
+    fn sample_uniform(&mut self, batch_size: usize) -> Vec<(usize, &TensorExperience)> {
+        let len = self.buffer.len();
+        let indices = self.rng.sample_indices(len, batch_size.min(len));
+
+        indices.iter()
+            .map(|&idx| (idx, &self.buffer[idx]))
+            .collect()
+    }
+
+    /// Prioritized experience replay (PER)
+    fn sample_prioritized(&mut self, batch_size: usize, alpha: f64, _beta: f64) -> Vec<(usize, &TensorExperience)> {
+        let mut samples = Vec::with_capacity(batch_size);
+        let len = self.buffer.len();
+
+        for _ in 0..batch_size {
+            let target = self.rng.next_f64() * self.priority_sum;
+            let mut cumsum = 0.0;
+
+            for (idx, exp) in self.buffer.iter().enumerate() {
+                cumsum += exp.priority.powf(alpha);
+                if cumsum >= target {
+                    samples.push((idx, exp));
+                    break;
+                }
+            }
+        }
+
+        // Fill if needed
+        while samples.len() < batch_size && !self.buffer.is_empty() {
+            let idx = self.rng.next_range(len);
+            samples.push((idx, &self.buffer[idx]));
+        }
+
+        samples
+    }
+
+    /// Sample stratified by task
+    fn sample_by_task(&mut self, batch_size: usize) -> Vec<(usize, &TensorExperience)> {
+        // Group by task
+        let mut task_groups: std::collections::HashMap<Option<usize>, Vec<usize>> =
+            std::collections::HashMap::new();
+
+        for (idx, exp) in self.buffer.iter().enumerate() {
+            task_groups.entry(exp.task_id).or_insert_with(Vec::new).push(idx);
+        }
+
+        // Sample equally from each task
+        let mut samples = Vec::with_capacity(batch_size);
+        let per_task = (batch_size / task_groups.len().max(1)).max(1);
+
+        for (_task, indices) in &task_groups {
+            for _ in 0..per_task {
+                if samples.len() >= batch_size {
+                    break;
+                }
+                let idx = indices[self.rng.next_range(indices.len())];
+                samples.push((idx, &self.buffer[idx]));
+            }
+        }
+
+        samples
+    }
+
+    /// Recency-biased sampling
+    fn sample_recency(&mut self, batch_size: usize, decay: f64) -> Vec<(usize, &TensorExperience)> {
+        let mut samples = Vec::with_capacity(batch_size);
+        let len = self.buffer.len();
+
+        for _ in 0..batch_size {
+            let u = self.rng.next_f64();
+            let idx = ((1.0 - u.powf(decay)) * len as f64) as usize;
+            let idx = idx.min(len - 1);
+            // Sample from end (most recent)
+            let actual_idx = len - 1 - idx;
+            samples.push((actual_idx, &self.buffer[actual_idx]));
+        }
+
+        samples
+    }
+
+    /// Update priority after training (for PER)
+    pub fn update_priority(&mut self, idx: usize, td_error: f64) {
+        if idx < self.buffer.len() {
+            self.priority_sum -= self.buffer[idx].priority;
+            let new_priority = td_error.abs() + 1e-6;
+            self.buffer[idx].priority = new_priority;
+            self.priority_sum += new_priority;
+            self.max_priority = self.max_priority.max(new_priority);
+        }
+    }
+
+    /// Update priorities in batch
+    pub fn update_priorities(&mut self, indices: &[usize], td_errors: &[f64]) {
+        for (&idx, &td_error) in indices.iter().zip(td_errors.iter()) {
+            self.update_priority(idx, td_error);
+        }
+    }
+
+    /// Get number of experiences by task
+    pub fn task_counts(&self) -> std::collections::HashMap<Option<usize>, usize> {
+        let mut counts = std::collections::HashMap::new();
+        for exp in &self.buffer {
+            *counts.entry(exp.task_id).or_insert(0) += 1;
+        }
+        counts
+    }
+
+    /// Get buffer size
+    pub fn len(&self) -> usize {
+        self.buffer.len()
+    }
+
+    /// Check if empty
+    pub fn is_empty(&self) -> bool {
+        self.buffer.is_empty()
+    }
+
+    /// Get capacity
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Clear buffer
+    pub fn clear(&mut self) {
+        self.buffer.clear();
+        self.priority_sum = 0.0;
+        self.max_priority = 1.0;
+    }
+
+    /// Get replay ratio
+    pub fn replay_ratio(&self) -> f64 {
+        self.config.replay_ratio
+    }
+
+    /// Calculate replay batch size for mixed batch
+    pub fn replay_batch_size(&self, new_batch_size: usize) -> usize {
+        ((new_batch_size as f64) * self.config.replay_ratio) as usize
+    }
+
+    /// Create mixed batch: new examples + replay examples
+    ///
+    /// Returns (replay_indices, replay_experiences) for training
+    pub fn create_mixed_batch(
+        &mut self,
+        new_inputs: &[Tensor],
+        new_targets: &[Tensor],
+        new_losses: &[f64],
+    ) -> (Vec<Tensor>, Vec<Tensor>) {
+        // Add new experiences to buffer
+        for ((input, target), &loss) in new_inputs.iter().zip(new_targets.iter()).zip(new_losses.iter()) {
+            self.add(input.clone(), target.clone(), loss);
+        }
+
+        // Calculate replay samples needed
+        let replay_count = self.replay_batch_size(new_inputs.len());
+
+        if replay_count == 0 || self.buffer.len() < 10 {
+            // Not enough history, just use new examples
+            return (new_inputs.to_vec(), new_targets.to_vec());
+        }
+
+        // Sample replay experiences
+        let replay_samples = self.sample(replay_count);
+
+        // Combine new + replay
+        let mut inputs = new_inputs.to_vec();
+        let mut targets = new_targets.to_vec();
+
+        for (_idx, exp) in &replay_samples {
+            inputs.push(exp.input.clone());
+            targets.push(exp.target.clone());
+        }
+
+        (inputs, targets)
+    }
+}

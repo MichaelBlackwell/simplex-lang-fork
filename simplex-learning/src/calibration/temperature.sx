@@ -1,0 +1,711 @@
+// Temperature scaling and calibration methods
+//
+// Methods for post-hoc calibration of neural network predictions.
+//
+// Implements:
+// - Temperature scaling (simple, effective)
+// - Learnable temperature with gradient descent
+// - Platt scaling (logistic regression)
+// - Beta calibration (more flexible)
+// - Vector scaling (per-class temperatures)
+// - Focal loss calibration
+// - Label smoothing
+
+use crate::tensor::{Tensor, Shape};
+
+/// Temperature scaling calibration
+///
+/// Simple but effective post-hoc calibration method.
+/// Divides logits by temperature T before softmax.
+/// T > 1 softens predictions (increases entropy)
+/// T < 1 sharpens predictions (decreases entropy)
+pub struct TemperatureScaling {
+    /// Temperature parameter
+    temperature: f64,
+
+    /// Whether temperature is learnable
+    learnable: bool,
+
+    /// Learning rate for temperature
+    lr: f64,
+}
+
+impl TemperatureScaling {
+    /// Create with fixed temperature
+    pub fn new(temperature: f64) -> Self {
+        TemperatureScaling {
+            temperature: temperature.max(0.01),
+            learnable: false,
+            lr: 0.01,
+        }
+    }
+
+    /// Create with learnable temperature
+    pub fn learnable(initial_temp: f64, lr: f64) -> Self {
+        TemperatureScaling {
+            temperature: initial_temp.max(0.01),
+            learnable: true,
+            lr,
+        }
+    }
+
+    /// Apply temperature scaling to logits
+    pub fn scale(&self, logits: &Tensor) -> Tensor {
+        let mut scaled = logits.clone();
+        for i in 0..scaled.numel() {
+            scaled.set(i, scaled.get(i) / self.temperature);
+        }
+        scaled
+    }
+
+    /// Get calibrated probabilities from logits
+    pub fn calibrate(&self, logits: &Tensor) -> Tensor {
+        let scaled = self.scale(logits);
+        softmax(&scaled)
+    }
+
+    /// Get current temperature
+    pub fn temperature(&self) -> f64 {
+        self.temperature
+    }
+
+    /// Set temperature
+    pub fn set_temperature(&mut self, temp: f64) {
+        self.temperature = temp.max(0.01);
+    }
+
+    /// Update temperature to minimize NLL
+    pub fn update(&mut self, logits: &Tensor, targets: &Tensor) {
+        if !self.learnable {
+            return;
+        }
+
+        // Gradient of NLL w.r.t. temperature
+        // dL/dT = (1/T^2) * sum_i (p_i - y_i) * z_i
+        let probs = self.calibrate(logits);
+        let mut grad = 0.0;
+
+        for i in 0..logits.numel() {
+            let p = probs.get(i);
+            let y = targets.get(i);
+            let z = logits.get(i);
+            grad += (p - y) * z;
+        }
+        grad /= self.temperature * self.temperature;
+
+        // Update with gradient descent
+        self.temperature -= self.lr * grad;
+        self.temperature = self.temperature.clamp(0.1, 10.0);
+    }
+
+    /// Find optimal temperature using grid search
+    pub fn optimize_grid(&mut self, logits: &Tensor, targets: &Tensor) {
+        let mut best_temp = self.temperature;
+        let mut best_nll = f64::MAX;
+
+        // Grid search over temperatures
+        for t in 1..100 {
+            let temp = t as f64 * 0.1; // 0.1 to 10.0
+            self.temperature = temp;
+
+            let nll = self.compute_nll(logits, targets);
+            if nll < best_nll {
+                best_nll = nll;
+                best_temp = temp;
+            }
+        }
+
+        self.temperature = best_temp;
+    }
+
+    /// Compute negative log-likelihood
+    fn compute_nll(&self, logits: &Tensor, targets: &Tensor) -> f64 {
+        let probs = self.calibrate(logits);
+        let mut nll = 0.0;
+
+        for i in 0..probs.numel() {
+            let p = probs.get(i).max(1e-10);
+            let y = targets.get(i);
+            if y > 0.5 {
+                nll -= p.ln();
+            }
+        }
+
+        nll / (probs.numel() as f64)
+    }
+}
+
+/// Learnable temperature with gradient descent
+pub struct LearnableTemperature {
+    /// Log temperature (for unconstrained optimization)
+    log_temp: f64,
+
+    /// Learning rate
+    lr: f64,
+
+    /// Momentum
+    momentum: f64,
+
+    /// Velocity for momentum
+    velocity: f64,
+
+    /// L2 regularization
+    weight_decay: f64,
+}
+
+impl LearnableTemperature {
+    /// Create with initial temperature
+    pub fn new(initial_temp: f64, lr: f64) -> Self {
+        LearnableTemperature {
+            log_temp: initial_temp.max(0.01).ln(),
+            lr,
+            momentum: 0.9,
+            velocity: 0.0,
+            weight_decay: 0.0,
+        }
+    }
+
+    /// Create with all parameters
+    pub fn with_params(initial_temp: f64, lr: f64, momentum: f64, weight_decay: f64) -> Self {
+        LearnableTemperature {
+            log_temp: initial_temp.max(0.01).ln(),
+            lr,
+            momentum,
+            velocity: 0.0,
+            weight_decay,
+        }
+    }
+
+    /// Get temperature
+    pub fn temperature(&self) -> f64 {
+        self.log_temp.exp()
+    }
+
+    /// Set temperature
+    pub fn set_temperature(&mut self, temp: f64) {
+        self.log_temp = temp.max(0.01).ln();
+    }
+
+    /// Apply temperature to logits
+    pub fn apply(&self, logits: &Tensor) -> Tensor {
+        let temp = self.temperature();
+        let mut scaled = logits.clone();
+        for i in 0..scaled.numel() {
+            scaled.set(i, scaled.get(i) / temp);
+        }
+        scaled
+    }
+
+    /// Get calibrated probabilities
+    pub fn calibrate(&self, logits: &Tensor) -> Tensor {
+        let scaled = self.apply(logits);
+        softmax(&scaled)
+    }
+
+    /// Update using NLL loss gradient
+    pub fn backward(&mut self, logits: &Tensor, targets: &Tensor) {
+        let temp = self.temperature();
+        let probs = self.calibrate(logits);
+
+        // Gradient of NLL w.r.t. log(T)
+        // dL/d(log T) = sum_i (p_i - y_i) * z_i
+        let mut grad = 0.0;
+        for i in 0..logits.numel() {
+            let p = probs.get(i);
+            let y = targets.get(i);
+            let z = logits.get(i);
+            grad += (p - y) * z;
+        }
+        grad /= logits.numel() as f64;
+
+        // Add weight decay
+        grad += self.weight_decay * self.log_temp;
+
+        // Update with momentum
+        self.velocity = self.momentum * self.velocity + grad;
+        self.log_temp -= self.lr * self.velocity;
+
+        // Clamp to reasonable range
+        self.log_temp = self.log_temp.clamp(-2.3, 2.3); // T in [0.1, 10]
+    }
+
+    /// Reset optimizer state
+    pub fn reset(&mut self) {
+        self.velocity = 0.0;
+    }
+}
+
+/// Platt scaling (logistic regression on logits)
+///
+/// Fits p = sigmoid(a * z + b) to calibrate binary predictions.
+pub struct PlattScaling {
+    /// Scale parameter (a)
+    scale: f64,
+
+    /// Bias parameter (b)
+    bias: f64,
+
+    /// Learning rate
+    lr: f64,
+
+    /// Regularization strength
+    reg: f64,
+}
+
+impl PlattScaling {
+    /// Create with default parameters
+    pub fn new() -> Self {
+        PlattScaling {
+            scale: 1.0,
+            bias: 0.0,
+            lr: 0.01,
+            reg: 0.001,
+        }
+    }
+
+    /// Create with custom learning rate
+    pub fn with_lr(lr: f64) -> Self {
+        PlattScaling {
+            scale: 1.0,
+            bias: 0.0,
+            lr,
+            reg: 0.001,
+        }
+    }
+
+    /// Apply Platt scaling to a single logit
+    pub fn calibrate(&self, logit: f64) -> f64 {
+        let z = self.scale * logit + self.bias;
+        sigmoid(z)
+    }
+
+    /// Apply to tensor of logits
+    pub fn calibrate_tensor(&self, logits: &Tensor) -> Tensor {
+        let mut calibrated = Tensor::zeros(logits.shape().clone());
+        for i in 0..logits.numel() {
+            calibrated.set(i, self.calibrate(logits.get(i)));
+        }
+        calibrated
+    }
+
+    /// Fit to validation data using gradient descent
+    pub fn fit(&mut self, logits: &[f64], labels: &[bool], num_iterations: usize) {
+        for _ in 0..num_iterations {
+            let mut grad_scale = 0.0;
+            let mut grad_bias = 0.0;
+
+            for (&logit, &label) in logits.iter().zip(labels.iter()) {
+                let p = self.calibrate(logit);
+                let y = if label { 1.0 } else { 0.0 };
+                let error = p - y;
+
+                grad_scale += error * logit;
+                grad_bias += error;
+            }
+
+            // Average gradients
+            let n = logits.len() as f64;
+            grad_scale = grad_scale / n + self.reg * self.scale;
+            grad_bias = grad_bias / n + self.reg * self.bias;
+
+            // Update parameters
+            self.scale -= self.lr * grad_scale;
+            self.bias -= self.lr * grad_bias;
+        }
+    }
+
+    /// Fit with Newton's method (faster convergence)
+    pub fn fit_newton(&mut self, logits: &[f64], labels: &[bool], num_iterations: usize) {
+        for _ in 0..num_iterations {
+            let mut grad_a = 0.0;
+            let mut grad_b = 0.0;
+            let mut hess_aa = 0.0;
+            let mut hess_ab = 0.0;
+            let mut hess_bb = 0.0;
+
+            for (&logit, &label) in logits.iter().zip(labels.iter()) {
+                let p = self.calibrate(logit);
+                let y = if label { 1.0 } else { 0.0 };
+                let d = p * (1.0 - p);
+
+                grad_a += (p - y) * logit;
+                grad_b += p - y;
+                hess_aa += d * logit * logit;
+                hess_ab += d * logit;
+                hess_bb += d;
+            }
+
+            // Add regularization
+            hess_aa += self.reg;
+            hess_bb += self.reg;
+
+            // Solve 2x2 system
+            let det = hess_aa * hess_bb - hess_ab * hess_ab;
+            if det.abs() > 1e-10 {
+                let delta_a = (hess_bb * grad_a - hess_ab * grad_b) / det;
+                let delta_b = (hess_aa * grad_b - hess_ab * grad_a) / det;
+
+                self.scale -= delta_a;
+                self.bias -= delta_b;
+            }
+        }
+    }
+
+    /// Get parameters
+    pub fn params(&self) -> (f64, f64) {
+        (self.scale, self.bias)
+    }
+}
+
+/// Beta calibration
+///
+/// More flexible than temperature scaling, uses Beta distribution CDF.
+/// Fits p_calibrated = Beta(a, b).cdf(p_original)
+pub struct BetaCalibration {
+    /// Alpha parameter (controls low-probability behavior)
+    alpha: f64,
+
+    /// Beta parameter (controls high-probability behavior)
+    beta: f64,
+
+    /// Learning rate
+    lr: f64,
+}
+
+impl BetaCalibration {
+    /// Create with default parameters (identity calibration)
+    pub fn new() -> Self {
+        BetaCalibration {
+            alpha: 1.0,
+            beta: 1.0,
+            lr: 0.01,
+        }
+    }
+
+    /// Apply beta calibration
+    pub fn calibrate(&self, prob: f64) -> f64 {
+        // Regularized incomplete beta function approximation
+        // For simplicity, use power transformation: x^a / (x^a + (1-x)^b)
+        let p = prob.clamp(1e-10, 1.0 - 1e-10);
+        let pa = p.powf(self.alpha);
+        let pb = (1.0 - p).powf(self.beta);
+        pa / (pa + pb)
+    }
+
+    /// Fit to validation data
+    pub fn fit(&mut self, probs: &[f64], labels: &[bool], num_iterations: usize) {
+        for _ in 0..num_iterations {
+            let mut grad_alpha = 0.0;
+            let mut grad_beta = 0.0;
+
+            for (&prob, &label) in probs.iter().zip(labels.iter()) {
+                let p = prob.clamp(1e-10, 1.0 - 1e-10);
+                let cal_p = self.calibrate(prob);
+                let y = if label { 1.0 } else { 0.0 };
+                let error = cal_p - y;
+
+                // Approximate gradients
+                let pa = p.powf(self.alpha);
+                let pb = (1.0 - p).powf(self.beta);
+                let denom = (pa + pb).powi(2);
+
+                grad_alpha += error * pa * pb * p.ln() / denom;
+                grad_beta -= error * pa * pb * (1.0 - p).ln() / denom;
+            }
+
+            let n = probs.len() as f64;
+            self.alpha -= self.lr * grad_alpha / n;
+            self.beta -= self.lr * grad_beta / n;
+
+            // Keep positive
+            self.alpha = self.alpha.max(0.1);
+            self.beta = self.beta.max(0.1);
+        }
+    }
+
+    /// Get parameters
+    pub fn params(&self) -> (f64, f64) {
+        (self.alpha, self.beta)
+    }
+}
+
+/// Vector scaling (per-class temperatures)
+///
+/// More flexible than single temperature, allows different scaling per class.
+pub struct VectorScaling {
+    /// Per-class temperature
+    temperatures: Vec<f64>,
+
+    /// Per-class bias
+    biases: Vec<f64>,
+
+    /// Learning rate
+    lr: f64,
+}
+
+impl VectorScaling {
+    /// Create with number of classes
+    pub fn new(num_classes: usize) -> Self {
+        VectorScaling {
+            temperatures: vec![1.0; num_classes],
+            biases: vec![0.0; num_classes],
+            lr: 0.01,
+        }
+    }
+
+    /// Apply vector scaling to logits
+    pub fn calibrate(&self, logits: &Tensor) -> Tensor {
+        let num_classes = self.temperatures.len();
+        let batch_size = logits.numel() / num_classes;
+
+        let mut scaled = logits.clone();
+        for b in 0..batch_size {
+            for c in 0..num_classes {
+                let idx = b * num_classes + c;
+                let z = logits.get(idx);
+                scaled.set(idx, z / self.temperatures[c] + self.biases[c]);
+            }
+        }
+
+        softmax(&scaled)
+    }
+
+    /// Update parameters with gradient descent
+    pub fn backward(&mut self, logits: &Tensor, targets: &Tensor) {
+        let num_classes = self.temperatures.len();
+        let batch_size = logits.numel() / num_classes;
+        let probs = self.calibrate(logits);
+
+        for c in 0..num_classes {
+            let mut grad_t = 0.0;
+            let mut grad_b = 0.0;
+
+            for b in 0..batch_size {
+                let idx = b * num_classes + c;
+                let p = probs.get(idx);
+                let y = targets.get(idx);
+                let z = logits.get(idx);
+
+                grad_t -= (p - y) * z / (self.temperatures[c] * self.temperatures[c]);
+                grad_b += p - y;
+            }
+
+            self.temperatures[c] -= self.lr * grad_t / batch_size as f64;
+            self.biases[c] -= self.lr * grad_b / batch_size as f64;
+
+            self.temperatures[c] = self.temperatures[c].clamp(0.1, 10.0);
+        }
+    }
+}
+
+/// Focal loss for calibration
+///
+/// Reduces contribution of well-classified examples, focusing on hard examples.
+/// L_focal = -alpha * (1-p)^gamma * log(p)
+pub struct FocalLoss {
+    /// Focusing parameter (higher = more focus on hard examples)
+    gamma: f64,
+
+    /// Class balance weight
+    alpha: f64,
+}
+
+impl FocalLoss {
+    /// Create with parameters
+    pub fn new(gamma: f64, alpha: f64) -> Self {
+        FocalLoss { gamma, alpha }
+    }
+
+    /// Compute focal loss
+    pub fn compute(&self, prob: f64, target: bool) -> f64 {
+        let p = if target { prob } else { 1.0 - prob };
+        let p = p.clamp(1e-10, 1.0);
+
+        -self.alpha * (1.0 - p).powf(self.gamma) * p.ln()
+    }
+
+    /// Compute batch focal loss
+    pub fn compute_batch(&self, probs: &Tensor, targets: &Tensor) -> f64 {
+        let mut loss = 0.0;
+        for i in 0..probs.numel() {
+            let p = probs.get(i);
+            let t = targets.get(i) > 0.5;
+            loss += self.compute(p, t);
+        }
+        loss / probs.numel() as f64
+    }
+
+    /// Compute gradient
+    pub fn gradient(&self, prob: f64, target: bool) -> f64 {
+        let p = if target { prob } else { 1.0 - prob };
+        let p = p.clamp(1e-10, 1.0 - 1e-10);
+        let sign = if target { -1.0 } else { 1.0 };
+
+        let factor = (1.0 - p).powf(self.gamma);
+        let term1 = factor / p;
+        let term2 = self.gamma * (1.0 - p).powf(self.gamma - 1.0) * p.ln();
+
+        sign * self.alpha * (term1 - term2)
+    }
+}
+
+/// Label smoothing for improved calibration
+///
+/// Replaces hard labels with soft labels: y_smooth = (1-e)*y + e/K
+pub struct LabelSmoothing {
+    /// Smoothing parameter (typically 0.1)
+    epsilon: f64,
+
+    /// Number of classes
+    num_classes: usize,
+}
+
+impl LabelSmoothing {
+    /// Create with smoothing parameter
+    pub fn new(epsilon: f64, num_classes: usize) -> Self {
+        LabelSmoothing { epsilon, num_classes }
+    }
+
+    /// Apply smoothing to one-hot targets
+    pub fn smooth(&self, targets: &Tensor) -> Tensor {
+        let mut smoothed = Tensor::zeros(targets.shape().clone());
+        let uniform = self.epsilon / self.num_classes as f64;
+        let scale = 1.0 - self.epsilon;
+
+        for i in 0..targets.numel() {
+            let y = targets.get(i);
+            smoothed.set(i, scale * y + uniform);
+        }
+
+        smoothed
+    }
+
+    /// Compute cross-entropy with smoothed labels
+    pub fn cross_entropy(&self, probs: &Tensor, targets: &Tensor) -> f64 {
+        let smoothed = self.smooth(targets);
+        let mut loss = 0.0;
+
+        for i in 0..probs.numel() {
+            let p = probs.get(i).max(1e-10);
+            let y = smoothed.get(i);
+            loss -= y * p.ln();
+        }
+
+        loss / (probs.numel() / self.num_classes) as f64
+    }
+}
+
+/// Matrix scaling (full affine transformation)
+///
+/// Most flexible: z_calibrated = W * z + b
+pub struct MatrixScaling {
+    /// Weight matrix (num_classes x num_classes)
+    weights: Vec<Vec<f64>>,
+
+    /// Bias vector
+    biases: Vec<f64>,
+
+    /// Learning rate
+    lr: f64,
+
+    /// Number of classes
+    num_classes: usize,
+}
+
+impl MatrixScaling {
+    /// Create with number of classes (initialized to identity)
+    pub fn new(num_classes: usize) -> Self {
+        let mut weights = vec![vec![0.0; num_classes]; num_classes];
+        for i in 0..num_classes {
+            weights[i][i] = 1.0;
+        }
+
+        MatrixScaling {
+            weights,
+            biases: vec![0.0; num_classes],
+            lr: 0.001,
+            num_classes,
+        }
+    }
+
+    /// Apply matrix scaling
+    pub fn calibrate(&self, logits: &Tensor) -> Tensor {
+        let batch_size = logits.numel() / self.num_classes;
+        let mut output = Tensor::zeros(logits.shape().clone());
+
+        for b in 0..batch_size {
+            for i in 0..self.num_classes {
+                let mut sum = self.biases[i];
+                for j in 0..self.num_classes {
+                    sum += self.weights[i][j] * logits.get(b * self.num_classes + j);
+                }
+                output.set(b * self.num_classes + i, sum);
+            }
+        }
+
+        softmax(&output)
+    }
+
+    /// Update with gradient descent
+    pub fn backward(&mut self, logits: &Tensor, targets: &Tensor) {
+        let batch_size = logits.numel() / self.num_classes;
+        let probs = self.calibrate(logits);
+
+        // Compute gradients
+        let mut grad_w = vec![vec![0.0; self.num_classes]; self.num_classes];
+        let mut grad_b = vec![0.0; self.num_classes];
+
+        for b in 0..batch_size {
+            for i in 0..self.num_classes {
+                let idx = b * self.num_classes + i;
+                let error = probs.get(idx) - targets.get(idx);
+
+                grad_b[i] += error;
+                for j in 0..self.num_classes {
+                    grad_w[i][j] += error * logits.get(b * self.num_classes + j);
+                }
+            }
+        }
+
+        // Update
+        let n = batch_size as f64;
+        for i in 0..self.num_classes {
+            self.biases[i] -= self.lr * grad_b[i] / n;
+            for j in 0..self.num_classes {
+                self.weights[i][j] -= self.lr * grad_w[i][j] / n;
+            }
+        }
+    }
+}
+
+// Helper functions
+
+fn sigmoid(x: f64) -> f64 {
+    1.0 / (1.0 + (-x).exp())
+}
+
+fn softmax(logits: &Tensor) -> Tensor {
+    let n = logits.numel();
+
+    // Find max for numerical stability
+    let mut max_val = logits.get(0);
+    for i in 1..n {
+        max_val = max_val.max(logits.get(i));
+    }
+
+    // Compute exp and sum
+    let mut sum = 0.0;
+    let mut exps = vec![0.0; n];
+    for i in 0..n {
+        exps[i] = (logits.get(i) - max_val).exp();
+        sum += exps[i];
+    }
+
+    // Normalize
+    let mut result = Tensor::zeros(logits.shape().clone());
+    for i in 0..n {
+        result.set(i, exps[i] / sum);
+    }
+
+    result
+}

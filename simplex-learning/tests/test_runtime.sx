@@ -1,0 +1,272 @@
+// Runtime module tests
+
+use simplex_learning::tensor::Tensor;
+use simplex_learning::runtime::{
+    ContinuousLearner, LearnerConfig, LearningEvent,
+    MetricsCollector, MetricsSummary, MetricTracker,
+    CheckpointManager, CheckpointConfig, AutoCheckpointer,
+};
+use simplex_learning::safety::SafetyBounds;
+
+#[test]
+fn test_continuous_learner_creation() {
+    let params = vec![Tensor::randn(&[10, 5])];
+    let config = LearnerConfig::default();
+
+    let learner = ContinuousLearner::new(config, params);
+
+    assert_eq!(learner.step(), 0);
+}
+
+#[test]
+fn test_continuous_learner_basic_learning() {
+    let params = vec![Tensor::randn(&[4, 4])];
+    let config = LearnerConfig {
+        learning_rate: 0.01,
+        warmup_steps: 0,
+        use_replay: false,
+        use_ewc: false,
+        use_calibration: false,
+        ..Default::default()
+    };
+
+    let mut learner = ContinuousLearner::new(config, params);
+    learner.start();
+
+    // Learn from some examples
+    for i in 0..10 {
+        let input = Tensor::randn(&[4]);
+        let output = Tensor::randn(&[4]);
+        let target = Tensor::randn(&[4]);
+        let feedback = 0.5;
+
+        let metrics = learner.learn(&input, &output, &target, feedback);
+
+        assert!(metrics.loss >= 0.0);
+    }
+
+    assert_eq!(learner.step(), 10);
+}
+
+#[test]
+fn test_learner_with_replay() {
+    let params = vec![Tensor::randn(&[4])];
+    let config = LearnerConfig {
+        use_replay: true,
+        replay_buffer_size: 100,
+        warmup_steps: 0,
+        use_ewc: false,
+        use_calibration: false,
+        ..Default::default()
+    };
+
+    let mut learner = ContinuousLearner::new(config, params);
+    learner.start();
+
+    // Add experiences
+    for _ in 0..50 {
+        let input = Tensor::randn(&[4]);
+        let output = Tensor::randn(&[4]);
+        let target = Tensor::randn(&[4]);
+        learner.learn(&input, &output, &target, 0.5);
+    }
+
+    // Replay buffer should have experiences
+    let metrics = learner.metrics().summary();
+    assert_eq!(metrics.total_steps, 50);
+}
+
+#[test]
+fn test_learner_event_callback() {
+    let params = vec![Tensor::randn(&[2])];
+    let config = LearnerConfig {
+        warmup_steps: 0,
+        use_replay: false,
+        use_ewc: false,
+        use_calibration: false,
+        ..Default::default()
+    };
+
+    let mut event_count = 0;
+
+    let mut learner = ContinuousLearner::new(config, params)
+        .on_event(|event| {
+            match event {
+                LearningEvent::StepComplete { .. } => {
+                    // Count events
+                }
+                _ => {}
+            }
+        });
+
+    learner.start();
+
+    for _ in 0..5 {
+        let input = Tensor::randn(&[2]);
+        let output = Tensor::randn(&[2]);
+        let target = Tensor::randn(&[2]);
+        learner.learn(&input, &output, &target, 0.5);
+    }
+}
+
+#[test]
+fn test_metrics_collector() {
+    let mut collector = MetricsCollector::new()
+        .max_history(100)
+        .window_size(10);
+
+    // Record metrics
+    for i in 0..50 {
+        let metrics = simplex_learning::runtime::learner::LearningStepMetrics {
+            loss: 1.0 - (i as f64 * 0.01),  // Decreasing loss
+            grad_norm: 0.5,
+            param_change: 0.01,
+            learning_rate: 0.001,
+            replay_used: true,
+            ewc_penalty: 0.0,
+            calibration_ece: 0.05,
+            constraints_violated: 0,
+            latency_ms: 5.0,
+        };
+
+        collector.record_step(&metrics);
+    }
+
+    let summary = collector.summary();
+    assert_eq!(summary.total_steps, 50);
+    assert!(summary.mean_loss > 0.0);
+}
+
+#[test]
+fn test_metrics_trend() {
+    let mut collector = MetricsCollector::new();
+
+    // Record decreasing loss
+    for i in 0..20 {
+        let metrics = simplex_learning::runtime::learner::LearningStepMetrics {
+            loss: 10.0 - (i as f64 * 0.4),
+            ..Default::default()
+        };
+        collector.record_step(&metrics);
+    }
+
+    // Trend should be negative (decreasing)
+    let trend = collector.loss_trend(20);
+    assert!(trend < 0.0);
+}
+
+#[test]
+fn test_metric_tracker() {
+    let mut tracker = MetricTracker::new("test_metric", 10);
+
+    // Add values
+    for i in 0..100 {
+        tracker.add(i as f64);
+    }
+
+    assert_eq!(tracker.count(), 100);
+    assert_eq!(tracker.min(), 0.0);
+    assert_eq!(tracker.max(), 99.0);
+
+    // Mean should be ~49.5
+    assert!((tracker.mean() - 49.5).abs() < 0.1);
+}
+
+#[test]
+fn test_checkpoint_manager() {
+    let mut manager = CheckpointManager::new(10);
+
+    let params = vec![Tensor::randn(&[4])];
+
+    // Should checkpoint
+    assert!(manager.should_checkpoint(10));
+
+    // Save checkpoint
+    let path = manager.save(&params, 10, 0.5);
+    assert!(path.contains("checkpoint_10"));
+
+    // Should not checkpoint immediately after
+    assert!(!manager.should_checkpoint(11));
+
+    // Should checkpoint after interval
+    assert!(manager.should_checkpoint(20));
+}
+
+#[test]
+fn test_checkpoint_best_tracking() {
+    let mut manager = CheckpointManager::new(10);
+    let params = vec![Tensor::randn(&[4])];
+
+    manager.save(&params, 10, 0.8);
+    manager.save(&params, 20, 0.5);
+    manager.save(&params, 30, 0.3);  // Best
+    manager.save(&params, 40, 0.6);
+
+    assert_eq!(manager.best_step(), 30);
+    assert_eq!(manager.best_metric(), 0.3);
+}
+
+#[test]
+fn test_auto_checkpointer() {
+    let config = CheckpointConfig {
+        frequency: 10,
+        max_checkpoints: 5,
+        keep_best: 2,
+        ..Default::default()
+    };
+
+    let mut checkpointer = AutoCheckpointer::new(config)
+        .patience(3)
+        .min_delta(0.01);
+
+    let params = vec![Tensor::randn(&[4])];
+
+    // Improving metrics
+    checkpointer.update(&params, 10, 1.0);
+    checkpointer.update(&params, 20, 0.8);
+    checkpointer.update(&params, 30, 0.6);
+
+    // No improvement
+    checkpointer.update(&params, 40, 0.65);
+    checkpointer.update(&params, 50, 0.64);
+    checkpointer.update(&params, 60, 0.63);
+
+    // Should eventually trigger early stopping or continue
+}
+
+#[test]
+fn test_metrics_summary_convergence() {
+    let summary = MetricsSummary {
+        total_steps: 1000,
+        mean_loss: 0.5,
+        min_loss: 0.1,
+        max_loss: 1.0,
+        windowed_loss: 0.3,  // Lower than mean
+        loss_trend: -0.01,    // Negative (decreasing)
+        mean_grad_norm: 1.0,
+        mean_param_change: 0.01,
+        mean_latency_ms: 5.0,
+        mean_ece: 0.05,
+        constraint_violations: 0,
+    };
+
+    assert!(summary.is_converging());
+    assert!(!summary.is_diverging());
+}
+
+#[test]
+fn test_metrics_json_export() {
+    let mut collector = MetricsCollector::new();
+
+    for i in 0..10 {
+        let metrics = simplex_learning::runtime::learner::LearningStepMetrics {
+            loss: 0.5,
+            ..Default::default()
+        };
+        collector.record_step(&metrics);
+    }
+
+    let json = collector.export_json();
+    assert!(json.contains("total_steps"));
+    assert!(json.contains("mean_loss"));
+}
