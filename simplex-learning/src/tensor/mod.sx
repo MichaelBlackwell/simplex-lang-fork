@@ -1,0 +1,23 @@
+// Tensor module: Core tensor operations with automatic differentiation
+//
+// This module provides the foundation for all numerical computation in
+// simplex-learning. Tensors track gradients automatically when requires_grad
+// is enabled, integrating with Neural IR's differentiable execution.
+
+pub mod tensor;
+pub mod ops;
+pub mod autograd;
+pub mod backends;
+
+pub use tensor::{Tensor, Shape, DType, TensorError};
+pub use ops::{matmul, add, mul, div, softmax, relu, tanh, sigmoid, layer_norm, gelu};
+pub use autograd::{
+    GradientTape, backward, no_grad, check_gradient,
+    is_grad_enabled, set_grad_enabled, clear_graph, clear_registry,
+    register_tensor, get_registered_tensor,
+    ComputationGraph, ComputationNode,
+};
+pub use backends::{Backend, CpuBackend};
+
+#[cfg(feature = "gpu")]
+pub use backends::GpuBackend;

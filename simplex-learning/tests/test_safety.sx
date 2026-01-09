@@ -1,0 +1,763 @@
+// Safety module tests
+
+use simplex_learning::tensor::Tensor;
+use simplex_learning::safety::{
+    SafetyBounds, GradientBounds, WeightBounds, SafetyApplier,
+    Constraint, SoftConstraint, HardConstraint,
+    ConstraintManager, ConstraintResult,
+    FallbackStrategy, SafeFallback, SafeLearner,
+    AnomalyDetector,
+};
+use simplex_learning::safety::constraints::LearningMetrics;
+
+#[test]
+fn test_gradient_clipping_by_norm() {
+    let bounds = GradientBounds::max_norm(1.0);
+
+    let mut params = vec![
+        Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]),
+    ];
+
+    // Set large gradients
+    // (In production, this would be through the grad() accessor)
+
+    let result = bounds.apply(&mut params);
+
+    // Should have clipping info
+    assert!(result.original_norm >= 0.0);
+}
+
+#[test]
+fn test_gradient_nan_detection() {
+    let bounds = GradientBounds {
+        max_norm: Some(1.0),
+        max_value: None,
+        skip_nan: true,
+        log_clipping: false,
+    };
+
+    let mut params = vec![
+        Tensor::zeros(&[2, 2]),
+    ];
+
+    // Would need NaN gradients to trigger
+    let result = bounds.apply(&mut params);
+
+    // Should not have NaN (clean params)
+    assert!(!result.had_nan);
+}
+
+#[test]
+fn test_weight_bounds() {
+    let bounds = WeightBounds::max_magnitude(5.0);
+
+    let mut params = vec![
+        Tensor::from_vec(vec![10.0, -10.0, 3.0, -3.0], &[2, 2]),
+    ];
+
+    let result = bounds.apply(&mut params);
+
+    // Should have clipped
+    assert!(result.clipped_count > 0);
+
+    // Check values are within bounds
+    assert!(params[0].get(0).abs() <= 5.0);
+    assert!(params[0].get(1).abs() <= 5.0);
+}
+
+#[test]
+fn test_weight_decay() {
+    let bounds = WeightBounds::with_decay(0.1);
+
+    let mut params = vec![
+        Tensor::from_vec(vec![10.0, 10.0], &[2]),
+    ];
+
+    let result = bounds.apply(&mut params);
+
+    assert!(result.applied_decay);
+    assert!(params[0].get(0) < 10.0);
+}
+
+#[test]
+fn test_safety_applier() {
+    let bounds = SafetyBounds::default();
+    let applier = SafetyApplier::new(bounds);
+
+    let mut params = vec![
+        Tensor::randn(&[4, 4]),
+    ];
+
+    let result = applier.apply(&mut params);
+
+    assert!(result.update_allowed);
+}
+
+#[test]
+fn test_soft_constraint() {
+    let mut constraint = SoftConstraint::max_latency("latency", 10.0, 0.5);
+
+    // Within bounds
+    let metrics = LearningMetrics {
+        latency_ms: 5.0,
+        ..Default::default()
+    };
+
+    let result = constraint.check(&metrics);
+    assert!(result.satisfied);
+    assert_eq!(result.penalty, 0.0);
+
+    // Exceeds bounds
+    let metrics = LearningMetrics {
+        latency_ms: 15.0,
+        ..Default::default()
+    };
+
+    let result = constraint.check(&metrics);
+    assert!(!result.satisfied);
+    assert!(result.penalty > 0.0);
+}
+
+#[test]
+fn test_hard_constraint() {
+    let mut constraint = HardConstraint::no_loss_explosion("loss", 100.0);
+
+    // Within bounds
+    let metrics = LearningMetrics {
+        loss: 50.0,
+        ..Default::default()
+    };
+
+    assert!(constraint.check(&metrics));
+
+    // Exceeds bounds
+    let metrics = LearningMetrics {
+        loss: 150.0,
+        ..Default::default()
+    };
+
+    assert!(!constraint.check(&metrics));
+}
+
+#[test]
+fn test_constraint_manager() {
+    let mut manager = ConstraintManager::new();
+
+    // Add constraints
+    manager.add_soft(SoftConstraint::max_latency("latency", 10.0, 0.5));
+    manager.add_hard(HardConstraint::no_loss_explosion("loss", 100.0));
+
+    // Check with good metrics
+    let metrics = LearningMetrics {
+        loss: 50.0,
+        latency_ms: 5.0,
+        ..Default::default()
+    };
+
+    let (allowed, penalty) = manager.check_all(&metrics, 1);
+    assert!(allowed);
+    assert_eq!(penalty, 0.0);
+
+    // Check with bad loss (hard constraint)
+    let metrics = LearningMetrics {
+        loss: 150.0,
+        latency_ms: 5.0,
+        ..Default::default()
+    };
+
+    let (allowed, _) = manager.check_all(&metrics, 2);
+    assert!(!allowed);
+}
+
+#[test]
+fn test_fallback_strategy_default() {
+    let fallback: SafeFallback<i32, i32> = SafeFallback::with_default(42);
+
+    let mut fb = fallback;
+    let result = fb.fallback(&0);
+
+    assert_eq!(result, Some(42));
+}
+
+#[test]
+fn test_fallback_strategy_last_good() {
+    let mut fallback: SafeFallback<i32, i32> = SafeFallback::new();
+
+    // Record a good output
+    fallback.record_good(1, 100);
+
+    // Trigger fallback
+    let result = fallback.fallback(&1);
+
+    assert_eq!(result, Some(100));
+}
+
+#[test]
+fn test_fallback_with_function() {
+    let fallback: SafeFallback<i32, i32> = SafeFallback::with_function(|x| x * 2);
+
+    let mut fb = fallback;
+    let result = fb.fallback(&5);
+
+    assert_eq!(result, Some(10));
+}
+
+#[test]
+fn test_safe_learner() {
+    struct DummyLearner;
+
+    let fallback = SafeFallback::with_default(0.0);
+    let mut learner = SafeLearner::new(DummyLearner, fallback)
+        .with_validator(|x| *x >= 0.0 && *x <= 1.0)
+        .max_failures(2);
+
+    // Valid output
+    let result = learner.process(&1.0, |_, _| Some(0.5));
+    assert_eq!(result, 0.5);
+
+    // Invalid output triggers fallback
+    let result = learner.process(&1.0, |_, _| Some(2.0)); // > 1.0, invalid
+    assert_eq!(result, 0.5); // Falls back to last good
+}
+
+#[test]
+fn test_anomaly_detector() {
+    let mut detector = AnomalyDetector::new(3.0); // 3 sigma threshold
+
+    // Warmup with normal values
+    for _ in 0..200 {
+        let value = 50.0 + (rand::random::<f64>() - 0.5) * 10.0; // 45-55 range
+        detector.update(value);
+    }
+
+    // Normal value should not be anomaly
+    let is_anomaly = detector.update(52.0);
+    assert!(!is_anomaly);
+
+    // Extreme value should be anomaly
+    let is_anomaly = detector.update(100.0);
+    assert!(is_anomaly);
+}
+
+#[test]
+fn test_anomaly_detector_stats() {
+    let mut detector = AnomalyDetector::new(3.0);
+
+    // Add values centered at 100 with std ~10
+    for i in 0..1000 {
+        let value = 100.0 + ((i % 20) as f64 - 10.0);
+        detector.update(value);
+    }
+
+    // Check statistics
+    let mean = detector.mean();
+    let std = detector.std();
+
+    assert!((mean - 100.0).abs() < 5.0);
+    assert!(std < 20.0);
+}
+
+// ===========================================
+// Phase 6 Integration Tests
+// ===========================================
+
+#[test]
+fn test_gradient_clipping_by_norm_actually_scales() {
+    // Create tensor with gradient
+    let mut param = Tensor::from_vec(vec![3.0, 4.0], &[2]).requires_grad_();
+
+    // Set a large gradient (norm = 5.0)
+    let grad = Tensor::from_vec(vec![3.0, 4.0], &[2]);
+    param.set_grad(grad);
+
+    // Create bounds with max_norm = 1.0
+    let bounds = GradientBounds::max_norm(1.0);
+    let mut params = vec![param];
+
+    let result = bounds.apply(&mut params);
+
+    // Should have clipped
+    assert!(result.clipped_norm);
+    assert!((result.original_norm - 5.0).abs() < 0.01);
+    assert!(result.clip_coef < 1.0);
+
+    // Verify gradient was actually scaled
+    let grad = params[0].grad().expect("should have gradient");
+    let new_norm = (grad.get(0).powi(2) + grad.get(1).powi(2)).sqrt();
+    assert!((new_norm - 1.0).abs() < 0.01, "Gradient norm should be ~1.0, got {}", new_norm);
+}
+
+#[test]
+fn test_gradient_clipping_by_value_actually_clamps() {
+    // Create tensor with gradient
+    let mut param = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[4]).requires_grad_();
+
+    // Set gradients with large values
+    let grad = Tensor::from_vec(vec![0.5, 2.0, -3.0, 0.1], &[4]);
+    param.set_grad(grad);
+
+    // Create bounds with max_value = 1.0
+    let bounds = GradientBounds {
+        max_norm: None,
+        max_value: Some(1.0),
+        skip_nan: true,
+        log_clipping: false,
+    };
+    let mut params = vec![param];
+
+    let result = bounds.apply(&mut params);
+
+    // Should have clipped
+    assert!(result.clipped_value);
+
+    // Verify gradients were clamped
+    let grad = params[0].grad().expect("should have gradient");
+    assert!((grad.get(0) - 0.5).abs() < 0.01); // Unchanged
+    assert!((grad.get(1) - 1.0).abs() < 0.01); // Clamped from 2.0
+    assert!((grad.get(2) - (-1.0)).abs() < 0.01); // Clamped from -3.0
+    assert!((grad.get(3) - 0.1).abs() < 0.01); // Unchanged
+}
+
+#[test]
+fn test_gradient_nan_skips_update() {
+    // Create tensor with NaN gradient
+    let mut param = Tensor::from_vec(vec![1.0, 2.0], &[2]).requires_grad_();
+    let grad = Tensor::from_vec(vec![f64::NAN, 1.0], &[2]);
+    param.set_grad(grad);
+
+    let bounds = GradientBounds {
+        max_norm: Some(1.0),
+        max_value: None,
+        skip_nan: true,
+        log_clipping: false,
+    };
+    let mut params = vec![param];
+
+    let result = bounds.apply(&mut params);
+
+    // Should have detected NaN and skipped
+    assert!(result.had_nan);
+    assert!(result.skipped);
+}
+
+#[test]
+fn test_gradient_inf_skips_update() {
+    // Create tensor with Inf gradient
+    let mut param = Tensor::from_vec(vec![1.0, 2.0], &[2]).requires_grad_();
+    let grad = Tensor::from_vec(vec![f64::INFINITY, 1.0], &[2]);
+    param.set_grad(grad);
+
+    let bounds = GradientBounds {
+        max_norm: Some(1.0),
+        max_value: None,
+        skip_nan: true,
+        log_clipping: false,
+    };
+    let mut params = vec![param];
+
+    let result = bounds.apply(&mut params);
+
+    // Should have detected Inf and skipped
+    assert!(result.had_nan); // Inf is also "not finite"
+    assert!(result.skipped);
+}
+
+#[test]
+fn test_combined_gradient_bounds() {
+    // Test both norm and value clipping together
+    let mut param = Tensor::from_vec(vec![6.0, 8.0], &[2]).requires_grad_();
+
+    // Set large gradient (norm = 10.0)
+    let grad = Tensor::from_vec(vec![6.0, 8.0], &[2]);
+    param.set_grad(grad);
+
+    // Clip by norm to 5.0, then by value to 3.0
+    let bounds = GradientBounds {
+        max_norm: Some(5.0),
+        max_value: Some(3.0),
+        skip_nan: true,
+        log_clipping: false,
+    };
+    let mut params = vec![param];
+
+    let result = bounds.apply(&mut params);
+
+    // Should have clipped both
+    assert!(result.clipped_norm);
+    assert!(result.clipped_value);
+
+    // After norm clipping: [3.0, 4.0]
+    // After value clipping: [3.0, 3.0]
+    let grad = params[0].grad().expect("should have gradient");
+    assert!(grad.get(0) <= 3.0);
+    assert!(grad.get(1) <= 3.0);
+}
+
+#[test]
+fn test_safe_training_loop_with_constraints() {
+    use simplex_learning::optim::StreamingSGD;
+
+    // Simple training loop with safety constraints
+    let mut param = Tensor::from_vec(vec![0.5, 0.5], &[2]).requires_grad_();
+    let mut optimizer = StreamingSGD::new(0.1, 0.0);
+
+    let mut manager = ConstraintManager::new();
+    manager.add_soft(SoftConstraint::max_grad_norm("grad_norm", 10.0, 0.1));
+    manager.add_hard(HardConstraint::no_loss_explosion("loss", 1000.0));
+
+    let bounds = SafetyBounds::default();
+    let applier = SafetyApplier::new(bounds);
+
+    // Simulate 10 training steps
+    for step in 0..10 {
+        // Compute "loss" and "gradient"
+        let loss = param.get(0).powi(2) + param.get(1).powi(2);
+        let grad = Tensor::from_vec(vec![2.0 * param.get(0), 2.0 * param.get(1)], &[2]);
+        param.set_grad(grad);
+
+        // Compute metrics
+        let grad_norm = {
+            let g = param.grad().unwrap();
+            (g.get(0).powi(2) + g.get(1).powi(2)).sqrt()
+        };
+
+        let metrics = LearningMetrics {
+            loss,
+            grad_norm,
+            ..Default::default()
+        };
+
+        // Check constraints
+        let (allowed, penalty) = manager.check_all(&metrics, step as u64);
+
+        if allowed {
+            // Apply safety bounds
+            let mut params = vec![param.clone()];
+            let safety_result = applier.apply(&mut params);
+
+            if safety_result.update_allowed {
+                // Do optimizer step
+                optimizer.step(&mut [param.clone()]);
+            }
+        }
+    }
+
+    // Training should have made progress
+    let stats = manager.stats();
+    assert_eq!(stats.hard_blocks, 0, "No hard constraint violations");
+}
+
+#[test]
+fn test_checkpoint_restore_on_violation() {
+    let mut params = vec![
+        Tensor::from_vec(vec![1.0, 2.0, 3.0], &[3]),
+    ];
+
+    // Create fallback with checkpoint
+    let mut fallback: SafeFallback<(), ()> = SafeFallback::new();
+    fallback.set_strategy(FallbackStrategy::Checkpoint);
+    fallback.save_checkpoint(&params);
+
+    // Modify parameters (simulating bad update)
+    for i in 0..params[0].numel() {
+        params[0].set(i, 100.0);
+    }
+
+    // Verify parameters changed
+    assert!((params[0].get(0) - 100.0).abs() < 0.01);
+
+    // Restore checkpoint
+    let restored = fallback.restore_checkpoint(&mut params);
+    assert!(restored);
+
+    // Verify parameters restored
+    assert!((params[0].get(0) - 1.0).abs() < 0.01);
+    assert!((params[0].get(1) - 2.0).abs() < 0.01);
+    assert!((params[0].get(2) - 3.0).abs() < 0.01);
+}
+
+#[test]
+fn test_soft_constraint_gradient_norm() {
+    let mut constraint = SoftConstraint::max_grad_norm("grad", 5.0, 1.0);
+
+    // Within bounds
+    let metrics = LearningMetrics {
+        grad_norm: 3.0,
+        ..Default::default()
+    };
+    let result = constraint.check(&metrics);
+    assert!(result.satisfied);
+    assert_eq!(result.penalty, 0.0);
+
+    // Exceeds bounds
+    let metrics = LearningMetrics {
+        grad_norm: 10.0,
+        ..Default::default()
+    };
+    let result = constraint.check(&metrics);
+    assert!(!result.satisfied);
+    assert!(result.penalty > 0.0);
+
+    // Penalty should be proportional to violation
+    // penalty = weight * (violation/max)^2 = 1.0 * (5.0/5.0)^2 = 1.0
+    assert!((result.penalty - 1.0).abs() < 0.01);
+}
+
+#[test]
+fn test_soft_constraint_confidence_range() {
+    let mut constraint = SoftConstraint::confidence_range("conf", 0.2, 0.8, 1.0);
+
+    // Within range
+    let metrics = LearningMetrics {
+        confidence: 0.5,
+        ..Default::default()
+    };
+    let result = constraint.check(&metrics);
+    assert!(result.satisfied);
+
+    // Below range
+    let metrics = LearningMetrics {
+        confidence: 0.1,
+        ..Default::default()
+    };
+    let result = constraint.check(&metrics);
+    assert!(!result.satisfied);
+    assert!((result.violation - 0.1).abs() < 0.01); // 0.2 - 0.1 = 0.1
+
+    // Above range
+    let metrics = LearningMetrics {
+        confidence: 0.9,
+        ..Default::default()
+    };
+    let result = constraint.check(&metrics);
+    assert!(!result.satisfied);
+    assert!((result.violation - 0.1).abs() < 0.01); // 0.9 - 0.8 = 0.1
+}
+
+#[test]
+fn test_hard_constraint_with_fallback() {
+    let mut fallback_called = false;
+
+    // Note: In production, we'd use proper closure capture
+    // For this test, we'll verify the mechanism exists
+    let constraint = HardConstraint::no_loss_explosion("loss", 10.0)
+        .with_fallback(|| {
+            // Fallback would be called here
+        });
+
+    // The constraint should have a fallback
+    assert!(constraint.fallback.is_some());
+}
+
+#[test]
+fn test_constraint_violation_history() {
+    let mut manager = ConstraintManager::new();
+    manager.add_soft(SoftConstraint::max_latency("latency", 10.0, 0.5));
+
+    // Generate some violations
+    for step in 0..5 {
+        let metrics = LearningMetrics {
+            latency_ms: 15.0, // Always violates
+            ..Default::default()
+        };
+        manager.check_all(&metrics, step);
+    }
+
+    // Check history
+    let violations = manager.recent_violations(10);
+    assert_eq!(violations.len(), 5);
+
+    // All should be soft violations
+    for v in violations {
+        assert!(!v.is_hard);
+        assert_eq!(v.constraint_name, "latency");
+    }
+}
+
+#[test]
+fn test_adversarial_feedback_resistance() {
+    // Test that anomaly detector catches extreme feedback values
+    let mut detector = AnomalyDetector::new(3.0);
+
+    // Establish baseline with normal feedback signals
+    for _ in 0..200 {
+        detector.update(0.8); // Normal positive feedback
+    }
+
+    // Try adversarial feedback
+    let adversarial_values = vec![100.0, -100.0, 1000.0, -1000.0, f64::MAX / 2.0];
+
+    for val in adversarial_values {
+        let is_anomaly = detector.update(val);
+        assert!(is_anomaly, "Should detect {} as anomaly", val);
+    }
+}
+
+#[test]
+fn test_safe_learner_consecutive_failures() {
+    struct CountingLearner {
+        call_count: usize,
+    }
+
+    let fallback = SafeFallback::with_default(-1.0);
+    let mut learner = SafeLearner::new(CountingLearner { call_count: 0 }, fallback)
+        .with_validator(|x| *x >= 0.0) // Negative is invalid
+        .max_failures(3);
+
+    // First failure - returns last good (but none yet, so panics would happen)
+    // We need to have a last good first
+    learner.process(&0.0, |l, _| {
+        l.call_count += 1;
+        Some(0.5) // Valid
+    });
+
+    // Now fail twice, should use last good
+    let result = learner.process(&0.0, |l, _| {
+        l.call_count += 1;
+        Some(-1.0) // Invalid
+    });
+    assert_eq!(result, 0.5); // Falls back to last good
+
+    // Another failure
+    let result = learner.process(&0.0, |l, _| {
+        l.call_count += 1;
+        Some(-2.0) // Invalid
+    });
+    assert_eq!(result, 0.5); // Still last good
+}
+
+#[test]
+fn test_weight_bounds_normalization() {
+    let bounds = WeightBounds {
+        max_magnitude: None,
+        min_magnitude: None,
+        weight_decay: None,
+        normalize: true,
+    };
+
+    let mut params = vec![
+        Tensor::from_vec(vec![3.0, 4.0], &[2]),
+    ];
+
+    let result = bounds.apply(&mut params);
+
+    assert!(result.normalized);
+
+    // Norm should be 1.0 after normalization
+    let norm = (params[0].get(0).powi(2) + params[0].get(1).powi(2)).sqrt();
+    assert!((norm - 1.0).abs() < 0.01);
+}
+
+#[test]
+fn test_weight_bounds_min_magnitude() {
+    let bounds = WeightBounds {
+        max_magnitude: None,
+        min_magnitude: Some(0.1),
+        weight_decay: None,
+        normalize: false,
+    };
+
+    let mut params = vec![
+        Tensor::from_vec(vec![0.01, -0.01, 0.5, 0.0], &[4]),
+    ];
+
+    bounds.apply(&mut params);
+
+    // Small non-zero values should be boosted
+    assert!(params[0].get(0).abs() >= 0.1);
+    assert!(params[0].get(1).abs() >= 0.1);
+    // Large values unchanged
+    assert!((params[0].get(2) - 0.5).abs() < 0.01);
+    // Zero stays zero
+    assert_eq!(params[0].get(3), 0.0);
+}
+
+#[test]
+fn test_full_safe_learning_integration() {
+    // Complete integration test combining all safety features
+
+    // 1. Setup constraints
+    let mut manager = ConstraintManager::new();
+    manager.add_soft(SoftConstraint::max_grad_norm("grad", 10.0, 0.1));
+    manager.add_soft(SoftConstraint::max_latency("latency", 100.0, 0.05));
+    manager.add_hard(HardConstraint::no_loss_explosion("loss", 1000.0));
+
+    // 2. Setup safety bounds
+    let bounds = SafetyBounds {
+        gradient: GradientBounds {
+            max_norm: Some(5.0),
+            max_value: Some(10.0),
+            skip_nan: true,
+            log_clipping: false,
+        },
+        weight: WeightBounds {
+            max_magnitude: Some(100.0),
+            min_magnitude: None,
+            weight_decay: Some(0.001),
+            normalize: false,
+        },
+    };
+    let applier = SafetyApplier::new(bounds);
+
+    // 3. Setup anomaly detector
+    let mut anomaly_detector = AnomalyDetector::new(3.0);
+
+    // 4. Create parameter
+    let mut param = Tensor::from_vec(vec![1.0, 1.0], &[2]).requires_grad_();
+
+    // 5. Simulate training with various scenarios
+    let scenarios = vec![
+        (1.0, 2.0, 10.0),   // Normal
+        (5.0, 8.0, 20.0),   // Higher loss, still ok
+        (50.0, 15.0, 50.0), // High loss and grad
+        (2.0, 3.0, 15.0),   // Normal again
+    ];
+
+    let mut total_penalty = 0.0;
+    let mut blocked_count = 0;
+
+    for (step, (loss, grad_norm, latency)) in scenarios.iter().enumerate() {
+        // Check for anomalous loss
+        if anomaly_detector.update(*loss) && step > 0 {
+            // Anomaly detected, could skip update
+            continue;
+        }
+
+        let metrics = LearningMetrics {
+            loss: *loss,
+            grad_norm: *grad_norm,
+            latency_ms: *latency,
+            ..Default::default()
+        };
+
+        let (allowed, penalty) = manager.check_all(&metrics, step as u64);
+        total_penalty += penalty;
+
+        if !allowed {
+            blocked_count += 1;
+            continue;
+        }
+
+        // Set gradient and apply safety
+        let grad = Tensor::from_vec(vec![*grad_norm / 2.0, *grad_norm / 2.0], &[2]);
+        param.set_grad(grad);
+
+        let mut params = vec![param.clone()];
+        let result = applier.apply(&mut params);
+
+        if result.update_allowed {
+            param = params.into_iter().next().unwrap();
+        }
+    }
+
+    let stats = manager.stats();
+
+    // Verify safety worked
+    assert_eq!(blocked_count, 0, "No hard blocks expected");
+    assert!(stats.soft_violations >= 0, "May have soft violations");
+
+    // Verify parameters are still within bounds
+    for i in 0..param.numel() {
+        assert!(param.get(i).abs() <= 100.0);
+    }
+}

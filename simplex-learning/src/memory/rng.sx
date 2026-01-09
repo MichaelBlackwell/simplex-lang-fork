@@ -1,0 +1,167 @@
+// Random number generation for replay buffer sampling
+//
+// Uses Xorshift64 for fast, reasonable quality pseudo-random numbers.
+// Not cryptographically secure, but sufficient for sampling.
+
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Thread-local RNG state
+thread_local! {
+    static RNG_STATE: std::cell::RefCell<u64> = std::cell::RefCell::new(init_seed());
+}
+
+/// Initialize seed from system time
+fn init_seed() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x123456789ABCDEF0)
+        ^ 0xDEADBEEFCAFEBABE
+}
+
+/// Xorshift64 random number generator
+///
+/// Period: 2^64 - 1
+/// Fast and simple, suitable for non-cryptographic purposes.
+pub fn xorshift64(state: &mut u64) -> u64 {
+    let mut x = *state;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    *state = x;
+    x
+}
+
+/// Generate random u64 using thread-local state
+pub fn random_u64() -> u64 {
+    RNG_STATE.with(|state| {
+        xorshift64(&mut *state.borrow_mut())
+    })
+}
+
+/// Generate random usize using thread-local state
+pub fn random_usize() -> usize {
+    random_u64() as usize
+}
+
+/// Generate random f64 in [0, 1)
+pub fn random_f64() -> f64 {
+    (random_u64() as f64) / (u64::MAX as f64)
+}
+
+/// Generate random usize in [0, max)
+pub fn random_range(max: usize) -> usize {
+    if max == 0 { return 0; }
+    random_usize() % max
+}
+
+/// Generate random f64 in [min, max)
+pub fn random_range_f64(min: f64, max: f64) -> f64 {
+    min + random_f64() * (max - min)
+}
+
+/// Seed the RNG with a specific value
+pub fn seed(value: u64) {
+    RNG_STATE.with(|state| {
+        *state.borrow_mut() = if value == 0 { 1 } else { value };
+    });
+}
+
+/// Stateful RNG struct for when you need reproducible sequences
+pub struct Rng {
+    state: u64,
+}
+
+impl Rng {
+    /// Create new RNG with seed
+    pub fn new(seed: u64) -> Self {
+        Rng {
+            state: if seed == 0 { 1 } else { seed },
+        }
+    }
+
+    /// Create RNG seeded from system time
+    pub fn from_entropy() -> Self {
+        Rng {
+            state: init_seed(),
+        }
+    }
+
+    /// Generate random u64
+    pub fn next_u64(&mut self) -> u64 {
+        xorshift64(&mut self.state)
+    }
+
+    /// Generate random usize
+    pub fn next_usize(&mut self) -> usize {
+        self.next_u64() as usize
+    }
+
+    /// Generate random f64 in [0, 1)
+    pub fn next_f64(&mut self) -> f64 {
+        (self.next_u64() as f64) / (u64::MAX as f64)
+    }
+
+    /// Generate random usize in [0, max)
+    pub fn next_range(&mut self, max: usize) -> usize {
+        if max == 0 { return 0; }
+        self.next_usize() % max
+    }
+
+    /// Generate random f64 in [min, max)
+    pub fn next_range_f64(&mut self, min: f64, max: f64) -> f64 {
+        min + self.next_f64() * (max - min)
+    }
+
+    /// Shuffle a slice in-place using Fisher-Yates
+    pub fn shuffle<T>(&mut self, slice: &mut [T]) {
+        for i in (1..slice.len()).rev() {
+            let j = self.next_range(i + 1);
+            slice.swap(i, j);
+        }
+    }
+
+    /// Sample n indices from [0, max) without replacement
+    pub fn sample_indices(&mut self, max: usize, n: usize) -> Vec<usize> {
+        if n >= max {
+            return (0..max).collect();
+        }
+
+        // For small n, use rejection sampling
+        if n < max / 4 {
+            let mut indices = Vec::with_capacity(n);
+            let mut seen = std::collections::HashSet::new();
+
+            while indices.len() < n {
+                let idx = self.next_range(max);
+                if seen.insert(idx) {
+                    indices.push(idx);
+                }
+            }
+            return indices;
+        }
+
+        // For larger n, use Fisher-Yates partial shuffle
+        let mut pool: Vec<usize> = (0..max).collect();
+        for i in 0..n {
+            let j = i + self.next_range(max - i);
+            pool.swap(i, j);
+        }
+        pool.truncate(n);
+        pool
+    }
+
+    /// Generate random normal using Box-Muller transform
+    pub fn next_normal(&mut self, mean: f64, std: f64) -> f64 {
+        let u1 = self.next_f64();
+        let u2 = self.next_f64();
+        let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
+        mean + z * std
+    }
+}
+
+impl Default for Rng {
+    fn default() -> Self {
+        Rng::from_entropy()
+    }
+}

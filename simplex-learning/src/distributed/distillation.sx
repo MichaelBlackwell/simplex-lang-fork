@@ -1,0 +1,457 @@
+// Knowledge distillation for model compression and transfer
+//
+// Enables transferring knowledge from teacher models to students,
+// crucial for deploying efficient specialist models.
+
+use crate::tensor::Tensor;
+use crate::tensor::ops;
+
+/// Distillation configuration
+pub struct DistillationConfig {
+    /// Temperature for softening logits
+    pub temperature: f64,
+
+    /// Weight for distillation loss (vs hard label loss)
+    pub alpha: f64,
+
+    /// Whether to use intermediate layer matching
+    pub intermediate_matching: bool,
+
+    /// Layers to match (if intermediate_matching enabled)
+    pub match_layers: Vec<usize>,
+
+    /// Feature projection dimension (0 = no projection)
+    pub projection_dim: usize,
+}
+
+impl Default for DistillationConfig {
+    fn default() -> Self {
+        DistillationConfig {
+            temperature: 4.0,
+            alpha: 0.7,
+            intermediate_matching: false,
+            match_layers: Vec::new(),
+            projection_dim: 0,
+        }
+    }
+}
+
+/// Knowledge distiller
+pub struct KnowledgeDistiller {
+    /// Configuration
+    config: DistillationConfig,
+
+    /// Feature projectors for intermediate matching
+    projectors: Vec<Option<LinearProjector>>,
+
+    /// Running statistics
+    stats: DistillationStats,
+}
+
+/// Simple linear projector for feature matching
+struct LinearProjector {
+    weight: Tensor,
+    bias: Tensor,
+}
+
+impl LinearProjector {
+    fn new(in_features: usize, out_features: usize) -> Self {
+        let scale = (2.0 / in_features as f64).sqrt();
+        LinearProjector {
+            weight: Tensor::randn(&[out_features, in_features]).scale(scale),
+            bias: Tensor::zeros(&[out_features]),
+        }
+    }
+
+    fn forward(&self, x: &Tensor) -> Tensor {
+        let mut result = ops::matmul(x, &self.weight.transpose());
+        for i in 0..result.numel() {
+            let bias_idx = i % self.bias.numel();
+            result.set(i, result.get(i) + self.bias.get(bias_idx));
+        }
+        result
+    }
+}
+
+/// Distillation statistics
+#[derive(Default)]
+pub struct DistillationStats {
+    /// Total distillation loss
+    pub total_distill_loss: f64,
+
+    /// Total hard label loss
+    pub total_hard_loss: f64,
+
+    /// Total intermediate loss
+    pub total_intermediate_loss: f64,
+
+    /// Samples processed
+    pub samples: u64,
+
+    /// Effective temperature (may be adaptive)
+    pub current_temperature: f64,
+}
+
+impl KnowledgeDistiller {
+    /// Create new knowledge distiller
+    pub fn new(config: DistillationConfig) -> Self {
+        KnowledgeDistiller {
+            config,
+            projectors: Vec::new(),
+            stats: DistillationStats::default(),
+        }
+    }
+
+    /// Initialize projectors for intermediate matching
+    pub fn init_projectors(&mut self, layer_dims: &[(usize, usize)]) {
+        self.projectors.clear();
+
+        for (teacher_dim, student_dim) in layer_dims {
+            if *teacher_dim == *student_dim {
+                self.projectors.push(None);
+            } else {
+                self.projectors.push(Some(LinearProjector::new(*student_dim, *teacher_dim)));
+            }
+        }
+    }
+
+    /// Compute distillation loss
+    pub fn distillation_loss(
+        &mut self,
+        student_logits: &Tensor,
+        teacher_logits: &Tensor,
+        hard_labels: Option<&Tensor>,
+    ) -> Tensor {
+        let t = self.config.temperature;
+
+        // Soft targets from teacher
+        let teacher_soft = ops::softmax(&teacher_logits.scale(1.0 / t));
+        let student_log_soft = log_softmax(&student_logits.scale(1.0 / t));
+
+        // KL divergence: sum(teacher * log(teacher/student))
+        let kl_loss = kl_divergence(&teacher_soft, &student_log_soft);
+
+        // Scale by T^2 as per Hinton et al.
+        let distill_loss = kl_loss.scale(t * t);
+
+        self.stats.total_distill_loss += distill_loss.get(0);
+
+        // Combine with hard label loss if provided
+        match hard_labels {
+            Some(labels) => {
+                let hard_loss = ops::cross_entropy(student_logits, labels);
+                self.stats.total_hard_loss += hard_loss.get(0);
+
+                // Weighted combination
+                let alpha = self.config.alpha;
+                distill_loss.scale(alpha).add(&hard_loss.scale(1.0 - alpha))
+            }
+            None => distill_loss,
+        }
+    }
+
+    /// Compute intermediate layer matching loss
+    pub fn intermediate_loss(
+        &mut self,
+        student_features: &[Tensor],
+        teacher_features: &[Tensor],
+    ) -> Tensor {
+        if !self.config.intermediate_matching {
+            return Tensor::zeros(&[1]);
+        }
+
+        let mut total_loss = 0.0;
+
+        for (i, layer_idx) in self.config.match_layers.iter().enumerate() {
+            if *layer_idx >= student_features.len() || *layer_idx >= teacher_features.len() {
+                continue;
+            }
+
+            let student_feat = &student_features[*layer_idx];
+            let teacher_feat = &teacher_features[*layer_idx];
+
+            // Project student features if needed
+            let projected = if i < self.projectors.len() {
+                match &self.projectors[i] {
+                    Some(proj) => proj.forward(student_feat),
+                    None => student_feat.clone(),
+                }
+            } else {
+                student_feat.clone()
+            };
+
+            // MSE loss between features
+            let diff = projected.sub(teacher_feat);
+            let mse = diff.dot(&diff) / diff.numel() as f64;
+            total_loss += mse;
+        }
+
+        self.stats.total_intermediate_loss += total_loss;
+
+        let mut result = Tensor::zeros(&[1]);
+        result.set(0, total_loss);
+        result
+    }
+
+    /// Compute full distillation loss with all components
+    pub fn full_loss(
+        &mut self,
+        student_logits: &Tensor,
+        teacher_logits: &Tensor,
+        student_features: Option<&[Tensor]>,
+        teacher_features: Option<&[Tensor]>,
+        hard_labels: Option<&Tensor>,
+    ) -> Tensor {
+        let base_loss = self.distillation_loss(student_logits, teacher_logits, hard_labels);
+
+        let intermediate_loss = match (student_features, teacher_features) {
+            (Some(sf), Some(tf)) => self.intermediate_loss(sf, tf),
+            _ => Tensor::zeros(&[1]),
+        };
+
+        self.stats.samples += 1;
+        self.stats.current_temperature = self.config.temperature;
+
+        base_loss.add(&intermediate_loss)
+    }
+
+    /// Get current statistics
+    pub fn stats(&self) -> &DistillationStats {
+        &self.stats
+    }
+
+    /// Reset statistics
+    pub fn reset_stats(&mut self) {
+        self.stats = DistillationStats::default();
+    }
+
+    /// Update temperature adaptively based on student performance
+    pub fn adapt_temperature(&mut self, student_accuracy: f64, target_accuracy: f64) {
+        // Lower temperature as student improves
+        let ratio = student_accuracy / (target_accuracy + 1e-8);
+
+        if ratio > 0.9 {
+            // Student is doing well - lower temperature for harder targets
+            self.config.temperature = (self.config.temperature * 0.95).max(1.0);
+        } else if ratio < 0.5 {
+            // Student struggling - raise temperature for softer targets
+            self.config.temperature = (self.config.temperature * 1.05).min(20.0);
+        }
+    }
+}
+
+/// Progressive distillation for continuous model improvement
+pub struct ProgressiveDistillation {
+    /// Base distiller
+    distiller: KnowledgeDistiller,
+
+    /// Historical teacher checkpoints
+    teacher_history: Vec<TeacherCheckpoint>,
+
+    /// Maximum history size
+    max_history: usize,
+
+    /// Weight decay for older teachers
+    history_decay: f64,
+}
+
+struct TeacherCheckpoint {
+    params: Vec<Tensor>,
+    performance: f64,
+    step: u64,
+}
+
+impl ProgressiveDistillation {
+    /// Create new progressive distillation
+    pub fn new(config: DistillationConfig) -> Self {
+        ProgressiveDistillation {
+            distiller: KnowledgeDistiller::new(config),
+            teacher_history: Vec::new(),
+            max_history: 5,
+            history_decay: 0.9,
+        }
+    }
+
+    /// Save teacher checkpoint
+    pub fn checkpoint_teacher(&mut self, params: Vec<Tensor>, performance: f64, step: u64) {
+        self.teacher_history.push(TeacherCheckpoint {
+            params,
+            performance,
+            step,
+        });
+
+        // Trim old checkpoints
+        while self.teacher_history.len() > self.max_history {
+            self.teacher_history.remove(0);
+        }
+    }
+
+    /// Compute ensemble distillation loss from multiple teachers
+    pub fn ensemble_loss(
+        &mut self,
+        student_logits: &Tensor,
+        teacher_logits_list: &[Tensor],
+        hard_labels: Option<&Tensor>,
+    ) -> Tensor {
+        if teacher_logits_list.is_empty() {
+            // Fall back to hard labels only
+            return match hard_labels {
+                Some(labels) => ops::cross_entropy(student_logits, labels),
+                None => Tensor::zeros(&[1]),
+            };
+        }
+
+        // Weight teachers by recency
+        let n = teacher_logits_list.len();
+        let mut weights: Vec<f64> = (0..n)
+            .map(|i| self.history_decay.powi((n - 1 - i) as i32))
+            .collect();
+
+        let sum: f64 = weights.iter().sum();
+        for w in &mut weights {
+            *w /= sum;
+        }
+
+        // Compute weighted ensemble of soft targets
+        let t = self.distiller.config.temperature;
+        let mut ensemble_soft = Tensor::zeros(teacher_logits_list[0].shape());
+
+        for (i, teacher_logits) in teacher_logits_list.iter().enumerate() {
+            let soft = ops::softmax(&teacher_logits.scale(1.0 / t));
+            for j in 0..ensemble_soft.numel() {
+                let v = ensemble_soft.get(j) + soft.get(j) * weights[i];
+                ensemble_soft.set(j, v);
+            }
+        }
+
+        // Compute loss against ensemble
+        let student_log_soft = log_softmax(&student_logits.scale(1.0 / t));
+        let kl_loss = kl_divergence(&ensemble_soft, &student_log_soft);
+        let distill_loss = kl_loss.scale(t * t);
+
+        // Combine with hard labels
+        match hard_labels {
+            Some(labels) => {
+                let hard_loss = ops::cross_entropy(student_logits, labels);
+                let alpha = self.distiller.config.alpha;
+                distill_loss.scale(alpha).add(&hard_loss.scale(1.0 - alpha))
+            }
+            None => distill_loss,
+        }
+    }
+
+    /// Get the base distiller
+    pub fn distiller(&self) -> &KnowledgeDistiller {
+        &self.distiller
+    }
+
+    /// Get mutable base distiller
+    pub fn distiller_mut(&mut self) -> &mut KnowledgeDistiller {
+        &mut self.distiller
+    }
+}
+
+/// Self-distillation for continuous improvement
+pub struct SelfDistillation {
+    /// EMA teacher parameters
+    ema_params: Vec<Tensor>,
+
+    /// EMA decay rate
+    ema_decay: f64,
+
+    /// Distiller
+    distiller: KnowledgeDistiller,
+
+    /// Steps since EMA update
+    steps: u64,
+
+    /// Update EMA every N steps
+    update_freq: u64,
+}
+
+impl SelfDistillation {
+    /// Create new self-distillation
+    pub fn new(config: DistillationConfig, initial_params: Vec<Tensor>) -> Self {
+        SelfDistillation {
+            ema_params: initial_params.iter().map(|p| p.clone()).collect(),
+            ema_decay: 0.999,
+            distiller: KnowledgeDistiller::new(config),
+            steps: 0,
+            update_freq: 1,
+        }
+    }
+
+    /// Update EMA teacher
+    pub fn update_ema(&mut self, current_params: &[Tensor]) {
+        self.steps += 1;
+
+        if self.steps % self.update_freq != 0 {
+            return;
+        }
+
+        for (ema, current) in self.ema_params.iter_mut().zip(current_params.iter()) {
+            for i in 0..ema.numel() {
+                let ema_val = ema.get(i);
+                let current_val = current.get(i);
+                let new_val = self.ema_decay * ema_val + (1.0 - self.ema_decay) * current_val;
+                ema.set(i, new_val);
+            }
+        }
+    }
+
+    /// Get EMA teacher parameters
+    pub fn ema_params(&self) -> &[Tensor] {
+        &self.ema_params
+    }
+
+    /// Get distiller
+    pub fn distiller(&self) -> &KnowledgeDistiller {
+        &self.distiller
+    }
+
+    /// Get mutable distiller
+    pub fn distiller_mut(&mut self) -> &mut KnowledgeDistiller {
+        &mut self.distiller
+    }
+
+    /// Set EMA decay
+    pub fn set_ema_decay(&mut self, decay: f64) {
+        self.ema_decay = decay.max(0.0).min(1.0);
+    }
+}
+
+// Helper functions
+
+fn log_softmax(logits: &Tensor) -> Tensor {
+    let max_val = (0..logits.numel())
+        .map(|i| logits.get(i))
+        .fold(f64::NEG_INFINITY, f64::max);
+
+    let mut exp_sum = 0.0;
+    for i in 0..logits.numel() {
+        exp_sum += (logits.get(i) - max_val).exp();
+    }
+    let log_sum = exp_sum.ln();
+
+    let mut result = Tensor::zeros(logits.shape());
+    for i in 0..logits.numel() {
+        result.set(i, logits.get(i) - max_val - log_sum);
+    }
+    result
+}
+
+fn kl_divergence(p: &Tensor, log_q: &Tensor) -> Tensor {
+    let mut kl = 0.0;
+    for i in 0..p.numel() {
+        let p_i = p.get(i);
+        if p_i > 1e-10 {
+            let log_p_i = p_i.ln();
+            let log_q_i = log_q.get(i);
+            kl += p_i * (log_p_i - log_q_i);
+        }
+    }
+
+    let mut result = Tensor::zeros(&[1]);
+    result.set(0, kl);
+    result
+}

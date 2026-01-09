@@ -1,0 +1,364 @@
+// Elastic Weight Consolidation (EWC)
+//
+// Prevents catastrophic forgetting by penalizing changes to weights
+// that are important for previous tasks.
+//
+// Reference: Kirkpatrick et al., "Overcoming catastrophic forgetting in
+// neural networks" (2017)
+
+use crate::tensor::{Tensor, Shape};
+use crate::optim::Optimizer;
+use std::collections::HashMap;
+
+/// EWC configuration
+pub struct EWCConfig {
+    /// Importance weight (lambda)
+    pub lambda: f64,
+
+    /// Number of samples for Fisher estimation
+    pub fisher_samples: usize,
+
+    /// Decay factor for old tasks
+    pub importance_decay: f64,
+
+    /// Whether to use online EWC
+    pub online: bool,
+}
+
+impl Default for EWCConfig {
+    fn default() -> Self {
+        EWCConfig {
+            lambda: 1000.0,
+            fisher_samples: 200,
+            importance_decay: 0.99,
+            online: true,
+        }
+    }
+}
+
+/// Fisher information for a parameter
+struct FisherInfo {
+    /// Diagonal Fisher information
+    fisher: Tensor,
+
+    /// Optimal weights for previous tasks
+    optimal_weights: Tensor,
+}
+
+/// Elastic Weight Consolidation
+pub struct EWC {
+    /// Configuration
+    config: EWCConfig,
+
+    /// Fisher information per parameter
+    fisher_info: HashMap<String, FisherInfo>,
+
+    /// Number of tasks consolidated
+    num_tasks: usize,
+}
+
+impl EWC {
+    /// Create new EWC
+    pub fn new(config: EWCConfig) -> Self {
+        EWC {
+            config,
+            fisher_info: HashMap::new(),
+            num_tasks: 0,
+        }
+    }
+
+    /// Create with default config
+    pub fn default() -> Self {
+        Self::new(EWCConfig::default())
+    }
+
+    /// Consolidate current task (compute Fisher and save weights)
+    ///
+    /// Call this after training on a task, before moving to the next task.
+    pub fn consolidate<O: Optimizer>(&mut self, optimizer: &O, compute_fisher: impl Fn() -> Vec<Tensor>) {
+        self.num_tasks += 1;
+
+        // Compute Fisher information diagonal
+        let fisher_samples = self.estimate_fisher(compute_fisher);
+
+        // Save optimal weights and Fisher for each parameter
+        for (i, (param, fisher)) in optimizer.parameters().iter().zip(fisher_samples.iter()).enumerate() {
+            let name = format!("param_{}", i);
+
+            if self.config.online && self.fisher_info.contains_key(&name) {
+                // Online EWC: accumulate Fisher information
+                let existing = self.fisher_info.get_mut(&name).unwrap();
+
+                // Decay old Fisher and add new
+                for j in 0..existing.fisher.numel() {
+                    let old_f = existing.fisher.get(j) * self.config.importance_decay;
+                    let new_f = fisher.get(j);
+                    existing.fisher.set(j, old_f + new_f);
+                }
+
+                // Update optimal weights
+                for j in 0..existing.optimal_weights.numel() {
+                    existing.optimal_weights.set(j, param.get(j));
+                }
+            } else {
+                // First task or standard EWC
+                self.fisher_info.insert(name, FisherInfo {
+                    fisher: fisher.clone(),
+                    optimal_weights: param.clone(),
+                });
+            }
+        }
+    }
+
+    /// Estimate Fisher information diagonal
+    fn estimate_fisher(&self, compute_fisher: impl Fn() -> Vec<Tensor>) -> Vec<Tensor> {
+        // Accumulate squared gradients over samples
+        let mut fisher_sum: Option<Vec<Tensor>> = None;
+
+        for _ in 0..self.config.fisher_samples {
+            let grads = compute_fisher();
+
+            if fisher_sum.is_none() {
+                fisher_sum = Some(grads.iter()
+                    .map(|g| {
+                        let mut f = Tensor::zeros(Shape::new(g.shape().dims().to_vec()));
+                        for i in 0..g.numel() {
+                            f.set(i, g.get(i) * g.get(i));
+                        }
+                        f
+                    })
+                    .collect());
+            } else {
+                let sum = fisher_sum.as_mut().unwrap();
+                for (f, g) in sum.iter_mut().zip(grads.iter()) {
+                    for i in 0..g.numel() {
+                        f.set(i, f.get(i) + g.get(i) * g.get(i));
+                    }
+                }
+            }
+        }
+
+        // Average
+        let mut fisher = fisher_sum.unwrap_or_default();
+        let scale = 1.0 / self.config.fisher_samples as f64;
+        for f in &mut fisher {
+            for i in 0..f.numel() {
+                f.set(i, f.get(i) * scale);
+            }
+        }
+
+        fisher
+    }
+
+    /// Compute EWC penalty for current parameters
+    pub fn penalty<O: Optimizer>(&self, optimizer: &O) -> f64 {
+        if self.fisher_info.is_empty() {
+            return 0.0;
+        }
+
+        let mut total_penalty = 0.0;
+
+        for (i, param) in optimizer.parameters().iter().enumerate() {
+            let name = format!("param_{}", i);
+
+            if let Some(info) = self.fisher_info.get(&name) {
+                for j in 0..param.numel() {
+                    let diff = param.get(j) - info.optimal_weights.get(j);
+                    let fisher = info.fisher.get(j);
+                    total_penalty += fisher * diff * diff;
+                }
+            }
+        }
+
+        self.config.lambda * total_penalty / 2.0
+    }
+
+    /// Compute EWC gradient contribution
+    pub fn gradient<O: Optimizer>(&self, optimizer: &O) -> Vec<Tensor> {
+        let mut grads = Vec::new();
+
+        for (i, param) in optimizer.parameters().iter().enumerate() {
+            let name = format!("param_{}", i);
+            let mut grad = Tensor::zeros(Shape::new(param.shape().dims().to_vec()));
+
+            if let Some(info) = self.fisher_info.get(&name) {
+                for j in 0..param.numel() {
+                    let diff = param.get(j) - info.optimal_weights.get(j);
+                    let fisher = info.fisher.get(j);
+                    grad.set(j, self.config.lambda * fisher * diff);
+                }
+            }
+
+            grads.push(grad);
+        }
+
+        grads
+    }
+
+    /// Apply EWC penalty to gradients
+    ///
+    /// Adds the EWC regularization gradient to each parameter's existing gradient.
+    /// Call this after computing task gradients but before optimizer.step().
+    pub fn apply_penalty<O: Optimizer>(&self, optimizer: &mut O) {
+        let ewc_grads = self.gradient(optimizer);
+
+        for (param, ewc_grad) in optimizer.parameters_mut().iter_mut().zip(ewc_grads.iter()) {
+            // Accumulate EWC gradient to parameter gradient
+            param.accumulate_grad(ewc_grad);
+        }
+    }
+
+    /// Compute total loss with EWC penalty
+    ///
+    /// Returns: task_loss + lambda/2 * sum_i(F_i * (theta_i - theta*_i)^2)
+    pub fn total_loss<O: Optimizer>(&self, task_loss: f64, optimizer: &O) -> f64 {
+        task_loss + self.penalty(optimizer)
+    }
+
+    /// Get number of consolidated tasks
+    pub fn num_tasks(&self) -> usize {
+        self.num_tasks
+    }
+
+    /// Reset EWC state
+    pub fn reset(&mut self) {
+        self.fisher_info.clear();
+        self.num_tasks = 0;
+    }
+}
+
+/// Memory Aware Synapses (MAS) - alternative to EWC
+///
+/// Uses sensitivity of output to parameter changes instead of Fisher.
+pub struct MAS {
+    /// Importance weight
+    lambda: f64,
+
+    /// Parameter importance (Omega)
+    importance: HashMap<String, Tensor>,
+
+    /// Optimal weights
+    optimal_weights: HashMap<String, Tensor>,
+}
+
+impl MAS {
+    /// Create new MAS
+    pub fn new(lambda: f64) -> Self {
+        MAS {
+            lambda,
+            importance: HashMap::new(),
+            optimal_weights: HashMap::new(),
+        }
+    }
+
+    /// Compute importance based on gradient magnitudes
+    pub fn compute_importance<O: Optimizer>(
+        &mut self,
+        optimizer: &O,
+        compute_output_grad: impl Fn() -> Vec<Tensor>,
+        num_samples: usize,
+    ) {
+        // Accumulate gradient magnitudes
+        for _ in 0..num_samples {
+            let grads = compute_output_grad();
+
+            for (i, grad) in grads.iter().enumerate() {
+                let name = format!("param_{}", i);
+
+                let importance = self.importance.entry(name.clone())
+                    .or_insert_with(|| Tensor::zeros(Shape::new(grad.shape().dims().to_vec())));
+
+                for j in 0..grad.numel() {
+                    importance.set(j, importance.get(j) + grad.get(j).abs());
+                }
+            }
+        }
+
+        // Normalize
+        let scale = 1.0 / num_samples as f64;
+        for importance in self.importance.values_mut() {
+            for j in 0..importance.numel() {
+                importance.set(j, importance.get(j) * scale);
+            }
+        }
+
+        // Save optimal weights
+        for (i, param) in optimizer.parameters().iter().enumerate() {
+            let name = format!("param_{}", i);
+            self.optimal_weights.insert(name, param.clone());
+        }
+    }
+
+    /// Compute MAS penalty
+    pub fn penalty<O: Optimizer>(&self, optimizer: &O) -> f64 {
+        let mut total = 0.0;
+
+        for (i, param) in optimizer.parameters().iter().enumerate() {
+            let name = format!("param_{}", i);
+
+            if let (Some(importance), Some(optimal)) =
+                (self.importance.get(&name), self.optimal_weights.get(&name))
+            {
+                for j in 0..param.numel() {
+                    let diff = param.get(j) - optimal.get(j);
+                    total += importance.get(j) * diff * diff;
+                }
+            }
+        }
+
+        self.lambda * total / 2.0
+    }
+
+    /// Compute MAS gradient
+    pub fn gradient<O: Optimizer>(&self, optimizer: &O) -> Vec<Tensor> {
+        let mut grads = Vec::new();
+
+        for (i, param) in optimizer.parameters().iter().enumerate() {
+            let name = format!("param_{}", i);
+            let mut grad = Tensor::zeros(Shape::new(param.shape().dims().to_vec()));
+
+            if let (Some(importance), Some(optimal)) =
+                (self.importance.get(&name), self.optimal_weights.get(&name))
+            {
+                for j in 0..param.numel() {
+                    let diff = param.get(j) - optimal.get(j);
+                    grad.set(j, self.lambda * importance.get(j) * diff);
+                }
+            }
+
+            grads.push(grad);
+        }
+
+        grads
+    }
+
+    /// Apply MAS penalty to gradients
+    pub fn apply_penalty<O: Optimizer>(&self, optimizer: &mut O) {
+        let mas_grads = self.gradient(optimizer);
+
+        for (param, mas_grad) in optimizer.parameters_mut().iter_mut().zip(mas_grads.iter()) {
+            param.accumulate_grad(mas_grad);
+        }
+    }
+
+    /// Compute total loss with MAS penalty
+    pub fn total_loss<O: Optimizer>(&self, task_loss: f64, optimizer: &O) -> f64 {
+        task_loss + self.penalty(optimizer)
+    }
+
+    /// Reset MAS state
+    pub fn reset(&mut self) {
+        self.importance.clear();
+        self.optimal_weights.clear();
+    }
+
+    /// Get lambda value
+    pub fn lambda(&self) -> f64 {
+        self.lambda
+    }
+
+    /// Set lambda value
+    pub fn set_lambda(&mut self, lambda: f64) {
+        self.lambda = lambda;
+    }
+}

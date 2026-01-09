@@ -1,0 +1,625 @@
+// Hive-level learning coordinator
+//
+// Orchestrates learning across multiple specialists in a cognitive hive.
+// Combines federated parameter learning, belief synchronization,
+// and knowledge distillation into a unified learning system.
+
+use crate::tensor::Tensor;
+use crate::distributed::federated::{FederatedLearner, FederatedConfig, NodeUpdate, AggregationStrategy};
+use crate::distributed::distillation::{KnowledgeDistiller, DistillationConfig, SelfDistillation};
+use crate::distributed::sync::{ModelSync, GradientSync, AllReduceStrategy};
+use crate::distributed::beliefs::{Belief, BeliefResolver, ConflictResolution, HiveBeliefManager};
+
+use std::collections::HashMap;
+
+/// Configuration for hive-wide learning
+#[derive(Clone)]
+pub struct HiveLearningConfig {
+    /// Federated learning config
+    pub federated: FederatedConfig,
+
+    /// Belief conflict resolution strategy
+    pub belief_resolution: ConflictResolution,
+
+    /// Enable knowledge distillation between specialists
+    pub enable_distillation: bool,
+
+    /// Distillation config
+    pub distillation: DistillationConfig,
+
+    /// Sync interval (steps between synchronization)
+    pub sync_interval: u64,
+
+    /// Checkpoint interval
+    pub checkpoint_interval: u64,
+
+    /// Maximum specialists in hive
+    pub max_specialists: usize,
+
+    /// Learning rate scale for hive updates
+    pub hive_learning_rate: f64,
+
+    /// Enable gradient compression
+    pub compress_gradients: bool,
+
+    /// Compression ratio (top-k)
+    pub compression_ratio: f64,
+}
+
+impl Default for HiveLearningConfig {
+    fn default() -> Self {
+        HiveLearningConfig {
+            federated: FederatedConfig::default(),
+            belief_resolution: ConflictResolution::EvidenceWeighted,
+            enable_distillation: true,
+            distillation: DistillationConfig::default(),
+            sync_interval: 100,
+            checkpoint_interval: 1000,
+            max_specialists: 16,
+            hive_learning_rate: 0.001,
+            compress_gradients: false,
+            compression_ratio: 0.1,
+        }
+    }
+}
+
+/// State of a specialist in the hive
+pub struct SpecialistState {
+    /// Specialist ID
+    pub id: String,
+
+    /// Current parameters
+    pub params: Vec<Tensor>,
+
+    /// Local step count
+    pub local_steps: u64,
+
+    /// Last sync step
+    pub last_sync_step: u64,
+
+    /// Accumulated gradients since last sync
+    pub grad_accumulator: Vec<Tensor>,
+
+    /// Local validation accuracy
+    pub validation_acc: f64,
+
+    /// Sample count since last sync
+    pub sample_count: usize,
+
+    /// Is active
+    pub active: bool,
+
+    /// Self-distillation state
+    pub self_distillation: Option<SelfDistillation>,
+}
+
+impl SpecialistState {
+    /// Create new specialist state
+    pub fn new(id: &str, initial_params: Vec<Tensor>) -> Self {
+        let grad_accumulator = initial_params.iter()
+            .map(|p| Tensor::zeros(p.shape()))
+            .collect();
+
+        SpecialistState {
+            id: id.to_string(),
+            params: initial_params,
+            local_steps: 0,
+            last_sync_step: 0,
+            grad_accumulator,
+            validation_acc: 0.0,
+            sample_count: 0,
+            active: true,
+            self_distillation: None,
+        }
+    }
+
+    /// Enable self-distillation
+    pub fn enable_self_distillation(&mut self, config: DistillationConfig) {
+        self.self_distillation = Some(SelfDistillation::new(config, self.params.clone()));
+    }
+
+    /// Accumulate gradients
+    pub fn accumulate_gradients(&mut self, gradients: &[Tensor]) {
+        for (acc, grad) in self.grad_accumulator.iter_mut().zip(gradients.iter()) {
+            for i in 0..acc.numel().min(grad.numel()) {
+                acc.set(i, acc.get(i) + grad.get(i));
+            }
+        }
+        self.sample_count += 1;
+    }
+
+    /// Clear accumulated gradients
+    pub fn clear_accumulator(&mut self) {
+        for acc in &mut self.grad_accumulator {
+            for i in 0..acc.numel() {
+                acc.set(i, 0.0);
+            }
+        }
+        self.sample_count = 0;
+    }
+
+    /// Get averaged gradients
+    pub fn averaged_gradients(&self) -> Vec<Tensor> {
+        if self.sample_count == 0 {
+            return self.grad_accumulator.clone();
+        }
+
+        self.grad_accumulator.iter()
+            .map(|acc| {
+                let mut avg = Tensor::zeros(acc.shape());
+                let scale = 1.0 / self.sample_count as f64;
+                for i in 0..acc.numel() {
+                    avg.set(i, acc.get(i) * scale);
+                }
+                avg
+            })
+            .collect()
+    }
+
+    /// Update parameters from hive
+    pub fn apply_hive_params(&mut self, hive_params: &[Tensor], blend_factor: f64) {
+        for (local, hive) in self.params.iter_mut().zip(hive_params.iter()) {
+            for i in 0..local.numel().min(hive.numel()) {
+                let blended = local.get(i) * (1.0 - blend_factor) + hive.get(i) * blend_factor;
+                local.set(i, blended);
+            }
+        }
+
+        // Update EMA teacher if using self-distillation
+        if let Some(ref mut sd) = self.self_distillation {
+            sd.update_ema(&self.params);
+        }
+    }
+}
+
+/// Hive-wide learning coordinator
+pub struct HiveLearningCoordinator {
+    /// Configuration
+    config: HiveLearningConfig,
+
+    /// Specialist states
+    specialists: HashMap<String, SpecialistState>,
+
+    /// Federated learner for parameter aggregation
+    federated: FederatedLearner,
+
+    /// Belief manager for conflict resolution
+    belief_manager: HiveBeliefManager,
+
+    /// Cross-specialist distiller
+    distiller: Option<KnowledgeDistiller>,
+
+    /// Model synchronization
+    model_sync: ModelSync,
+
+    /// Gradient synchronization
+    gradient_sync: GradientSync,
+
+    /// Global step counter
+    global_step: u64,
+
+    /// Hive-level metrics
+    metrics: HiveMetrics,
+}
+
+/// Metrics for hive learning
+#[derive(Default)]
+pub struct HiveMetrics {
+    /// Total synchronizations
+    pub sync_count: u64,
+
+    /// Total belief conflicts resolved
+    pub belief_conflicts_resolved: u64,
+
+    /// Average specialist divergence
+    pub avg_divergence: f64,
+
+    /// Best validation accuracy across specialists
+    pub best_validation_acc: f64,
+
+    /// Total samples processed
+    pub total_samples: u64,
+
+    /// Gradient compression ratio achieved
+    pub compression_ratio: f64,
+}
+
+impl HiveLearningCoordinator {
+    /// Create new hive learning coordinator
+    pub fn new(config: HiveLearningConfig, initial_params: Vec<Tensor>) -> Self {
+        let federated = FederatedLearner::new(config.federated.clone(), initial_params.clone());
+        let belief_manager = HiveBeliefManager::new(config.belief_resolution.clone());
+        let model_sync = ModelSync::new(config.checkpoint_interval);
+
+        let gradient_sync = if config.compress_gradients {
+            GradientSync::new(AllReduceStrategy::Ring)
+                .with_compression(config.compression_ratio)
+        } else {
+            GradientSync::new(AllReduceStrategy::Ring)
+        };
+
+        let distiller = if config.enable_distillation {
+            Some(KnowledgeDistiller::new(config.distillation.clone()))
+        } else {
+            None
+        };
+
+        HiveLearningCoordinator {
+            config,
+            specialists: HashMap::new(),
+            federated,
+            belief_manager,
+            distiller,
+            model_sync,
+            gradient_sync,
+            global_step: 0,
+            metrics: HiveMetrics::default(),
+        }
+    }
+
+    /// Register a specialist with the hive
+    pub fn register_specialist(&mut self, id: &str, params: Vec<Tensor>) -> bool {
+        if self.specialists.len() >= self.config.max_specialists {
+            return false;
+        }
+
+        if self.specialists.contains_key(id) {
+            return false;
+        }
+
+        let mut state = SpecialistState::new(id, params);
+
+        if self.config.enable_distillation {
+            state.enable_self_distillation(self.config.distillation.clone());
+        }
+
+        self.specialists.insert(id.to_string(), state);
+        true
+    }
+
+    /// Unregister a specialist
+    pub fn unregister_specialist(&mut self, id: &str) -> bool {
+        self.specialists.remove(id).is_some()
+    }
+
+    /// Submit gradients from a specialist
+    pub fn submit_gradients(&mut self, specialist_id: &str, gradients: &[Tensor]) -> bool {
+        let specialist = match self.specialists.get_mut(specialist_id) {
+            Some(s) => s,
+            None => return false,
+        };
+
+        specialist.accumulate_gradients(gradients);
+        specialist.local_steps += 1;
+
+        self.metrics.total_samples += 1;
+
+        // Check if sync is due
+        if specialist.local_steps - specialist.last_sync_step >= self.config.sync_interval {
+            self.sync_specialist(specialist_id);
+        }
+
+        true
+    }
+
+    /// Submit a belief from a specialist
+    pub fn submit_belief(&mut self, specialist_id: &str, belief: Belief) {
+        // Update belief manager
+        self.belief_manager.submit_belief(belief);
+
+        // Check for conflicts
+        if self.belief_manager.has_conflict(&belief.id) {
+            self.metrics.belief_conflicts_resolved += 1;
+        }
+    }
+
+    /// Synchronize a specialist with the hive
+    fn sync_specialist(&mut self, specialist_id: &str) {
+        let specialist = match self.specialists.get_mut(specialist_id) {
+            Some(s) => s,
+            None => return,
+        };
+
+        // Get averaged gradients
+        let avg_grads = specialist.averaged_gradients();
+
+        // Submit to federated learner
+        let update = NodeUpdate {
+            node_id: specialist_id.to_string(),
+            params: specialist.params.clone(),
+            sample_count: specialist.sample_count,
+            validation_acc: specialist.validation_acc,
+            round: self.federated.round(),
+            metadata: HashMap::new(),
+        };
+
+        let triggered_aggregation = self.federated.submit_update(update);
+
+        if triggered_aggregation {
+            // Distribute aggregated parameters to all specialists
+            let hive_params = self.federated.global_params().to_vec();
+
+            for (_, spec) in self.specialists.iter_mut() {
+                spec.apply_hive_params(&hive_params, 0.5);
+            }
+
+            self.metrics.sync_count += 1;
+        }
+
+        // Clear accumulator
+        specialist.clear_accumulator();
+        specialist.last_sync_step = specialist.local_steps;
+    }
+
+    /// Force synchronization of all specialists
+    pub fn sync_all(&mut self) {
+        let specialist_ids: Vec<String> = self.specialists.keys().cloned().collect();
+
+        for id in specialist_ids {
+            self.sync_specialist(&id);
+        }
+
+        // Compute divergence metrics
+        self.update_divergence_metrics();
+    }
+
+    /// Update divergence metrics
+    fn update_divergence_metrics(&mut self) {
+        if self.specialists.len() < 2 {
+            self.metrics.avg_divergence = 0.0;
+            return;
+        }
+
+        let hive_params = self.federated.global_params();
+        let mut total_divergence = 0.0;
+        let mut count = 0;
+
+        for (_, specialist) in &self.specialists {
+            let divergence = compute_param_divergence(&specialist.params, hive_params);
+            total_divergence += divergence;
+            count += 1;
+        }
+
+        self.metrics.avg_divergence = total_divergence / count as f64;
+
+        // Update best validation accuracy
+        self.metrics.best_validation_acc = self.specialists.values()
+            .map(|s| s.validation_acc)
+            .fold(0.0, f64::max);
+    }
+
+    /// Get consensus belief
+    pub fn consensus_belief(&self, belief_id: &str) -> Option<&Belief> {
+        self.belief_manager.consensus(belief_id)
+    }
+
+    /// Get all consensus beliefs
+    pub fn all_consensus_beliefs(&self) -> &HashMap<String, Belief> {
+        self.belief_manager.all_consensus()
+    }
+
+    /// Apply consensus beliefs to a specialist
+    pub fn apply_consensus_to_specialist(&mut self, specialist_id: &str) {
+        let consensus = self.belief_manager.all_consensus().clone();
+
+        if let Some(specialist) = self.specialists.get_mut(specialist_id) {
+            // In production, this would update the specialist's belief system
+            // For now, we track it
+            for (_, belief) in &consensus {
+                // Specialist would apply belief here
+                let _ = belief;
+            }
+        }
+    }
+
+    /// Checkpoint the hive state
+    pub fn checkpoint(&mut self) {
+        let params: Vec<Tensor> = self.federated.global_params().to_vec();
+        let metric = self.metrics.best_validation_acc;
+
+        self.model_sync.save_checkpoint(&params, self.global_step, metric);
+    }
+
+    /// Restore from best checkpoint
+    pub fn restore_best(&mut self) -> bool {
+        if let Some(checkpoint) = self.model_sync.best_checkpoint() {
+            let params = checkpoint.params.clone();
+
+            // Update federated learner (would need to expose a method)
+            // For now, distribute to specialists
+            for (_, specialist) in self.specialists.iter_mut() {
+                specialist.apply_hive_params(&params, 1.0);
+            }
+
+            return true;
+        }
+        false
+    }
+
+    /// Step the global counter
+    pub fn step(&mut self) {
+        self.global_step += 1;
+
+        // Periodic checkpoint
+        if self.model_sync.should_checkpoint(self.global_step) {
+            self.checkpoint();
+        }
+    }
+
+    /// Get current metrics
+    pub fn metrics(&self) -> &HiveMetrics {
+        &self.metrics
+    }
+
+    /// Get specialist state
+    pub fn specialist(&self, id: &str) -> Option<&SpecialistState> {
+        self.specialists.get(id)
+    }
+
+    /// Get mutable specialist state
+    pub fn specialist_mut(&mut self, id: &str) -> Option<&mut SpecialistState> {
+        self.specialists.get_mut(id)
+    }
+
+    /// Get specialist count
+    pub fn specialist_count(&self) -> usize {
+        self.specialists.len()
+    }
+
+    /// Get active specialist count
+    pub fn active_count(&self) -> usize {
+        self.specialists.values().filter(|s| s.active).count()
+    }
+
+    /// Get global step
+    pub fn global_step(&self) -> u64 {
+        self.global_step
+    }
+
+    /// Get federated learner
+    pub fn federated(&self) -> &FederatedLearner {
+        &self.federated
+    }
+
+    /// Get hive parameters
+    pub fn hive_params(&self) -> &[Tensor] {
+        self.federated.global_params()
+    }
+
+    /// Perform cross-specialist distillation
+    pub fn cross_distill(&mut self, teacher_id: &str, student_id: &str, input: &Tensor) -> Option<f64> {
+        let distiller = self.distiller.as_mut()?;
+
+        let teacher_params = self.specialists.get(teacher_id)?.params.clone();
+        let student_params = self.specialists.get(student_id)?.params.clone();
+
+        // In production, we'd run forward passes through actual models
+        // For now, simulate with parameter-based "logits"
+        let teacher_logits = simulate_forward(&teacher_params, input);
+        let student_logits = simulate_forward(&student_params, input);
+
+        let loss = distiller.distillation_loss(&student_logits, &teacher_logits, None);
+
+        Some(loss.get(0))
+    }
+
+    /// Update specialist validation accuracy
+    pub fn update_validation(&mut self, specialist_id: &str, accuracy: f64) {
+        if let Some(specialist) = self.specialists.get_mut(specialist_id) {
+            specialist.validation_acc = accuracy;
+        }
+    }
+}
+
+// Helper functions
+
+fn compute_param_divergence(params_a: &[Tensor], params_b: &[Tensor]) -> f64 {
+    let mut total_diff = 0.0;
+    let mut total_count = 0;
+
+    for (a, b) in params_a.iter().zip(params_b.iter()) {
+        for i in 0..a.numel().min(b.numel()) {
+            let diff = a.get(i) - b.get(i);
+            total_diff += diff * diff;
+            total_count += 1;
+        }
+    }
+
+    if total_count > 0 {
+        (total_diff / total_count as f64).sqrt()
+    } else {
+        0.0
+    }
+}
+
+fn simulate_forward(params: &[Tensor], input: &Tensor) -> Tensor {
+    // Simplified forward pass simulation
+    // In production, this would be actual model inference
+    if params.is_empty() {
+        return input.clone();
+    }
+
+    let mut output = Tensor::zeros(&[params[0].numel().min(10)]);
+    for i in 0..output.numel() {
+        let mut sum = 0.0;
+        for j in 0..input.numel().min(params[0].numel()) {
+            sum += input.get(j % input.numel()) * params[0].get((i + j) % params[0].numel());
+        }
+        output.set(i, sum);
+    }
+    output
+}
+
+/// Builder for hive learning configuration
+pub struct HiveLearningConfigBuilder {
+    config: HiveLearningConfig,
+}
+
+impl HiveLearningConfigBuilder {
+    /// Create new builder
+    pub fn new() -> Self {
+        HiveLearningConfigBuilder {
+            config: HiveLearningConfig::default(),
+        }
+    }
+
+    /// Set sync interval
+    pub fn sync_interval(mut self, interval: u64) -> Self {
+        self.config.sync_interval = interval;
+        self
+    }
+
+    /// Set checkpoint interval
+    pub fn checkpoint_interval(mut self, interval: u64) -> Self {
+        self.config.checkpoint_interval = interval;
+        self
+    }
+
+    /// Set max specialists
+    pub fn max_specialists(mut self, max: usize) -> Self {
+        self.config.max_specialists = max;
+        self
+    }
+
+    /// Set aggregation strategy
+    pub fn aggregation(mut self, strategy: AggregationStrategy) -> Self {
+        self.config.federated.aggregation = strategy;
+        self
+    }
+
+    /// Set belief resolution strategy
+    pub fn belief_resolution(mut self, strategy: ConflictResolution) -> Self {
+        self.config.belief_resolution = strategy;
+        self
+    }
+
+    /// Enable distillation
+    pub fn enable_distillation(mut self, enable: bool) -> Self {
+        self.config.enable_distillation = enable;
+        self
+    }
+
+    /// Set distillation temperature
+    pub fn distillation_temperature(mut self, temp: f64) -> Self {
+        self.config.distillation.temperature = temp;
+        self
+    }
+
+    /// Enable gradient compression
+    pub fn compress_gradients(mut self, enable: bool, ratio: f64) -> Self {
+        self.config.compress_gradients = enable;
+        self.config.compression_ratio = ratio;
+        self
+    }
+
+    /// Set hive learning rate
+    pub fn learning_rate(mut self, lr: f64) -> Self {
+        self.config.hive_learning_rate = lr;
+        self
+    }
+
+    /// Build configuration
+    pub fn build(self) -> HiveLearningConfig {
+        self.config
+    }
+}

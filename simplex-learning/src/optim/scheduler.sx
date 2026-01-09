@@ -1,0 +1,349 @@
+// Learning rate schedulers
+//
+// Control learning rate over the course of training.
+
+use super::Optimizer;
+
+/// Trait for learning rate schedulers
+pub trait LearningRateScheduler {
+    /// Get learning rate for given step
+    fn get_lr(&self, step: u64) -> f64;
+
+    /// Step the scheduler (update internal state)
+    fn step(&mut self);
+
+    /// Get current learning rate
+    fn current_lr(&self) -> f64;
+
+    /// Reset scheduler to initial state
+    fn reset(&mut self);
+}
+
+/// Constant learning rate (no decay)
+pub struct ConstantScheduler {
+    lr: f64,
+}
+
+impl ConstantScheduler {
+    pub fn new(lr: f64) -> Self {
+        ConstantScheduler { lr }
+    }
+}
+
+impl LearningRateScheduler for ConstantScheduler {
+    fn get_lr(&self, _step: u64) -> f64 {
+        self.lr
+    }
+
+    fn step(&mut self) {}
+
+    fn current_lr(&self) -> f64 {
+        self.lr
+    }
+
+    fn reset(&mut self) {}
+}
+
+/// Step decay: multiply lr by gamma every step_size steps
+pub struct StepScheduler {
+    /// Initial learning rate
+    initial_lr: f64,
+
+    /// Current learning rate
+    current: f64,
+
+    /// Decay factor
+    gamma: f64,
+
+    /// Steps between decays
+    step_size: u64,
+
+    /// Current step
+    step_count: u64,
+
+    /// Last decay step
+    last_decay: u64,
+}
+
+impl StepScheduler {
+    pub fn new(lr: f64, step_size: u64, gamma: f64) -> Self {
+        StepScheduler {
+            initial_lr: lr,
+            current: lr,
+            gamma,
+            step_size,
+            step_count: 0,
+            last_decay: 0,
+        }
+    }
+}
+
+impl LearningRateScheduler for StepScheduler {
+    fn get_lr(&self, step: u64) -> f64 {
+        let num_decays = step / self.step_size;
+        self.initial_lr * self.gamma.powi(num_decays as i32)
+    }
+
+    fn step(&mut self) {
+        self.step_count += 1;
+
+        if self.step_count - self.last_decay >= self.step_size {
+            self.current *= self.gamma;
+            self.last_decay = self.step_count;
+        }
+    }
+
+    fn current_lr(&self) -> f64 {
+        self.current
+    }
+
+    fn reset(&mut self) {
+        self.current = self.initial_lr;
+        self.step_count = 0;
+        self.last_decay = 0;
+    }
+}
+
+/// Cosine annealing scheduler
+pub struct CosineScheduler {
+    /// Initial learning rate
+    initial_lr: f64,
+
+    /// Minimum learning rate
+    min_lr: f64,
+
+    /// Total number of steps
+    total_steps: u64,
+
+    /// Current step
+    step_count: u64,
+
+    /// Whether to restart
+    restart: bool,
+}
+
+impl CosineScheduler {
+    pub fn new(lr: f64, total_steps: u64) -> Self {
+        CosineScheduler {
+            initial_lr: lr,
+            min_lr: 0.0,
+            total_steps,
+            step_count: 0,
+            restart: false,
+        }
+    }
+
+    /// Set minimum learning rate
+    pub fn min_lr(mut self, min_lr: f64) -> Self {
+        self.min_lr = min_lr;
+        self
+    }
+
+    /// Enable restart after total_steps
+    pub fn restart(mut self, restart: bool) -> Self {
+        self.restart = restart;
+        self
+    }
+}
+
+impl LearningRateScheduler for CosineScheduler {
+    fn get_lr(&self, step: u64) -> f64 {
+        let step = if self.restart {
+            step % self.total_steps
+        } else {
+            step.min(self.total_steps)
+        };
+
+        let progress = step as f64 / self.total_steps as f64;
+        let cosine = (1.0 + (std::f64::consts::PI * progress).cos()) / 2.0;
+
+        self.min_lr + (self.initial_lr - self.min_lr) * cosine
+    }
+
+    fn step(&mut self) {
+        self.step_count += 1;
+
+        if self.restart && self.step_count >= self.total_steps {
+            self.step_count = 0;
+        }
+    }
+
+    fn current_lr(&self) -> f64 {
+        self.get_lr(self.step_count)
+    }
+
+    fn reset(&mut self) {
+        self.step_count = 0;
+    }
+}
+
+/// Linear warmup scheduler
+pub struct WarmupScheduler {
+    /// Target learning rate after warmup
+    target_lr: f64,
+
+    /// Number of warmup steps
+    warmup_steps: u64,
+
+    /// Current step
+    step_count: u64,
+
+    /// Post-warmup scheduler
+    post_warmup: Option<Box<dyn LearningRateScheduler>>,
+}
+
+impl WarmupScheduler {
+    pub fn new(target_lr: f64, warmup_steps: u64) -> Self {
+        WarmupScheduler {
+            target_lr,
+            warmup_steps,
+            step_count: 0,
+            post_warmup: None,
+        }
+    }
+
+    /// Set scheduler to use after warmup
+    pub fn then<S: LearningRateScheduler + 'static>(mut self, scheduler: S) -> Self {
+        self.post_warmup = Some(Box::new(scheduler));
+        self
+    }
+}
+
+impl LearningRateScheduler for WarmupScheduler {
+    fn get_lr(&self, step: u64) -> f64 {
+        if step < self.warmup_steps {
+            // Linear warmup
+            self.target_lr * (step + 1) as f64 / self.warmup_steps as f64
+        } else if let Some(ref post) = self.post_warmup {
+            // Use post-warmup scheduler
+            post.get_lr(step - self.warmup_steps)
+        } else {
+            // Constant at target
+            self.target_lr
+        }
+    }
+
+    fn step(&mut self) {
+        self.step_count += 1;
+
+        if self.step_count > self.warmup_steps {
+            if let Some(ref mut post) = self.post_warmup {
+                post.step();
+            }
+        }
+    }
+
+    fn current_lr(&self) -> f64 {
+        self.get_lr(self.step_count)
+    }
+
+    fn reset(&mut self) {
+        self.step_count = 0;
+        if let Some(ref mut post) = self.post_warmup {
+            post.reset();
+        }
+    }
+}
+
+/// Reduce on plateau: reduce lr when metric stops improving
+pub struct ReduceOnPlateau {
+    /// Current learning rate
+    current_lr: f64,
+
+    /// Decay factor
+    factor: f64,
+
+    /// Patience (steps without improvement)
+    patience: u64,
+
+    /// Minimum learning rate
+    min_lr: f64,
+
+    /// Best metric value seen
+    best: f64,
+
+    /// Steps since improvement
+    num_bad: u64,
+
+    /// Whether lower is better
+    mode_min: bool,
+
+    /// Threshold for improvement
+    threshold: f64,
+}
+
+impl ReduceOnPlateau {
+    pub fn new(lr: f64, factor: f64, patience: u64) -> Self {
+        ReduceOnPlateau {
+            current_lr: lr,
+            factor,
+            patience,
+            min_lr: 1e-8,
+            best: f64::INFINITY,
+            num_bad: 0,
+            mode_min: true,
+            threshold: 1e-4,
+        }
+    }
+
+    /// Set mode (min: lower is better, max: higher is better)
+    pub fn mode_min(mut self, mode_min: bool) -> Self {
+        self.mode_min = mode_min;
+        self.best = if mode_min { f64::INFINITY } else { f64::NEG_INFINITY };
+        self
+    }
+
+    /// Set minimum learning rate
+    pub fn min_lr(mut self, min_lr: f64) -> Self {
+        self.min_lr = min_lr;
+        self
+    }
+
+    /// Update with new metric value
+    pub fn step_metric(&mut self, metric: f64) {
+        let improved = if self.mode_min {
+            metric < self.best - self.threshold
+        } else {
+            metric > self.best + self.threshold
+        };
+
+        if improved {
+            self.best = metric;
+            self.num_bad = 0;
+        } else {
+            self.num_bad += 1;
+
+            if self.num_bad >= self.patience {
+                self.current_lr = (self.current_lr * self.factor).max(self.min_lr);
+                self.num_bad = 0;
+            }
+        }
+    }
+}
+
+impl LearningRateScheduler for ReduceOnPlateau {
+    fn get_lr(&self, _step: u64) -> f64 {
+        self.current_lr
+    }
+
+    fn step(&mut self) {
+        // No-op: use step_metric instead
+    }
+
+    fn current_lr(&self) -> f64 {
+        self.current_lr
+    }
+
+    fn reset(&mut self) {
+        self.best = if self.mode_min { f64::INFINITY } else { f64::NEG_INFINITY };
+        self.num_bad = 0;
+    }
+}
+
+/// Apply scheduler to optimizer
+pub fn apply_scheduler<O: Optimizer, S: LearningRateScheduler>(
+    optimizer: &mut O,
+    scheduler: &S,
+) {
+    optimizer.set_learning_rate(scheduler.current_lr());
+}

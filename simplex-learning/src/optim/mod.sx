@@ -1,0 +1,92 @@
+// Optimizer module: Streaming optimizers for continuous learning
+//
+// Provides online learning variants of standard optimizers that work
+// with streaming data rather than batch datasets.
+
+pub mod sgd;
+pub mod adam;
+pub mod streaming;
+pub mod scheduler;
+
+pub use sgd::{SGD, StreamingSGD};
+pub use adam::{Adam, AdamW, StreamingAdam};
+pub use streaming::{StreamingOptimizer, OnlineStats};
+pub use scheduler::{LearningRateScheduler, CosineScheduler, StepScheduler, WarmupScheduler};
+
+use crate::tensor::Tensor;
+
+/// Base trait for all optimizers
+pub trait Optimizer {
+    /// Perform one optimization step
+    fn step(&mut self);
+
+    /// Zero all gradients
+    fn zero_grad(&mut self);
+
+    /// Get current learning rate
+    fn learning_rate(&self) -> f64;
+
+    /// Set learning rate
+    fn set_learning_rate(&mut self, lr: f64);
+
+    /// Get all parameters being optimized
+    fn parameters(&self) -> &[Tensor];
+
+    /// Get mutable parameters
+    fn parameters_mut(&mut self) -> &mut [Tensor];
+
+    /// Get state dict for checkpointing
+    fn state_dict(&self) -> OptimizerState;
+
+    /// Load state from checkpoint
+    fn load_state_dict(&mut self, state: OptimizerState);
+}
+
+/// Optimizer state for checkpointing
+pub struct OptimizerState {
+    /// Step count
+    pub step: u64,
+
+    /// Learning rate
+    pub lr: f64,
+
+    /// Parameter states (momentum, variance, etc.)
+    pub param_states: Vec<ParamState>,
+}
+
+/// Per-parameter optimizer state
+pub struct ParamState {
+    /// Parameter name/id
+    pub name: String,
+
+    /// First moment (momentum)
+    pub momentum: Option<Tensor>,
+
+    /// Second moment (variance)
+    pub variance: Option<Tensor>,
+
+    /// Other state as needed
+    pub extra: Vec<(String, Tensor)>,
+}
+
+/// Parameter group for different learning rates
+pub struct ParamGroup {
+    /// Parameters in this group
+    pub params: Vec<Tensor>,
+
+    /// Learning rate for this group
+    pub lr: f64,
+
+    /// Weight decay for this group
+    pub weight_decay: f64,
+}
+
+impl Default for OptimizerState {
+    fn default() -> Self {
+        OptimizerState {
+            step: 0,
+            lr: 0.001,
+            param_states: Vec::new(),
+        }
+    }
+}

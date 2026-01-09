@@ -1,0 +1,323 @@
+// Safety bounds for gradients and weights
+//
+// Prevents gradient explosion and keeps weights in reasonable ranges.
+
+use crate::tensor::Tensor;
+
+/// Safety bounds configuration
+pub struct SafetyBounds {
+    /// Gradient bounds
+    pub gradient: GradientBounds,
+
+    /// Weight bounds
+    pub weight: WeightBounds,
+}
+
+impl Default for SafetyBounds {
+    fn default() -> Self {
+        SafetyBounds {
+            gradient: GradientBounds::default(),
+            weight: WeightBounds::default(),
+        }
+    }
+}
+
+/// Gradient clipping and bounds
+pub struct GradientBounds {
+    /// Maximum gradient norm (None = no clipping)
+    pub max_norm: Option<f64>,
+
+    /// Maximum per-element gradient value
+    pub max_value: Option<f64>,
+
+    /// Whether to skip update on NaN/Inf gradients
+    pub skip_nan: bool,
+
+    /// Whether to log when clipping occurs
+    pub log_clipping: bool,
+}
+
+impl Default for GradientBounds {
+    fn default() -> Self {
+        GradientBounds {
+            max_norm: Some(1.0),
+            max_value: None,
+            skip_nan: true,
+            log_clipping: false,
+        }
+    }
+}
+
+impl GradientBounds {
+    /// Create with max norm only
+    pub fn max_norm(norm: f64) -> Self {
+        GradientBounds {
+            max_norm: Some(norm),
+            ..Default::default()
+        }
+    }
+
+    /// Create with max value only
+    pub fn max_value(value: f64) -> Self {
+        GradientBounds {
+            max_value: Some(value),
+            ..Default::default()
+        }
+    }
+
+    /// Apply bounds to gradients
+    pub fn apply(&self, params: &mut [Tensor]) -> GradientClipResult {
+        let mut result = GradientClipResult::default();
+
+        // Check for NaN/Inf
+        if self.skip_nan {
+            for param in params.iter() {
+                if let Some(grad) = param.grad() {
+                    for i in 0..grad.numel() {
+                        let v = grad.get(i);
+                        if !v.is_finite() {
+                            result.had_nan = true;
+                            result.skipped = true;
+                            return result;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Clip by norm
+        if let Some(max_norm) = self.max_norm {
+            let norm = self.compute_total_norm(params);
+            result.original_norm = norm;
+
+            if norm > max_norm {
+                let clip_coef = max_norm / (norm + 1e-6);
+                result.clipped_norm = true;
+                result.clip_coef = clip_coef;
+
+                for param in params.iter_mut() {
+                    if let Some(grad) = param.grad_mut() {
+                        for i in 0..grad.numel() {
+                            grad.set(i, grad.get(i) * clip_coef);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Clip by value
+        if let Some(max_value) = self.max_value {
+            for param in params.iter_mut() {
+                if let Some(grad) = param.grad_mut() {
+                    for i in 0..grad.numel() {
+                        let v = grad.get(i);
+                        if v > max_value {
+                            grad.set(i, max_value);
+                            result.clipped_value = true;
+                        } else if v < -max_value {
+                            grad.set(i, -max_value);
+                            result.clipped_value = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Compute total gradient norm
+    fn compute_total_norm(&self, params: &[Tensor]) -> f64 {
+        let mut total_norm_sq = 0.0;
+
+        for param in params {
+            if let Some(grad) = param.grad() {
+                for i in 0..grad.numel() {
+                    let v = grad.get(i);
+                    total_norm_sq += v * v;
+                }
+            }
+        }
+
+        total_norm_sq.sqrt()
+    }
+}
+
+/// Result of gradient clipping
+#[derive(Default)]
+pub struct GradientClipResult {
+    /// Original gradient norm
+    pub original_norm: f64,
+
+    /// Whether norm clipping was applied
+    pub clipped_norm: bool,
+
+    /// Whether value clipping was applied
+    pub clipped_value: bool,
+
+    /// Clipping coefficient used
+    pub clip_coef: f64,
+
+    /// Whether NaN was detected
+    pub had_nan: bool,
+
+    /// Whether update was skipped
+    pub skipped: bool,
+}
+
+/// Weight bounds and constraints
+pub struct WeightBounds {
+    /// Maximum weight magnitude
+    pub max_magnitude: Option<f64>,
+
+    /// Minimum weight magnitude (for numerical stability)
+    pub min_magnitude: Option<f64>,
+
+    /// Whether to apply weight decay
+    pub weight_decay: Option<f64>,
+
+    /// Whether to normalize weights
+    pub normalize: bool,
+}
+
+impl Default for WeightBounds {
+    fn default() -> Self {
+        WeightBounds {
+            max_magnitude: None,
+            min_magnitude: None,
+            weight_decay: None,
+            normalize: false,
+        }
+    }
+}
+
+impl WeightBounds {
+    /// Create with max magnitude
+    pub fn max_magnitude(mag: f64) -> Self {
+        WeightBounds {
+            max_magnitude: Some(mag),
+            ..Default::default()
+        }
+    }
+
+    /// Create with weight decay
+    pub fn with_decay(decay: f64) -> Self {
+        WeightBounds {
+            weight_decay: Some(decay),
+            ..Default::default()
+        }
+    }
+
+    /// Apply bounds to weights
+    pub fn apply(&self, params: &mut [Tensor]) -> WeightBoundResult {
+        let mut result = WeightBoundResult::default();
+
+        for param in params.iter_mut() {
+            // Apply magnitude clipping
+            if let Some(max_mag) = self.max_magnitude {
+                for i in 0..param.numel() {
+                    let v = param.get(i);
+                    if v.abs() > max_mag {
+                        param.set(i, v.signum() * max_mag);
+                        result.clipped_count += 1;
+                    }
+                }
+            }
+
+            // Apply minimum magnitude
+            if let Some(min_mag) = self.min_magnitude {
+                for i in 0..param.numel() {
+                    let v = param.get(i);
+                    if v.abs() < min_mag && v != 0.0 {
+                        param.set(i, v.signum() * min_mag);
+                    }
+                }
+            }
+
+            // Apply weight decay
+            if let Some(decay) = self.weight_decay {
+                for i in 0..param.numel() {
+                    let v = param.get(i);
+                    param.set(i, v * (1.0 - decay));
+                }
+                result.applied_decay = true;
+            }
+
+            // Normalize if requested
+            if self.normalize {
+                let norm = self.compute_norm(param);
+                if norm > 0.0 {
+                    for i in 0..param.numel() {
+                        param.set(i, param.get(i) / norm);
+                    }
+                    result.normalized = true;
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Compute weight norm
+    fn compute_norm(&self, param: &Tensor) -> f64 {
+        let mut norm_sq = 0.0;
+        for i in 0..param.numel() {
+            let v = param.get(i);
+            norm_sq += v * v;
+        }
+        norm_sq.sqrt()
+    }
+}
+
+/// Result of weight bounding
+#[derive(Default)]
+pub struct WeightBoundResult {
+    /// Number of weights clipped
+    pub clipped_count: usize,
+
+    /// Whether decay was applied
+    pub applied_decay: bool,
+
+    /// Whether normalization was applied
+    pub normalized: bool,
+}
+
+/// Combined safety applier
+pub struct SafetyApplier {
+    bounds: SafetyBounds,
+}
+
+impl SafetyApplier {
+    /// Create with bounds
+    pub fn new(bounds: SafetyBounds) -> Self {
+        SafetyApplier { bounds }
+    }
+
+    /// Apply all safety bounds
+    pub fn apply(&self, params: &mut [Tensor]) -> SafetyResult {
+        let gradient_result = self.bounds.gradient.apply(params);
+
+        if gradient_result.skipped {
+            return SafetyResult {
+                gradient: gradient_result,
+                weight: WeightBoundResult::default(),
+                update_allowed: false,
+            };
+        }
+
+        let weight_result = self.bounds.weight.apply(params);
+
+        SafetyResult {
+            gradient: gradient_result,
+            weight: weight_result,
+            update_allowed: true,
+        }
+    }
+}
+
+/// Combined safety result
+pub struct SafetyResult {
+    pub gradient: GradientClipResult,
+    pub weight: WeightBoundResult,
+    pub update_allowed: bool,
+}

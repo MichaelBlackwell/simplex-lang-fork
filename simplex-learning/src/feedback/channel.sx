@@ -1,0 +1,269 @@
+// Feedback channels for learning signals
+//
+// Type-safe channels that connect feedback sources to neural gates.
+
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+use super::signals::FeedbackSignal;
+use super::attribution::CreditAssignment;
+
+/// Configuration for feedback channel
+pub struct ChannelConfig {
+    /// Maximum pending signals
+    pub buffer_size: usize,
+
+    /// How long to wait for delayed feedback (steps)
+    pub max_delay: u64,
+
+    /// Discount factor for delayed feedback
+    pub delay_discount: f64,
+}
+
+impl Default for ChannelConfig {
+    fn default() -> Self {
+        ChannelConfig {
+            buffer_size: 1000,
+            max_delay: 1000,
+            delay_discount: 0.95,
+        }
+    }
+}
+
+/// A feedback entry with metadata
+struct FeedbackEntry<I, O, S> {
+    /// Original input
+    input: I,
+
+    /// Output produced
+    output: O,
+
+    /// Feedback signal
+    signal: S,
+
+    /// Step when output was produced
+    output_step: u64,
+
+    /// Step when feedback was received
+    feedback_step: u64,
+}
+
+/// Typed feedback channel
+pub struct FeedbackChannel<I, O, S> {
+    /// Pending feedback signals
+    buffer: Arc<Mutex<VecDeque<FeedbackEntry<I, O, S>>>>,
+
+    /// Configuration
+    config: ChannelConfig,
+
+    /// Current step
+    step: Arc<Mutex<u64>>,
+
+    /// Credit assignment strategy
+    credit: CreditAssignment,
+
+    /// Channel name
+    name: String,
+}
+
+impl<I: Clone + Send, O: Clone + Send, S: Clone + Send> FeedbackChannel<I, O, S> {
+    /// Create a new feedback channel
+    pub fn new(name: &str) -> Self {
+        FeedbackChannel {
+            buffer: Arc::new(Mutex::new(VecDeque::new())),
+            config: ChannelConfig::default(),
+            step: Arc::new(Mutex::new(0)),
+            credit: CreditAssignment::default(),
+            name: name.to_string(),
+        }
+    }
+
+    /// Create with configuration
+    pub fn with_config(name: &str, config: ChannelConfig) -> Self {
+        FeedbackChannel {
+            buffer: Arc::new(Mutex::new(VecDeque::new())),
+            config,
+            step: Arc::new(Mutex::new(0)),
+            credit: CreditAssignment::default(),
+            name: name.to_string(),
+        }
+    }
+
+    /// Record an output (before feedback is known)
+    pub fn record_output(&self, input: I, output: O) -> OutputHandle<I, O, S> {
+        let step = {
+            let mut s = self.step.lock().unwrap();
+            *s += 1;
+            *s
+        };
+
+        OutputHandle {
+            channel: self.clone_ref(),
+            input,
+            output,
+            step,
+        }
+    }
+
+    /// Send feedback signal
+    pub fn send(&self, input: I, output: O, signal: S) {
+        let feedback_step = *self.step.lock().unwrap();
+
+        let entry = FeedbackEntry {
+            input,
+            output,
+            signal,
+            output_step: feedback_step, // Approximate if not using handles
+            feedback_step,
+        };
+
+        let mut buffer = self.buffer.lock().unwrap();
+        if buffer.len() >= self.config.buffer_size {
+            buffer.pop_front();
+        }
+        buffer.push_back(entry);
+    }
+
+    /// Receive pending feedback signals
+    pub fn receive(&self) -> Vec<(I, O, S, f64)> {
+        let current_step = *self.step.lock().unwrap();
+        let mut buffer = self.buffer.lock().unwrap();
+
+        let mut results = Vec::new();
+
+        // Process entries, applying delay discount
+        while let Some(entry) = buffer.pop_front() {
+            let delay = entry.feedback_step - entry.output_step;
+
+            if delay > self.config.max_delay {
+                continue; // Too old, discard
+            }
+
+            let discount = self.config.delay_discount.powi(delay as i32);
+            results.push((entry.input, entry.output, entry.signal, discount));
+        }
+
+        results
+    }
+
+    /// Get number of pending signals
+    pub fn pending(&self) -> usize {
+        self.buffer.lock().unwrap().len()
+    }
+
+    /// Clear all pending signals
+    pub fn clear(&self) {
+        self.buffer.lock().unwrap().clear();
+    }
+
+    /// Clone reference (for handles)
+    fn clone_ref(&self) -> Self {
+        FeedbackChannel {
+            buffer: Arc::clone(&self.buffer),
+            config: ChannelConfig {
+                buffer_size: self.config.buffer_size,
+                max_delay: self.config.max_delay,
+                delay_discount: self.config.delay_discount,
+            },
+            step: Arc::clone(&self.step),
+            credit: self.credit.clone(),
+            name: self.name.clone(),
+        }
+    }
+}
+
+/// Handle for providing feedback on a specific output
+pub struct OutputHandle<I, O, S> {
+    channel: FeedbackChannel<I, O, S>,
+    input: I,
+    output: O,
+    step: u64,
+}
+
+impl<I: Clone + Send, O: Clone + Send, S: Clone + Send> OutputHandle<I, O, S> {
+    /// Provide feedback for this output
+    pub fn feedback(self, signal: S) {
+        let feedback_step = *self.channel.step.lock().unwrap();
+
+        let entry = FeedbackEntry {
+            input: self.input,
+            output: self.output,
+            signal,
+            output_step: self.step,
+            feedback_step,
+        };
+
+        let mut buffer = self.channel.buffer.lock().unwrap();
+        if buffer.len() >= self.channel.config.buffer_size {
+            buffer.pop_front();
+        }
+        buffer.push_back(entry);
+    }
+}
+
+/// Receiver end of a feedback channel
+pub struct FeedbackReceiver<I, O, S> {
+    channel: FeedbackChannel<I, O, S>,
+}
+
+impl<I: Clone + Send, O: Clone + Send, S: Clone + Send> FeedbackReceiver<I, O, S> {
+    /// Create from channel
+    pub fn new(channel: FeedbackChannel<I, O, S>) -> Self {
+        FeedbackReceiver { channel }
+    }
+
+    /// Poll for feedback
+    pub fn poll(&self) -> Vec<(I, O, S, f64)> {
+        self.channel.receive()
+    }
+
+    /// Check if feedback is available
+    pub fn has_feedback(&self) -> bool {
+        self.channel.pending() > 0
+    }
+}
+
+/// Multi-source feedback aggregator
+pub struct FeedbackAggregator<I, O> {
+    /// Channels with weights
+    channels: Vec<(Box<dyn FeedbackSource<I, O>>, f64)>,
+}
+
+/// Trait for feedback sources
+pub trait FeedbackSource<I, O> {
+    /// Get pending feedback
+    fn get_feedback(&self) -> Vec<(I, O, f64)>;
+
+    /// Source name
+    fn name(&self) -> &str;
+}
+
+impl<I, O> FeedbackAggregator<I, O> {
+    /// Create new aggregator
+    pub fn new() -> Self {
+        FeedbackAggregator {
+            channels: Vec::new(),
+        }
+    }
+
+    /// Add a feedback source with weight
+    pub fn add_source(&mut self, source: Box<dyn FeedbackSource<I, O>>, weight: f64) {
+        self.channels.push((source, weight));
+    }
+
+    /// Aggregate feedback from all sources
+    pub fn aggregate(&self) -> Vec<(I, O, f64)>
+    where
+        I: Clone,
+        O: Clone,
+    {
+        let mut all_feedback = Vec::new();
+
+        for (source, weight) in &self.channels {
+            for (input, output, signal) in source.get_feedback() {
+                all_feedback.push((input, output, signal * weight));
+            }
+        }
+
+        all_feedback
+    }
+}

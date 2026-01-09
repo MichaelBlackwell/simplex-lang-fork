@@ -1,0 +1,627 @@
+// Synchronization primitives for distributed learning
+//
+// Provides parameter servers, gradient synchronization, and model
+// synchronization for coordinated learning across the hive.
+
+use crate::tensor::Tensor;
+
+/// Parameter server for centralized coordination
+pub struct ParameterServer {
+    /// Current parameters
+    params: Vec<Tensor>,
+
+    /// Gradient accumulator
+    grad_accumulator: Vec<Tensor>,
+
+    /// Number of accumulated gradients
+    accumulated_count: usize,
+
+    /// Version number
+    version: u64,
+
+    /// Synchronization mode
+    mode: SyncMode,
+
+    /// Staleness tolerance
+    max_staleness: u64,
+
+    /// Client versions
+    client_versions: std::collections::HashMap<String, u64>,
+}
+
+/// Synchronization mode
+#[derive(Clone, Copy, PartialEq)]
+pub enum SyncMode {
+    /// Synchronous - wait for all clients
+    Synchronous,
+
+    /// Asynchronous - apply immediately
+    Asynchronous,
+
+    /// Bounded staleness - allow some lag
+    BoundedStaleness,
+
+    /// Local SGD - sync periodically
+    LocalSGD { sync_every: usize },
+}
+
+impl ParameterServer {
+    /// Create new parameter server
+    pub fn new(initial_params: Vec<Tensor>, mode: SyncMode) -> Self {
+        let grad_accumulator = initial_params.iter()
+            .map(|p| Tensor::zeros(p.shape()))
+            .collect();
+
+        ParameterServer {
+            params: initial_params,
+            grad_accumulator,
+            accumulated_count: 0,
+            version: 0,
+            mode,
+            max_staleness: 5,
+            client_versions: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Set staleness tolerance
+    pub fn max_staleness(mut self, staleness: u64) -> Self {
+        self.max_staleness = staleness;
+        self
+    }
+
+    /// Submit gradients from a client
+    pub fn submit_gradients(
+        &mut self,
+        client_id: &str,
+        gradients: &[Tensor],
+        client_version: u64,
+    ) -> SubmitResult {
+        // Check staleness
+        if self.version > client_version + self.max_staleness {
+            return SubmitResult::TooStale {
+                current_version: self.version,
+            };
+        }
+
+        // Accumulate gradients
+        for (i, grad) in gradients.iter().enumerate() {
+            if i < self.grad_accumulator.len() {
+                for j in 0..grad.numel() {
+                    let current = self.grad_accumulator[i].get(j);
+                    self.grad_accumulator[i].set(j, current + grad.get(j));
+                }
+            }
+        }
+
+        self.accumulated_count += 1;
+        self.client_versions.insert(client_id.to_string(), self.version);
+
+        SubmitResult::Accepted {
+            accumulated: self.accumulated_count,
+        }
+    }
+
+    /// Apply accumulated gradients
+    pub fn apply_gradients(&mut self, learning_rate: f64, min_accumulate: usize) -> bool {
+        if self.accumulated_count < min_accumulate {
+            return false;
+        }
+
+        let scale = learning_rate / self.accumulated_count as f64;
+
+        for (param, grad) in self.params.iter_mut().zip(self.grad_accumulator.iter()) {
+            for i in 0..param.numel() {
+                let update = param.get(i) - grad.get(i) * scale;
+                param.set(i, update);
+            }
+        }
+
+        // Reset accumulator
+        for grad in &mut self.grad_accumulator {
+            for i in 0..grad.numel() {
+                grad.set(i, 0.0);
+            }
+        }
+
+        self.accumulated_count = 0;
+        self.version += 1;
+
+        true
+    }
+
+    /// Get current parameters
+    pub fn params(&self) -> &[Tensor] {
+        &self.params
+    }
+
+    /// Get current version
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// Check if client is synced
+    pub fn is_synced(&self, client_id: &str) -> bool {
+        self.client_versions
+            .get(client_id)
+            .map(|&v| v == self.version)
+            .unwrap_or(false)
+    }
+}
+
+/// Result of gradient submission
+pub enum SubmitResult {
+    /// Gradients accepted
+    Accepted { accumulated: usize },
+
+    /// Rejected due to staleness
+    TooStale { current_version: u64 },
+}
+
+/// Gradient synchronization across nodes
+pub struct GradientSync {
+    /// All-reduce strategy
+    strategy: AllReduceStrategy,
+
+    /// Compression enabled
+    compress: bool,
+
+    /// Compression ratio (top-k)
+    compression_ratio: f64,
+
+    /// Error feedback buffer
+    error_buffer: Vec<Tensor>,
+}
+
+/// All-reduce strategy
+pub enum AllReduceStrategy {
+    /// Ring all-reduce
+    Ring,
+
+    /// Tree all-reduce
+    Tree,
+
+    /// Recursive halving-doubling
+    RecursiveHalvingDoubling,
+
+    /// Centralized (through parameter server)
+    Centralized,
+}
+
+impl GradientSync {
+    /// Create new gradient synchronizer
+    pub fn new(strategy: AllReduceStrategy) -> Self {
+        GradientSync {
+            strategy,
+            compress: false,
+            compression_ratio: 0.01,
+            error_buffer: Vec::new(),
+        }
+    }
+
+    /// Enable compression
+    pub fn with_compression(mut self, ratio: f64) -> Self {
+        self.compress = true;
+        self.compression_ratio = ratio;
+        self
+    }
+
+    /// Initialize error buffer for gradient compression
+    pub fn init_error_buffer(&mut self, param_shapes: &[Vec<usize>]) {
+        self.error_buffer = param_shapes.iter()
+            .map(|shape| Tensor::zeros(shape))
+            .collect();
+    }
+
+    /// Synchronize gradients (simulated - in production would use actual networking)
+    pub fn all_reduce(&mut self, local_grads: &mut [Tensor], world_size: usize) {
+        if world_size <= 1 {
+            return;
+        }
+
+        // Apply error feedback for compression
+        if self.compress && !self.error_buffer.is_empty() {
+            for (i, grad) in local_grads.iter_mut().enumerate() {
+                if i < self.error_buffer.len() {
+                    for j in 0..grad.numel() {
+                        let adjusted = grad.get(j) + self.error_buffer[i].get(j);
+                        grad.set(j, adjusted);
+                    }
+                }
+            }
+        }
+
+        // Compress if enabled
+        let (compressed, indices) = if self.compress {
+            self.top_k_compress(local_grads)
+        } else {
+            (local_grads.to_vec(), None)
+        };
+
+        // Simulated all-reduce (in production, use MPI/NCCL/etc)
+        let reduced = match self.strategy {
+            AllReduceStrategy::Ring => self.ring_all_reduce(&compressed, world_size),
+            AllReduceStrategy::Tree => self.tree_all_reduce(&compressed, world_size),
+            AllReduceStrategy::RecursiveHalvingDoubling => {
+                self.recursive_hd_all_reduce(&compressed, world_size)
+            }
+            AllReduceStrategy::Centralized => compressed, // Would go through PS
+        };
+
+        // Decompress and update
+        if self.compress {
+            self.decompress_and_update(local_grads, &reduced, &indices);
+        } else {
+            for (i, grad) in local_grads.iter_mut().enumerate() {
+                if i < reduced.len() {
+                    for j in 0..grad.numel() {
+                        grad.set(j, reduced[i].get(j));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Top-k compression
+    fn top_k_compress(&self, grads: &[Tensor]) -> (Vec<Tensor>, Option<Vec<Vec<usize>>>) {
+        let mut compressed = Vec::new();
+        let mut all_indices = Vec::new();
+
+        for grad in grads {
+            let k = (grad.numel() as f64 * self.compression_ratio) as usize;
+            let k = k.max(1);
+
+            // Find top-k indices
+            let mut indexed: Vec<(usize, f64)> = (0..grad.numel())
+                .map(|i| (i, grad.get(i).abs()))
+                .collect();
+
+            indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+            let indices: Vec<usize> = indexed[..k].iter()
+                .map(|(i, _)| *i)
+                .collect();
+
+            // Create sparse tensor
+            let mut sparse = Tensor::zeros(&[k]);
+            for (j, &idx) in indices.iter().enumerate() {
+                sparse.set(j, grad.get(idx));
+            }
+
+            compressed.push(sparse);
+            all_indices.push(indices);
+        }
+
+        (compressed, Some(all_indices))
+    }
+
+    /// Decompress and update gradients with error feedback
+    fn decompress_and_update(
+        &mut self,
+        grads: &mut [Tensor],
+        compressed: &[Tensor],
+        indices: &Option<Vec<Vec<usize>>>,
+    ) {
+        let indices = match indices {
+            Some(idx) => idx,
+            None => return,
+        };
+
+        for (i, grad) in grads.iter_mut().enumerate() {
+            if i >= indices.len() || i >= compressed.len() {
+                continue;
+            }
+
+            // First, compute error from what we're about to discard
+            if i < self.error_buffer.len() {
+                for j in 0..grad.numel() {
+                    self.error_buffer[i].set(j, grad.get(j));
+                }
+            }
+
+            // Zero out gradient
+            for j in 0..grad.numel() {
+                grad.set(j, 0.0);
+            }
+
+            // Fill in compressed values
+            for (j, &idx) in indices[i].iter().enumerate() {
+                if idx < grad.numel() && j < compressed[i].numel() {
+                    grad.set(idx, compressed[i].get(j));
+                }
+            }
+
+            // Update error buffer
+            if i < self.error_buffer.len() {
+                for j in 0..grad.numel() {
+                    let error = self.error_buffer[i].get(j) - grad.get(j);
+                    self.error_buffer[i].set(j, error);
+                }
+            }
+        }
+    }
+
+    /// Simulated ring all-reduce
+    fn ring_all_reduce(&self, grads: &[Tensor], world_size: usize) -> Vec<Tensor> {
+        // In production, this would do actual ring communication
+        // For now, simulate by dividing by world_size (as if averaged)
+        grads.iter()
+            .map(|g| {
+                let mut result = Tensor::zeros(g.shape());
+                for i in 0..g.numel() {
+                    result.set(i, g.get(i));
+                }
+                result
+            })
+            .collect()
+    }
+
+    /// Simulated tree all-reduce
+    fn tree_all_reduce(&self, grads: &[Tensor], world_size: usize) -> Vec<Tensor> {
+        self.ring_all_reduce(grads, world_size)
+    }
+
+    /// Simulated recursive halving-doubling
+    fn recursive_hd_all_reduce(&self, grads: &[Tensor], world_size: usize) -> Vec<Tensor> {
+        self.ring_all_reduce(grads, world_size)
+    }
+}
+
+/// Model synchronization for consistent state
+pub struct ModelSync {
+    /// Checkpoint interval (steps)
+    checkpoint_interval: u64,
+
+    /// Last checkpoint step
+    last_checkpoint: u64,
+
+    /// Checkpoint storage
+    checkpoints: Vec<Checkpoint>,
+
+    /// Max checkpoints to keep
+    max_checkpoints: usize,
+}
+
+/// Model checkpoint
+pub struct Checkpoint {
+    /// Parameters
+    pub params: Vec<Tensor>,
+
+    /// Step number
+    pub step: u64,
+
+    /// Performance metric
+    pub metric: f64,
+
+    /// Metadata
+    pub metadata: std::collections::HashMap<String, String>,
+}
+
+impl ModelSync {
+    /// Create new model synchronizer
+    pub fn new(checkpoint_interval: u64) -> Self {
+        ModelSync {
+            checkpoint_interval,
+            last_checkpoint: 0,
+            checkpoints: Vec::new(),
+            max_checkpoints: 5,
+        }
+    }
+
+    /// Set max checkpoints
+    pub fn max_checkpoints(mut self, max: usize) -> Self {
+        self.max_checkpoints = max;
+        self
+    }
+
+    /// Check if checkpoint is due
+    pub fn should_checkpoint(&self, step: u64) -> bool {
+        step - self.last_checkpoint >= self.checkpoint_interval
+    }
+
+    /// Save checkpoint
+    pub fn save_checkpoint(&mut self, params: &[Tensor], step: u64, metric: f64) {
+        let checkpoint = Checkpoint {
+            params: params.iter().map(|p| p.clone()).collect(),
+            step,
+            metric,
+            metadata: std::collections::HashMap::new(),
+        };
+
+        self.checkpoints.push(checkpoint);
+        self.last_checkpoint = step;
+
+        // Keep only best checkpoints
+        self.checkpoints.sort_by(|a, b| {
+            b.metric.partial_cmp(&a.metric).unwrap()
+        });
+
+        while self.checkpoints.len() > self.max_checkpoints {
+            self.checkpoints.pop();
+        }
+    }
+
+    /// Get best checkpoint
+    pub fn best_checkpoint(&self) -> Option<&Checkpoint> {
+        self.checkpoints.first()
+    }
+
+    /// Get checkpoint by step
+    pub fn checkpoint_at(&self, step: u64) -> Option<&Checkpoint> {
+        self.checkpoints.iter().find(|c| c.step == step)
+    }
+
+    /// Restore from checkpoint
+    pub fn restore(&self, params: &mut [Tensor], checkpoint: &Checkpoint) {
+        for (param, saved) in params.iter_mut().zip(checkpoint.params.iter()) {
+            for i in 0..param.numel() {
+                param.set(i, saved.get(i));
+            }
+        }
+    }
+
+    /// Get all checkpoints
+    pub fn checkpoints(&self) -> &[Checkpoint] {
+        &self.checkpoints
+    }
+}
+
+/// Gossip-based synchronization for decentralized learning
+pub struct GossipSync {
+    /// Node parameters
+    local_params: Vec<Tensor>,
+
+    /// Mixing weight for gossip
+    mixing_weight: f64,
+
+    /// Peer list
+    peers: Vec<String>,
+
+    /// Communication rounds
+    rounds: u64,
+}
+
+impl GossipSync {
+    /// Create new gossip synchronizer
+    pub fn new(initial_params: Vec<Tensor>) -> Self {
+        GossipSync {
+            local_params: initial_params,
+            mixing_weight: 0.5,
+            peers: Vec::new(),
+            rounds: 0,
+        }
+    }
+
+    /// Set mixing weight
+    pub fn mixing_weight(mut self, weight: f64) -> Self {
+        self.mixing_weight = weight.max(0.0).min(1.0);
+        self
+    }
+
+    /// Add peer
+    pub fn add_peer(&mut self, peer_id: String) {
+        if !self.peers.contains(&peer_id) {
+            self.peers.push(peer_id);
+        }
+    }
+
+    /// Remove peer
+    pub fn remove_peer(&mut self, peer_id: &str) {
+        self.peers.retain(|p| p != peer_id);
+    }
+
+    /// Mix with peer parameters (simulated)
+    pub fn mix_with_peer(&mut self, peer_params: &[Tensor]) {
+        let w = self.mixing_weight;
+
+        for (local, peer) in self.local_params.iter_mut().zip(peer_params.iter()) {
+            for i in 0..local.numel() {
+                let mixed = w * local.get(i) + (1.0 - w) * peer.get(i);
+                local.set(i, mixed);
+            }
+        }
+
+        self.rounds += 1;
+    }
+
+    /// Get local parameters
+    pub fn params(&self) -> &[Tensor] {
+        &self.local_params
+    }
+
+    /// Get mutable local parameters
+    pub fn params_mut(&mut self) -> &mut [Tensor] {
+        &mut self.local_params
+    }
+
+    /// Get communication rounds
+    pub fn rounds(&self) -> u64 {
+        self.rounds
+    }
+
+    /// Get peer count
+    pub fn peer_count(&self) -> usize {
+        self.peers.len()
+    }
+}
+
+/// Elastic synchronization for varying cluster sizes
+pub struct ElasticSync {
+    /// Current world size
+    world_size: usize,
+
+    /// Minimum workers
+    min_workers: usize,
+
+    /// Maximum workers
+    max_workers: usize,
+
+    /// Active workers
+    active_workers: std::collections::HashSet<String>,
+
+    /// Parameter server
+    param_server: ParameterServer,
+}
+
+impl ElasticSync {
+    /// Create new elastic synchronizer
+    pub fn new(
+        initial_params: Vec<Tensor>,
+        min_workers: usize,
+        max_workers: usize,
+    ) -> Self {
+        ElasticSync {
+            world_size: min_workers,
+            min_workers,
+            max_workers,
+            active_workers: std::collections::HashSet::new(),
+            param_server: ParameterServer::new(initial_params, SyncMode::BoundedStaleness),
+        }
+    }
+
+    /// Add worker
+    pub fn add_worker(&mut self, worker_id: String) -> bool {
+        if self.active_workers.len() >= self.max_workers {
+            return false;
+        }
+
+        self.active_workers.insert(worker_id);
+        self.world_size = self.active_workers.len();
+        true
+    }
+
+    /// Remove worker
+    pub fn remove_worker(&mut self, worker_id: &str) -> bool {
+        if self.active_workers.len() <= self.min_workers {
+            return false;
+        }
+
+        self.active_workers.remove(worker_id);
+        self.world_size = self.active_workers.len();
+        true
+    }
+
+    /// Get current world size
+    pub fn world_size(&self) -> usize {
+        self.world_size
+    }
+
+    /// Get parameter server
+    pub fn param_server(&self) -> &ParameterServer {
+        &self.param_server
+    }
+
+    /// Get mutable parameter server
+    pub fn param_server_mut(&mut self) -> &mut ParameterServer {
+        &mut self.param_server
+    }
+
+    /// Check if worker is active
+    pub fn is_active(&self, worker_id: &str) -> bool {
+        self.active_workers.contains(worker_id)
+    }
+
+    /// Get active worker count
+    pub fn active_count(&self) -> usize {
+        self.active_workers.len()
+    }
+}

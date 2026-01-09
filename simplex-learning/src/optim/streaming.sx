@@ -1,0 +1,221 @@
+// Streaming optimizer utilities
+//
+// Common utilities for online learning optimizers.
+
+use crate::tensor::Tensor;
+
+/// Online statistics tracker
+pub struct OnlineStats {
+    /// Running mean
+    mean: f64,
+
+    /// Running variance (M2 in Welford's algorithm)
+    m2: f64,
+
+    /// Count of samples
+    count: u64,
+
+    /// Minimum value seen
+    min: f64,
+
+    /// Maximum value seen
+    max: f64,
+}
+
+impl OnlineStats {
+    /// Create new online statistics tracker
+    pub fn new() -> Self {
+        OnlineStats {
+            mean: 0.0,
+            m2: 0.0,
+            count: 0,
+            min: f64::INFINITY,
+            max: f64::NEG_INFINITY,
+        }
+    }
+
+    /// Update with new value (Welford's algorithm)
+    pub fn update(&mut self, value: f64) {
+        self.count += 1;
+        let delta = value - self.mean;
+        self.mean += delta / self.count as f64;
+        let delta2 = value - self.mean;
+        self.m2 += delta * delta2;
+
+        self.min = self.min.min(value);
+        self.max = self.max.max(value);
+    }
+
+    /// Get current mean
+    pub fn mean(&self) -> f64 {
+        self.mean
+    }
+
+    /// Get current variance
+    pub fn variance(&self) -> f64 {
+        if self.count < 2 {
+            0.0
+        } else {
+            self.m2 / (self.count - 1) as f64
+        }
+    }
+
+    /// Get current standard deviation
+    pub fn std(&self) -> f64 {
+        self.variance().sqrt()
+    }
+
+    /// Get min value
+    pub fn min(&self) -> f64 {
+        self.min
+    }
+
+    /// Get max value
+    pub fn max(&self) -> f64 {
+        self.max
+    }
+
+    /// Get sample count
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Reset statistics
+    pub fn reset(&mut self) {
+        self.mean = 0.0;
+        self.m2 = 0.0;
+        self.count = 0;
+        self.min = f64::INFINITY;
+        self.max = f64::NEG_INFINITY;
+    }
+}
+
+/// Trait for streaming optimizers with adaptive learning rate
+pub trait StreamingOptimizer {
+    /// Update learning rate based on gradient statistics
+    fn adapt_learning_rate(&mut self, grad_stats: &OnlineStats);
+
+    /// Get gradient norm
+    fn gradient_norm(&self) -> f64;
+
+    /// Clip gradients to max norm
+    fn clip_grad_norm(&mut self, max_norm: f64);
+
+    /// Get effective learning rate (after adaptation)
+    fn effective_lr(&self) -> f64;
+}
+
+/// Gradient clipping utilities
+pub fn clip_grad_norm(params: &mut [Tensor], max_norm: f64) -> f64 {
+    // Compute total gradient norm
+    let mut total_norm_sq = 0.0;
+
+    for param in params.iter() {
+        if let Some(grad) = param.grad() {
+            for i in 0..grad.numel() {
+                total_norm_sq += grad.get(i) * grad.get(i);
+            }
+        }
+    }
+
+    let total_norm = total_norm_sq.sqrt();
+
+    // Clip if necessary
+    if total_norm > max_norm {
+        let clip_coef = max_norm / (total_norm + 1e-6);
+        for param in params.iter_mut() {
+            if let Some(grad) = param.grad_mut() {
+                for i in 0..grad.numel() {
+                    grad.set(i, grad.get(i) * clip_coef);
+                }
+            }
+        }
+    }
+
+    total_norm
+}
+
+/// Gradient clipping by value
+pub fn clip_grad_value(params: &mut [Tensor], clip_value: f64) {
+    for param in params.iter_mut() {
+        if let Some(grad) = param.grad_mut() {
+            for i in 0..grad.numel() {
+                let v = grad.get(i);
+                if v > clip_value {
+                    grad.set(i, clip_value);
+                } else if v < -clip_value {
+                    grad.set(i, -clip_value);
+                }
+            }
+        }
+    }
+}
+
+/// Exponential moving average of parameters
+pub struct EMA {
+    /// Shadow parameters
+    shadow: Vec<Tensor>,
+
+    /// Decay rate
+    decay: f64,
+
+    /// Number of updates
+    num_updates: u64,
+}
+
+impl EMA {
+    /// Create new EMA tracker
+    pub fn new(params: &[Tensor], decay: f64) -> Self {
+        let shadow = params.iter()
+            .map(|p| p.clone())
+            .collect();
+
+        EMA {
+            shadow,
+            decay,
+            num_updates: 0,
+        }
+    }
+
+    /// Update shadow parameters
+    pub fn update(&mut self, params: &[Tensor]) {
+        self.num_updates += 1;
+
+        // Use decay warmup
+        let decay = (1.0 + self.num_updates as f64).min(
+            (1.0 + self.num_updates as f64) / (10.0 + self.num_updates as f64)
+        ).min(self.decay);
+
+        for (shadow, param) in self.shadow.iter_mut().zip(params.iter()) {
+            for i in 0..shadow.numel() {
+                let new_val = decay * shadow.get(i) + (1.0 - decay) * param.get(i);
+                shadow.set(i, new_val);
+            }
+        }
+    }
+
+    /// Get shadow parameters
+    pub fn shadow(&self) -> &[Tensor] {
+        &self.shadow
+    }
+
+    /// Copy shadow parameters to model
+    pub fn copy_to(&self, params: &mut [Tensor]) {
+        for (shadow, param) in self.shadow.iter().zip(params.iter_mut()) {
+            for i in 0..shadow.numel() {
+                param.set(i, shadow.get(i));
+            }
+        }
+    }
+
+    /// Store current params and load shadow
+    pub fn swap(&mut self, params: &mut [Tensor]) {
+        for (shadow, param) in self.shadow.iter_mut().zip(params.iter_mut()) {
+            for i in 0..shadow.numel() {
+                let tmp = param.get(i);
+                param.set(i, shadow.get(i));
+                shadow.set(i, tmp);
+            }
+        }
+    }
+}

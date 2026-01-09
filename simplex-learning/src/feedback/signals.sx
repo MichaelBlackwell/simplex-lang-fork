@@ -1,0 +1,255 @@
+// Feedback signal types
+//
+// Built-in signal types for common feedback patterns.
+
+/// Base trait for feedback signals
+pub trait FeedbackSignal {
+    /// Convert to scalar reward
+    fn to_reward(&self) -> f64;
+
+    /// Signal weight (importance)
+    fn weight(&self) -> f64 {
+        1.0
+    }
+
+    /// Signal source name
+    fn source(&self) -> &str;
+}
+
+/// Explicit feedback from user
+pub struct ExplicitFeedback {
+    /// Rating (0.0 to 1.0)
+    pub rating: f64,
+
+    /// Optional correction
+    pub correction: Option<String>,
+
+    /// Feedback category
+    pub category: FeedbackCategory,
+}
+
+/// Feedback categories
+pub enum FeedbackCategory {
+    /// Thumbs up/down
+    Binary { positive: bool },
+
+    /// Star rating (1-5)
+    Rating { stars: u8 },
+
+    /// Likert scale
+    Likert { value: i8 }, // -2 to +2
+
+    /// Direct correction
+    Correction,
+
+    /// Free-form comment
+    Comment,
+}
+
+impl FeedbackSignal for ExplicitFeedback {
+    fn to_reward(&self) -> f64 {
+        match &self.category {
+            FeedbackCategory::Binary { positive } => if *positive { 1.0 } else { -1.0 },
+            FeedbackCategory::Rating { stars } => (*stars as f64 - 3.0) / 2.0, // -1 to +1
+            FeedbackCategory::Likert { value } => *value as f64 / 2.0,
+            FeedbackCategory::Correction => -0.5, // Needed correction
+            FeedbackCategory::Comment => 0.0, // Neutral
+        }
+    }
+
+    fn source(&self) -> &str {
+        "explicit"
+    }
+}
+
+/// Implicit feedback from user behavior
+pub struct ImplicitFeedback {
+    /// Type of implicit signal
+    pub signal_type: ImplicitSignalType,
+
+    /// Time spent (for engagement signals)
+    pub duration_ms: Option<u64>,
+}
+
+/// Types of implicit signals
+pub enum ImplicitSignalType {
+    /// User accepted suggestion
+    Accepted,
+
+    /// User rejected/undid suggestion
+    Rejected,
+
+    /// User modified suggestion
+    Modified { similarity: f64 },
+
+    /// User ignored suggestion
+    Ignored,
+
+    /// User engaged with content
+    Engaged { duration_ms: u64 },
+
+    /// User scrolled past
+    Skipped,
+
+    /// User copied content
+    Copied,
+
+    /// User shared content
+    Shared,
+}
+
+impl FeedbackSignal for ImplicitFeedback {
+    fn to_reward(&self) -> f64 {
+        match &self.signal_type {
+            ImplicitSignalType::Accepted => 1.0,
+            ImplicitSignalType::Rejected => -1.0,
+            ImplicitSignalType::Modified { similarity } => *similarity * 2.0 - 1.0,
+            ImplicitSignalType::Ignored => -0.2,
+            ImplicitSignalType::Engaged { duration_ms } => {
+                // Logarithmic engagement reward
+                (*duration_ms as f64 / 1000.0).ln().max(0.0).min(2.0) / 2.0
+            }
+            ImplicitSignalType::Skipped => -0.5,
+            ImplicitSignalType::Copied => 0.8,
+            ImplicitSignalType::Shared => 1.0,
+        }
+    }
+
+    fn weight(&self) -> f64 {
+        // Implicit signals are less reliable
+        0.5
+    }
+
+    fn source(&self) -> &str {
+        "implicit"
+    }
+}
+
+/// Downstream feedback from system effects
+pub struct DownstreamFeedback {
+    /// Type of downstream signal
+    pub signal_type: DownstreamSignalType,
+
+    /// Delay in steps from action to feedback
+    pub delay_steps: u64,
+}
+
+/// Types of downstream signals
+pub enum DownstreamSignalType {
+    /// Test passed
+    TestPassed,
+
+    /// Test failed
+    TestFailed,
+
+    /// Build succeeded
+    BuildSucceeded,
+
+    /// Build failed
+    BuildFailed,
+
+    /// Performance improved
+    PerformanceImproved { delta: f64 },
+
+    /// Performance degraded
+    PerformanceDegraded { delta: f64 },
+
+    /// Error occurred
+    ErrorOccurred { severity: ErrorSeverity },
+
+    /// Task completed
+    TaskCompleted { quality: f64 },
+}
+
+/// Error severity levels
+pub enum ErrorSeverity {
+    Info,
+    Warning,
+    Error,
+    Critical,
+}
+
+impl FeedbackSignal for DownstreamFeedback {
+    fn to_reward(&self) -> f64 {
+        match &self.signal_type {
+            DownstreamSignalType::TestPassed => 0.5,
+            DownstreamSignalType::TestFailed => -0.5,
+            DownstreamSignalType::BuildSucceeded => 0.3,
+            DownstreamSignalType::BuildFailed => -0.8,
+            DownstreamSignalType::PerformanceImproved { delta } => delta.min(1.0),
+            DownstreamSignalType::PerformanceDegraded { delta } => -delta.min(1.0),
+            DownstreamSignalType::ErrorOccurred { severity } => {
+                match severity {
+                    ErrorSeverity::Info => -0.1,
+                    ErrorSeverity::Warning => -0.3,
+                    ErrorSeverity::Error => -0.7,
+                    ErrorSeverity::Critical => -1.0,
+                }
+            }
+            DownstreamSignalType::TaskCompleted { quality } => *quality,
+        }
+    }
+
+    fn weight(&self) -> f64 {
+        // Downstream signals are reliable but delayed
+        let base_weight = 0.8;
+        // Discount for delay
+        0.95_f64.powi(self.delay_steps as i32) * base_weight
+    }
+
+    fn source(&self) -> &str {
+        "downstream"
+    }
+}
+
+/// Self-consistency feedback (internal signal)
+pub struct ConsistencyFeedback {
+    /// Similarity to previous outputs for similar inputs
+    pub consistency_score: f64,
+
+    /// Number of similar examples compared
+    pub num_comparisons: usize,
+}
+
+impl FeedbackSignal for ConsistencyFeedback {
+    fn to_reward(&self) -> f64 {
+        // Reward consistency (up to a point)
+        if self.consistency_score > 0.95 {
+            // Too consistent might mean not adapting
+            0.5
+        } else {
+            self.consistency_score
+        }
+    }
+
+    fn weight(&self) -> f64 {
+        // Low weight - just a regularizer
+        0.2 * (self.num_comparisons as f64 / 10.0).min(1.0)
+    }
+
+    fn source(&self) -> &str {
+        "consistency"
+    }
+}
+
+/// Aggregate multiple feedback signals
+pub fn aggregate_signals(signals: &[Box<dyn FeedbackSignal>]) -> f64 {
+    if signals.is_empty() {
+        return 0.0;
+    }
+
+    let mut weighted_sum = 0.0;
+    let mut total_weight = 0.0;
+
+    for signal in signals {
+        let weight = signal.weight();
+        weighted_sum += signal.to_reward() * weight;
+        total_weight += weight;
+    }
+
+    if total_weight > 0.0 {
+        weighted_sum / total_weight
+    } else {
+        0.0
+    }
+}

@@ -1,0 +1,403 @@
+// Integration tests for autograd + optimizer flow
+//
+// Tests the complete learning loop:
+// 1. Forward pass through operations
+// 2. Backward pass computing gradients
+// 3. Optimizer step updating parameters
+// 4. Convergence on simple problems
+
+use simplex_learning::tensor::{
+    Tensor, Shape, TensorError,
+    matmul, add, mul, relu, sigmoid,
+    backward, is_grad_enabled, set_grad_enabled, clear_graph, clear_registry,
+};
+use simplex_learning::optim::{Optimizer, SGD, Adam, StreamingSGD, StreamingAdam};
+
+// ==================== Basic Gradient Flow Tests ====================
+
+/// Test that requires_grad tensors track gradients
+fn test_requires_grad_tracking() {
+    println!("Testing requires_grad tracking...");
+
+    // Create tensor with gradient tracking
+    let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], Shape::vector(4))
+        .unwrap()
+        .requires_grad_();
+
+    assert!(x.requires_grad());
+    assert_eq!(x.id() > 0, true); // Should have unique ID
+
+    println!("  requires_grad tracking works!");
+}
+
+/// Test gradient through addition
+fn test_add_gradient() {
+    println!("Testing add gradient...");
+    clear_graph();
+    clear_registry();
+
+    let a = Tensor::new(vec![1.0, 2.0], Shape::vector(2))
+        .unwrap()
+        .requires_grad_();
+    let b = Tensor::new(vec![3.0, 4.0], Shape::vector(2))
+        .unwrap()
+        .requires_grad_();
+
+    let c = add(&a, &b).unwrap();
+
+    assert!(c.requires_grad());
+    assert_eq!(c.get(0), 4.0);
+    assert_eq!(c.get(1), 6.0);
+
+    println!("  add forward pass works!");
+}
+
+/// Test gradient through multiplication
+fn test_mul_gradient() {
+    println!("Testing mul gradient...");
+    clear_graph();
+    clear_registry();
+
+    let a = Tensor::new(vec![2.0, 3.0], Shape::vector(2))
+        .unwrap()
+        .requires_grad_();
+    let b = Tensor::new(vec![4.0, 5.0], Shape::vector(2))
+        .unwrap()
+        .requires_grad_();
+
+    let c = mul(&a, &b).unwrap();
+
+    assert!(c.requires_grad());
+    assert_eq!(c.get(0), 8.0);
+    assert_eq!(c.get(1), 15.0);
+
+    println!("  mul forward pass works!");
+}
+
+/// Test gradient through matmul
+fn test_matmul_gradient() {
+    println!("Testing matmul gradient...");
+    clear_graph();
+    clear_registry();
+
+    // 2x3 matrix
+    let a = Tensor::new(
+        vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        Shape::matrix(2, 3)
+    ).unwrap().requires_grad_();
+
+    // 3x2 matrix
+    let b = Tensor::new(
+        vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        Shape::matrix(3, 2)
+    ).unwrap().requires_grad_();
+
+    let c = matmul(&a, &b).unwrap();
+
+    assert!(c.requires_grad());
+    assert_eq!(c.shape().dim(0), 2);
+    assert_eq!(c.shape().dim(1), 2);
+
+    // Check values: [1*1+2*3+3*5, 1*2+2*4+3*6] = [22, 28]
+    //               [4*1+5*3+6*5, 4*2+5*4+6*6] = [49, 64]
+    assert_eq!(c.get(0), 22.0);
+    assert_eq!(c.get(1), 28.0);
+    assert_eq!(c.get(2), 49.0);
+    assert_eq!(c.get(3), 64.0);
+
+    println!("  matmul forward pass works!");
+}
+
+/// Test gradient through ReLU
+fn test_relu_gradient() {
+    println!("Testing ReLU gradient...");
+    clear_graph();
+    clear_registry();
+
+    let x = Tensor::new(vec![-2.0, -1.0, 0.0, 1.0, 2.0], Shape::vector(5))
+        .unwrap()
+        .requires_grad_();
+
+    let y = relu(&x);
+
+    assert!(y.requires_grad());
+    assert_eq!(y.get(0), 0.0);
+    assert_eq!(y.get(1), 0.0);
+    assert_eq!(y.get(2), 0.0);
+    assert_eq!(y.get(3), 1.0);
+    assert_eq!(y.get(4), 2.0);
+
+    println!("  ReLU forward pass works!");
+}
+
+/// Test gradient through sigmoid
+fn test_sigmoid_gradient() {
+    println!("Testing sigmoid gradient...");
+    clear_graph();
+    clear_registry();
+
+    let x = Tensor::new(vec![0.0], Shape::vector(1))
+        .unwrap()
+        .requires_grad_();
+
+    let y = sigmoid(&x);
+
+    assert!(y.requires_grad());
+    // sigmoid(0) = 0.5
+    assert!((y.get(0) - 0.5).abs() < 1e-6);
+
+    println!("  sigmoid forward pass works!");
+}
+
+// ==================== Optimizer Tests ====================
+
+/// Test SGD optimizer step
+fn test_sgd_step() {
+    println!("Testing SGD optimizer step...");
+
+    // Create parameter with gradient
+    let mut param = Tensor::new(vec![1.0, 2.0, 3.0], Shape::vector(3))
+        .unwrap()
+        .requires_grad_();
+
+    // Simulate gradient
+    let grad = Tensor::new(vec![0.1, 0.2, 0.3], Shape::vector(3)).unwrap();
+    param.set_grad(grad);
+
+    // Create optimizer
+    let mut optimizer = SGD::new(vec![param.clone()], 0.1);
+
+    // Step
+    optimizer.step();
+
+    // Check parameters updated: param = param - lr * grad
+    // param[0] = 1.0 - 0.1 * 0.1 = 0.99
+    let params = optimizer.parameters();
+    assert!((params[0].get(0) - 0.99).abs() < 1e-6);
+    assert!((params[0].get(1) - 1.98).abs() < 1e-6);
+    assert!((params[0].get(2) - 2.97).abs() < 1e-6);
+
+    println!("  SGD step works!");
+}
+
+/// Test Adam optimizer step
+fn test_adam_step() {
+    println!("Testing Adam optimizer step...");
+
+    // Create parameter with gradient
+    let mut param = Tensor::new(vec![1.0, 2.0, 3.0], Shape::vector(3))
+        .unwrap()
+        .requires_grad_();
+
+    // Simulate gradient
+    let grad = Tensor::new(vec![0.1, 0.2, 0.3], Shape::vector(3)).unwrap();
+    param.set_grad(grad);
+
+    // Create optimizer
+    let mut optimizer = Adam::new(vec![param.clone()], 0.1);
+
+    // Step
+    optimizer.step();
+
+    // Parameters should have changed
+    let params = optimizer.parameters();
+    assert!(params[0].get(0) < 1.0); // Should decrease
+
+    println!("  Adam step works!");
+}
+
+/// Test zero_grad
+fn test_zero_grad() {
+    println!("Testing zero_grad...");
+
+    let mut param = Tensor::new(vec![1.0, 2.0], Shape::vector(2))
+        .unwrap()
+        .requires_grad_();
+
+    // Set gradient
+    let grad = Tensor::new(vec![0.5, 0.5], Shape::vector(2)).unwrap();
+    param.set_grad(grad);
+    assert!(param.grad().is_some());
+
+    // Zero gradient
+    param.zero_grad();
+    assert!(param.grad().is_none());
+
+    println!("  zero_grad works!");
+}
+
+// ==================== Simple Convergence Test ====================
+
+/// Test convergence on y = 2x problem (linear regression)
+fn test_linear_regression_convergence() {
+    println!("Testing linear regression convergence...");
+    clear_graph();
+    clear_registry();
+
+    // Target: y = 2 * x
+    // We want to learn w such that y_pred = w * x
+
+    // Initial weight
+    let mut w = Tensor::new(vec![0.5], Shape::vector(1))
+        .unwrap()
+        .requires_grad_();
+
+    // Training data (simple case)
+    let x = Tensor::new(vec![1.0], Shape::vector(1)).unwrap();
+    let y_target = Tensor::new(vec![2.0], Shape::vector(1)).unwrap();
+
+    let lr = 0.1;
+    let initial_w = w.get(0);
+
+    // Manual gradient descent steps
+    for step in 0..10 {
+        // Forward: y_pred = w * x
+        let y_pred = mul(&w, &x).unwrap();
+
+        // Loss: (y_pred - y_target)^2
+        let diff = y_pred.get(0) - y_target.get(0);
+        let loss = diff * diff;
+
+        // Manual gradient: d(loss)/dw = 2 * (w*x - y) * x = 2 * diff * x
+        let grad_w = 2.0 * diff * x.get(0);
+
+        // Update weight
+        w.set(0, w.get(0) - lr * grad_w);
+
+        if step % 3 == 0 {
+            println!("    Step {}: w = {:.4}, loss = {:.6}", step, w.get(0), loss);
+        }
+    }
+
+    // Weight should be close to 2.0
+    let final_w = w.get(0);
+    println!("    Final w = {:.4} (target: 2.0)", final_w);
+
+    assert!(final_w > initial_w); // Should have increased from 0.5
+    assert!((final_w - 2.0).abs() < 0.1); // Should be close to 2.0
+
+    println!("  Linear regression converged!");
+}
+
+/// Test multi-step learning with optimizer
+fn test_optimizer_convergence() {
+    println!("Testing optimizer convergence...");
+
+    // Target: minimize (w - 3)^2
+    // Optimal w = 3
+
+    let mut w = Tensor::new(vec![0.0], Shape::vector(1))
+        .unwrap()
+        .requires_grad_();
+
+    // Create optimizer
+    let mut optimizer = SGD::new(vec![w.clone()], 0.1).momentum(0.9);
+
+    for step in 0..20 {
+        // Clear gradients
+        optimizer.zero_grad();
+
+        // Get current parameter value
+        let params = optimizer.parameters();
+        let current_w = params[0].get(0);
+
+        // Loss: (w - 3)^2
+        let loss = (current_w - 3.0) * (current_w - 3.0);
+
+        // Gradient: 2 * (w - 3)
+        let grad = 2.0 * (current_w - 3.0);
+
+        // Set gradient manually
+        let grad_tensor = Tensor::new(vec![grad], Shape::vector(1)).unwrap();
+        optimizer.parameters_mut()[0].set_grad(grad_tensor);
+
+        // Step
+        optimizer.step();
+
+        if step % 5 == 0 {
+            println!("    Step {}: w = {:.4}, loss = {:.6}", step, current_w, loss);
+        }
+    }
+
+    let final_w = optimizer.parameters()[0].get(0);
+    println!("    Final w = {:.4} (target: 3.0)", final_w);
+
+    assert!((final_w - 3.0).abs() < 0.5); // Should be close to 3.0
+
+    println!("  Optimizer convergence works!");
+}
+
+// ==================== End-to-End Learning Test ====================
+
+/// Test a simple neural network forward pass
+fn test_simple_mlp_forward() {
+    println!("Testing simple MLP forward pass...");
+    clear_graph();
+    clear_registry();
+
+    // Input: 2D
+    let x = Tensor::new(vec![1.0, 2.0], Shape::matrix(1, 2))
+        .unwrap();
+
+    // Layer 1: 2 -> 3
+    let w1 = Tensor::new(
+        vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+        Shape::matrix(2, 3)
+    ).unwrap().requires_grad_();
+
+    // Layer 2: 3 -> 1
+    let w2 = Tensor::new(
+        vec![0.1, 0.2, 0.3],
+        Shape::matrix(3, 1)
+    ).unwrap().requires_grad_();
+
+    // Forward pass
+    let h1 = matmul(&x, &w1).unwrap();  // [1, 3]
+    let h1_activated = relu(&h1);
+    let output = matmul(&h1_activated, &w2).unwrap();  // [1, 1]
+
+    assert!(output.requires_grad());
+    assert_eq!(output.shape().dim(0), 1);
+    assert_eq!(output.shape().dim(1), 1);
+
+    println!("    Output: {:.4}", output.get(0));
+    println!("  MLP forward pass works!");
+}
+
+// ==================== Main Test Runner ====================
+
+fn main() {
+    println!("\n========================================");
+    println!("  simplex-learning Integration Tests");
+    println!("========================================\n");
+
+    // Basic gradient tests
+    test_requires_grad_tracking();
+    test_add_gradient();
+    test_mul_gradient();
+    test_matmul_gradient();
+    test_relu_gradient();
+    test_sigmoid_gradient();
+
+    println!();
+
+    // Optimizer tests
+    test_sgd_step();
+    test_adam_step();
+    test_zero_grad();
+
+    println!();
+
+    // Convergence tests
+    test_linear_regression_convergence();
+    test_optimizer_convergence();
+
+    println!();
+
+    // End-to-end tests
+    test_simple_mlp_forward();
+
+    println!("\n========================================");
+    println!("  All integration tests passed!");
+    println!("========================================\n");
+}

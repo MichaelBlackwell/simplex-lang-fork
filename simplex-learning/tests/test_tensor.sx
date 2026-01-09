@@ -1,0 +1,122 @@
+// Tensor module tests
+
+use simplex_learning::tensor::{Tensor, ops};
+
+#[test]
+fn test_tensor_creation() {
+    // Test zeros
+    let t = Tensor::zeros(&[2, 3]);
+    assert_eq!(t.shape(), &[2, 3]);
+    assert_eq!(t.numel(), 6);
+    for i in 0..6 {
+        assert_eq!(t.get(i), 0.0);
+    }
+
+    // Test ones
+    let t = Tensor::ones(&[3, 2]);
+    assert_eq!(t.shape(), &[3, 2]);
+    for i in 0..6 {
+        assert_eq!(t.get(i), 1.0);
+    }
+
+    // Test from_vec
+    let t = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
+    assert_eq!(t.get(0), 1.0);
+    assert_eq!(t.get(3), 4.0);
+}
+
+#[test]
+fn test_tensor_ops() {
+    let a = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
+    let b = Tensor::from_vec(vec![5.0, 6.0, 7.0, 8.0], &[2, 2]);
+
+    // Test add
+    let c = a.add(&b);
+    assert_eq!(c.get(0), 6.0);
+    assert_eq!(c.get(3), 12.0);
+
+    // Test sub
+    let c = a.sub(&b);
+    assert_eq!(c.get(0), -4.0);
+
+    // Test mul
+    let c = a.mul(&b);
+    assert_eq!(c.get(0), 5.0);
+    assert_eq!(c.get(1), 12.0);
+
+    // Test scale
+    let c = a.scale(2.0);
+    assert_eq!(c.get(0), 2.0);
+    assert_eq!(c.get(1), 4.0);
+}
+
+#[test]
+fn test_activations() {
+    let t = Tensor::from_vec(vec![-1.0, 0.0, 1.0, 2.0], &[4]);
+
+    // Test relu
+    let r = ops::relu(&t);
+    assert_eq!(r.get(0), 0.0);
+    assert_eq!(r.get(1), 0.0);
+    assert_eq!(r.get(2), 1.0);
+    assert_eq!(r.get(3), 2.0);
+
+    // Test sigmoid
+    let s = ops::sigmoid(&t);
+    assert!(s.get(0) < 0.5); // sigmoid(-1) < 0.5
+    assert!((s.get(1) - 0.5).abs() < 0.01); // sigmoid(0) ≈ 0.5
+    assert!(s.get(2) > 0.5); // sigmoid(1) > 0.5
+}
+
+#[test]
+fn test_softmax() {
+    let t = Tensor::from_vec(vec![1.0, 2.0, 3.0], &[3]);
+    let s = ops::softmax(&t);
+
+    // Sum should be 1
+    let sum: f64 = (0..3).map(|i| s.get(i)).sum();
+    assert!((sum - 1.0).abs() < 0.001);
+
+    // Should be increasing
+    assert!(s.get(0) < s.get(1));
+    assert!(s.get(1) < s.get(2));
+}
+
+#[test]
+fn test_matmul() {
+    let a = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
+    let b = Tensor::from_vec(vec![5.0, 6.0, 7.0, 8.0], &[2, 2]);
+
+    let c = ops::matmul(&a, &b);
+
+    // [1,2] * [5,7]^T = 5+14 = 19
+    // [1,2] * [6,8]^T = 6+16 = 22
+    // etc.
+    assert_eq!(c.shape(), &[2, 2]);
+}
+
+#[test]
+fn test_dot_product() {
+    let a = Tensor::from_vec(vec![1.0, 2.0, 3.0], &[3]);
+    let b = Tensor::from_vec(vec![4.0, 5.0, 6.0], &[3]);
+
+    let dot = a.dot(&b);
+    assert_eq!(dot, 1.0*4.0 + 2.0*5.0 + 3.0*6.0); // 32.0
+}
+
+#[test]
+fn test_transpose() {
+    let t = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
+    let tr = t.transpose();
+
+    assert_eq!(tr.shape(), &[3, 2]);
+}
+
+#[test]
+fn test_reshape() {
+    let t = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
+    let r = t.reshape(&[3, 2]);
+
+    assert_eq!(r.shape(), &[3, 2]);
+    assert_eq!(r.numel(), 6);
+}

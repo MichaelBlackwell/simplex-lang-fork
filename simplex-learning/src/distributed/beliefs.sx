@@ -1,0 +1,677 @@
+// Belief conflict resolution for distributed hive learning
+//
+// In Simplex's cognitive architecture, specialists maintain beliefs
+// (confidence values about facts). When multiple specialists learn
+// independently, their beliefs can diverge. This module provides
+// mechanisms for reconciling conflicting beliefs across the hive.
+
+use crate::tensor::Tensor;
+use std::collections::HashMap;
+
+/// A belief held by a specialist
+#[derive(Clone)]
+pub struct Belief {
+    /// Belief identifier (e.g., "user_prefers_concise_responses")
+    pub id: String,
+
+    /// Confidence level (0.0 to 1.0)
+    pub confidence: f64,
+
+    /// Evidence count supporting this belief
+    pub evidence_count: u64,
+
+    /// Last update timestamp (epoch ms)
+    pub last_updated: u64,
+
+    /// Source specialist
+    pub source: String,
+
+    /// Associated embedding (for semantic similarity)
+    pub embedding: Option<Tensor>,
+}
+
+impl Belief {
+    /// Create a new belief
+    pub fn new(id: &str, confidence: f64, source: &str) -> Self {
+        Belief {
+            id: id.to_string(),
+            confidence: confidence.max(0.0).min(1.0),
+            evidence_count: 1,
+            last_updated: current_timestamp(),
+            source: source.to_string(),
+            embedding: None,
+        }
+    }
+
+    /// Create with embedding
+    pub fn with_embedding(mut self, embedding: Tensor) -> Self {
+        self.embedding = Some(embedding);
+        self
+    }
+
+    /// Update confidence with new evidence
+    pub fn update(&mut self, new_evidence_confidence: f64, learning_rate: f64) {
+        self.confidence = self.confidence * (1.0 - learning_rate)
+            + new_evidence_confidence * learning_rate;
+        self.confidence = self.confidence.max(0.0).min(1.0);
+        self.evidence_count += 1;
+        self.last_updated = current_timestamp();
+    }
+
+    /// Compute belief strength (confidence * evidence weight)
+    pub fn strength(&self) -> f64 {
+        let evidence_weight = 1.0 - 1.0 / (1.0 + self.evidence_count as f64);
+        self.confidence * evidence_weight
+    }
+}
+
+/// Conflict resolution strategy
+#[derive(Clone)]
+pub enum ConflictResolution {
+    /// Use highest confidence belief
+    HighestConfidence,
+
+    /// Use most recent belief
+    MostRecent,
+
+    /// Use belief with most evidence
+    MostEvidence,
+
+    /// Weighted average by evidence count
+    EvidenceWeighted,
+
+    /// Weighted average by confidence
+    ConfidenceWeighted,
+
+    /// Bayesian combination
+    BayesianCombination,
+
+    /// Semantic similarity weighted (requires embeddings)
+    SemanticWeighted,
+
+    /// Majority vote (for discrete beliefs)
+    MajorityVote,
+
+    /// Custom resolver
+    Custom(Box<dyn Fn(&[Belief]) -> Belief + Send + Sync>),
+}
+
+/// Belief conflict resolver
+pub struct BeliefResolver {
+    /// Resolution strategy
+    strategy: ConflictResolution,
+
+    /// Minimum confidence threshold
+    min_confidence: f64,
+
+    /// Maximum age for beliefs (ms)
+    max_age_ms: u64,
+
+    /// Resolution history
+    history: Vec<ResolutionRecord>,
+
+    /// Maximum history size
+    max_history: usize,
+}
+
+/// Record of a conflict resolution
+pub struct ResolutionRecord {
+    /// Belief ID
+    pub belief_id: String,
+
+    /// Conflicting beliefs
+    pub conflicts: Vec<(String, f64)>, // (source, confidence)
+
+    /// Resolved confidence
+    pub resolved_confidence: f64,
+
+    /// Resolution timestamp
+    pub timestamp: u64,
+
+    /// Strategy used
+    pub strategy: String,
+}
+
+impl BeliefResolver {
+    /// Create new resolver
+    pub fn new(strategy: ConflictResolution) -> Self {
+        BeliefResolver {
+            strategy,
+            min_confidence: 0.1,
+            max_age_ms: 24 * 60 * 60 * 1000, // 24 hours
+            history: Vec::new(),
+            max_history: 1000,
+        }
+    }
+
+    /// Set minimum confidence threshold
+    pub fn min_confidence(mut self, min: f64) -> Self {
+        self.min_confidence = min;
+        self
+    }
+
+    /// Set maximum age for beliefs
+    pub fn max_age_ms(mut self, max: u64) -> Self {
+        self.max_age_ms = max;
+        self
+    }
+
+    /// Resolve conflicting beliefs into a single belief
+    pub fn resolve(&mut self, beliefs: &[Belief]) -> Option<Belief> {
+        if beliefs.is_empty() {
+            return None;
+        }
+
+        // Filter by age
+        let now = current_timestamp();
+        let valid_beliefs: Vec<&Belief> = beliefs.iter()
+            .filter(|b| now - b.last_updated <= self.max_age_ms)
+            .filter(|b| b.confidence >= self.min_confidence)
+            .collect();
+
+        if valid_beliefs.is_empty() {
+            return None;
+        }
+
+        if valid_beliefs.len() == 1 {
+            return Some(valid_beliefs[0].clone());
+        }
+
+        let resolved = match &self.strategy {
+            ConflictResolution::HighestConfidence => {
+                self.resolve_highest_confidence(&valid_beliefs)
+            }
+            ConflictResolution::MostRecent => {
+                self.resolve_most_recent(&valid_beliefs)
+            }
+            ConflictResolution::MostEvidence => {
+                self.resolve_most_evidence(&valid_beliefs)
+            }
+            ConflictResolution::EvidenceWeighted => {
+                self.resolve_evidence_weighted(&valid_beliefs)
+            }
+            ConflictResolution::ConfidenceWeighted => {
+                self.resolve_confidence_weighted(&valid_beliefs)
+            }
+            ConflictResolution::BayesianCombination => {
+                self.resolve_bayesian(&valid_beliefs)
+            }
+            ConflictResolution::SemanticWeighted => {
+                self.resolve_semantic_weighted(&valid_beliefs)
+            }
+            ConflictResolution::MajorityVote => {
+                self.resolve_majority_vote(&valid_beliefs)
+            }
+            ConflictResolution::Custom(f) => {
+                let owned: Vec<Belief> = valid_beliefs.iter().map(|b| (*b).clone()).collect();
+                f(&owned)
+            }
+        };
+
+        // Record resolution
+        self.record_resolution(&beliefs, &resolved);
+
+        Some(resolved)
+    }
+
+    fn resolve_highest_confidence(&self, beliefs: &[&Belief]) -> Belief {
+        let best = beliefs.iter()
+            .max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap())
+            .unwrap();
+        (*best).clone()
+    }
+
+    fn resolve_most_recent(&self, beliefs: &[&Belief]) -> Belief {
+        let best = beliefs.iter()
+            .max_by_key(|b| b.last_updated)
+            .unwrap();
+        (*best).clone()
+    }
+
+    fn resolve_most_evidence(&self, beliefs: &[&Belief]) -> Belief {
+        let best = beliefs.iter()
+            .max_by_key(|b| b.evidence_count)
+            .unwrap();
+        (*best).clone()
+    }
+
+    fn resolve_evidence_weighted(&self, beliefs: &[&Belief]) -> Belief {
+        let total_evidence: u64 = beliefs.iter().map(|b| b.evidence_count).sum();
+
+        let mut weighted_confidence = 0.0;
+        for belief in beliefs {
+            let weight = belief.evidence_count as f64 / total_evidence as f64;
+            weighted_confidence += belief.confidence * weight;
+        }
+
+        let mut resolved = beliefs[0].clone();
+        resolved.confidence = weighted_confidence;
+        resolved.evidence_count = total_evidence;
+        resolved.source = "hive:evidence_weighted".to_string();
+        resolved.last_updated = current_timestamp();
+        resolved
+    }
+
+    fn resolve_confidence_weighted(&self, beliefs: &[&Belief]) -> Belief {
+        let total_confidence: f64 = beliefs.iter().map(|b| b.confidence).sum();
+
+        let mut weighted_confidence = 0.0;
+        for belief in beliefs {
+            let weight = belief.confidence / total_confidence;
+            weighted_confidence += belief.confidence * weight;
+        }
+
+        let total_evidence: u64 = beliefs.iter().map(|b| b.evidence_count).sum();
+
+        let mut resolved = beliefs[0].clone();
+        resolved.confidence = weighted_confidence;
+        resolved.evidence_count = total_evidence;
+        resolved.source = "hive:confidence_weighted".to_string();
+        resolved.last_updated = current_timestamp();
+        resolved
+    }
+
+    fn resolve_bayesian(&self, beliefs: &[&Belief]) -> Belief {
+        // Combine beliefs using log-odds (Bayesian approach)
+        // log_odds = log(p / (1-p))
+        // Combined log_odds = sum of individual log_odds
+
+        let mut combined_log_odds = 0.0;
+        for belief in beliefs {
+            let p = belief.confidence.max(0.001).min(0.999);
+            let log_odds = (p / (1.0 - p)).ln();
+            combined_log_odds += log_odds;
+        }
+
+        // Convert back to probability
+        // p = 1 / (1 + exp(-log_odds))
+        let combined_confidence = 1.0 / (1.0 + (-combined_log_odds).exp());
+
+        let total_evidence: u64 = beliefs.iter().map(|b| b.evidence_count).sum();
+
+        let mut resolved = beliefs[0].clone();
+        resolved.confidence = combined_confidence;
+        resolved.evidence_count = total_evidence;
+        resolved.source = "hive:bayesian".to_string();
+        resolved.last_updated = current_timestamp();
+        resolved
+    }
+
+    fn resolve_semantic_weighted(&self, beliefs: &[&Belief]) -> Belief {
+        // Weight by semantic similarity to query (if embeddings available)
+        // For now, fall back to evidence weighted if no embeddings
+
+        let has_embeddings = beliefs.iter().all(|b| b.embedding.is_some());
+
+        if !has_embeddings {
+            return self.resolve_evidence_weighted(beliefs);
+        }
+
+        // Compute pairwise similarities and weight by agreement
+        let mut weights: Vec<f64> = Vec::new();
+        for i in 0..beliefs.len() {
+            let mut similarity_sum = 0.0;
+            for j in 0..beliefs.len() {
+                if i != j {
+                    let sim = cosine_similarity(
+                        beliefs[i].embedding.as_ref().unwrap(),
+                        beliefs[j].embedding.as_ref().unwrap(),
+                    );
+                    similarity_sum += sim;
+                }
+            }
+            weights.push(similarity_sum / (beliefs.len() - 1) as f64);
+        }
+
+        // Normalize weights
+        let total_weight: f64 = weights.iter().sum();
+        for w in &mut weights {
+            *w /= total_weight + 1e-8;
+        }
+
+        // Weighted combination
+        let mut weighted_confidence = 0.0;
+        for (i, belief) in beliefs.iter().enumerate() {
+            weighted_confidence += belief.confidence * weights[i];
+        }
+
+        let total_evidence: u64 = beliefs.iter().map(|b| b.evidence_count).sum();
+
+        let mut resolved = beliefs[0].clone();
+        resolved.confidence = weighted_confidence;
+        resolved.evidence_count = total_evidence;
+        resolved.source = "hive:semantic_weighted".to_string();
+        resolved.last_updated = current_timestamp();
+        resolved
+    }
+
+    fn resolve_majority_vote(&self, beliefs: &[&Belief]) -> Belief {
+        // For discrete beliefs, count votes weighted by confidence
+        // High confidence = strong agreement, low confidence = weak agreement
+
+        let threshold = 0.5;
+        let mut agree_votes = 0.0;
+        let mut disagree_votes = 0.0;
+
+        for belief in beliefs {
+            if belief.confidence >= threshold {
+                agree_votes += belief.confidence;
+            } else {
+                disagree_votes += 1.0 - belief.confidence;
+            }
+        }
+
+        let resolved_confidence = if agree_votes >= disagree_votes {
+            agree_votes / (agree_votes + disagree_votes + 1e-8)
+        } else {
+            disagree_votes / (agree_votes + disagree_votes + 1e-8) * -1.0 + 1.0
+        };
+
+        let total_evidence: u64 = beliefs.iter().map(|b| b.evidence_count).sum();
+
+        let mut resolved = beliefs[0].clone();
+        resolved.confidence = resolved_confidence.max(0.0).min(1.0);
+        resolved.evidence_count = total_evidence;
+        resolved.source = "hive:majority_vote".to_string();
+        resolved.last_updated = current_timestamp();
+        resolved
+    }
+
+    fn record_resolution(&mut self, original: &[Belief], resolved: &Belief) {
+        let record = ResolutionRecord {
+            belief_id: resolved.id.clone(),
+            conflicts: original.iter()
+                .map(|b| (b.source.clone(), b.confidence))
+                .collect(),
+            resolved_confidence: resolved.confidence,
+            timestamp: current_timestamp(),
+            strategy: format!("{:?}", strategy_name(&self.strategy)),
+        };
+
+        self.history.push(record);
+
+        // Trim history
+        while self.history.len() > self.max_history {
+            self.history.remove(0);
+        }
+    }
+
+    /// Get resolution history
+    pub fn history(&self) -> &[ResolutionRecord] {
+        &self.history
+    }
+
+    /// Get conflict statistics
+    pub fn stats(&self) -> ConflictStats {
+        let total = self.history.len();
+        let avg_conflicts = if total > 0 {
+            self.history.iter()
+                .map(|r| r.conflicts.len())
+                .sum::<usize>() as f64 / total as f64
+        } else {
+            0.0
+        };
+
+        let avg_confidence_spread = if total > 0 {
+            self.history.iter()
+                .map(|r| {
+                    let confidences: Vec<f64> = r.conflicts.iter().map(|(_, c)| *c).collect();
+                    if confidences.len() > 1 {
+                        let max = confidences.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                        let min = confidences.iter().cloned().fold(f64::INFINITY, f64::min);
+                        max - min
+                    } else {
+                        0.0
+                    }
+                })
+                .sum::<f64>() / total as f64
+        } else {
+            0.0
+        };
+
+        ConflictStats {
+            total_resolutions: total,
+            avg_conflicts_per_resolution: avg_conflicts,
+            avg_confidence_spread: avg_confidence_spread,
+        }
+    }
+}
+
+/// Statistics about conflict resolution
+pub struct ConflictStats {
+    pub total_resolutions: usize,
+    pub avg_conflicts_per_resolution: f64,
+    pub avg_confidence_spread: f64,
+}
+
+/// Hive-level belief manager
+pub struct HiveBeliefManager {
+    /// Beliefs by ID
+    beliefs: HashMap<String, Vec<Belief>>,
+
+    /// Resolver
+    resolver: BeliefResolver,
+
+    /// Consensus beliefs
+    consensus: HashMap<String, Belief>,
+
+    /// Update callbacks
+    on_consensus_change: Vec<Box<dyn Fn(&str, &Belief) + Send + Sync>>,
+}
+
+impl HiveBeliefManager {
+    /// Create new hive belief manager
+    pub fn new(strategy: ConflictResolution) -> Self {
+        HiveBeliefManager {
+            beliefs: HashMap::new(),
+            resolver: BeliefResolver::new(strategy),
+            consensus: HashMap::new(),
+            on_consensus_change: Vec::new(),
+        }
+    }
+
+    /// Submit a belief from a specialist
+    pub fn submit_belief(&mut self, belief: Belief) {
+        let id = belief.id.clone();
+
+        self.beliefs
+            .entry(id.clone())
+            .or_insert_with(Vec::new)
+            .push(belief);
+
+        // Try to resolve conflicts
+        if let Some(beliefs) = self.beliefs.get(&id) {
+            if beliefs.len() > 1 {
+                if let Some(resolved) = self.resolver.resolve(beliefs) {
+                    let changed = self.consensus
+                        .get(&id)
+                        .map(|old| (old.confidence - resolved.confidence).abs() > 0.01)
+                        .unwrap_or(true);
+
+                    self.consensus.insert(id.clone(), resolved.clone());
+
+                    if changed {
+                        for callback in &self.on_consensus_change {
+                            callback(&id, &resolved);
+                        }
+                    }
+                }
+            } else {
+                // Single belief - becomes consensus
+                self.consensus.insert(id, beliefs[0].clone());
+            }
+        }
+    }
+
+    /// Get consensus belief
+    pub fn consensus(&self, belief_id: &str) -> Option<&Belief> {
+        self.consensus.get(belief_id)
+    }
+
+    /// Get all consensus beliefs
+    pub fn all_consensus(&self) -> &HashMap<String, Belief> {
+        &self.consensus
+    }
+
+    /// Get conflicting beliefs for an ID
+    pub fn conflicts(&self, belief_id: &str) -> Option<&[Belief]> {
+        self.beliefs.get(belief_id).map(|v| v.as_slice())
+    }
+
+    /// Check if there are conflicts for a belief
+    pub fn has_conflict(&self, belief_id: &str) -> bool {
+        self.beliefs
+            .get(belief_id)
+            .map(|v| v.len() > 1)
+            .unwrap_or(false)
+    }
+
+    /// Get all beliefs with conflicts
+    pub fn conflicting_beliefs(&self) -> Vec<&str> {
+        self.beliefs.iter()
+            .filter(|(_, v)| v.len() > 1)
+            .map(|(k, _)| k.as_str())
+            .collect()
+    }
+
+    /// Clear old beliefs
+    pub fn clear_old(&mut self, max_age_ms: u64) {
+        let now = current_timestamp();
+
+        for beliefs in self.beliefs.values_mut() {
+            beliefs.retain(|b| now - b.last_updated <= max_age_ms);
+        }
+
+        // Remove empty entries
+        self.beliefs.retain(|_, v| !v.is_empty());
+    }
+
+    /// Register callback for consensus changes
+    pub fn on_consensus_change<F>(&mut self, callback: F)
+    where
+        F: Fn(&str, &Belief) + Send + Sync + 'static,
+    {
+        self.on_consensus_change.push(Box::new(callback));
+    }
+
+    /// Get resolver statistics
+    pub fn stats(&self) -> ConflictStats {
+        self.resolver.stats()
+    }
+}
+
+/// Specialist-level belief synchronizer
+pub struct BeliefSynchronizer {
+    /// Local beliefs
+    local_beliefs: HashMap<String, Belief>,
+
+    /// Specialist ID
+    specialist_id: String,
+
+    /// Pending updates to send
+    pending_updates: Vec<Belief>,
+
+    /// Hive manager reference (would be actual reference in production)
+    hive_manager_id: String,
+}
+
+impl BeliefSynchronizer {
+    /// Create new synchronizer for a specialist
+    pub fn new(specialist_id: &str, hive_manager_id: &str) -> Self {
+        BeliefSynchronizer {
+            local_beliefs: HashMap::new(),
+            specialist_id: specialist_id.to_string(),
+            pending_updates: Vec::new(),
+            hive_manager_id: hive_manager_id.to_string(),
+        }
+    }
+
+    /// Update local belief
+    pub fn update_belief(&mut self, belief_id: &str, confidence: f64) {
+        let belief = self.local_beliefs
+            .entry(belief_id.to_string())
+            .or_insert_with(|| Belief::new(belief_id, confidence, &self.specialist_id));
+
+        belief.update(confidence, 0.1);
+        self.pending_updates.push(belief.clone());
+    }
+
+    /// Set belief with specific confidence
+    pub fn set_belief(&mut self, belief_id: &str, confidence: f64) {
+        let belief = Belief::new(belief_id, confidence, &self.specialist_id);
+        self.local_beliefs.insert(belief_id.to_string(), belief.clone());
+        self.pending_updates.push(belief);
+    }
+
+    /// Get local belief
+    pub fn local_belief(&self, belief_id: &str) -> Option<&Belief> {
+        self.local_beliefs.get(belief_id)
+    }
+
+    /// Get pending updates and clear
+    pub fn drain_pending(&mut self) -> Vec<Belief> {
+        std::mem::take(&mut self.pending_updates)
+    }
+
+    /// Apply consensus belief from hive
+    pub fn apply_consensus(&mut self, belief: &Belief) {
+        if let Some(local) = self.local_beliefs.get_mut(&belief.id) {
+            // Blend local with consensus (weighted by evidence)
+            let local_weight = local.evidence_count as f64
+                / (local.evidence_count + belief.evidence_count) as f64;
+            let consensus_weight = 1.0 - local_weight;
+
+            local.confidence = local.confidence * local_weight
+                + belief.confidence * consensus_weight;
+            local.evidence_count += belief.evidence_count;
+        } else {
+            // Adopt consensus belief
+            self.local_beliefs.insert(belief.id.clone(), belief.clone());
+        }
+    }
+
+    /// Get all local beliefs
+    pub fn all_local(&self) -> &HashMap<String, Belief> {
+        &self.local_beliefs
+    }
+}
+
+// Helper functions
+
+fn current_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn cosine_similarity(a: &Tensor, b: &Tensor) -> f64 {
+    let mut dot = 0.0;
+    let mut norm_a = 0.0;
+    let mut norm_b = 0.0;
+
+    let len = a.numel().min(b.numel());
+    for i in 0..len {
+        let va = a.get(i);
+        let vb = b.get(i);
+        dot += va * vb;
+        norm_a += va * va;
+        norm_b += vb * vb;
+    }
+
+    dot / ((norm_a.sqrt() * norm_b.sqrt()) + 1e-8)
+}
+
+fn strategy_name(strategy: &ConflictResolution) -> &'static str {
+    match strategy {
+        ConflictResolution::HighestConfidence => "HighestConfidence",
+        ConflictResolution::MostRecent => "MostRecent",
+        ConflictResolution::MostEvidence => "MostEvidence",
+        ConflictResolution::EvidenceWeighted => "EvidenceWeighted",
+        ConflictResolution::ConfidenceWeighted => "ConfidenceWeighted",
+        ConflictResolution::BayesianCombination => "BayesianCombination",
+        ConflictResolution::SemanticWeighted => "SemanticWeighted",
+        ConflictResolution::MajorityVote => "MajorityVote",
+        ConflictResolution::Custom(_) => "Custom",
+    }
+}

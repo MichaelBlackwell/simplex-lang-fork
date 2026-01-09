@@ -1,0 +1,174 @@
+// GPU Backend: Neural IR integration for GPU acceleration
+//
+// Uses Neural IR Phase 3 (hardware targeting) to execute tensor
+// operations on GPU. Only available when "gpu" feature is enabled.
+
+use super::{Backend, Tensor, Shape, TensorError};
+
+/// GPU backend for tensor operations via Neural IR
+pub struct GpuBackend {
+    /// Device ID
+    device_id: i32,
+
+    /// Whether device is initialized
+    initialized: bool,
+
+    /// Available GPU memory in bytes
+    available_memory: usize,
+}
+
+impl GpuBackend {
+    /// Create a new GPU backend
+    pub fn new() -> Result<Self, TensorError> {
+        // Check if GPU is available
+        if !is_gpu_available() {
+            return Err(TensorError::BackendError {
+                message: "No GPU available".to_string(),
+            });
+        }
+
+        Ok(GpuBackend {
+            device_id: 0,
+            initialized: false,
+            available_memory: 0,
+        })
+    }
+
+    /// Create for specific device
+    pub fn with_device(device_id: i32) -> Result<Self, TensorError> {
+        let mut backend = Self::new()?;
+        backend.device_id = device_id;
+        Ok(backend)
+    }
+
+    /// Initialize the GPU device
+    pub fn initialize(&mut self) -> Result<(), TensorError> {
+        if self.initialized {
+            return Ok(());
+        }
+
+        // Initialize via Neural IR runtime
+        // This would call into the Neural IR GPU backend
+        self.available_memory = query_gpu_memory(self.device_id);
+        self.initialized = true;
+
+        Ok(())
+    }
+
+    /// Transfer tensor to GPU
+    pub fn to_device(&self, tensor: &Tensor) -> Result<GpuTensor, TensorError> {
+        if !self.initialized {
+            return Err(TensorError::BackendError {
+                message: "GPU not initialized".to_string(),
+            });
+        }
+
+        // Allocate on GPU and copy data
+        // This would use Neural IR's device memory management
+        Ok(GpuTensor {
+            device_id: self.device_id,
+            shape: tensor.shape().clone(),
+            // device_ptr would be set by actual allocation
+        })
+    }
+
+    /// Transfer tensor from GPU
+    pub fn to_host(&self, gpu_tensor: &GpuTensor) -> Result<Tensor, TensorError> {
+        // Copy data back from GPU
+        // This would use Neural IR's device memory management
+        Ok(Tensor::zeros(gpu_tensor.shape.clone()))
+    }
+}
+
+impl Backend for GpuBackend {
+    fn name(&self) -> &str {
+        "GPU"
+    }
+
+    fn is_available(&self) -> bool {
+        is_gpu_available()
+    }
+
+    fn matmul(&self, a: &Tensor, b: &Tensor) -> Result<Tensor, TensorError> {
+        // Transfer to GPU, compute, transfer back
+        // In practice, we'd keep data on GPU between operations
+        let a_gpu = self.to_device(a)?;
+        let b_gpu = self.to_device(b)?;
+
+        let result_gpu = gpu_matmul(&a_gpu, &b_gpu)?;
+
+        self.to_host(&result_gpu)
+    }
+
+    fn add(&self, a: &Tensor, b: &Tensor) -> Result<Tensor, TensorError> {
+        let a_gpu = self.to_device(a)?;
+        let b_gpu = self.to_device(b)?;
+
+        let result_gpu = gpu_add(&a_gpu, &b_gpu)?;
+
+        self.to_host(&result_gpu)
+    }
+
+    fn mul(&self, a: &Tensor, b: &Tensor) -> Result<Tensor, TensorError> {
+        let a_gpu = self.to_device(a)?;
+        let b_gpu = self.to_device(b)?;
+
+        let result_gpu = gpu_mul(&a_gpu, &b_gpu)?;
+
+        self.to_host(&result_gpu)
+    }
+
+    fn softmax(&self, x: &Tensor) -> Tensor {
+        // Fall back to CPU for now
+        // TODO: Implement GPU softmax
+        crate::tensor::ops::softmax(x)
+    }
+
+    fn layer_norm(&self, x: &Tensor, weight: Option<&Tensor>, bias: Option<&Tensor>, eps: f64) -> Tensor {
+        // Fall back to CPU for now
+        crate::tensor::ops::layer_norm(x, weight, bias, eps)
+    }
+}
+
+/// GPU tensor handle
+pub struct GpuTensor {
+    device_id: i32,
+    shape: Shape,
+    // device_ptr: *mut f32, // Would be actual device pointer
+}
+
+/// Check if GPU is available
+fn is_gpu_available() -> bool {
+    // This would check via Neural IR runtime
+    // Placeholder: always false unless properly initialized
+    false
+}
+
+/// Query GPU memory
+fn query_gpu_memory(device_id: i32) -> usize {
+    // This would query via Neural IR runtime
+    0
+}
+
+/// GPU matrix multiplication
+fn gpu_matmul(a: &GpuTensor, b: &GpuTensor) -> Result<GpuTensor, TensorError> {
+    // This would call into Neural IR GPU backend
+    // Using @gpu annotated neural gates
+    Err(TensorError::BackendError {
+        message: "GPU matmul not implemented".to_string(),
+    })
+}
+
+/// GPU element-wise addition
+fn gpu_add(a: &GpuTensor, b: &GpuTensor) -> Result<GpuTensor, TensorError> {
+    Err(TensorError::BackendError {
+        message: "GPU add not implemented".to_string(),
+    })
+}
+
+/// GPU element-wise multiplication
+fn gpu_mul(a: &GpuTensor, b: &GpuTensor) -> Result<GpuTensor, TensorError> {
+    Err(TensorError::BackendError {
+        message: "GPU mul not implemented".to_string(),
+    })
+}
