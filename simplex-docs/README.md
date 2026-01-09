@@ -1,6 +1,6 @@
 # Simplex Language Documentation
 
-**Version 0.5.0**
+**Version 0.7.0**
 
 Simplex (Latin for "simple") is a programming language designed for the AI era. It combines the fault-tolerance of Erlang, the memory safety of Rust, the distributed computing model of Ray, and the content-addressable code of Unison into a cohesive system built for intelligent, distributed workloads.
 
@@ -24,7 +24,9 @@ Simplex (Latin for "simple") is a programming language designed for the AI era. 
 | [Compiler Toolchain](spec/10-compiler-toolchain.md) | sxc, spx, cursus - 100% pure Simplex |
 | [Standard Library](spec/11-standard-library.md) | Complete std API reference |
 | [The Anima](spec/12-anima.md) | Cognitive soul - memory, beliefs, intentions |
-| [SLM Provisioning](spec/13-slm-provisioning.md) | **NEW** Per-hive model architecture |
+| [SLM Provisioning](spec/13-slm-provisioning.md) | Per-hive model architecture |
+| [Neural IR](spec/14-neural-ir.md) | Differentiable execution and neural gates |
+| [Real-Time Learning](spec/15-real-time-learning.md) | Online learning and adaptation |
 
 ### Tutorial
 
@@ -44,6 +46,8 @@ A step-by-step learning path for the Simplex language.
 | [10](tutorial/10-ai-basics.md) | AI Integration | Completion, classification, embeddings |
 | [11](tutorial/11-capstone.md) | Capstone Project | Build a complete application |
 | [12](tutorial/12-cognitive-hives.md) | Cognitive Hives | Building SLM swarms with CHAI |
+| [13](tutorial/13-neural-gates.md) | Neural Gates | Learnable control flow with Neural IR |
+| [14](tutorial/14-real-time-learning.md) | Real-Time Learning | Online adaptation with simplex-learning |
 
 Start the tutorial: [Tutorial Index](tutorial/README.md)
 
@@ -99,11 +103,57 @@ Start the tutorial: [Tutorial Index](tutorial/README.md)
 
 ---
 
-## Key Features (v0.5.0)
+## Key Features (v0.7.0)
 
-### NEW in v0.5.0: Per-Hive SLM Architecture
+### NEW in v0.7.0: Real-Time Continuous Learning
 
-**The headline feature**: Each hive provisions ONE shared SLM that all its specialists use.
+**The headline feature**: AI specialists learn and adapt during runtime without batch retraining.
+
+```simplex
+use simplex_learning::{OnlineLearner, StreamingAdam, SafeFallback};
+
+let learner = OnlineLearner::new(model_params)
+    .optimizer(StreamingAdam::new(0.001))
+    .fallback(SafeFallback::with_default(safe_output));
+
+// Learn from each interaction
+for (input, feedback) in interactions {
+    let output = learner.forward(&input);
+    learner.learn(&feedback);  // Adapts in real-time
+}
+```
+
+- **Online learning**: Streaming optimizers (SGD, Adam, AdamW) with gradient accumulation
+- **Safety constraints**: Fallback strategies, validation, bounds checking
+- **Federated learning**: 6 aggregation strategies for distributed hives
+- **Knowledge distillation**: Teacher-student, self-distillation, progressive
+- **Belief resolution**: Reconcile conflicting beliefs across specialists
+
+See [RELEASE-0.7.0.md](RELEASE-0.7.0.md) for complete release notes.
+
+### v0.6.0: Neural IR and Differentiable Execution
+
+Neural Gates transform control flow into learnable operations:
+
+```simplex
+neural_gate should_retry(confidence: f64) -> bool
+    requires confidence > 0.5
+    fallback => conservative_path()
+{
+    confidence > 0.7  // Threshold learned during training
+}
+```
+
+- **Neural Gates**: Gumbel-Softmax for differentiable branches
+- **Dual compilation**: Training mode (differentiable) vs inference mode (discrete)
+- **Contract logic**: `requires`, `ensures`, `fallback` for probabilistic verification
+- **Hardware targeting**: `@cpu`, `@gpu`, `@npu` annotations
+
+See [RELEASE-0.6.0.md](RELEASE-0.6.0.md) for complete release notes.
+
+### v0.5.0: Per-Hive SLM Architecture
+
+Each hive provisions ONE shared SLM that all its specialists use:
 
 ```
 ┌─────────────────────────────────────────┐
@@ -125,7 +175,6 @@ Start the tutorial: [Tutorial Index](tutorial/README.md)
 - **HiveMnemonic**: Shared consciousness across specialists
 - **Memory-augmented inference**: Anima + Mnemonic context flows to SLM
 - **Built-in models**: cognitive-7b (4.1GB), cognitive-1b (700MB), mnemonic-embed (134MB)
-- **sxpm model commands**: `install`, `list`, `remove`, `info`
 
 See [RELEASE-0.5.0.md](RELEASE-0.5.0.md) for complete release notes.
 
@@ -151,16 +200,34 @@ See [RELEASE-0.5.0.md](RELEASE-0.5.0.md) for complete release notes.
 - BDI (Beliefs-Desires-Intentions) architecture
 - Goal-directed memory recall
 - Memory persistence and sharing
-- **NEW**: Integration with HiveMnemonic for shared consciousness
+- Integration with HiveMnemonic for shared consciousness
 
 ### AI Specialists & Hives
-- **NEW**: Per-hive SLM sharing (one model per hive)
-- **NEW**: HiveMnemonic for collective memory
+- Per-hive SLM sharing (one model per hive)
+- HiveMnemonic for collective memory
 - Multi-provider support (Anthropic, OpenAI, Ollama, local SLMs)
 - Streaming responses
 - Tool/function calling
 - Multi-actor orchestration (pipeline, parallel, consensus)
 - Semantic routing
+
+### Neural IR (v0.6.0)
+- `neural_gate` keyword for learnable control flow
+- Gumbel-Softmax differentiable branches
+- Dual compilation modes (training/inference)
+- Contract logic with `requires`, `ensures`, `fallback`
+- Hardware targeting (`@cpu`, `@gpu`, `@npu`)
+- Structural pruning for optimized inference
+
+### Real-Time Learning (v0.7.0)
+- `simplex-learning` library for online adaptation
+- Tensor operations with automatic differentiation
+- Streaming optimizers (SGD, Adam, AdamW)
+- Safety constraints with fallback strategies
+- Federated learning (FedAvg, Median, TrimmedMean, etc.)
+- Knowledge distillation (teacher-student, self-distillation)
+- Belief conflict resolution across hives
+- Experience replay and checkpointing
 
 ### Observability
 - Metrics (counter, gauge, histogram)
@@ -214,7 +281,10 @@ Simplex uses the following terminology for its module system:
 | 0.3.5 | 2025-01 | Added sxpm package manager, Phase 1 stdlib (HashMap, HashSet, String ops) |
 | 0.4.0 | 2026-01 | The Anima: cognitive memory, BDI, tool calling, observability, multi-actor orchestration |
 | 0.4.1 | 2026-01 | sxpm enhancements: inline modules, pub use re-exports, diamond dependency detection, build cache, lock files |
-| 0.5.0 | 2026-01 | SLM Provisioning: model commands, HTTP client, terminal colors, enhanced test framework |
+| 0.5.0 | 2026-01-07 | SLM Provisioning: model commands, HTTP client, terminal colors, enhanced test framework |
+| 0.5.1 | 2026-01-07 | Type aliases, AGPL-3.0 license change, LLM context specification |
+| 0.6.0 | 2026-01-08 | Neural IR: neural gates, Gumbel-Softmax, dual compilation, hardware targeting |
+| 0.7.0 | 2026-01-09 | Real-Time Learning: simplex-learning library, streaming optimizers, federated learning |
 
 ---
 

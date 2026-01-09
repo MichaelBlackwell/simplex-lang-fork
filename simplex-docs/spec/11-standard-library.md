@@ -1,6 +1,6 @@
 # Simplex Standard Library Reference
 
-**Version 0.1.0**
+**Version 0.7.0**
 
 The Simplex standard library provides core functionality for I/O, collections, networking, and more. All modules are written in pure Simplex.
 
@@ -20,6 +20,7 @@ The Simplex standard library provides core functionality for I/O, collections, n
 | `std::env` | Environment and process info |
 | `std::process` | Process execution |
 | `std::fmt` | Formatting and display |
+| `simplex_learning` | Real-time learning library (v0.7.0) |
 
 ---
 
@@ -748,6 +749,189 @@ impl WatchReceiver<T> {
 ```simplex
 fn select<T>(receivers: Vec<&Receiver<T>>) -> SelectResult<T>
 fn select_timeout<T>(receivers: Vec<&Receiver<T>>, timeout_ms: i64) -> SelectResult<T>
+```
+
+---
+
+## simplex_learning (v0.7.0)
+
+Real-time continuous learning library for AI specialists.
+
+### Tensor Operations
+
+```simplex
+use simplex_learning::tensor::{Tensor, ops};
+
+type Tensor {
+    fn zeros(shape: &[i64]) -> Tensor
+    fn ones(shape: &[i64]) -> Tensor
+    fn randn(shape: &[i64]) -> Tensor
+    fn from_slice(data: &[f64], shape: &[i64]) -> Tensor
+    fn requires_grad_(self) -> Tensor
+    fn grad(self) -> Option<Tensor>
+    fn backward(self)
+    fn shape(self) -> &[i64]
+    fn reshape(self, shape: &[i64]) -> Tensor
+}
+
+// Operations
+fn ops::matmul(a: &Tensor, b: &Tensor) -> Tensor
+fn ops::batch_matmul(a: &Tensor, b: &Tensor) -> Tensor
+fn ops::add(a: &Tensor, b: &Tensor) -> Tensor
+fn ops::mul(a: &Tensor, b: &Tensor) -> Tensor
+fn ops::relu(x: &Tensor) -> Tensor
+fn ops::sigmoid(x: &Tensor) -> Tensor
+fn ops::softmax(x: &Tensor, dim: i64) -> Tensor
+fn ops::mse_loss(pred: &Tensor, target: &Tensor) -> Tensor
+fn ops::cross_entropy(logits: &Tensor, labels: &Tensor) -> Tensor
+```
+
+### Optimizers
+
+```simplex
+use simplex_learning::optim::{StreamingSGD, StreamingAdam, AdamW};
+
+type StreamingSGD {
+    fn new(lr: f64) -> StreamingSGD
+    fn momentum(self, m: f64) -> StreamingSGD
+    fn weight_decay(self, wd: f64) -> StreamingSGD
+    fn max_grad_norm(self, max: f64) -> StreamingSGD
+    fn step(self, params: &mut [Tensor])
+}
+
+type StreamingAdam {
+    fn new(lr: f64) -> StreamingAdam
+    fn betas(self, b1: f64, b2: f64) -> StreamingAdam
+    fn eps(self, e: f64) -> StreamingAdam
+    fn accumulation_steps(self, steps: i64) -> StreamingAdam
+    fn step(self, params: &mut [Tensor])
+}
+
+type AdamW {
+    fn new(lr: f64) -> AdamW
+    fn weight_decay(self, wd: f64) -> AdamW
+    fn step(self, params: &mut [Tensor])
+}
+
+// Gradient clipping
+fn clip_grad_norm(params: &mut [Tensor], max_norm: f64) -> f64
+fn clip_grad_value(params: &mut [Tensor], max_value: f64)
+```
+
+### Safety
+
+```simplex
+use simplex_learning::safety::{SafeLearner, SafeFallback, ConstraintManager};
+
+enum SafeFallback<T> {
+    fn with_default(value: T) -> SafeFallback<T>
+    fn last_good() -> SafeFallback<T>
+    fn with_function(f: fn(&Input) -> T) -> SafeFallback<T>
+    fn checkpoint(path: &str) -> SafeFallback<T>
+    fn skip_update() -> SafeFallback<T>
+}
+
+type SafeLearner<T> {
+    fn new(learner: OnlineLearner, fallback: SafeFallback<T>) -> SafeLearner<T>
+    fn with_validator(self, f: fn(&T) -> bool) -> SafeLearner<T>
+    fn max_failures(self, n: i64) -> SafeLearner<T>
+    fn try_process(self, input: &Input, f: fn(&Input) -> T) -> Result<T, SafetyError>
+}
+
+type ConstraintManager {
+    fn new() -> ConstraintManager
+    fn add_soft(self, constraint: Constraint) -> ConstraintManager
+    fn add_hard(self, constraint: Constraint) -> ConstraintManager
+    fn check(self, metrics: &Metrics) -> ConstraintResult
+}
+```
+
+### Distributed Learning
+
+```simplex
+use simplex_learning::distributed::{
+    FederatedLearner, KnowledgeDistiller, HiveBeliefManager, HiveLearningCoordinator
+};
+
+// Federated Learning
+type FederatedLearner {
+    fn new(config: FederatedConfig, params: Vec<Tensor>) -> FederatedLearner
+    fn submit_update(self, update: NodeUpdate)
+    fn global_params(self) -> Vec<Tensor>
+    fn round(self) -> i64
+}
+
+enum AggregationStrategy {
+    FedAvg,
+    WeightedAvg,
+    PerformanceWeighted,
+    Median,
+    TrimmedMean,
+    AttentionWeighted,
+}
+
+// Knowledge Distillation
+type KnowledgeDistiller {
+    fn new(config: DistillationConfig) -> KnowledgeDistiller
+    fn distillation_loss(self, student: &Tensor, teacher: &Tensor, labels: &Tensor) -> Tensor
+}
+
+// Belief Resolution
+type HiveBeliefManager {
+    fn new(strategy: ConflictResolution) -> HiveBeliefManager
+    fn submit_belief(self, belief: Belief)
+    fn consensus(self, key: &str) -> f64
+    fn all_beliefs(self) -> Vec<Belief>
+}
+
+enum ConflictResolution {
+    HighestConfidence,
+    MostRecent,
+    MostEvidence,
+    EvidenceWeighted,
+    BayesianCombination,
+    SemanticWeighted,
+    MajorityVote,
+}
+
+// Hive Coordinator
+type HiveLearningCoordinator {
+    fn new(config: HiveLearningConfig, params: Vec<Tensor>) -> HiveLearningCoordinator
+    fn register_specialist(self, name: &str, params: Vec<Tensor>)
+    fn submit_gradients(self, name: &str, grads: &[Tensor])
+    fn submit_belief(self, name: &str, belief: Belief)
+    fn step(self)
+    fn get_specialist_params(self, name: &str) -> Vec<Tensor>
+}
+```
+
+### Runtime
+
+```simplex
+use simplex_learning::runtime::{OnlineLearner, Checkpoint, Metrics};
+
+type OnlineLearner {
+    fn new(params: Vec<Tensor>) -> OnlineLearner
+    fn optimizer<O: Optimizer>(self, opt: O) -> OnlineLearner
+    fn fallback(self, fb: SafeFallback) -> OnlineLearner
+    fn constraint(self, c: Constraint) -> OnlineLearner
+    fn forward(self, input: &Tensor) -> Tensor
+    fn learn(self, feedback: &FeedbackSignal)
+    fn metrics(self) -> Metrics
+}
+
+type Checkpoint {
+    fn save(path: &str, learner: &OnlineLearner) -> Result<(), IoError>
+    fn load(path: &str) -> Result<OnlineLearner, IoError>
+}
+
+type Metrics {
+    loss: f64,
+    lr: f64,
+    grad_norm: f64,
+    step_count: i64,
+    samples_per_sec: f64,
+}
 ```
 
 ---

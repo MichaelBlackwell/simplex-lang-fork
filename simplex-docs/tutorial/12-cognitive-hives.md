@@ -625,6 +625,126 @@ fn main() {
 
 ---
 
+## Real-Time Learning (v0.7.0)
+
+Starting with v0.7.0, specialists can learn and adapt during runtime:
+
+### Learning-Enabled Specialist
+
+```simplex
+use simplex_learning::{OnlineLearner, StreamingAdam, SafeFallback};
+
+specialist AdaptiveSummarizer {
+    model: "mistral-7b-instruct",
+    domain: "summarization",
+    learner: OnlineLearner,
+
+    fn init() {
+        // Set up online learning with safety fallback
+        self.learner = OnlineLearner::new(self.params())
+            .optimizer(StreamingAdam::new(0.001))
+            .fallback(SafeFallback::with_default("Unable to summarize."));
+    }
+
+    receive Summarize(text: String) -> String {
+        infer("Summarize: {text}")
+    }
+
+    receive Feedback(summary: String, was_good: bool) {
+        // Learn from user feedback
+        if was_good {
+            self.learner.learn(&PositiveFeedback(summary));
+        } else {
+            self.learner.learn(&NegativeFeedback(summary));
+        }
+    }
+}
+
+fn main() {
+    let summarizer = spawn AdaptiveSummarizer
+
+    let article = "The Simplex language..."
+    let summary = ask(summarizer, Summarize(article))
+
+    // User provides feedback
+    print("Was this summary helpful? (y/n)")
+    let feedback = read_line()
+
+    // The specialist learns from feedback
+    send(summarizer, Feedback(summary, feedback == "y"))
+}
+```
+
+### Federated Learning Across Hive
+
+Multiple specialists can learn together:
+
+```simplex
+use simplex_learning::distributed::{HiveLearningCoordinator, HiveLearningConfig};
+
+hive LearningHive {
+    specialists: [SecurityAnalyzer, QualityReviewer, PerformanceOptimizer],
+
+    // All specialists share learnings
+    learning: HiveLearningCoordinator::new(
+        HiveLearningConfig::builder()
+            .sync_interval(100)
+            .aggregation(AggregationStrategy::FedAvg)
+            .build()
+    ),
+
+    router: SemanticRouter
+}
+
+fn main() {
+    let hive = spawn LearningHive
+
+    // Each specialist's learnings are aggregated
+    // and shared with all others
+    for code_review in incoming_reviews() {
+        let analysis = ask(hive, Route(code_review))
+        let feedback = get_user_feedback(analysis)
+
+        // Learning propagates across all specialists
+        hive.learning.submit_feedback(feedback);
+    }
+}
+```
+
+### Safe Learning with Fallbacks
+
+Ensure learning doesn't break your specialists:
+
+```simplex
+use simplex_learning::safety::{SafeLearner, SafeFallback, ConstraintManager};
+
+specialist SafeClassifier {
+    model: "classifier-3b",
+    learner: SafeLearner,
+
+    fn init() {
+        let constraints = ConstraintManager::new()
+            .add_hard(NoLossExplosion("loss", 100.0));
+
+        self.learner = SafeLearner::new(
+            OnlineLearner::new(self.params()),
+            SafeFallback::last_good()  // Return last successful output if learning fails
+        )
+        .with_constraints(constraints)
+        .max_failures(3);
+    }
+
+    receive Classify(text: String) -> Classification {
+        match self.learner.try_forward(&text) {
+            Ok(result) => result,
+            Err(_) => Classification::Unknown  // Safe fallback
+        }
+    }
+}
+```
+
+---
+
 ## Summary
 
 | Concept | Purpose |
@@ -637,6 +757,9 @@ fn main() {
 | `parallel` | Run specialists concurrently |
 | `hive.memory` | Shared vector store |
 | `hive.context` | Shared conversation buffer |
+| `OnlineLearner` | Real-time learning during inference (v0.7.0) |
+| `HiveLearningCoordinator` | Federated learning across hive (v0.7.0) |
+| `SafeLearner` | Learning with safety constraints (v0.7.0) |
 
 ---
 
@@ -648,8 +771,10 @@ fn main() {
 
 3. **Research Assistant**: Create a hive that can research a topic, verify facts, and produce a well-cited report.
 
+4. **Adaptive Hive**: Build a learning-enabled hive that improves its responses based on user feedback. Use `SafeLearner` to ensure stability.
+
 ---
 
-*Previous: [Chapter 11: Capstone Project](11-capstone.md)*
+*Previous: [Chapter 11: Capstone Project](11-capstone.md)* | *Next: [Chapter 13: Neural Gates](13-neural-gates.md)*
 
-*See also: [Cognitive Hive AI Specification](../spec/09-cognitive-hive.md)*
+*See also: [Cognitive Hive AI Specification](../spec/09-cognitive-hive.md) | [Real-Time Learning](../spec/15-real-time-learning.md)*
