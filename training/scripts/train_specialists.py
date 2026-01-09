@@ -625,10 +625,10 @@ def train_specialist(
     """Train a specialist LoRA adapter."""
     try:
         import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments
+        from transformers import AutoModelForCausalLM, AutoTokenizer
         from peft import LoraConfig, get_peft_model
         from datasets import load_dataset
-        from trl import SFTTrainer
+        from trl import SFTTrainer, SFTConfig
     except ImportError as e:
         print(f"Training requires PyTorch and transformers: {e}")
         print("Run with --generate-only to only generate data")
@@ -679,7 +679,7 @@ def train_specialist(
         max_steps = -1
         batch_size = 4 if torch.cuda.is_available() else 1
 
-    training_args = TrainingArguments(
+    training_config = SFTConfig(
         output_dir=output_dir,
         num_train_epochs=3,
         max_steps=max_steps,
@@ -692,15 +692,14 @@ def train_specialist(
         bf16=torch.cuda.is_available(),
         optim="adamw_torch",
         report_to="none",
+        max_length=2048,
     )
 
     trainer = SFTTrainer(
         model=model,
-        args=training_args,
+        args=training_config,
         train_dataset=dataset,
-        tokenizer=tokenizer,
-        dataset_text_field="text",
-        max_seq_length=2048,
+        processing_class=tokenizer,
     )
 
     print("\nStarting training...")

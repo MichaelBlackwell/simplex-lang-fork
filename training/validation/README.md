@@ -20,7 +20,7 @@ This pipeline validates with 3 diverse pilots:
 
 ```bash
 # Install dependencies
-cd /Users/rod/code/simplex-lang/training
+cd ~/code/simplex-lang/training
 pip install -r requirements.txt
 pip install datasets sqlparse
 
