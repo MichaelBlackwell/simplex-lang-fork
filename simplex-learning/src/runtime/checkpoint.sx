@@ -1,0 +1,523 @@
+// Checkpoint management for continuous learning
+//
+// Provides saving, loading, and management of model checkpoints
+// for recovery, rollback, and best model selection.
+
+use crate::tensor::Tensor;
+
+/// Checkpoint configuration
+pub struct CheckpointConfig {
+    /// Directory for checkpoints
+    pub directory: String,
+
+    /// Maximum checkpoints to keep
+    pub max_checkpoints: usize,
+
+    /// Keep best N checkpoints by metric
+    pub keep_best: usize,
+
+    /// Checkpoint frequency (steps)
+    pub frequency: u64,
+
+    /// Whether to save optimizer state
+    pub save_optimizer: bool,
+
+    /// Compression enabled
+    pub compress: bool,
+}
+
+impl Default for CheckpointConfig {
+    fn default() -> Self {
+        CheckpointConfig {
+            directory: "checkpoints".to_string(),
+            max_checkpoints: 10,
+            keep_best: 3,
+            frequency: 1000,
+            save_optimizer: true,
+            compress: false,
+        }
+    }
+}
+
+/// Checkpoint manager
+pub struct CheckpointManager {
+    /// Configuration
+    config: CheckpointConfig,
+
+    /// Checkpoint metadata
+    checkpoints: Vec<CheckpointMetadata>,
+
+    /// Last checkpoint step
+    last_checkpoint: u64,
+
+    /// Best metric value seen
+    best_metric: f64,
+
+    /// Best checkpoint step
+    best_step: u64,
+}
+
+/// Metadata for a checkpoint
+#[derive(Clone)]
+pub struct CheckpointMetadata {
+    /// Step number
+    pub step: u64,
+
+    /// Metric value (e.g., loss)
+    pub metric: f64,
+
+    /// File path
+    pub path: String,
+
+    /// Timestamp
+    pub timestamp: u64,
+
+    /// Additional metadata
+    pub extra: std::collections::HashMap<String, String>,
+}
+
+impl CheckpointManager {
+    /// Create new checkpoint manager
+    pub fn new(frequency: u64) -> Self {
+        CheckpointManager {
+            config: CheckpointConfig {
+                frequency,
+                ..Default::default()
+            },
+            checkpoints: Vec::new(),
+            last_checkpoint: 0,
+            best_metric: f64::INFINITY,
+            best_step: 0,
+        }
+    }
+
+    /// Create with full configuration
+    pub fn with_config(config: CheckpointConfig) -> Self {
+        CheckpointManager {
+            config,
+            checkpoints: Vec::new(),
+            last_checkpoint: 0,
+            best_metric: f64::INFINITY,
+            best_step: 0,
+        }
+    }
+
+    /// Check if checkpoint is due
+    pub fn should_checkpoint(&self, step: u64) -> bool {
+        step - self.last_checkpoint >= self.config.frequency
+    }
+
+    /// Save checkpoint
+    pub fn save(&mut self, params: &[Tensor], step: u64, metric: f64) -> String {
+        let path = format!("{}/checkpoint_{}.bin", self.config.directory, step);
+
+        // Serialize parameters (simplified - in production would use proper serialization)
+        let data = self.serialize_params(params);
+
+        // Save to disk (simulated)
+        // In production: std::fs::write(&path, &data)?;
+
+        // Update best metric
+        if metric < self.best_metric {
+            self.best_metric = metric;
+            self.best_step = step;
+        }
+
+        // Record metadata
+        let metadata = CheckpointMetadata {
+            step,
+            metric,
+            path: path.clone(),
+            timestamp: current_timestamp(),
+            extra: std::collections::HashMap::new(),
+        };
+
+        self.checkpoints.push(metadata);
+        self.last_checkpoint = step;
+
+        // Cleanup old checkpoints
+        self.cleanup();
+
+        path
+    }
+
+    /// Load checkpoint
+    pub fn load(&self, step: u64) -> Option<Vec<Tensor>> {
+        let metadata = self.checkpoints.iter().find(|c| c.step == step)?;
+
+        // In production: load from file
+        // let data = std::fs::read(&metadata.path)?;
+        // self.deserialize_params(&data)
+
+        // For now, return None (placeholder)
+        None
+    }
+
+    /// Load best checkpoint
+    pub fn load_best(&self) -> Option<Vec<Tensor>> {
+        self.load(self.best_step)
+    }
+
+    /// Get checkpoint metadata
+    pub fn get_metadata(&self, step: u64) -> Option<&CheckpointMetadata> {
+        self.checkpoints.iter().find(|c| c.step == step)
+    }
+
+    /// Get all checkpoint metadata
+    pub fn all_checkpoints(&self) -> &[CheckpointMetadata] {
+        &self.checkpoints
+    }
+
+    /// Get best checkpoint step
+    pub fn best_step(&self) -> u64 {
+        self.best_step
+    }
+
+    /// Get best metric
+    pub fn best_metric(&self) -> f64 {
+        self.best_metric
+    }
+
+    /// Cleanup old checkpoints
+    fn cleanup(&mut self) {
+        // Keep best checkpoints
+        let mut sorted: Vec<_> = self.checkpoints.iter().cloned().collect();
+        sorted.sort_by(|a, b| a.metric.partial_cmp(&b.metric).unwrap());
+
+        let best_steps: Vec<u64> = sorted.iter()
+            .take(self.config.keep_best)
+            .map(|c| c.step)
+            .collect();
+
+        // Keep recent checkpoints
+        let recent: Vec<u64> = self.checkpoints.iter()
+            .rev()
+            .take(self.config.max_checkpoints - self.config.keep_best)
+            .map(|c| c.step)
+            .collect();
+
+        // Combine keeps
+        let keep: Vec<u64> = best_steps.iter()
+            .chain(recent.iter())
+            .cloned()
+            .collect();
+
+        // Remove old checkpoints
+        self.checkpoints.retain(|c| keep.contains(&c.step));
+
+        // Delete files for removed checkpoints (in production)
+        // for c in removed { std::fs::remove_file(&c.path)?; }
+    }
+
+    /// Serialize parameters
+    fn serialize_params(&self, params: &[Tensor]) -> Vec<u8> {
+        let mut data = Vec::new();
+
+        // Write number of tensors
+        let n = params.len() as u32;
+        data.extend_from_slice(&n.to_le_bytes());
+
+        // Write each tensor
+        for param in params {
+            // Write shape
+            let ndim = param.shape().len() as u32;
+            data.extend_from_slice(&ndim.to_le_bytes());
+
+            for &dim in param.shape() {
+                let d = dim as u32;
+                data.extend_from_slice(&d.to_le_bytes());
+            }
+
+            // Write data
+            let numel = param.numel() as u32;
+            data.extend_from_slice(&numel.to_le_bytes());
+
+            for i in 0..param.numel() {
+                let v = param.get(i);
+                data.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+
+        if self.config.compress {
+            // In production: compress data
+            data
+        } else {
+            data
+        }
+    }
+
+    /// Deserialize parameters
+    fn deserialize_params(&self, data: &[u8]) -> Option<Vec<Tensor>> {
+        let mut offset = 0;
+
+        // Read number of tensors
+        if data.len() < 4 {
+            return None;
+        }
+        let n = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+        offset += 4;
+
+        let mut params = Vec::with_capacity(n);
+
+        for _ in 0..n {
+            // Read shape
+            if offset + 4 > data.len() {
+                return None;
+            }
+            let ndim = u32::from_le_bytes([
+                data[offset], data[offset + 1], data[offset + 2], data[offset + 3]
+            ]) as usize;
+            offset += 4;
+
+            let mut shape = Vec::with_capacity(ndim);
+            for _ in 0..ndim {
+                if offset + 4 > data.len() {
+                    return None;
+                }
+                let dim = u32::from_le_bytes([
+                    data[offset], data[offset + 1], data[offset + 2], data[offset + 3]
+                ]) as usize;
+                offset += 4;
+                shape.push(dim);
+            }
+
+            // Read data
+            if offset + 4 > data.len() {
+                return None;
+            }
+            let numel = u32::from_le_bytes([
+                data[offset], data[offset + 1], data[offset + 2], data[offset + 3]
+            ]) as usize;
+            offset += 4;
+
+            let mut tensor = Tensor::zeros(&shape);
+            for i in 0..numel {
+                if offset + 8 > data.len() {
+                    return None;
+                }
+                let v = f64::from_le_bytes([
+                    data[offset], data[offset + 1], data[offset + 2], data[offset + 3],
+                    data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7]
+                ]);
+                offset += 8;
+                tensor.set(i, v);
+            }
+
+            params.push(tensor);
+        }
+
+        Some(params)
+    }
+}
+
+/// Checkpoint versioning for incremental saves
+pub struct IncrementalCheckpoint {
+    /// Base checkpoint
+    base: Option<CheckpointMetadata>,
+
+    /// Parameter diffs since base
+    diffs: Vec<ParameterDiff>,
+
+    /// Diff threshold (only store if change exceeds this)
+    threshold: f64,
+}
+
+/// Difference in a parameter
+struct ParameterDiff {
+    /// Parameter index
+    param_idx: usize,
+
+    /// Changed indices
+    indices: Vec<usize>,
+
+    /// New values
+    values: Vec<f64>,
+}
+
+impl IncrementalCheckpoint {
+    /// Create new incremental checkpoint
+    pub fn new(threshold: f64) -> Self {
+        IncrementalCheckpoint {
+            base: None,
+            diffs: Vec::new(),
+            threshold,
+        }
+    }
+
+    /// Set base checkpoint
+    pub fn set_base(&mut self, metadata: CheckpointMetadata) {
+        self.base = Some(metadata);
+        self.diffs.clear();
+    }
+
+    /// Compute diff from base
+    pub fn compute_diff(&mut self, current: &[Tensor], base: &[Tensor]) {
+        self.diffs.clear();
+
+        for (i, (cur, bas)) in current.iter().zip(base.iter()).enumerate() {
+            let mut indices = Vec::new();
+            let mut values = Vec::new();
+
+            for j in 0..cur.numel() {
+                let diff = (cur.get(j) - bas.get(j)).abs();
+                if diff > self.threshold {
+                    indices.push(j);
+                    values.push(cur.get(j));
+                }
+            }
+
+            if !indices.is_empty() {
+                self.diffs.push(ParameterDiff {
+                    param_idx: i,
+                    indices,
+                    values,
+                });
+            }
+        }
+    }
+
+    /// Apply diff to base
+    pub fn apply_diff(&self, base: &mut [Tensor]) {
+        for diff in &self.diffs {
+            if diff.param_idx < base.len() {
+                for (idx, val) in diff.indices.iter().zip(diff.values.iter()) {
+                    if *idx < base[diff.param_idx].numel() {
+                        base[diff.param_idx].set(*idx, *val);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Get diff count
+    pub fn diff_count(&self) -> usize {
+        self.diffs.iter().map(|d| d.indices.len()).sum()
+    }
+
+    /// Get compression ratio
+    pub fn compression_ratio(&self, total_params: usize) -> f64 {
+        let diff_count = self.diff_count();
+        if total_params == 0 {
+            1.0
+        } else {
+            diff_count as f64 / total_params as f64
+        }
+    }
+}
+
+/// Automatic checkpoint selection based on metrics
+pub struct AutoCheckpointer {
+    /// Checkpoint manager
+    manager: CheckpointManager,
+
+    /// Metric history for selection
+    metric_history: Vec<(u64, f64)>,
+
+    /// Patience for early stopping
+    patience: usize,
+
+    /// Steps without improvement
+    no_improvement: usize,
+
+    /// Minimum improvement to count
+    min_delta: f64,
+}
+
+impl AutoCheckpointer {
+    /// Create new auto checkpointer
+    pub fn new(config: CheckpointConfig) -> Self {
+        AutoCheckpointer {
+            manager: CheckpointManager::with_config(config),
+            metric_history: Vec::new(),
+            patience: 10,
+            no_improvement: 0,
+            min_delta: 1e-4,
+        }
+    }
+
+    /// Set patience
+    pub fn patience(mut self, patience: usize) -> Self {
+        self.patience = patience;
+        self
+    }
+
+    /// Set minimum improvement delta
+    pub fn min_delta(mut self, delta: f64) -> Self {
+        self.min_delta = delta;
+        self
+    }
+
+    /// Update with new metric
+    pub fn update(&mut self, params: &[Tensor], step: u64, metric: f64) -> AutoCheckpointResult {
+        self.metric_history.push((step, metric));
+
+        // Check for improvement
+        let improved = metric < self.manager.best_metric - self.min_delta;
+
+        if improved {
+            self.no_improvement = 0;
+        } else {
+            self.no_improvement += 1;
+        }
+
+        // Save if improved or scheduled
+        let should_save = improved || self.manager.should_checkpoint(step);
+
+        if should_save {
+            let path = self.manager.save(params, step, metric);
+            return AutoCheckpointResult::Saved {
+                path,
+                improved,
+                early_stop: false,
+            };
+        }
+
+        // Check early stopping
+        if self.no_improvement >= self.patience {
+            return AutoCheckpointResult::EarlyStop {
+                best_step: self.manager.best_step,
+                best_metric: self.manager.best_metric,
+            };
+        }
+
+        AutoCheckpointResult::NoAction
+    }
+
+    /// Get underlying manager
+    pub fn manager(&self) -> &CheckpointManager {
+        &self.manager
+    }
+
+    /// Get mutable manager
+    pub fn manager_mut(&mut self) -> &mut CheckpointManager {
+        &mut self.manager
+    }
+}
+
+/// Result of auto checkpoint update
+pub enum AutoCheckpointResult {
+    /// No action taken
+    NoAction,
+
+    /// Checkpoint saved
+    Saved {
+        path: String,
+        improved: bool,
+        early_stop: bool,
+    },
+
+    /// Early stopping triggered
+    EarlyStop {
+        best_step: u64,
+        best_metric: f64,
+    },
+}
+
+// Helper function
+fn current_timestamp() -> u64 {
+    // In production: std::time::SystemTime::now()
+    //     .duration_since(std::time::UNIX_EPOCH)
+    //     .unwrap()
+    //     .as_secs()
+    0
+}

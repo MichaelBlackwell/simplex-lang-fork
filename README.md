@@ -1,6 +1,6 @@
 # Simplex Programming Language
 
-**Version 0.5.1**
+**Version 0.7.0**
 
 Simplex is a modern systems programming language designed for AI-native applications, featuring first-class support for actors, cognitive agents, and distributed computing.
 
@@ -10,6 +10,8 @@ Simplex is a modern systems programming language designed for AI-native applicat
 - **Cognitive Agents**: First-class AI specialist agents with inference capabilities
 - **Per-Hive SLM**: Each cognitive hive provisions its own shared language model
 - **HiveMnemonic**: Shared consciousness across specialists within a hive
+- **Neural IR**: Differentiable program execution with learnable control flow (v0.6.0)
+- **Real-Time Learning**: Online training during inference without retraining (v0.7.0)
 - **Self-Hosted**: Compiler written in Simplex itself (bootstrapped from Python)
 - **LLVM Backend**: Compiles to optimized native code via LLVM IR
 - **Rust-Inspired Syntax**: Familiar syntax with enums, traits, and pattern matching
@@ -268,13 +270,55 @@ simplex-lang/
 
 | Tool | Version | Description |
 |------|---------|-------------|
-| **sxc** | 0.5.1 | Simplex Compiler |
-| **sxpm** | 0.5.1 | Package Manager with SLM provisioning |
-| **cursus** | 0.5.1 | Bytecode Virtual Machine |
-| **sxdoc** | 0.5.1 | Documentation Generator |
-| **sxlsp** | 0.5.1 | Language Server Protocol |
+| **sxc** | 0.7.0 | Simplex Compiler with Neural IR |
+| **sxpm** | 0.7.0 | Package Manager with SLM provisioning |
+| **cursus** | 0.7.0 | Bytecode Virtual Machine |
+| **sxdoc** | 0.7.0 | Documentation Generator |
+| **sxlsp** | 0.7.0 | Language Server Protocol |
 
 ## Release History
+
+### v0.7.0 (2026-01-09) - Real-Time Continuous Learning
+
+**simplex-learning Library (TASK-004):**
+- Complete real-time continuous learning framework for AI specialists
+- Online training during inference without batch retraining
+- Streaming optimizers (SGD, Adam, AdamW) with gradient accumulation
+- Automatic gradient clipping (by norm and value)
+- Safety constraints with fallback strategies
+- Federated learning with 6 aggregation strategies (FedAvg, Median, TrimmedMean, etc.)
+- Knowledge distillation (teacher-student, self-distillation, progressive)
+- Belief conflict resolution across distributed hives
+- Experience replay and memory management
+- Checkpoint/restore for fault tolerance
+
+**New Modules:**
+- `simplex-learning/tensor` - Tensor operations with autograd
+- `simplex-learning/optim` - Streaming optimizers and schedulers
+- `simplex-learning/safety` - Constraints, bounds, and fallbacks
+- `simplex-learning/distributed` - Federated learning and hive coordination
+- `simplex-learning/runtime` - Online learner and metrics
+
+See [RELEASE-0.7.0.md](simplex-docs/RELEASE-0.7.0.md) for details.
+
+### v0.6.0 (2026-01-08) - Neural IR and Differentiable Execution
+
+**Neural IR Backend (TASK-001/002):**
+- Neural Gates with Gumbel-Softmax for differentiable control flow
+- Dual compilation modes: training (differentiable) and inference (discrete)
+- Contract logic for probabilistic verification (`requires`, `ensures`, `fallback`)
+- Hardware-aware compilation with CPU/GPU/NPU targeting
+- Structural pruning for optimized inference binaries
+- Superposition memory model with weighted references
+- Temperature annealing during training
+
+**Key Features:**
+- `neural_gate` keyword for learnable conditionals
+- Automatic differentiation through program logic
+- Graph partitioning for heterogeneous hardware
+- Dead path elimination in trained models
+
+See [RELEASE-0.6.0.md](simplex-docs/RELEASE-0.6.0.md) for details.
 
 ### v0.5.1 (2026-01-07) - Type Aliases & License Change
 
@@ -443,7 +487,9 @@ sxc run tests/language/basics/test_loops.sx
 - [Tutorial](simplex-docs/tutorial/)
 - [Testing Documentation](simplex-docs/testing/)
 - [Getting Started Guide](simplex-docs/guides/getting-started.md)
-- [Release Notes](simplex-docs/RELEASE-0.5.0.md)
+- [Release Notes v0.7.0](simplex-docs/RELEASE-0.7.0.md)
+- [Release Notes v0.6.0](simplex-docs/RELEASE-0.6.0.md)
+- [Release Notes v0.5.0](simplex-docs/RELEASE-0.5.0.md)
 
 ## Contributing
 

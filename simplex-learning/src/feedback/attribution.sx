@@ -1,0 +1,992 @@
+// Credit assignment for feedback attribution
+//
+// Determines how feedback signals are attributed to neural gates
+// when there are delays or multiple gates involved.
+//
+// Implements:
+// - Temporal credit assignment with eligibility traces
+// - TD(λ) for multi-step bootstrapping
+// - Generalized Advantage Estimation (GAE)
+// - Action-value (Q) estimation
+// - Counterfactual reasoning
+
+use crate::tensor::{Tensor, Shape};
+use std::collections::HashMap;
+
+/// Credit assignment strategy
+#[derive(Clone)]
+pub enum CreditAssignment {
+    /// Uniform credit to all gates
+    Uniform,
+
+    /// Temporal credit with discount
+    Temporal { discount: f64 },
+
+    /// TD(λ) with eligibility traces
+    TDLambda { discount: f64, lambda: f64 },
+
+    /// Generalized Advantage Estimation
+    GAE { discount: f64, lambda: f64 },
+
+    /// Attention-based credit
+    Attention,
+
+    /// Gradient-based credit (requires backward pass)
+    Gradient,
+
+    /// Counterfactual credit (compares with baseline)
+    Counterfactual { baseline: BaselineType },
+}
+
+impl Default for CreditAssignment {
+    fn default() -> Self {
+        CreditAssignment::TDLambda { discount: 0.99, lambda: 0.95 }
+    }
+}
+
+/// Baseline types for counterfactual credit
+#[derive(Clone)]
+pub enum BaselineType {
+    /// Running average baseline
+    RunningAverage { rate: f64 },
+    /// Value function baseline
+    ValueFunction,
+    /// Leave-one-out baseline
+    LeaveOneOut,
+}
+
+/// Attribution result for a gate
+#[derive(Clone, Debug)]
+pub struct Attribution {
+    /// Gate identifier
+    pub gate_id: String,
+
+    /// Credit assigned (can be negative)
+    pub credit: f64,
+
+    /// Confidence in attribution
+    pub confidence: f64,
+
+    /// Step when action was taken
+    pub step: u64,
+}
+
+/// Record of a gate activation
+#[derive(Clone)]
+pub struct GateTrace {
+    pub gate_id: String,
+    pub step: u64,
+    pub activation: f64,
+    pub value_estimate: f64,
+    pub log_prob: Option<f64>,
+}
+
+/// Temporal credit assignment with eligibility traces
+pub struct TemporalCredit {
+    /// Discount factor per step (gamma)
+    discount: f64,
+
+    /// Lambda for eligibility trace decay
+    lambda: f64,
+
+    /// Trace of gate activations
+    traces: Vec<GateTrace>,
+
+    /// Eligibility traces per gate
+    eligibility: HashMap<String, f64>,
+
+    /// Value estimates per gate
+    values: HashMap<String, f64>,
+
+    /// Running baseline
+    baseline: f64,
+
+    /// Baseline update rate
+    baseline_rate: f64,
+
+    /// Maximum trace length
+    max_trace_length: usize,
+}
+
+impl TemporalCredit {
+    /// Create new temporal credit assigner
+    pub fn new(discount: f64) -> Self {
+        TemporalCredit {
+            discount,
+            lambda: 0.95,
+            traces: Vec::new(),
+            eligibility: HashMap::new(),
+            values: HashMap::new(),
+            baseline: 0.0,
+            baseline_rate: 0.01,
+            max_trace_length: 10000,
+        }
+    }
+
+    /// Create with TD(λ) parameters
+    pub fn with_lambda(discount: f64, lambda: f64) -> Self {
+        TemporalCredit {
+            discount,
+            lambda,
+            traces: Vec::new(),
+            eligibility: HashMap::new(),
+            values: HashMap::new(),
+            baseline: 0.0,
+            baseline_rate: 0.01,
+            max_trace_length: 10000,
+        }
+    }
+
+    /// Record a gate activation
+    pub fn record_activation(&mut self, gate_id: &str, step: u64, activation: f64) {
+        self.record_activation_with_value(gate_id, step, activation, 0.0, None);
+    }
+
+    /// Record activation with value estimate and log probability
+    pub fn record_activation_with_value(
+        &mut self,
+        gate_id: &str,
+        step: u64,
+        activation: f64,
+        value_estimate: f64,
+        log_prob: Option<f64>,
+    ) {
+        self.traces.push(GateTrace {
+            gate_id: gate_id.to_string(),
+            step,
+            activation,
+            value_estimate,
+            log_prob,
+        });
+
+        // Update eligibility trace: e(s,a) = γλe(s,a) + ∇
+        let entry = self.eligibility.entry(gate_id.to_string()).or_insert(0.0);
+        *entry = *entry * self.discount * self.lambda + activation.abs();
+
+        // Store value estimate
+        self.values.insert(gate_id.to_string(), value_estimate);
+
+        // Prune old traces
+        if self.traces.len() > self.max_trace_length {
+            let cutoff = step.saturating_sub(self.max_trace_length as u64);
+            self.traces.retain(|t| t.step >= cutoff);
+        }
+    }
+
+    /// Assign credit using TD(λ) style updates
+    pub fn assign_credit(&self, reward_step: u64, reward: f64) -> Vec<Attribution> {
+        self.assign_credit_td_lambda(reward_step, reward, None)
+    }
+
+    /// Assign credit with TD(λ) and optional next value estimate
+    pub fn assign_credit_td_lambda(
+        &self,
+        reward_step: u64,
+        reward: f64,
+        next_value: Option<f64>,
+    ) -> Vec<Attribution> {
+        let mut attributions = Vec::new();
+
+        // TD target: r + γV(s')
+        let td_target = reward + self.discount * next_value.unwrap_or(0.0);
+
+        // Credit per gate using eligibility traces
+        for (gate_id, &eligibility) in &self.eligibility {
+            if eligibility > 1e-8 {
+                let value = self.values.get(gate_id).copied().unwrap_or(0.0);
+                let td_error = td_target - value;
+
+                // Credit = eligibility * TD_error
+                let credit = eligibility * td_error;
+
+                attributions.push(Attribution {
+                    gate_id: gate_id.clone(),
+                    credit,
+                    confidence: eligibility.min(1.0),
+                    step: reward_step,
+                });
+            }
+        }
+
+        attributions
+    }
+
+    /// Compute n-step returns for a trajectory
+    pub fn compute_n_step_returns(&self, rewards: &[f64], values: &[f64], n: usize) -> Vec<f64> {
+        let t_max = rewards.len();
+        let mut returns = vec![0.0; t_max];
+
+        for t in 0..t_max {
+            let mut g = 0.0;
+            let mut gamma_power = 1.0;
+
+            // Sum discounted rewards for n steps
+            for i in 0..n {
+                if t + i >= t_max {
+                    break;
+                }
+                g += gamma_power * rewards[t + i];
+                gamma_power *= self.discount;
+            }
+
+            // Bootstrap with value estimate if not at end
+            if t + n < t_max {
+                g += gamma_power * values[t + n];
+            }
+
+            returns[t] = g;
+        }
+
+        returns
+    }
+
+    /// Compute λ-returns (weighted average of n-step returns)
+    pub fn compute_lambda_returns(&self, rewards: &[f64], values: &[f64]) -> Vec<f64> {
+        let t_max = rewards.len();
+        if t_max == 0 {
+            return Vec::new();
+        }
+
+        let mut lambda_returns = vec![0.0; t_max];
+
+        // Compute backwards for efficiency
+        let mut g = values.last().copied().unwrap_or(0.0);
+
+        for t in (0..t_max).rev() {
+            let v_next = if t + 1 < t_max { values[t + 1] } else { 0.0 };
+            let td_target = rewards[t] + self.discount * v_next;
+
+            // λ-return: G_t^λ = (1-λ) * Σ λ^(n-1) G_t^n
+            // Recursive form: G_t^λ = r_t + γ * ((1-λ)V(s_{t+1}) + λG_{t+1}^λ)
+            g = rewards[t] + self.discount * ((1.0 - self.lambda) * v_next + self.lambda * g);
+            lambda_returns[t] = g;
+        }
+
+        lambda_returns
+    }
+
+    /// Get eligibility trace for a gate
+    pub fn eligibility(&self, gate_id: &str) -> f64 {
+        *self.eligibility.get(gate_id).copied().unwrap_or(&0.0)
+    }
+
+    /// Decay all eligibility traces
+    pub fn decay_eligibility(&mut self) {
+        for value in self.eligibility.values_mut() {
+            *value *= self.discount * self.lambda;
+        }
+    }
+
+    /// Update baseline with new reward
+    pub fn update_baseline(&mut self, reward: f64) {
+        self.baseline = self.baseline * (1.0 - self.baseline_rate) + reward * self.baseline_rate;
+    }
+
+    /// Get current baseline
+    pub fn baseline(&self) -> f64 {
+        self.baseline
+    }
+
+    /// Clear all traces
+    pub fn clear(&mut self) {
+        self.traces.clear();
+        self.eligibility.clear();
+        self.values.clear();
+    }
+
+    /// Get discount factor
+    pub fn discount(&self) -> f64 {
+        self.discount
+    }
+
+    /// Get lambda
+    pub fn lambda(&self) -> f64 {
+        self.lambda
+    }
+}
+
+/// Generalized Advantage Estimation (GAE)
+///
+/// Computes advantages using a weighted average of TD errors.
+/// GAE(γ,λ) balances bias and variance in advantage estimation.
+pub struct GAE {
+    /// Discount factor
+    gamma: f64,
+
+    /// GAE lambda parameter
+    lambda: f64,
+
+    /// Stored transitions
+    transitions: Vec<Transition>,
+
+    /// Value function (optional, can be external)
+    value_estimates: Vec<f64>,
+}
+
+/// A single transition for GAE
+#[derive(Clone)]
+pub struct Transition {
+    pub step: u64,
+    pub gate_id: String,
+    pub reward: f64,
+    pub value: f64,
+    pub next_value: f64,
+    pub done: bool,
+}
+
+impl GAE {
+    /// Create new GAE calculator
+    pub fn new(gamma: f64, lambda: f64) -> Self {
+        GAE {
+            gamma,
+            lambda,
+            transitions: Vec::new(),
+            value_estimates: Vec::new(),
+        }
+    }
+
+    /// Add a transition
+    pub fn add_transition(&mut self, transition: Transition) {
+        self.transitions.push(transition);
+    }
+
+    /// Record value estimate
+    pub fn record_value(&mut self, value: f64) {
+        self.value_estimates.push(value);
+    }
+
+    /// Compute GAE advantages for all stored transitions
+    pub fn compute_advantages(&self) -> Vec<(String, f64, f64)> {
+        if self.transitions.is_empty() {
+            return Vec::new();
+        }
+
+        let n = self.transitions.len();
+        let mut advantages = vec![0.0; n];
+        let mut gae = 0.0;
+
+        // Compute backwards
+        for t in (0..n).rev() {
+            let trans = &self.transitions[t];
+
+            // TD error: δ_t = r_t + γV(s_{t+1}) - V(s_t)
+            let next_value = if trans.done { 0.0 } else { trans.next_value };
+            let delta = trans.reward + self.gamma * next_value - trans.value;
+
+            // GAE: A_t = δ_t + γλA_{t+1}
+            gae = delta + self.gamma * self.lambda * (if trans.done { 0.0 } else { gae });
+            advantages[t] = gae;
+        }
+
+        // Return (gate_id, advantage, return)
+        self.transitions.iter().zip(advantages.iter())
+            .map(|(t, &adv)| {
+                let ret = adv + t.value; // Return = advantage + value
+                (t.gate_id.clone(), adv, ret)
+            })
+            .collect()
+    }
+
+    /// Clear stored transitions
+    pub fn clear(&mut self) {
+        self.transitions.clear();
+        self.value_estimates.clear();
+    }
+
+    /// Get number of stored transitions
+    pub fn len(&self) -> usize {
+        self.transitions.len()
+    }
+
+    /// Check if empty
+    pub fn is_empty(&self) -> bool {
+        self.transitions.is_empty()
+    }
+}
+
+/// Action-Value (Q-value) Estimation
+///
+/// Estimates Q(s, a) - the expected return from taking action a in state s.
+pub struct ActionValueEstimator {
+    /// Q-table for discrete actions (gate_id -> action -> q_value)
+    q_table: HashMap<String, HashMap<String, f64>>,
+
+    /// Learning rate
+    alpha: f64,
+
+    /// Discount factor
+    gamma: f64,
+
+    /// Exploration rate
+    epsilon: f64,
+
+    /// Running statistics for each gate
+    stats: HashMap<String, ActionStats>,
+}
+
+/// Statistics for action selection
+struct ActionStats {
+    count: u64,
+    mean: f64,
+    m2: f64, // For Welford's online variance
+}
+
+impl ActionStats {
+    fn new() -> Self {
+        ActionStats {
+            count: 0,
+            mean: 0.0,
+            m2: 0.0,
+        }
+    }
+
+    fn update(&mut self, value: f64) {
+        self.count += 1;
+        let delta = value - self.mean;
+        self.mean += delta / self.count as f64;
+        let delta2 = value - self.mean;
+        self.m2 += delta * delta2;
+    }
+
+    fn variance(&self) -> f64 {
+        if self.count < 2 {
+            0.0
+        } else {
+            self.m2 / (self.count - 1) as f64
+        }
+    }
+
+    fn std(&self) -> f64 {
+        self.variance().sqrt()
+    }
+}
+
+impl ActionValueEstimator {
+    /// Create new Q-value estimator
+    pub fn new(alpha: f64, gamma: f64, epsilon: f64) -> Self {
+        ActionValueEstimator {
+            q_table: HashMap::new(),
+            alpha,
+            gamma,
+            epsilon,
+            stats: HashMap::new(),
+        }
+    }
+
+    /// Get Q-value for gate and action
+    pub fn get_q(&self, gate_id: &str, action: &str) -> f64 {
+        self.q_table
+            .get(gate_id)
+            .and_then(|actions| actions.get(action))
+            .copied()
+            .unwrap_or(0.0)
+    }
+
+    /// Get all Q-values for a gate
+    pub fn get_q_values(&self, gate_id: &str) -> HashMap<String, f64> {
+        self.q_table
+            .get(gate_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Update Q-value using TD update
+    pub fn update_q(
+        &mut self,
+        gate_id: &str,
+        action: &str,
+        reward: f64,
+        next_gate_id: Option<&str>,
+        next_action: Option<&str>,
+    ) {
+        let current_q = self.get_q(gate_id, action);
+
+        // Get next Q-value (SARSA style if next_action provided, Q-learning otherwise)
+        let next_q = match (next_gate_id, next_action) {
+            (Some(ng), Some(na)) => self.get_q(ng, na), // SARSA
+            (Some(ng), None) => self.max_q(ng),         // Q-learning
+            _ => 0.0,
+        };
+
+        // TD update: Q(s,a) += α[r + γQ(s',a') - Q(s,a)]
+        let td_error = reward + self.gamma * next_q - current_q;
+        let new_q = current_q + self.alpha * td_error;
+
+        // Store updated Q-value
+        self.q_table
+            .entry(gate_id.to_string())
+            .or_insert_with(HashMap::new)
+            .insert(action.to_string(), new_q);
+
+        // Update stats
+        self.stats
+            .entry(gate_id.to_string())
+            .or_insert_with(ActionStats::new)
+            .update(new_q);
+    }
+
+    /// Get maximum Q-value for a gate (across all actions)
+    pub fn max_q(&self, gate_id: &str) -> f64 {
+        self.q_table
+            .get(gate_id)
+            .map(|actions| {
+                actions.values().cloned().fold(f64::NEG_INFINITY, f64::max)
+            })
+            .unwrap_or(0.0)
+    }
+
+    /// Get best action for a gate (greedy)
+    pub fn best_action(&self, gate_id: &str) -> Option<String> {
+        self.q_table.get(gate_id).and_then(|actions| {
+            actions
+                .iter()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(action, _)| action.clone())
+        })
+    }
+
+    /// Compute advantage A(s,a) = Q(s,a) - V(s)
+    pub fn advantage(&self, gate_id: &str, action: &str) -> f64 {
+        let q = self.get_q(gate_id, action);
+        let v = self.state_value(gate_id);
+        q - v
+    }
+
+    /// Estimate state value V(s) as average of Q-values
+    pub fn state_value(&self, gate_id: &str) -> f64 {
+        self.q_table.get(gate_id).map(|actions| {
+            if actions.is_empty() {
+                0.0
+            } else {
+                actions.values().sum::<f64>() / actions.len() as f64
+            }
+        }).unwrap_or(0.0)
+    }
+
+    /// Get statistics for a gate
+    pub fn get_stats(&self, gate_id: &str) -> Option<(f64, f64)> {
+        self.stats.get(gate_id).map(|s| (s.mean, s.std()))
+    }
+
+    /// Set learning rate
+    pub fn set_alpha(&mut self, alpha: f64) {
+        self.alpha = alpha;
+    }
+
+    /// Set exploration rate
+    pub fn set_epsilon(&mut self, epsilon: f64) {
+        self.epsilon = epsilon;
+    }
+
+    /// Clear all Q-values
+    pub fn clear(&mut self) {
+        self.q_table.clear();
+        self.stats.clear();
+    }
+}
+
+/// Counterfactual Credit Assignment
+///
+/// Computes credit by comparing actual outcome to a counterfactual baseline.
+pub struct CounterfactualCredit {
+    /// Baseline type
+    baseline_type: BaselineType,
+
+    /// Running baseline value
+    running_baseline: f64,
+
+    /// Baseline update rate
+    baseline_rate: f64,
+
+    /// History of outcomes for leave-one-out
+    outcome_history: Vec<OutcomeRecord>,
+
+    /// Maximum history size
+    max_history: usize,
+}
+
+/// Record of an outcome for counterfactual analysis
+#[derive(Clone)]
+pub struct OutcomeRecord {
+    pub step: u64,
+    pub gate_id: String,
+    pub action: f64,
+    pub outcome: f64,
+    pub context: Vec<f64>,
+}
+
+impl CounterfactualCredit {
+    /// Create new counterfactual credit assigner
+    pub fn new(baseline_type: BaselineType) -> Self {
+        let rate = match &baseline_type {
+            BaselineType::RunningAverage { rate } => *rate,
+            _ => 0.01,
+        };
+
+        CounterfactualCredit {
+            baseline_type,
+            running_baseline: 0.0,
+            baseline_rate: rate,
+            outcome_history: Vec::new(),
+            max_history: 10000,
+        }
+    }
+
+    /// Record an outcome
+    pub fn record_outcome(
+        &mut self,
+        step: u64,
+        gate_id: &str,
+        action: f64,
+        outcome: f64,
+        context: Vec<f64>,
+    ) {
+        self.outcome_history.push(OutcomeRecord {
+            step,
+            gate_id: gate_id.to_string(),
+            action,
+            outcome,
+            context,
+        });
+
+        // Update running baseline
+        self.running_baseline = self.running_baseline * (1.0 - self.baseline_rate)
+            + outcome * self.baseline_rate;
+
+        // Prune old history
+        if self.outcome_history.len() > self.max_history {
+            self.outcome_history.remove(0);
+        }
+    }
+
+    /// Compute counterfactual credit for a gate
+    pub fn compute_credit(&self, gate_id: &str, outcome: f64) -> Attribution {
+        let baseline = self.get_baseline(gate_id);
+        let credit = outcome - baseline;
+
+        Attribution {
+            gate_id: gate_id.to_string(),
+            credit,
+            confidence: self.confidence_in_baseline(gate_id),
+            step: self.outcome_history.last().map(|r| r.step).unwrap_or(0),
+        }
+    }
+
+    /// Get baseline for a gate
+    fn get_baseline(&self, gate_id: &str) -> f64 {
+        match &self.baseline_type {
+            BaselineType::RunningAverage { .. } => self.running_baseline,
+            BaselineType::ValueFunction => {
+                // Average outcome for this gate
+                let gate_outcomes: Vec<f64> = self.outcome_history
+                    .iter()
+                    .filter(|r| r.gate_id == gate_id)
+                    .map(|r| r.outcome)
+                    .collect();
+
+                if gate_outcomes.is_empty() {
+                    self.running_baseline
+                } else {
+                    gate_outcomes.iter().sum::<f64>() / gate_outcomes.len() as f64
+                }
+            }
+            BaselineType::LeaveOneOut => {
+                // Average of all other outcomes (counterfactual)
+                let other_outcomes: Vec<f64> = self.outcome_history
+                    .iter()
+                    .filter(|r| r.gate_id != gate_id)
+                    .map(|r| r.outcome)
+                    .collect();
+
+                if other_outcomes.is_empty() {
+                    self.running_baseline
+                } else {
+                    other_outcomes.iter().sum::<f64>() / other_outcomes.len() as f64
+                }
+            }
+        }
+    }
+
+    /// Confidence in the baseline estimate
+    fn confidence_in_baseline(&self, gate_id: &str) -> f64 {
+        let gate_count = self.outcome_history
+            .iter()
+            .filter(|r| r.gate_id == gate_id)
+            .count();
+
+        // More samples = higher confidence, saturating at 1.0
+        (gate_count as f64 / 100.0).min(1.0)
+    }
+
+    /// Get all attributions for current outcomes
+    pub fn compute_all_attributions(&self) -> Vec<Attribution> {
+        let mut gate_ids: Vec<String> = self.outcome_history
+            .iter()
+            .map(|r| r.gate_id.clone())
+            .collect();
+        gate_ids.sort();
+        gate_ids.dedup();
+
+        gate_ids.iter().filter_map(|gate_id| {
+            let recent = self.outcome_history
+                .iter()
+                .rev()
+                .find(|r| r.gate_id == *gate_id)?;
+            Some(self.compute_credit(gate_id, recent.outcome))
+        }).collect()
+    }
+
+    /// Clear history
+    pub fn clear(&mut self) {
+        self.outcome_history.clear();
+        self.running_baseline = 0.0;
+    }
+}
+
+/// Attention-based credit assignment
+pub struct AttentionCredit {
+    /// Attention weights history
+    attention_history: Vec<AttentionRecord>,
+
+    /// Window size for attention
+    window_size: usize,
+}
+
+struct AttentionRecord {
+    step: u64,
+    gate_weights: HashMap<String, f64>,
+}
+
+impl AttentionCredit {
+    /// Create new attention credit assigner
+    pub fn new(window_size: usize) -> Self {
+        AttentionCredit {
+            attention_history: Vec::new(),
+            window_size,
+        }
+    }
+
+    /// Record attention weights at a step
+    pub fn record(&mut self, step: u64, gate_weights: HashMap<String, f64>) {
+        self.attention_history.push(AttentionRecord {
+            step,
+            gate_weights,
+        });
+
+        // Keep only recent history
+        if self.attention_history.len() > self.window_size {
+            self.attention_history.remove(0);
+        }
+    }
+
+    /// Assign credit based on attention weights
+    pub fn assign_credit(&self, reward_step: u64, reward: f64) -> Vec<Attribution> {
+        // Find attention record closest to reward
+        let record = self.attention_history.iter()
+            .filter(|r| r.step <= reward_step)
+            .max_by_key(|r| r.step);
+
+        match record {
+            Some(r) => {
+                r.gate_weights.iter()
+                    .map(|(gate_id, &weight)| Attribution {
+                        gate_id: gate_id.clone(),
+                        credit: weight * reward,
+                        confidence: weight,
+                        step: r.step,
+                    })
+                    .collect()
+            }
+            None => Vec::new(),
+        }
+    }
+
+    /// Clear history
+    pub fn clear(&mut self) {
+        self.attention_history.clear();
+    }
+}
+
+/// Gradient-based credit assignment (REINFORCE style)
+pub struct GradientCredit {
+    /// Log probabilities of actions
+    log_probs: Vec<LogProbRecord>,
+
+    /// Baseline for variance reduction
+    baseline: f64,
+
+    /// Baseline update rate
+    baseline_rate: f64,
+
+    /// Entropy coefficient for exploration bonus
+    entropy_coef: f64,
+}
+
+struct LogProbRecord {
+    gate_id: String,
+    step: u64,
+    log_prob: f64,
+    entropy: f64,
+}
+
+impl GradientCredit {
+    /// Create new gradient credit assigner
+    pub fn new() -> Self {
+        GradientCredit {
+            log_probs: Vec::new(),
+            baseline: 0.0,
+            baseline_rate: 0.01,
+            entropy_coef: 0.01,
+        }
+    }
+
+    /// Create with custom parameters
+    pub fn with_params(baseline_rate: f64, entropy_coef: f64) -> Self {
+        GradientCredit {
+            log_probs: Vec::new(),
+            baseline: 0.0,
+            baseline_rate,
+            entropy_coef,
+        }
+    }
+
+    /// Record log probability of an action
+    pub fn record_log_prob(&mut self, gate_id: &str, step: u64, log_prob: f64) {
+        self.record_log_prob_with_entropy(gate_id, step, log_prob, 0.0);
+    }
+
+    /// Record log probability with entropy
+    pub fn record_log_prob_with_entropy(
+        &mut self,
+        gate_id: &str,
+        step: u64,
+        log_prob: f64,
+        entropy: f64,
+    ) {
+        self.log_probs.push(LogProbRecord {
+            gate_id: gate_id.to_string(),
+            step,
+            log_prob,
+            entropy,
+        });
+    }
+
+    /// Compute policy gradient with baseline subtraction
+    pub fn compute_gradient(&mut self, reward_step: u64, reward: f64) -> Vec<(String, f64)> {
+        // Update baseline
+        self.baseline = self.baseline * (1.0 - self.baseline_rate) + reward * self.baseline_rate;
+
+        // Advantage = reward - baseline
+        let advantage = reward - self.baseline;
+
+        // Policy gradient: advantage * grad(log_prob) + entropy_coef * entropy
+        let gradients: Vec<(String, f64)> = self.log_probs.iter()
+            .filter(|r| r.step <= reward_step)
+            .map(|r| {
+                let pg = advantage * (-r.log_prob); // Negative because we maximize
+                let entropy_bonus = self.entropy_coef * r.entropy;
+                (r.gate_id.clone(), pg + entropy_bonus)
+            })
+            .collect();
+
+        // Clear used log probs
+        self.log_probs.retain(|r| r.step > reward_step);
+
+        gradients
+    }
+
+    /// Compute gradient with GAE advantages
+    pub fn compute_gradient_with_gae(
+        &self,
+        advantages: &[(String, f64)],
+    ) -> Vec<(String, f64)> {
+        let adv_map: HashMap<String, f64> = advantages.iter().cloned().collect();
+
+        self.log_probs.iter()
+            .filter_map(|r| {
+                adv_map.get(&r.gate_id).map(|&adv| {
+                    let pg = adv * (-r.log_prob);
+                    let entropy_bonus = self.entropy_coef * r.entropy;
+                    (r.gate_id.clone(), pg + entropy_bonus)
+                })
+            })
+            .collect()
+    }
+
+    /// Get current baseline
+    pub fn baseline(&self) -> f64 {
+        self.baseline
+    }
+
+    /// Set entropy coefficient
+    pub fn set_entropy_coef(&mut self, coef: f64) {
+        self.entropy_coef = coef;
+    }
+
+    /// Clear records
+    pub fn clear(&mut self) {
+        self.log_probs.clear();
+    }
+}
+
+/// Multi-step return calculator
+pub struct NStepReturns {
+    /// Number of steps
+    n: usize,
+
+    /// Discount factor
+    gamma: f64,
+
+    /// Buffer of (reward, value) pairs
+    buffer: Vec<(f64, f64)>,
+}
+
+impl NStepReturns {
+    /// Create new n-step return calculator
+    pub fn new(n: usize, gamma: f64) -> Self {
+        NStepReturns {
+            n,
+            gamma,
+            buffer: Vec::new(),
+        }
+    }
+
+    /// Add a step
+    pub fn add(&mut self, reward: f64, value: f64) {
+        self.buffer.push((reward, value));
+    }
+
+    /// Compute n-step return if enough steps available
+    pub fn compute(&self) -> Option<f64> {
+        if self.buffer.len() < self.n {
+            return None;
+        }
+
+        let mut g = 0.0;
+        let mut gamma_power = 1.0;
+
+        for i in 0..self.n {
+            g += gamma_power * self.buffer[i].0;
+            gamma_power *= self.gamma;
+        }
+
+        // Bootstrap with value at step n
+        if self.buffer.len() > self.n {
+            g += gamma_power * self.buffer[self.n].1;
+        }
+
+        Some(g)
+    }
+
+    /// Advance buffer (remove oldest step)
+    pub fn advance(&mut self) {
+        if !self.buffer.is_empty() {
+            self.buffer.remove(0);
+        }
+    }
+
+    /// Clear buffer
+    pub fn clear(&mut self) {
+        self.buffer.clear();
+    }
+}

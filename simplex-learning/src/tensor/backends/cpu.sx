@@ -1,0 +1,94 @@
+// CPU Backend: SIMD-optimized tensor operations
+//
+// Default backend for all tensor operations. Uses SIMD where available.
+
+use super::{Backend, Tensor, Shape, TensorError};
+use crate::tensor::ops;
+
+/// CPU backend for tensor operations
+pub struct CpuBackend {
+    /// Number of threads for parallel operations
+    num_threads: usize,
+
+    /// Whether SIMD is available
+    simd_available: bool,
+}
+
+impl CpuBackend {
+    /// Create a new CPU backend
+    pub fn new() -> Self {
+        CpuBackend {
+            num_threads: num_cpus(),
+            simd_available: check_simd_support(),
+        }
+    }
+
+    /// Create with specific thread count
+    pub fn with_threads(num_threads: usize) -> Self {
+        CpuBackend {
+            num_threads,
+            simd_available: check_simd_support(),
+        }
+    }
+}
+
+impl Backend for CpuBackend {
+    fn name(&self) -> &str {
+        "CPU"
+    }
+
+    fn is_available(&self) -> bool {
+        true // CPU is always available
+    }
+
+    fn matmul(&self, a: &Tensor, b: &Tensor) -> Result<Tensor, TensorError> {
+        // Use optimized matmul for large matrices
+        if a.numel() > 1000 && self.simd_available {
+            simd_matmul(a, b)
+        } else {
+            ops::matmul(a, b)
+        }
+    }
+
+    fn add(&self, a: &Tensor, b: &Tensor) -> Result<Tensor, TensorError> {
+        ops::add(a, b)
+    }
+
+    fn mul(&self, a: &Tensor, b: &Tensor) -> Result<Tensor, TensorError> {
+        ops::mul(a, b)
+    }
+
+    fn softmax(&self, x: &Tensor) -> Tensor {
+        ops::softmax(x)
+    }
+
+    fn layer_norm(&self, x: &Tensor, weight: Option<&Tensor>, bias: Option<&Tensor>, eps: f64) -> Tensor {
+        ops::layer_norm(x, weight, bias, eps)
+    }
+}
+
+/// Get number of CPU cores
+fn num_cpus() -> usize {
+    // Placeholder - would use system call
+    4
+}
+
+/// Check if SIMD is available
+fn check_simd_support() -> bool {
+    // Placeholder - would check CPU features
+    true
+}
+
+/// SIMD-optimized matrix multiplication
+fn simd_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor, TensorError> {
+    // For now, fall back to standard implementation
+    // TODO: Implement actual SIMD optimization
+    ops::matmul(a, b)
+}
+
+/// Parallel matrix multiplication (for large matrices)
+fn parallel_matmul(a: &Tensor, b: &Tensor, num_threads: usize) -> Result<Tensor, TensorError> {
+    // For now, fall back to standard implementation
+    // TODO: Implement parallel execution
+    ops::matmul(a, b)
+}

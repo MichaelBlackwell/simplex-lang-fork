@@ -1,0 +1,743 @@
+// Comprehensive calibration module tests
+
+use simplex_learning::tensor::Tensor;
+use simplex_learning::calibration::{
+    TemperatureScaling, LearnableTemperature,
+    PlattScaling, BetaCalibration, VectorScaling,
+    FocalLoss, LabelSmoothing, MatrixScaling,
+    ECE, BrierScore, CalibrationCurve, ReliabilityDiagram,
+    OnlineCalibration, CalibrationState,
+    compute_ece, compute_mce,
+};
+
+// ============================================================================
+// Temperature Scaling Tests
+// ============================================================================
+
+#[test]
+fn test_temperature_scaling_basic() {
+    let scaler = TemperatureScaling::new(2.0);
+
+    // Logits
+    let logits = Tensor::from_vec(vec![1.0, 2.0, 3.0], &[3]);
+
+    // Apply temperature
+    let scaled = scaler.scale(&logits);
+
+    // Should be divided by temperature
+    assert_eq!(scaled.get(0), 0.5);
+    assert_eq!(scaled.get(1), 1.0);
+    assert_eq!(scaled.get(2), 1.5);
+}
+
+#[test]
+fn test_temperature_scaling_calibrate() {
+    let scaler = TemperatureScaling::new(1.0);
+    let logits = Tensor::from_vec(vec![0.0, 0.0, 0.0], &[3]);
+
+    let probs = scaler.calibrate(&logits);
+
+    // Uniform logits -> uniform probabilities
+    let expected = 1.0 / 3.0;
+    assert!((probs.get(0) - expected).abs() < 0.01);
+    assert!((probs.get(1) - expected).abs() < 0.01);
+    assert!((probs.get(2) - expected).abs() < 0.01);
+}
+
+#[test]
+fn test_temperature_scaling_high_temp() {
+    // High temperature = softer predictions
+    let scaler = TemperatureScaling::new(10.0);
+    let logits = Tensor::from_vec(vec![1.0, 0.0], &[2]);
+
+    let probs = scaler.calibrate(&logits);
+
+    // Should be closer to uniform
+    let diff = (probs.get(0) - probs.get(1)).abs();
+    assert!(diff < 0.2); // Close to uniform
+}
+
+#[test]
+fn test_temperature_scaling_low_temp() {
+    // Low temperature = sharper predictions
+    let scaler = TemperatureScaling::new(0.1);
+    let logits = Tensor::from_vec(vec![1.0, 0.0], &[2]);
+
+    let probs = scaler.calibrate(&logits);
+
+    // Should be very peaked
+    assert!(probs.get(0) > 0.99);
+}
+
+#[test]
+fn test_temperature_grid_search() {
+    let mut scaler = TemperatureScaling::learnable(1.0, 0.01);
+
+    // Create some logits and targets
+    let logits = Tensor::from_vec(vec![2.0, 1.0, 0.0], &[3]);
+    let targets = Tensor::from_vec(vec![1.0, 0.0, 0.0], &[3]);
+
+    // Grid search should find better temperature
+    let initial_temp = scaler.temperature();
+    scaler.optimize_grid(&logits, &targets);
+
+    // May or may not change depending on data, but should be valid
+    assert!(scaler.temperature() >= 0.1);
+    assert!(scaler.temperature() <= 10.0);
+}
+
+// ============================================================================
+// Learnable Temperature Tests
+// ============================================================================
+
+#[test]
+fn test_learnable_temperature() {
+    let mut temp = LearnableTemperature::new(1.0, 0.01);
+
+    // Initial temperature
+    assert!((temp.temperature() - 1.0).abs() < 0.01);
+
+    // Train on some data
+    let logits = Tensor::from_vec(vec![1.0, 0.0, 0.0], &[3]);
+    let targets = Tensor::from_vec(vec![1.0, 0.0, 0.0], &[3]);
+
+    temp.backward(&logits, &targets);
+
+    // Temperature should have changed (direction depends on calibration error)
+}
+
+#[test]
+fn test_learnable_temperature_with_params() {
+    let temp = LearnableTemperature::with_params(2.0, 0.1, 0.95, 0.001);
+
+    assert!((temp.temperature() - 2.0).abs() < 0.01);
+}
+
+#[test]
+fn test_temperature_bounds() {
+    let mut temp = LearnableTemperature::new(1.0, 0.1);
+
+    // Try to learn extreme temperature
+    for _ in 0..1000 {
+        let logits = Tensor::from_vec(vec![100.0, 0.0], &[2]);
+        let targets = Tensor::from_vec(vec![0.0, 1.0], &[2]);
+        temp.backward(&logits, &targets);
+    }
+
+    // Temperature should be bounded
+    let t = temp.temperature();
+    assert!(t >= 0.1 && t <= 10.0);
+}
+
+// ============================================================================
+// Platt Scaling Tests
+// ============================================================================
+
+#[test]
+fn test_platt_scaling_default() {
+    let platt = PlattScaling::new();
+    let (scale, bias) = platt.params();
+
+    assert_eq!(scale, 1.0);
+    assert_eq!(bias, 0.0);
+}
+
+#[test]
+fn test_platt_scaling_calibrate() {
+    let platt = PlattScaling::new();
+
+    // Test sigmoid output
+    let p = platt.calibrate(0.0);
+    assert!((p - 0.5).abs() < 0.01);
+
+    let p_high = platt.calibrate(5.0);
+    assert!(p_high > 0.99);
+
+    let p_low = platt.calibrate(-5.0);
+    assert!(p_low < 0.01);
+}
+
+#[test]
+fn test_platt_scaling_fit() {
+    let mut platt = PlattScaling::with_lr(0.1);
+
+    // Well-separated data
+    let logits = vec![-2.0, -1.0, 1.0, 2.0];
+    let labels = vec![false, false, true, true];
+
+    platt.fit(&logits, &labels, 100);
+
+    // Should separate well
+    assert!(platt.calibrate(-2.0) < 0.3);
+    assert!(platt.calibrate(2.0) > 0.7);
+}
+
+#[test]
+fn test_platt_scaling_newton() {
+    let mut platt = PlattScaling::new();
+
+    // Some data
+    let logits = vec![-3.0, -1.0, 1.0, 3.0];
+    let labels = vec![false, false, true, true];
+
+    platt.fit_newton(&logits, &labels, 10);
+
+    // Newton should converge faster
+    assert!(platt.calibrate(-2.0) < 0.5);
+    assert!(platt.calibrate(2.0) > 0.5);
+}
+
+// ============================================================================
+// Beta Calibration Tests
+// ============================================================================
+
+#[test]
+fn test_beta_calibration_identity() {
+    let beta = BetaCalibration::new();
+    let (alpha, b) = beta.params();
+
+    // Default is identity (alpha=1, beta=1)
+    assert_eq!(alpha, 1.0);
+    assert_eq!(b, 1.0);
+
+    // Should be close to identity
+    assert!((beta.calibrate(0.5) - 0.5).abs() < 0.01);
+}
+
+#[test]
+fn test_beta_calibration_bounds() {
+    let beta = BetaCalibration::new();
+
+    // Should handle edge cases
+    assert!(beta.calibrate(0.0) >= 0.0);
+    assert!(beta.calibrate(1.0) <= 1.0);
+    assert!(beta.calibrate(0.5) >= 0.0 && beta.calibrate(0.5) <= 1.0);
+}
+
+#[test]
+fn test_beta_calibration_fit() {
+    let mut beta = BetaCalibration::new();
+
+    // Data where we need calibration
+    let probs = vec![0.3, 0.4, 0.6, 0.7];
+    let labels = vec![false, false, true, true];
+
+    beta.fit(&probs, &labels, 100);
+
+    // Parameters should have changed
+    let (alpha, b) = beta.params();
+    assert!(alpha > 0.1);
+    assert!(b > 0.1);
+}
+
+// ============================================================================
+// Vector Scaling Tests
+// ============================================================================
+
+#[test]
+fn test_vector_scaling_init() {
+    let vs = VectorScaling::new(3);
+
+    // Initial is identity-like
+    let logits = Tensor::from_vec(vec![1.0, 2.0, 3.0], &[3]);
+    let probs = vs.calibrate(&logits);
+
+    // Should be softmax of original
+    assert!(probs.get(2) > probs.get(1));
+    assert!(probs.get(1) > probs.get(0));
+}
+
+#[test]
+fn test_vector_scaling_batch() {
+    let vs = VectorScaling::new(2);
+
+    // Batch of 2, 2 classes each
+    let logits = Tensor::from_vec(vec![1.0, 0.0, 0.0, 1.0], &[2, 2]);
+    let probs = vs.calibrate(&logits);
+
+    // Each sample should sum to ~1
+    let sum1 = probs.get(0) + probs.get(1);
+    let sum2 = probs.get(2) + probs.get(3);
+    assert!((sum1 - 1.0).abs() < 0.01);
+    assert!((sum2 - 1.0).abs() < 0.01);
+}
+
+#[test]
+fn test_vector_scaling_backward() {
+    let mut vs = VectorScaling::new(2);
+
+    let logits = Tensor::from_vec(vec![1.0, 0.0], &[2]);
+    let targets = Tensor::from_vec(vec![1.0, 0.0], &[2]);
+
+    // Update should not crash
+    vs.backward(&logits, &targets);
+}
+
+// ============================================================================
+// Focal Loss Tests
+// ============================================================================
+
+#[test]
+fn test_focal_loss_basic() {
+    let focal = FocalLoss::new(2.0, 1.0);
+
+    // High confidence correct prediction = low loss
+    let loss_easy = focal.compute(0.9, true);
+
+    // Low confidence correct prediction = higher loss
+    let loss_hard = focal.compute(0.5, true);
+
+    assert!(loss_easy < loss_hard);
+}
+
+#[test]
+fn test_focal_loss_wrong_prediction() {
+    let focal = FocalLoss::new(2.0, 1.0);
+
+    // Wrong prediction should have high loss
+    let loss_wrong = focal.compute(0.9, false);
+    let loss_correct = focal.compute(0.9, true);
+
+    assert!(loss_wrong > loss_correct);
+}
+
+#[test]
+fn test_focal_loss_gamma() {
+    let focal_low = FocalLoss::new(0.0, 1.0);  // Standard CE
+    let focal_high = FocalLoss::new(5.0, 1.0); // High focusing
+
+    // With gamma=0, should be standard cross-entropy
+    // With high gamma, easy examples contribute less
+    let loss_low = focal_low.compute(0.8, true);
+    let loss_high = focal_high.compute(0.8, true);
+
+    // High gamma reduces loss for easy examples
+    assert!(loss_high < loss_low);
+}
+
+#[test]
+fn test_focal_loss_batch() {
+    let focal = FocalLoss::new(2.0, 1.0);
+
+    let probs = Tensor::from_vec(vec![0.9, 0.1], &[2]);
+    let targets = Tensor::from_vec(vec![1.0, 0.0], &[2]);
+
+    let loss = focal.compute_batch(&probs, &targets);
+    assert!(loss >= 0.0);
+}
+
+// ============================================================================
+// Label Smoothing Tests
+// ============================================================================
+
+#[test]
+fn test_label_smoothing_basic() {
+    let smoother = LabelSmoothing::new(0.1, 3);
+
+    // One-hot target
+    let targets = Tensor::from_vec(vec![1.0, 0.0, 0.0], &[3]);
+    let smoothed = smoother.smooth(&targets);
+
+    // True class should be 1 - epsilon + epsilon/K = 0.9 + 0.033 = 0.933
+    // Other classes should be epsilon/K = 0.033
+    assert!((smoothed.get(0) - 0.933).abs() < 0.01);
+    assert!((smoothed.get(1) - 0.033).abs() < 0.01);
+    assert!((smoothed.get(2) - 0.033).abs() < 0.01);
+}
+
+#[test]
+fn test_label_smoothing_sum_to_one() {
+    let smoother = LabelSmoothing::new(0.2, 4);
+
+    let targets = Tensor::from_vec(vec![0.0, 1.0, 0.0, 0.0], &[4]);
+    let smoothed = smoother.smooth(&targets);
+
+    // Should sum to 1
+    let sum: f64 = (0..4).map(|i| smoothed.get(i)).sum();
+    assert!((sum - 1.0).abs() < 0.01);
+}
+
+#[test]
+fn test_label_smoothing_cross_entropy() {
+    let smoother = LabelSmoothing::new(0.1, 3);
+
+    let probs = Tensor::from_vec(vec![0.8, 0.1, 0.1], &[3]);
+    let targets = Tensor::from_vec(vec![1.0, 0.0, 0.0], &[3]);
+
+    let loss = smoother.cross_entropy(&probs, &targets);
+    assert!(loss >= 0.0);
+}
+
+// ============================================================================
+// Matrix Scaling Tests
+// ============================================================================
+
+#[test]
+fn test_matrix_scaling_init() {
+    let ms = MatrixScaling::new(3);
+
+    // Should be initialized as identity
+    let logits = Tensor::from_vec(vec![1.0, 2.0, 3.0], &[3]);
+    let probs = ms.calibrate(&logits);
+
+    // Should give same result as plain softmax (identity matrix)
+    assert!(probs.get(2) > probs.get(1));
+    assert!(probs.get(1) > probs.get(0));
+}
+
+#[test]
+fn test_matrix_scaling_backward() {
+    let mut ms = MatrixScaling::new(2);
+
+    let logits = Tensor::from_vec(vec![1.0, 0.0], &[2]);
+    let targets = Tensor::from_vec(vec![0.0, 1.0], &[2]);
+
+    // Should update weights
+    ms.backward(&logits, &targets);
+
+    // Verify calibration still works
+    let probs = ms.calibrate(&logits);
+    let sum = probs.get(0) + probs.get(1);
+    assert!((sum - 1.0).abs() < 0.01);
+}
+
+// ============================================================================
+// ECE Tests
+// ============================================================================
+
+#[test]
+fn test_ece_calculation() {
+    let mut ece = ECE::new(10);
+
+    // Perfect calibration: confidence matches accuracy
+    for _ in 0..100 {
+        // 80% confident predictions that are 80% correct
+        ece.add(0.8, true);
+        ece.add(0.8, true);
+        ece.add(0.8, true);
+        ece.add(0.8, true);
+        ece.add(0.8, false);
+    }
+
+    let ece_value = ece.compute();
+    // Should be close to 0 (well calibrated)
+    assert!(ece_value < 0.1);
+}
+
+#[test]
+fn test_ece_miscalibration() {
+    let mut ece = ECE::new(10);
+
+    // Over-confident: 90% confident but only 50% correct
+    for _ in 0..100 {
+        ece.add(0.9, true);
+        ece.add(0.9, false);
+    }
+
+    let ece_value = ece.compute();
+    // Should be high (poorly calibrated)
+    assert!(ece_value > 0.3);
+}
+
+#[test]
+fn test_ece_empty() {
+    let ece = ECE::new(10);
+    assert_eq!(ece.compute(), 0.0);
+}
+
+#[test]
+fn test_ece_reset() {
+    let mut ece = ECE::new(10);
+
+    ece.add(0.9, true);
+    ece.add(0.9, false);
+
+    ece.reset();
+
+    assert_eq!(ece.compute(), 0.0);
+}
+
+#[test]
+fn test_ece_bins() {
+    let mut ece = ECE::new(10);
+
+    // Add to specific bins
+    ece.add(0.15, true);  // Bin 1
+    ece.add(0.55, false); // Bin 5
+    ece.add(0.95, true);  // Bin 9
+
+    let bins = ece.get_bins();
+    assert_eq!(bins.len(), 10);
+}
+
+// ============================================================================
+// Brier Score Tests
+// ============================================================================
+
+#[test]
+fn test_brier_score_perfect() {
+    let mut brier = BrierScore::new();
+
+    // Perfect predictions
+    brier.add(1.0, true);
+    brier.add(0.0, false);
+
+    let score = brier.compute();
+    // Should be 0 for perfect predictions
+    assert_eq!(score, 0.0);
+}
+
+#[test]
+fn test_brier_score_imperfect() {
+    let mut brier = BrierScore::new();
+
+    // Imperfect predictions
+    brier.add(0.7, true);  // (1 - 0.7)^2 = 0.09
+    brier.add(0.3, false); // (0 - 0.3)^2 = 0.09
+
+    let score = brier.compute();
+    assert!((score - 0.09).abs() < 0.01);
+}
+
+#[test]
+fn test_brier_score_multiclass() {
+    let mut brier = BrierScore::new();
+
+    // Confident correct prediction
+    brier.add_multiclass(&[0.9, 0.05, 0.05], 0);
+
+    let score = brier.compute();
+    // (0.9-1)^2 + (0.05-0)^2 + (0.05-0)^2 = 0.01 + 0.0025 + 0.0025 = 0.015
+    assert!((score - 0.015).abs() < 0.001);
+}
+
+#[test]
+fn test_brier_score_reset() {
+    let mut brier = BrierScore::new();
+
+    brier.add(0.5, true);
+    brier.reset();
+
+    assert_eq!(brier.compute(), 0.0);
+}
+
+// ============================================================================
+// Calibration Curve Tests
+// ============================================================================
+
+#[test]
+fn test_calibration_curve_from_ece() {
+    let mut ece = ECE::new(5);
+
+    // Add predictions to different bins
+    for i in 0..5 {
+        let conf = (i as f64 + 0.5) / 5.0;
+        for _ in 0..10 {
+            ece.add(conf, i % 2 == 0);
+        }
+    }
+
+    let curve = CalibrationCurve::from_ece(&ece);
+
+    assert_eq!(curve.bin_centers.len(), 5);
+    assert_eq!(curve.accuracies.len(), 5);
+    assert_eq!(curve.counts.len(), 5);
+}
+
+// ============================================================================
+// Reliability Diagram Tests
+// ============================================================================
+
+#[test]
+fn test_reliability_diagram() {
+    let mut ece = ECE::new(10);
+    let mut brier = BrierScore::new();
+
+    for _ in 0..100 {
+        ece.add(0.7, true);
+        brier.add(0.7, true);
+    }
+
+    let diagram = ReliabilityDiagram::new(&ece, &brier);
+
+    assert!(diagram.ece() >= 0.0 && diagram.ece() <= 1.0);
+    assert!(diagram.brier() >= 0.0);
+}
+
+#[test]
+fn test_reliability_diagram_string() {
+    let mut ece = ECE::new(5);
+    let mut brier = BrierScore::new();
+
+    ece.add(0.5, true);
+    brier.add(0.5, true);
+
+    let diagram = ReliabilityDiagram::new(&ece, &brier);
+    let s = diagram.to_string();
+
+    assert!(s.contains("ECE:"));
+    assert!(s.contains("Brier:"));
+}
+
+// ============================================================================
+// MCE Tests
+// ============================================================================
+
+#[test]
+fn test_compute_mce() {
+    let mut ece = ECE::new(10);
+
+    // Add with different gaps
+    for _ in 0..50 {
+        ece.add(0.9, true);  // gap = 0.1
+    }
+    for _ in 0..50 {
+        ece.add(0.5, true);  // gap = 0.5
+    }
+
+    let mce = compute_mce(&ece);
+
+    // MCE should be at least the maximum gap
+    assert!(mce >= 0.0);
+}
+
+// ============================================================================
+// Online Calibration Tests
+// ============================================================================
+
+#[test]
+fn test_online_calibration_basic() {
+    let mut calibrator = OnlineCalibration::new(0.05)
+        .warmup(5)
+        .update_frequency(2);
+
+    // Process some batches
+    for _ in 0..20 {
+        let logits = Tensor::from_vec(vec![1.0, 0.0], &[2]);
+        let targets = Tensor::from_vec(vec![1.0, 0.0], &[2]);
+
+        let _calibrated = calibrator.process_batch(&logits, &targets);
+    }
+
+    // Check state
+    let state = calibrator.state();
+    assert!(state.samples_seen() > 0);
+}
+
+// ============================================================================
+// Calibration State Tests
+// ============================================================================
+
+#[test]
+fn test_calibration_state() {
+    let mut state = CalibrationState::new(0.05);
+
+    // Simulate predictions
+    for i in 0..1000 {
+        let confidence = (i % 10) as f64 / 10.0 + 0.05;
+        let correct = confidence > 0.5;
+        state.update(confidence, correct);
+    }
+
+    // Should have processed samples
+    assert_eq!(state.samples_seen(), 1000);
+
+    // Check ECE
+    let ece = state.ece();
+    assert!(ece >= 0.0 && ece <= 1.0);
+}
+
+// ============================================================================
+// Integration Tests
+// ============================================================================
+
+#[test]
+fn test_calibration_pipeline() {
+    // End-to-end calibration pipeline
+
+    // 1. Raw logits from model
+    let logits = Tensor::from_vec(vec![2.0, 1.0, 0.0], &[3]);
+    let targets = Tensor::from_vec(vec![1.0, 0.0, 0.0], &[3]);
+
+    // 2. Apply temperature scaling
+    let mut temp_scaler = TemperatureScaling::learnable(1.0, 0.01);
+    for _ in 0..10 {
+        temp_scaler.update(&logits, &targets);
+    }
+    let calibrated = temp_scaler.calibrate(&logits);
+
+    // 3. Measure calibration
+    let mut ece = ECE::new(10);
+    let mut brier = BrierScore::new();
+
+    // Find predicted class and confidence
+    let mut max_prob = 0.0;
+    let mut pred_class = 0;
+    for i in 0..3 {
+        if calibrated.get(i) > max_prob {
+            max_prob = calibrated.get(i);
+            pred_class = i;
+        }
+    }
+
+    let correct = targets.get(pred_class) > 0.5;
+    ece.add(max_prob, correct);
+    brier.add(max_prob, correct);
+
+    // 4. Check metrics
+    let ece_value = ece.compute();
+    let brier_value = brier.compute();
+
+    assert!(ece_value >= 0.0 && ece_value <= 1.0);
+    assert!(brier_value >= 0.0 && brier_value <= 1.0);
+}
+
+#[test]
+fn test_multi_method_comparison() {
+    // Compare different calibration methods
+
+    let logits = vec![1.0, 2.0, 3.0, 0.5, 1.5];
+    let labels = vec![false, false, true, false, true];
+
+    // Platt scaling
+    let mut platt = PlattScaling::new();
+    platt.fit(&logits, &labels, 50);
+
+    // Beta calibration (need probabilities, not logits)
+    let probs: Vec<f64> = logits.iter().map(|&l| 1.0 / (1.0 + (-l).exp())).collect();
+    let mut beta = BetaCalibration::new();
+    beta.fit(&probs, &labels, 50);
+
+    // Both should give reasonable outputs
+    assert!(platt.calibrate(2.0) >= 0.0 && platt.calibrate(2.0) <= 1.0);
+    assert!(beta.calibrate(0.8) >= 0.0 && beta.calibrate(0.8) <= 1.0);
+}
+
+#[test]
+fn test_ece_target() {
+    // Test that we can achieve ECE < 0.05 with proper calibration
+
+    let mut ece = ECE::new(10);
+
+    // Well-calibrated predictions
+    // 70% confidence with 70% accuracy
+    for _ in 0..70 {
+        ece.add(0.7, true);
+    }
+    for _ in 0..30 {
+        ece.add(0.7, false);
+    }
+
+    // 30% confidence with 30% accuracy
+    for _ in 0..30 {
+        ece.add(0.3, true);
+    }
+    for _ in 0..70 {
+        ece.add(0.3, false);
+    }
+
+    let ece_value = ece.compute();
+
+    // Should meet target
+    assert!(ece_value < 0.05, "ECE {} should be < 0.05", ece_value);
+}

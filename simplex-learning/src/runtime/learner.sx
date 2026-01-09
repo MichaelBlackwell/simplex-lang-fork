@@ -1,0 +1,680 @@
+// Continuous learner runtime
+//
+// The main entry point for real-time continuous learning. Orchestrates
+// all learning components into a unified execution loop.
+
+use crate::tensor::Tensor;
+use crate::optim::{StreamingAdam, StreamingSGD, LearningRateScheduler};
+use crate::memory::{ReplayBuffer, EWC};
+use crate::feedback::{FeedbackChannel, FeedbackAggregator};
+use crate::calibration::{OnlineCalibration, CalibrationState};
+use crate::safety::{SafetyBounds, SafetyApplier, ConstraintManager};
+use super::metrics::MetricsCollector;
+use super::checkpoint::CheckpointManager;
+
+/// Configuration for continuous learner
+pub struct LearnerConfig {
+    /// Learning rate
+    pub learning_rate: f64,
+
+    /// Batch size for updates
+    pub batch_size: usize,
+
+    /// Update frequency (steps between updates)
+    pub update_frequency: usize,
+
+    /// Enable experience replay
+    pub use_replay: bool,
+
+    /// Replay buffer size
+    pub replay_buffer_size: usize,
+
+    /// Enable EWC for forgetting prevention
+    pub use_ewc: bool,
+
+    /// EWC importance weight
+    pub ewc_lambda: f64,
+
+    /// Enable calibration
+    pub use_calibration: bool,
+
+    /// Target ECE for calibration
+    pub target_ece: f64,
+
+    /// Safety bounds
+    pub safety_bounds: SafetyBounds,
+
+    /// Checkpoint frequency (steps)
+    pub checkpoint_frequency: u64,
+
+    /// Maximum steps (0 = unlimited)
+    pub max_steps: u64,
+
+    /// Warmup steps before learning
+    pub warmup_steps: u64,
+
+    /// Gradient accumulation steps
+    pub gradient_accumulation: usize,
+}
+
+impl Default for LearnerConfig {
+    fn default() -> Self {
+        LearnerConfig {
+            learning_rate: 0.001,
+            batch_size: 32,
+            update_frequency: 1,
+            use_replay: true,
+            replay_buffer_size: 10000,
+            use_ewc: true,
+            ewc_lambda: 0.4,
+            use_calibration: true,
+            target_ece: 0.05,
+            safety_bounds: SafetyBounds::default(),
+            checkpoint_frequency: 1000,
+            max_steps: 0,
+            warmup_steps: 100,
+            gradient_accumulation: 1,
+        }
+    }
+}
+
+/// Learning event for callbacks
+pub enum LearningEvent {
+    /// Step completed
+    StepComplete {
+        step: u64,
+        loss: f64,
+        metrics: LearningStepMetrics,
+    },
+
+    /// Checkpoint saved
+    CheckpointSaved {
+        step: u64,
+        path: String,
+    },
+
+    /// Constraint violated
+    ConstraintViolated {
+        step: u64,
+        constraint: String,
+        is_hard: bool,
+    },
+
+    /// Calibration updated
+    CalibrationUpdated {
+        step: u64,
+        ece: f64,
+        temperature: f64,
+    },
+
+    /// Learning paused (e.g., due to safety)
+    Paused {
+        step: u64,
+        reason: String,
+    },
+
+    /// Learning resumed
+    Resumed {
+        step: u64,
+    },
+}
+
+/// Metrics for a single learning step
+#[derive(Clone)]
+pub struct LearningStepMetrics {
+    pub loss: f64,
+    pub grad_norm: f64,
+    pub param_change: f64,
+    pub learning_rate: f64,
+    pub replay_used: bool,
+    pub ewc_penalty: f64,
+    pub calibration_ece: f64,
+    pub constraints_violated: usize,
+    pub latency_ms: f64,
+}
+
+impl Default for LearningStepMetrics {
+    fn default() -> Self {
+        LearningStepMetrics {
+            loss: 0.0,
+            grad_norm: 0.0,
+            param_change: 0.0,
+            learning_rate: 0.001,
+            replay_used: false,
+            ewc_penalty: 0.0,
+            calibration_ece: 0.0,
+            constraints_violated: 0,
+            latency_ms: 0.0,
+        }
+    }
+}
+
+/// State of the continuous learner
+pub enum LearnerState {
+    /// Not started
+    Idle,
+
+    /// Warming up
+    Warmup,
+
+    /// Actively learning
+    Learning,
+
+    /// Paused
+    Paused,
+
+    /// Stopped
+    Stopped,
+}
+
+/// Continuous learner - the main runtime
+pub struct ContinuousLearner {
+    /// Configuration
+    config: LearnerConfig,
+
+    /// Current parameters
+    params: Vec<Tensor>,
+
+    /// Optimizer state (using Adam)
+    optimizer_m: Vec<Tensor>,  // First moment
+    optimizer_v: Vec<Tensor>,  // Second moment
+    optimizer_t: u64,          // Time step
+
+    /// Experience replay buffer
+    replay_buffer: Option<ReplayBuffer>,
+
+    /// EWC for forgetting prevention
+    ewc: Option<EWC>,
+
+    /// Online calibration
+    calibration: Option<OnlineCalibration>,
+
+    /// Safety applier
+    safety: SafetyApplier,
+
+    /// Constraint manager
+    constraints: ConstraintManager,
+
+    /// Metrics collector
+    metrics: MetricsCollector,
+
+    /// Checkpoint manager
+    checkpoints: CheckpointManager,
+
+    /// Current step
+    step: u64,
+
+    /// Current state
+    state: LearnerState,
+
+    /// Gradient accumulator
+    grad_accumulator: Vec<Tensor>,
+
+    /// Accumulated gradient count
+    accumulated_count: usize,
+
+    /// Event callback
+    event_callback: Option<Box<dyn Fn(LearningEvent)>>,
+
+    /// Learning rate scheduler
+    lr_scheduler: Option<Box<dyn LearningRateScheduler>>,
+}
+
+impl ContinuousLearner {
+    /// Create new continuous learner
+    pub fn new(config: LearnerConfig, initial_params: Vec<Tensor>) -> Self {
+        // Initialize optimizer state
+        let optimizer_m: Vec<Tensor> = initial_params.iter()
+            .map(|p| Tensor::zeros(p.shape()))
+            .collect();
+
+        let optimizer_v: Vec<Tensor> = initial_params.iter()
+            .map(|p| Tensor::zeros(p.shape()))
+            .collect();
+
+        let grad_accumulator: Vec<Tensor> = initial_params.iter()
+            .map(|p| Tensor::zeros(p.shape()))
+            .collect();
+
+        // Initialize replay buffer
+        let replay_buffer = if config.use_replay {
+            Some(ReplayBuffer::new(config.replay_buffer_size))
+        } else {
+            None
+        };
+
+        // Initialize EWC
+        let ewc = if config.use_ewc {
+            Some(EWC::new(config.ewc_lambda))
+        } else {
+            None
+        };
+
+        // Initialize calibration
+        let calibration = if config.use_calibration {
+            Some(OnlineCalibration::new(config.target_ece))
+        } else {
+            None
+        };
+
+        ContinuousLearner {
+            config: config.clone(),
+            params: initial_params,
+            optimizer_m,
+            optimizer_v,
+            optimizer_t: 0,
+            replay_buffer,
+            ewc,
+            calibration,
+            safety: SafetyApplier::new(config.safety_bounds),
+            constraints: ConstraintManager::new(),
+            metrics: MetricsCollector::new(),
+            checkpoints: CheckpointManager::new(config.checkpoint_frequency),
+            step: 0,
+            state: LearnerState::Idle,
+            grad_accumulator,
+            accumulated_count: 0,
+            event_callback: None,
+            lr_scheduler: None,
+        }
+    }
+
+    /// Set event callback
+    pub fn on_event<F: Fn(LearningEvent) + 'static>(mut self, f: F) -> Self {
+        self.event_callback = Some(Box::new(f));
+        self
+    }
+
+    /// Set learning rate scheduler
+    pub fn with_scheduler<S: LearningRateScheduler + 'static>(mut self, scheduler: S) -> Self {
+        self.lr_scheduler = Some(Box::new(scheduler));
+        self
+    }
+
+    /// Add a constraint
+    pub fn add_constraint(&mut self, constraint: crate::safety::Constraint) {
+        match constraint {
+            crate::safety::Constraint::Soft(c) => self.constraints.add_soft(c),
+            crate::safety::Constraint::Hard(c) => self.constraints.add_hard(c),
+        }
+    }
+
+    /// Start learning
+    pub fn start(&mut self) {
+        self.state = if self.step < self.config.warmup_steps {
+            LearnerState::Warmup
+        } else {
+            LearnerState::Learning
+        };
+    }
+
+    /// Pause learning
+    pub fn pause(&mut self, reason: &str) {
+        self.state = LearnerState::Paused;
+        self.emit_event(LearningEvent::Paused {
+            step: self.step,
+            reason: reason.to_string(),
+        });
+    }
+
+    /// Resume learning
+    pub fn resume(&mut self) {
+        self.state = LearnerState::Learning;
+        self.emit_event(LearningEvent::Resumed { step: self.step });
+    }
+
+    /// Stop learning
+    pub fn stop(&mut self) {
+        self.state = LearnerState::Stopped;
+    }
+
+    /// Process a single input-output pair with feedback
+    pub fn learn(
+        &mut self,
+        input: &Tensor,
+        output: &Tensor,
+        target: &Tensor,
+        feedback: f64,
+    ) -> LearningStepMetrics {
+        let start_time = std::time::Instant::now();
+        let mut step_metrics = LearningStepMetrics::default();
+
+        // Check state
+        match self.state {
+            LearnerState::Stopped | LearnerState::Idle => return step_metrics,
+            LearnerState::Paused => return step_metrics,
+            _ => {}
+        }
+
+        self.step += 1;
+
+        // Transition from warmup if needed
+        if self.step >= self.config.warmup_steps {
+            if let LearnerState::Warmup = self.state {
+                self.state = LearnerState::Learning;
+            }
+        }
+
+        // Add to replay buffer
+        if let Some(ref mut buffer) = self.replay_buffer {
+            buffer.add(Experience {
+                input: input.clone(),
+                output: output.clone(),
+                target: target.clone(),
+                feedback,
+                step: self.step,
+            });
+            step_metrics.replay_used = true;
+        }
+
+        // Compute loss
+        let loss = self.compute_loss(output, target, feedback);
+        step_metrics.loss = loss;
+
+        // Compute gradients (simplified - in production would use autograd)
+        let gradients = self.compute_gradients(output, target);
+
+        // Accumulate gradients
+        for (acc, grad) in self.grad_accumulator.iter_mut().zip(gradients.iter()) {
+            for i in 0..acc.numel() {
+                acc.set(i, acc.get(i) + grad.get(i));
+            }
+        }
+        self.accumulated_count += 1;
+
+        // Apply update if accumulated enough
+        if self.accumulated_count >= self.config.gradient_accumulation {
+            // Average accumulated gradients
+            for acc in &mut self.grad_accumulator {
+                for i in 0..acc.numel() {
+                    acc.set(i, acc.get(i) / self.accumulated_count as f64);
+                }
+            }
+
+            // Get current learning rate
+            let lr = match &self.lr_scheduler {
+                Some(scheduler) => scheduler.get_lr(self.step),
+                None => self.config.learning_rate,
+            };
+            step_metrics.learning_rate = lr;
+
+            // Check constraints
+            let learning_metrics = crate::safety::constraints::LearningMetrics {
+                loss,
+                grad_norm: self.compute_grad_norm(&self.grad_accumulator),
+                learning_rate: lr,
+                param_change: 0.0,
+                confidence: 0.5,
+                entropy: 0.0,
+                latency_ms: 0.0,
+                memory_bytes: 0,
+                custom: std::collections::HashMap::new(),
+            };
+
+            let (allow_update, penalty) = self.constraints.check_all(&learning_metrics, self.step);
+
+            if !allow_update {
+                step_metrics.constraints_violated += 1;
+                self.emit_event(LearningEvent::ConstraintViolated {
+                    step: self.step,
+                    constraint: "hard_constraint".to_string(),
+                    is_hard: true,
+                });
+
+                // Reset accumulator
+                self.reset_accumulator();
+                return step_metrics;
+            }
+
+            // Add EWC penalty to gradients
+            if let Some(ref ewc) = self.ewc {
+                let ewc_grads = ewc.compute_penalty(&self.params);
+                step_metrics.ewc_penalty = ewc_grads.iter()
+                    .map(|g| g.iter().map(|&x| x * x).sum::<f64>())
+                    .sum::<f64>()
+                    .sqrt();
+
+                for (acc, ewc_grad) in self.grad_accumulator.iter_mut().zip(ewc_grads.iter()) {
+                    for (i, &eg) in ewc_grad.iter().enumerate() {
+                        if i < acc.numel() {
+                            acc.set(i, acc.get(i) + eg);
+                        }
+                    }
+                }
+            }
+
+            // Apply safety bounds
+            let safety_result = self.safety.apply(&mut self.params);
+            if !safety_result.update_allowed {
+                self.reset_accumulator();
+                return step_metrics;
+            }
+
+            step_metrics.grad_norm = safety_result.gradient.original_norm;
+
+            // Apply optimizer update (Adam)
+            let param_change = self.apply_adam_update(lr);
+            step_metrics.param_change = param_change;
+
+            // Reset accumulator
+            self.reset_accumulator();
+        }
+
+        // Update calibration
+        if let Some(ref mut calibration) = self.calibration {
+            let calibrated = calibration.process_batch(output, target);
+            step_metrics.calibration_ece = calibration.state().ece();
+
+            if self.step % 100 == 0 {
+                self.emit_event(LearningEvent::CalibrationUpdated {
+                    step: self.step,
+                    ece: calibration.state().ece(),
+                    temperature: calibration.state().temperature(),
+                });
+            }
+        }
+
+        // Record metrics
+        step_metrics.latency_ms = start_time.elapsed().as_secs_f64() * 1000.0;
+        self.metrics.record_step(&step_metrics);
+
+        // Checkpoint if needed
+        if self.checkpoints.should_checkpoint(self.step) {
+            let path = self.checkpoints.save(&self.params, self.step, loss);
+            self.emit_event(LearningEvent::CheckpointSaved {
+                step: self.step,
+                path,
+            });
+        }
+
+        // Emit step complete event
+        self.emit_event(LearningEvent::StepComplete {
+            step: self.step,
+            loss,
+            metrics: step_metrics.clone(),
+        });
+
+        // Check max steps
+        if self.config.max_steps > 0 && self.step >= self.config.max_steps {
+            self.stop();
+        }
+
+        step_metrics
+    }
+
+    /// Compute loss
+    fn compute_loss(&self, output: &Tensor, target: &Tensor, feedback: f64) -> f64 {
+        let mut loss = 0.0;
+
+        for i in 0..output.numel().min(target.numel()) {
+            let diff = output.get(i) - target.get(i);
+            loss += diff * diff;
+        }
+
+        // Scale by feedback (positive feedback reduces loss importance)
+        loss * (1.0 - feedback.max(-1.0).min(1.0) * 0.5)
+    }
+
+    /// Compute gradients (simplified linear propagation)
+    ///
+    /// Note: For proper gradient computation, integrate with autograd.
+    /// This simplified version estimates gradients using the output error.
+    fn compute_gradients(&self, output: &Tensor, target: &Tensor) -> Vec<Tensor> {
+        // Compute output gradient (MSE derivative)
+        let mut output_grad_sum = 0.0;
+        let n = output.numel().min(target.numel());
+
+        for i in 0..n {
+            let diff = 2.0 * (output.get(i) - target.get(i));
+            output_grad_sum += diff;
+        }
+
+        // Average gradient magnitude
+        let avg_grad = if n > 0 { output_grad_sum / n as f64 } else { 0.0 };
+
+        // Propagate to params using simplified linear assumption
+        // Each parameter gets gradient proportional to avg output error
+        // Scaled by parameter magnitude for numerical stability
+        self.params.iter()
+            .map(|p| {
+                let mut grad = Tensor::zeros(p.shape());
+                let scale = avg_grad / (p.numel() as f64).sqrt().max(1.0);
+
+                for i in 0..p.numel() {
+                    // Gradient estimate: direction from param value, magnitude from error
+                    grad.set(i, scale * p.get(i).signum());
+                }
+                grad
+            })
+            .collect()
+    }
+
+    /// Compute gradient norm
+    fn compute_grad_norm(&self, gradients: &[Tensor]) -> f64 {
+        let mut norm_sq = 0.0;
+        for grad in gradients {
+            for i in 0..grad.numel() {
+                let v = grad.get(i);
+                norm_sq += v * v;
+            }
+        }
+        norm_sq.sqrt()
+    }
+
+    /// Apply Adam optimizer update
+    fn apply_adam_update(&mut self, lr: f64) -> f64 {
+        const BETA1: f64 = 0.9;
+        const BETA2: f64 = 0.999;
+        const EPSILON: f64 = 1e-8;
+
+        self.optimizer_t += 1;
+        let t = self.optimizer_t as f64;
+
+        let bias_correction1 = 1.0 - BETA1.powf(t);
+        let bias_correction2 = 1.0 - BETA2.powf(t);
+
+        let mut total_change = 0.0;
+
+        for i in 0..self.params.len() {
+            for j in 0..self.params[i].numel() {
+                let g = self.grad_accumulator[i].get(j);
+
+                // Update biased first moment
+                let m = BETA1 * self.optimizer_m[i].get(j) + (1.0 - BETA1) * g;
+                self.optimizer_m[i].set(j, m);
+
+                // Update biased second moment
+                let v = BETA2 * self.optimizer_v[i].get(j) + (1.0 - BETA2) * g * g;
+                self.optimizer_v[i].set(j, v);
+
+                // Compute bias-corrected estimates
+                let m_hat = m / bias_correction1;
+                let v_hat = v / bias_correction2;
+
+                // Compute update
+                let update = lr * m_hat / (v_hat.sqrt() + EPSILON);
+                let old_val = self.params[i].get(j);
+                self.params[i].set(j, old_val - update);
+
+                total_change += update.abs();
+            }
+        }
+
+        total_change
+    }
+
+    /// Reset gradient accumulator
+    fn reset_accumulator(&mut self) {
+        for acc in &mut self.grad_accumulator {
+            for i in 0..acc.numel() {
+                acc.set(i, 0.0);
+            }
+        }
+        self.accumulated_count = 0;
+    }
+
+    /// Emit event to callback
+    fn emit_event(&self, event: LearningEvent) {
+        if let Some(ref callback) = self.event_callback {
+            callback(event);
+        }
+    }
+
+    /// Register important parameters with EWC
+    pub fn register_ewc_task(&mut self) {
+        if let Some(ref mut ewc) = self.ewc {
+            ewc.register_task(&self.params);
+        }
+    }
+
+    /// Get current parameters
+    pub fn params(&self) -> &[Tensor] {
+        &self.params
+    }
+
+    /// Get mutable parameters
+    pub fn params_mut(&mut self) -> &mut [Tensor] {
+        &mut self.params
+    }
+
+    /// Get current step
+    pub fn step(&self) -> u64 {
+        self.step
+    }
+
+    /// Get current state
+    pub fn state(&self) -> &LearnerState {
+        &self.state
+    }
+
+    /// Get metrics collector
+    pub fn metrics(&self) -> &MetricsCollector {
+        &self.metrics
+    }
+
+    /// Get calibration state
+    pub fn calibration_state(&self) -> Option<&CalibrationState> {
+        self.calibration.as_ref().map(|c| c.state())
+    }
+
+    /// Restore from checkpoint
+    pub fn restore_checkpoint(&mut self, step: u64) -> bool {
+        match self.checkpoints.load(step) {
+            Some(params) => {
+                self.params = params;
+                self.step = step;
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// Experience for replay buffer
+struct Experience {
+    input: Tensor,
+    output: Tensor,
+    target: Tensor,
+    feedback: f64,
+    step: u64,
+}

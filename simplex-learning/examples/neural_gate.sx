@@ -1,0 +1,193 @@
+// Neural gate with continuous learning
+//
+// Demonstrates the @learning annotation for neural gates
+// that learn from feedback in real-time.
+
+use simplex_learning::tensor::Tensor;
+use simplex_learning::feedback::{FeedbackChannel, AttributionMethod};
+use simplex_learning::calibration::OnlineCalibration;
+use simplex_learning::safety::{SafetyBounds, ConstraintManager, SoftConstraint, HardConstraint};
+
+/// A neural gate that learns to route inputs
+///
+/// In Simplex, this would be annotated with @learning:
+/// ```
+/// @learning(
+///     optimizer = "adam",
+///     lr = 0.001,
+///     replay_size = 1000,
+///     ewc_lambda = 0.4
+/// )
+/// fn neural_router(input: Tensor) -> Route { ... }
+/// ```
+struct NeuralRouter {
+    /// Routing weights
+    weights: Tensor,
+
+    /// Feedback channel
+    feedback: FeedbackChannel<Tensor, usize, f64>,
+
+    /// Online calibration
+    calibration: OnlineCalibration,
+
+    /// Constraints
+    constraints: ConstraintManager,
+
+    /// Route count
+    route_count: usize,
+}
+
+/// Route decision
+struct RouteDecision {
+    /// Selected route
+    route: usize,
+
+    /// Confidence in decision
+    confidence: f64,
+
+    /// All route probabilities
+    probabilities: Vec<f64>,
+}
+
+impl NeuralRouter {
+    /// Create new router
+    fn new(input_dim: usize, route_count: usize) -> Self {
+        // Initialize weights
+        let weights = Tensor::randn(&[route_count, input_dim]);
+
+        // Create feedback channel
+        let feedback = FeedbackChannel::new();
+
+        // Create calibration
+        let calibration = OnlineCalibration::new(0.05)
+            .warmup(100)
+            .update_frequency(10);
+
+        // Create constraints
+        let mut constraints = ConstraintManager::new();
+
+        // Add latency constraint
+        constraints.add_soft(SoftConstraint::max_latency("latency", 10.0, 0.1));
+
+        // Add confidence constraint
+        constraints.add_soft(SoftConstraint::confidence_range("confidence", 0.3, 0.95, 0.5));
+
+        // Add loss explosion constraint
+        constraints.add_hard(HardConstraint::no_loss_explosion("loss_limit", 100.0));
+
+        NeuralRouter {
+            weights,
+            feedback,
+            calibration,
+            constraints,
+            route_count,
+        }
+    }
+
+    /// Route an input
+    fn route(&mut self, input: &Tensor) -> RouteDecision {
+        // Compute logits
+        let mut logits = vec![0.0; self.route_count];
+        for r in 0..self.route_count {
+            let mut dot = 0.0;
+            for i in 0..input.numel() {
+                let w_idx = r * input.numel() + i;
+                if w_idx < self.weights.numel() {
+                    dot += self.weights.get(w_idx) * input.get(i);
+                }
+            }
+            logits[r] = dot;
+        }
+
+        // Softmax for probabilities
+        let max_logit = logits.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let exp_sum: f64 = logits.iter().map(|&x| (x - max_logit).exp()).sum();
+        let probabilities: Vec<f64> = logits.iter()
+            .map(|&x| (x - max_logit).exp() / exp_sum)
+            .collect();
+
+        // Select route (argmax)
+        let route = probabilities.iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+
+        let confidence = probabilities[route];
+
+        // Register for feedback
+        let handle = self.feedback.register_output(input.clone(), route);
+
+        RouteDecision {
+            route,
+            confidence,
+            probabilities,
+        }
+    }
+
+    /// Provide feedback on a routing decision
+    fn provide_feedback(&mut self, input: &Tensor, route: usize, success: bool) {
+        let signal = if success { 1.0 } else { -1.0 };
+        self.feedback.receive_feedback(input.clone(), route, signal);
+    }
+
+    /// Learn from accumulated feedback
+    fn learn(&mut self) {
+        // Aggregate feedback
+        let attributed = self.feedback.aggregate_and_attribute(
+            AttributionMethod::Temporal { decay: 0.95 }
+        );
+
+        // Update weights based on feedback
+        for (input, route, signal) in attributed {
+            let lr = 0.01 * signal.abs();
+            let direction = signal.signum();
+
+            // Update weights for the chosen route
+            for i in 0..input.numel() {
+                let w_idx = route * input.numel() + i;
+                if w_idx < self.weights.numel() {
+                    let grad = input.get(i) * direction;
+                    let new_w = self.weights.get(w_idx) + lr * grad;
+                    self.weights.set(w_idx, new_w);
+                }
+            }
+        }
+    }
+}
+
+fn main() {
+    // Create router with 32-dim input and 4 routes
+    let mut router = NeuralRouter::new(32, 4);
+
+    // Simulate routing decisions
+    for i in 0..1000 {
+        // Generate input
+        let input = Tensor::randn(&[32]);
+
+        // Make routing decision
+        let decision = router.route(&input);
+
+        // Simulate downstream task success/failure
+        // (In real system, this comes from actual execution)
+        let success = decision.confidence > 0.6;
+
+        // Provide feedback
+        router.provide_feedback(&input, decision.route, success);
+
+        // Learn periodically
+        if i % 10 == 0 {
+            router.learn();
+        }
+
+        // Log progress
+        if i % 100 == 0 {
+            println!(
+                "Step {}: route={}, conf={:.2}",
+                i, decision.route, decision.confidence
+            );
+        }
+    }
+
+    println!("\nRouting learning complete");
+}

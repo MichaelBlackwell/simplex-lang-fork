@@ -1,0 +1,298 @@
+// Progressive Networks
+//
+// Add new capacity for new tasks while keeping old parameters frozen.
+// Enables learning without forgetting by architectural expansion.
+//
+// Reference: Rusu et al., "Progressive Neural Networks" (2016)
+
+use crate::tensor::{Tensor, Shape};
+
+/// Configuration for progressive network
+pub struct ProgressiveConfig {
+    /// Initial layer sizes
+    pub layer_sizes: Vec<usize>,
+
+    /// Hidden size for lateral connections
+    pub lateral_hidden: usize,
+
+    /// Whether to use adapters instead of full lateral connections
+    pub use_adapters: bool,
+
+    /// Adapter bottleneck dimension
+    pub adapter_dim: usize,
+}
+
+impl Default for ProgressiveConfig {
+    fn default() -> Self {
+        ProgressiveConfig {
+            layer_sizes: vec![256, 256],
+            lateral_hidden: 64,
+            use_adapters: true,
+            adapter_dim: 32,
+        }
+    }
+}
+
+/// A column in the progressive network
+pub struct ProgressiveColumn {
+    /// Layer weights
+    layers: Vec<Tensor>,
+
+    /// Layer biases
+    biases: Vec<Tensor>,
+
+    /// Lateral connections from previous columns
+    laterals: Vec<Vec<LateralConnection>>,
+
+    /// Whether this column is frozen
+    frozen: bool,
+
+    /// Column index
+    index: usize,
+}
+
+/// Lateral connection from a previous column
+struct LateralConnection {
+    /// Weight matrix
+    weight: Tensor,
+
+    /// Adapter (if using adapters)
+    adapter: Option<Adapter>,
+
+    /// Source column index
+    source_column: usize,
+
+    /// Source layer index
+    source_layer: usize,
+}
+
+/// Adapter for efficient lateral connections
+struct Adapter {
+    /// Down projection
+    down: Tensor,
+
+    /// Up projection
+    up: Tensor,
+}
+
+impl ProgressiveColumn {
+    /// Create a new column
+    pub fn new(layer_sizes: &[usize], index: usize) -> Self {
+        let mut layers = Vec::new();
+        let mut biases = Vec::new();
+
+        for i in 0..layer_sizes.len() - 1 {
+            let in_size = layer_sizes[i];
+            let out_size = layer_sizes[i + 1];
+
+            // Initialize with He initialization
+            let scale = (2.0 / in_size as f64).sqrt();
+            let weight = crate::tensor::ops::scale(
+                &Tensor::randn(Shape::matrix(out_size, in_size)),
+                scale
+            );
+            let bias = Tensor::zeros(Shape::vector(out_size));
+
+            layers.push(weight);
+            biases.push(bias);
+        }
+
+        ProgressiveColumn {
+            layers,
+            biases,
+            laterals: vec![Vec::new(); layer_sizes.len() - 1],
+            frozen: false,
+            index,
+        }
+    }
+
+    /// Forward pass
+    pub fn forward(&self, input: &Tensor, prev_activations: &[Vec<Tensor>]) -> Tensor {
+        let mut x = input.clone();
+
+        for (layer_idx, (weight, bias)) in self.layers.iter().zip(self.biases.iter()).enumerate() {
+            // Linear transformation
+            let mut out = crate::tensor::ops::matmul(weight, &x).unwrap();
+
+            // Add bias
+            for i in 0..out.numel() {
+                out.set(i, out.get(i) + bias.get(i));
+            }
+
+            // Add lateral connections
+            for lateral in &self.laterals[layer_idx] {
+                if lateral.source_column < prev_activations.len() {
+                    let source = &prev_activations[lateral.source_column][lateral.source_layer];
+
+                    let lateral_out = if let Some(ref adapter) = lateral.adapter {
+                        // Adapter: down -> nonlinear -> up
+                        let down = crate::tensor::ops::matmul(&adapter.down, source).unwrap();
+                        let down = crate::tensor::ops::relu(&down);
+                        crate::tensor::ops::matmul(&adapter.up, &down).unwrap()
+                    } else {
+                        crate::tensor::ops::matmul(&lateral.weight, source).unwrap()
+                    };
+
+                    // Add to output
+                    for i in 0..out.numel() {
+                        out.set(i, out.get(i) + lateral_out.get(i));
+                    }
+                }
+            }
+
+            // Activation (ReLU except last layer)
+            if layer_idx < self.layers.len() - 1 {
+                x = crate::tensor::ops::relu(&out);
+            } else {
+                x = out;
+            }
+        }
+
+        x
+    }
+
+    /// Add lateral connections from a previous column
+    pub fn add_lateral_connections(&mut self, source_column: usize, source_sizes: &[usize], config: &ProgressiveConfig) {
+        for (layer_idx, _) in self.layers.iter().enumerate() {
+            if layer_idx < source_sizes.len() {
+                let source_size = source_sizes[layer_idx];
+                let target_size = self.layers[layer_idx].shape().dim(0);
+
+                let lateral = if config.use_adapters {
+                    // Create adapter
+                    let adapter = Adapter {
+                        down: Tensor::randn(Shape::matrix(config.adapter_dim, source_size)),
+                        up: Tensor::randn(Shape::matrix(target_size, config.adapter_dim)),
+                    };
+
+                    LateralConnection {
+                        weight: Tensor::zeros(Shape::scalar()),
+                        adapter: Some(adapter),
+                        source_column,
+                        source_layer: layer_idx,
+                    }
+                } else {
+                    // Full lateral connection
+                    LateralConnection {
+                        weight: Tensor::randn(Shape::matrix(target_size, source_size)),
+                        adapter: None,
+                        source_column,
+                        source_layer: layer_idx,
+                    }
+                };
+
+                self.laterals[layer_idx].push(lateral);
+            }
+        }
+    }
+
+    /// Freeze this column (no more updates)
+    pub fn freeze(&mut self) {
+        self.frozen = true;
+        for layer in &mut self.layers {
+            layer.set_requires_grad(false);
+        }
+        for bias in &mut self.biases {
+            bias.set_requires_grad(false);
+        }
+    }
+
+    /// Get trainable parameters
+    pub fn parameters(&self) -> Vec<&Tensor> {
+        if self.frozen {
+            Vec::new()
+        } else {
+            let mut params: Vec<&Tensor> = self.layers.iter().chain(self.biases.iter()).collect();
+
+            // Add lateral parameters
+            for layer_laterals in &self.laterals {
+                for lateral in layer_laterals {
+                    if let Some(ref adapter) = lateral.adapter {
+                        params.push(&adapter.down);
+                        params.push(&adapter.up);
+                    } else {
+                        params.push(&lateral.weight);
+                    }
+                }
+            }
+
+            params
+        }
+    }
+
+    /// Get layer sizes
+    pub fn layer_sizes(&self) -> Vec<usize> {
+        self.layers.iter().map(|l| l.shape().dim(0)).collect()
+    }
+}
+
+/// Progressive network with multiple columns
+pub struct ProgressiveNetwork {
+    /// Network columns (one per task)
+    columns: Vec<ProgressiveColumn>,
+
+    /// Configuration
+    config: ProgressiveConfig,
+}
+
+impl ProgressiveNetwork {
+    /// Create new progressive network
+    pub fn new(config: ProgressiveConfig) -> Self {
+        ProgressiveNetwork {
+            columns: Vec::new(),
+            config,
+        }
+    }
+
+    /// Add a new column for a new task
+    pub fn add_column(&mut self) {
+        let index = self.columns.len();
+        let mut column = ProgressiveColumn::new(&self.config.layer_sizes, index);
+
+        // Add lateral connections from all previous columns
+        for (prev_idx, prev_column) in self.columns.iter().enumerate() {
+            column.add_lateral_connections(prev_idx, &prev_column.layer_sizes(), &self.config);
+        }
+
+        self.columns.push(column);
+    }
+
+    /// Freeze all existing columns
+    pub fn freeze_existing(&mut self) {
+        for column in &mut self.columns {
+            column.freeze();
+        }
+    }
+
+    /// Forward pass using the latest column
+    pub fn forward(&self, input: &Tensor) -> Tensor {
+        if self.columns.is_empty() {
+            return input.clone();
+        }
+
+        // Collect activations from all columns
+        let mut all_activations: Vec<Vec<Tensor>> = Vec::new();
+
+        for column in &self.columns {
+            let prev_acts: &[Vec<Tensor>] = &all_activations;
+            // For simplicity, just run final output
+            let output = column.forward(input, prev_acts);
+            all_activations.push(vec![output]);
+        }
+
+        // Return output from latest column
+        all_activations.last().unwrap().last().unwrap().clone()
+    }
+
+    /// Get trainable parameters (only from latest unfrozen column)
+    pub fn parameters(&self) -> Vec<&Tensor> {
+        self.columns.last()
+            .map(|c| c.parameters())
+            .unwrap_or_default()
+    }
+
+    /// Number of columns (tasks)
+    pub fn num_columns(&self) -> usize {
+        self.columns.len()
+    }
+}

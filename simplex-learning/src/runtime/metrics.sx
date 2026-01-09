@@ -1,0 +1,479 @@
+// Metrics collection for learning runtime
+//
+// Collects, aggregates, and reports metrics for monitoring
+// continuous learning performance.
+
+use super::learner::LearningStepMetrics;
+
+/// Metrics collector
+pub struct MetricsCollector {
+    /// Step metrics history
+    step_history: Vec<LearningStepMetrics>,
+
+    /// Maximum history size
+    max_history: usize,
+
+    /// Aggregated metrics
+    aggregated: AggregatedMetrics,
+
+    /// Window size for rolling averages
+    window_size: usize,
+
+    /// Custom metric trackers
+    custom_metrics: std::collections::HashMap<String, MetricTracker>,
+}
+
+/// Aggregated metrics over time
+#[derive(Default)]
+pub struct AggregatedMetrics {
+    /// Total steps
+    pub total_steps: u64,
+
+    /// Total loss
+    pub total_loss: f64,
+
+    /// Mean loss
+    pub mean_loss: f64,
+
+    /// Min loss
+    pub min_loss: f64,
+
+    /// Max loss
+    pub max_loss: f64,
+
+    /// Mean gradient norm
+    pub mean_grad_norm: f64,
+
+    /// Mean parameter change
+    pub mean_param_change: f64,
+
+    /// Mean latency (ms)
+    pub mean_latency_ms: f64,
+
+    /// Constraint violation count
+    pub constraint_violations: u64,
+
+    /// Mean ECE
+    pub mean_ece: f64,
+}
+
+/// Single metric tracker with online statistics
+pub struct MetricTracker {
+    /// Metric name
+    pub name: String,
+
+    /// Running count
+    count: u64,
+
+    /// Running mean
+    mean: f64,
+
+    /// Running M2 for variance (Welford's algorithm)
+    m2: f64,
+
+    /// Minimum value
+    min: f64,
+
+    /// Maximum value
+    max: f64,
+
+    /// Recent values for windowed stats
+    recent: std::collections::VecDeque<f64>,
+
+    /// Window size
+    window_size: usize,
+}
+
+impl MetricTracker {
+    /// Create new metric tracker
+    pub fn new(name: &str, window_size: usize) -> Self {
+        MetricTracker {
+            name: name.to_string(),
+            count: 0,
+            mean: 0.0,
+            m2: 0.0,
+            min: f64::INFINITY,
+            max: f64::NEG_INFINITY,
+            recent: std::collections::VecDeque::with_capacity(window_size),
+            window_size,
+        }
+    }
+
+    /// Add a value
+    pub fn add(&mut self, value: f64) {
+        self.count += 1;
+
+        // Update min/max
+        self.min = self.min.min(value);
+        self.max = self.max.max(value);
+
+        // Welford's online algorithm for mean and variance
+        let delta = value - self.mean;
+        self.mean += delta / self.count as f64;
+        let delta2 = value - self.mean;
+        self.m2 += delta * delta2;
+
+        // Update recent window
+        self.recent.push_back(value);
+        if self.recent.len() > self.window_size {
+            self.recent.pop_front();
+        }
+    }
+
+    /// Get count
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Get mean
+    pub fn mean(&self) -> f64 {
+        self.mean
+    }
+
+    /// Get variance
+    pub fn variance(&self) -> f64 {
+        if self.count < 2 {
+            0.0
+        } else {
+            self.m2 / (self.count - 1) as f64
+        }
+    }
+
+    /// Get standard deviation
+    pub fn std(&self) -> f64 {
+        self.variance().sqrt()
+    }
+
+    /// Get min
+    pub fn min(&self) -> f64 {
+        self.min
+    }
+
+    /// Get max
+    pub fn max(&self) -> f64 {
+        self.max
+    }
+
+    /// Get windowed mean
+    pub fn windowed_mean(&self) -> f64 {
+        if self.recent.is_empty() {
+            0.0
+        } else {
+            self.recent.iter().sum::<f64>() / self.recent.len() as f64
+        }
+    }
+
+    /// Get windowed std
+    pub fn windowed_std(&self) -> f64 {
+        if self.recent.len() < 2 {
+            return 0.0;
+        }
+
+        let mean = self.windowed_mean();
+        let var: f64 = self.recent.iter()
+            .map(|&x| (x - mean).powi(2))
+            .sum::<f64>() / (self.recent.len() - 1) as f64;
+
+        var.sqrt()
+    }
+
+    /// Reset tracker
+    pub fn reset(&mut self) {
+        self.count = 0;
+        self.mean = 0.0;
+        self.m2 = 0.0;
+        self.min = f64::INFINITY;
+        self.max = f64::NEG_INFINITY;
+        self.recent.clear();
+    }
+}
+
+impl MetricsCollector {
+    /// Create new metrics collector
+    pub fn new() -> Self {
+        MetricsCollector {
+            step_history: Vec::new(),
+            max_history: 10000,
+            aggregated: AggregatedMetrics::default(),
+            window_size: 100,
+            custom_metrics: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Set maximum history size
+    pub fn max_history(mut self, max: usize) -> Self {
+        self.max_history = max;
+        self
+    }
+
+    /// Set window size for rolling averages
+    pub fn window_size(mut self, size: usize) -> Self {
+        self.window_size = size;
+        self
+    }
+
+    /// Record a step's metrics
+    pub fn record_step(&mut self, metrics: &LearningStepMetrics) {
+        // Add to history
+        self.step_history.push(metrics.clone());
+
+        // Trim history
+        while self.step_history.len() > self.max_history {
+            self.step_history.remove(0);
+        }
+
+        // Update aggregated metrics
+        self.aggregated.total_steps += 1;
+        self.aggregated.total_loss += metrics.loss;
+
+        let n = self.aggregated.total_steps as f64;
+        self.aggregated.mean_loss = self.aggregated.total_loss / n;
+
+        if metrics.loss < self.aggregated.min_loss || self.aggregated.total_steps == 1 {
+            self.aggregated.min_loss = metrics.loss;
+        }
+        if metrics.loss > self.aggregated.max_loss {
+            self.aggregated.max_loss = metrics.loss;
+        }
+
+        // Update running averages (exponential moving average)
+        let alpha = 0.01;
+        self.aggregated.mean_grad_norm = (1.0 - alpha) * self.aggregated.mean_grad_norm
+            + alpha * metrics.grad_norm;
+        self.aggregated.mean_param_change = (1.0 - alpha) * self.aggregated.mean_param_change
+            + alpha * metrics.param_change;
+        self.aggregated.mean_latency_ms = (1.0 - alpha) * self.aggregated.mean_latency_ms
+            + alpha * metrics.latency_ms;
+        self.aggregated.mean_ece = (1.0 - alpha) * self.aggregated.mean_ece
+            + alpha * metrics.calibration_ece;
+
+        self.aggregated.constraint_violations += metrics.constraints_violated as u64;
+    }
+
+    /// Add custom metric
+    pub fn add_custom_metric(&mut self, name: &str) {
+        self.custom_metrics.insert(
+            name.to_string(),
+            MetricTracker::new(name, self.window_size),
+        );
+    }
+
+    /// Record custom metric value
+    pub fn record_custom(&mut self, name: &str, value: f64) {
+        if let Some(tracker) = self.custom_metrics.get_mut(name) {
+            tracker.add(value);
+        }
+    }
+
+    /// Get custom metric tracker
+    pub fn custom_metric(&self, name: &str) -> Option<&MetricTracker> {
+        self.custom_metrics.get(name)
+    }
+
+    /// Get aggregated metrics
+    pub fn aggregated(&self) -> &AggregatedMetrics {
+        &self.aggregated
+    }
+
+    /// Get recent step history
+    pub fn recent_steps(&self, n: usize) -> &[LearningStepMetrics] {
+        let start = self.step_history.len().saturating_sub(n);
+        &self.step_history[start..]
+    }
+
+    /// Compute windowed loss average
+    pub fn windowed_loss(&self, window: usize) -> f64 {
+        let recent = self.recent_steps(window);
+        if recent.is_empty() {
+            return 0.0;
+        }
+        recent.iter().map(|m| m.loss).sum::<f64>() / recent.len() as f64
+    }
+
+    /// Compute loss trend (positive = increasing, negative = decreasing)
+    pub fn loss_trend(&self, window: usize) -> f64 {
+        let recent = self.recent_steps(window);
+        if recent.len() < 2 {
+            return 0.0;
+        }
+
+        // Simple linear regression
+        let n = recent.len() as f64;
+        let mut sum_x = 0.0;
+        let mut sum_y = 0.0;
+        let mut sum_xy = 0.0;
+        let mut sum_xx = 0.0;
+
+        for (i, m) in recent.iter().enumerate() {
+            let x = i as f64;
+            let y = m.loss;
+            sum_x += x;
+            sum_y += y;
+            sum_xy += x * y;
+            sum_xx += x * x;
+        }
+
+        // Slope of best fit line
+        let slope = (n * sum_xy - sum_x * sum_y) / (n * sum_xx - sum_x * sum_x + 1e-8);
+        slope
+    }
+
+    /// Generate summary
+    pub fn summary(&self) -> MetricsSummary {
+        MetricsSummary {
+            total_steps: self.aggregated.total_steps,
+            mean_loss: self.aggregated.mean_loss,
+            min_loss: self.aggregated.min_loss,
+            max_loss: self.aggregated.max_loss,
+            windowed_loss: self.windowed_loss(self.window_size),
+            loss_trend: self.loss_trend(self.window_size),
+            mean_grad_norm: self.aggregated.mean_grad_norm,
+            mean_param_change: self.aggregated.mean_param_change,
+            mean_latency_ms: self.aggregated.mean_latency_ms,
+            mean_ece: self.aggregated.mean_ece,
+            constraint_violations: self.aggregated.constraint_violations,
+        }
+    }
+
+    /// Reset all metrics
+    pub fn reset(&mut self) {
+        self.step_history.clear();
+        self.aggregated = AggregatedMetrics::default();
+        for tracker in self.custom_metrics.values_mut() {
+            tracker.reset();
+        }
+    }
+
+    /// Export to JSON format
+    pub fn export_json(&self) -> String {
+        let summary = self.summary();
+        format!(
+            r#"{{
+  "total_steps": {},
+  "mean_loss": {:.6},
+  "min_loss": {:.6},
+  "max_loss": {:.6},
+  "windowed_loss": {:.6},
+  "loss_trend": {:.6},
+  "mean_grad_norm": {:.6},
+  "mean_param_change": {:.6},
+  "mean_latency_ms": {:.3},
+  "mean_ece": {:.6},
+  "constraint_violations": {}
+}}"#,
+            summary.total_steps,
+            summary.mean_loss,
+            summary.min_loss,
+            summary.max_loss,
+            summary.windowed_loss,
+            summary.loss_trend,
+            summary.mean_grad_norm,
+            summary.mean_param_change,
+            summary.mean_latency_ms,
+            summary.mean_ece,
+            summary.constraint_violations,
+        )
+    }
+}
+
+/// Summary of learning metrics
+#[derive(Clone)]
+pub struct MetricsSummary {
+    pub total_steps: u64,
+    pub mean_loss: f64,
+    pub min_loss: f64,
+    pub max_loss: f64,
+    pub windowed_loss: f64,
+    pub loss_trend: f64,
+    pub mean_grad_norm: f64,
+    pub mean_param_change: f64,
+    pub mean_latency_ms: f64,
+    pub mean_ece: f64,
+    pub constraint_violations: u64,
+}
+
+impl MetricsSummary {
+    /// Check if learning is converging
+    pub fn is_converging(&self) -> bool {
+        self.loss_trend < 0.0 && self.windowed_loss < self.mean_loss
+    }
+
+    /// Check if learning is diverging
+    pub fn is_diverging(&self) -> bool {
+        self.loss_trend > 0.0 && self.windowed_loss > self.mean_loss * 1.5
+    }
+
+    /// Check if learning is stable
+    pub fn is_stable(&self) -> bool {
+        self.loss_trend.abs() < 0.001 && self.mean_grad_norm < 10.0
+    }
+}
+
+/// Learning metrics for constraint checking and reporting
+pub struct LearningMetrics {
+    /// Current loss value
+    pub loss: f64,
+
+    /// Current gradient norm
+    pub grad_norm: f64,
+
+    /// Current learning rate
+    pub learning_rate: f64,
+
+    /// Parameter change magnitude
+    pub param_change: f64,
+
+    /// Output confidence (for classification)
+    pub confidence: f64,
+
+    /// Output entropy
+    pub entropy: f64,
+
+    /// Step latency in milliseconds
+    pub latency_ms: f64,
+
+    /// Memory usage in bytes
+    pub memory_bytes: usize,
+
+    /// Custom metrics
+    pub custom: std::collections::HashMap<String, f64>,
+}
+
+impl Default for LearningMetrics {
+    fn default() -> Self {
+        LearningMetrics {
+            loss: 0.0,
+            grad_norm: 0.0,
+            learning_rate: 0.001,
+            param_change: 0.0,
+            confidence: 0.5,
+            entropy: 0.0,
+            latency_ms: 0.0,
+            memory_bytes: 0,
+            custom: std::collections::HashMap::new(),
+        }
+    }
+}
+
+impl LearningMetrics {
+    /// Create from step metrics
+    pub fn from_step_metrics(step: &LearningStepMetrics) -> Self {
+        LearningMetrics {
+            loss: step.loss,
+            grad_norm: step.grad_norm,
+            learning_rate: step.learning_rate,
+            param_change: step.param_change,
+            confidence: 0.5,
+            entropy: 0.0,
+            latency_ms: step.latency_ms,
+            memory_bytes: 0,
+            custom: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Add custom metric
+    pub fn with_custom(mut self, name: &str, value: f64) -> Self {
+        self.custom.insert(name.to_string(), value);
+        self
+    }
+}

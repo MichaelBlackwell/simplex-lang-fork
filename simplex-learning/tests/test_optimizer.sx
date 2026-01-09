@@ -1,0 +1,140 @@
+// Optimizer module tests
+
+use simplex_learning::tensor::Tensor;
+use simplex_learning::optim::{StreamingSGD, StreamingAdam, LearningRateScheduler};
+use simplex_learning::optim::scheduler::{CosineScheduler, StepScheduler, WarmupScheduler};
+
+#[test]
+fn test_streaming_sgd() {
+    // Create simple parameters
+    let mut params = vec![
+        Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]),
+    ];
+
+    // Create optimizer
+    let mut optimizer = StreamingSGD::new(0.1)
+        .momentum(0.9)
+        .weight_decay(0.0001);
+
+    // Simulate gradients
+    let gradients = vec![
+        Tensor::from_vec(vec![0.1, 0.2, 0.3, 0.4], &[2, 2]),
+    ];
+
+    // Step
+    let initial_val = params[0].get(0);
+    optimizer.step(&mut params, &gradients);
+
+    // Params should have changed
+    assert_ne!(params[0].get(0), initial_val);
+}
+
+#[test]
+fn test_streaming_adam() {
+    let mut params = vec![
+        Tensor::ones(&[4]),
+    ];
+
+    let mut optimizer = StreamingAdam::new(0.001);
+
+    // Multiple steps to test moment accumulation
+    for _ in 0..10 {
+        let gradients = vec![
+            Tensor::from_vec(vec![0.1, -0.1, 0.2, -0.2], &[4]),
+        ];
+
+        optimizer.step(&mut params, &gradients);
+    }
+
+    // Params should have been updated
+    assert_ne!(params[0].get(0), 1.0);
+}
+
+#[test]
+fn test_cosine_scheduler() {
+    let scheduler = CosineScheduler::new(0.1, 0.001, 100);
+
+    // At start
+    let lr0 = scheduler.get_lr(0);
+    assert!((lr0 - 0.1).abs() < 0.01);
+
+    // At middle
+    let lr50 = scheduler.get_lr(50);
+    assert!(lr50 < 0.1 && lr50 > 0.001);
+
+    // At end
+    let lr100 = scheduler.get_lr(100);
+    assert!((lr100 - 0.001).abs() < 0.01);
+}
+
+#[test]
+fn test_step_scheduler() {
+    let scheduler = StepScheduler::new(0.1, 0.5, 10);
+
+    // Before first step
+    assert_eq!(scheduler.get_lr(5), 0.1);
+
+    // After first step
+    assert_eq!(scheduler.get_lr(15), 0.05);
+
+    // After second step
+    assert_eq!(scheduler.get_lr(25), 0.025);
+}
+
+#[test]
+fn test_warmup_scheduler() {
+    let inner = CosineScheduler::new(0.1, 0.001, 100);
+    let scheduler = WarmupScheduler::new(Box::new(inner), 10);
+
+    // During warmup
+    let lr5 = scheduler.get_lr(5);
+    assert!(lr5 < 0.1);
+    assert!(lr5 > 0.0);
+
+    // After warmup
+    let lr15 = scheduler.get_lr(15);
+    assert!((lr15 - 0.1).abs() < 0.02); // Close to initial LR
+}
+
+#[test]
+fn test_gradient_clipping() {
+    let mut params = vec![
+        Tensor::ones(&[4]),
+    ];
+
+    let mut optimizer = StreamingSGD::new(0.1)
+        .max_grad_norm(0.5);
+
+    // Large gradients
+    let gradients = vec![
+        Tensor::from_vec(vec![10.0, 10.0, 10.0, 10.0], &[4]),
+    ];
+
+    optimizer.step(&mut params, &gradients);
+
+    // Update should be clipped
+    // Without clipping: 1.0 - 0.1*10 = 0.0
+    // With clipping to norm 0.5, update is smaller
+    assert!(params[0].get(0) > 0.0);
+}
+
+#[test]
+fn test_weight_decay() {
+    let mut params = vec![
+        Tensor::from_vec(vec![10.0, 10.0], &[2]),
+    ];
+
+    let mut optimizer = StreamingSGD::new(0.1)
+        .weight_decay(0.1);
+
+    // Zero gradients
+    let gradients = vec![
+        Tensor::zeros(&[2]),
+    ];
+
+    let initial_val = params[0].get(0);
+    optimizer.step(&mut params, &gradients);
+
+    // Weight decay should reduce magnitude
+    assert!(params[0].get(0) < initial_val);
+}

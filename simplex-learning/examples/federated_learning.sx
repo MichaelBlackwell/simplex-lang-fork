@@ -1,0 +1,94 @@
+// Federated learning example
+//
+// Demonstrates distributed learning across multiple nodes
+// with privacy-preserving aggregation.
+
+use simplex_learning::tensor::Tensor;
+use simplex_learning::distributed::{
+    FederatedLearner, FederatedConfig, AggregationStrategy,
+    NodeUpdate,
+};
+
+fn main() {
+    // Initial global model
+    let initial_params = vec![
+        Tensor::randn(&[100, 50]),
+        Tensor::zeros(&[100]),
+    ];
+
+    // Configure federated learning
+    let config = FederatedConfig {
+        min_nodes: 3,
+        max_staleness: 5,
+        local_epochs: 1,
+        aggregation: AggregationStrategy::WeightedAvg,
+        ..Default::default()
+    };
+
+    // Create coordinator
+    let mut coordinator = FederatedLearner::new(config, initial_params);
+
+    // Simulate multiple nodes
+    let node_ids = vec!["node_1", "node_2", "node_3", "node_4"];
+
+    for round in 0..10 {
+        println!("Round {}", round);
+
+        // Simulate each node training locally
+        for node_id in &node_ids {
+            // Simulate local training (in production, each node runs independently)
+            let local_params = simulate_local_training(
+                coordinator.global_params(),
+                *node_id,
+            );
+
+            // Create update
+            let update = NodeUpdate {
+                node_id: node_id.to_string(),
+                params: local_params,
+                sample_count: 100 + (round * 10) as usize,
+                validation_acc: 0.8 + (round as f64 * 0.01),
+                round: round,
+                metadata: std::collections::HashMap::new(),
+            };
+
+            // Submit to coordinator
+            let aggregated = coordinator.submit_update(update);
+
+            if aggregated {
+                println!("  Aggregation triggered after {} submissions", node_ids.len());
+            }
+        }
+
+        // Print round stats
+        println!("  Global model version: {}", coordinator.round());
+    }
+
+    println!("\nFinal round: {}", coordinator.round());
+}
+
+// Simulate local training
+fn simulate_local_training(global_params: &[Tensor], node_id: &str) -> Vec<Tensor> {
+    // In production, this would be actual training
+    // Here we just add some noise to simulate learning
+    global_params.iter()
+        .map(|p| {
+            let mut local = p.clone();
+            for i in 0..local.numel() {
+                // Add node-specific gradient (simulated)
+                let gradient = 0.01 * (hash_string(node_id) as f64 / 1000.0);
+                local.set(i, local.get(i) - gradient);
+            }
+            local
+        })
+        .collect()
+}
+
+// Simple hash for simulation
+fn hash_string(s: &str) -> usize {
+    let mut h: usize = 0;
+    for c in s.bytes() {
+        h = h.wrapping_mul(31).wrapping_add(c as usize);
+    }
+    h % 1000
+}

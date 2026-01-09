@@ -1,0 +1,331 @@
+// Sentiment Learner Example
+//
+// A sentiment classifier that learns from user corrections in real-time.
+// Demonstrates the core Simplex vision: code that learns.
+//
+// Key features demonstrated:
+// - @learning annotation usage
+// - Experience replay for stability
+// - Online calibration for well-calibrated confidence
+// - Feedback-driven continuous improvement
+
+use simplex_learning::{
+    ContinuousLearner, LearnerConfig, LearningEvent,
+    Tensor, StreamingAdam, ReplayBuffer,
+    OnlineCalibration, SoftConstraint, HardConstraint, Constraint,
+};
+
+/// Sentiment categories
+enum Sentiment {
+    Negative,
+    Neutral,
+    Positive,
+}
+
+impl Sentiment {
+    fn to_index(&self) -> usize {
+        match self {
+            Sentiment::Negative => 0,
+            Sentiment::Neutral => 1,
+            Sentiment::Positive => 2,
+        }
+    }
+
+    fn from_index(idx: usize) -> Self {
+        match idx {
+            0 => Sentiment::Negative,
+            1 => Sentiment::Neutral,
+            _ => Sentiment::Positive,
+        }
+    }
+}
+
+/// Sentiment classifier that learns from feedback
+struct SentimentClassifier {
+    /// Model parameters
+    embeddings: Tensor,      // [vocab_size, embed_dim]
+    hidden_weights: Tensor,  // [embed_dim, hidden_dim]
+    output_weights: Tensor,  // [hidden_dim, 3]
+
+    /// Continuous learner
+    learner: ContinuousLearner,
+
+    /// Vocabulary mapping (simplified)
+    vocab_size: usize,
+    embed_dim: usize,
+    hidden_dim: usize,
+
+    /// Statistics
+    total_predictions: u64,
+    correct_predictions: u64,
+}
+
+impl SentimentClassifier {
+    /// Create a new sentiment classifier
+    pub fn new() -> Self {
+        let vocab_size = 10000;
+        let embed_dim = 128;
+        let hidden_dim = 256;
+
+        // Initialize parameters with Xavier initialization
+        let embeddings = Tensor::randn(&[vocab_size, embed_dim])
+            .mul_scalar((2.0 / vocab_size as f64).sqrt());
+        let hidden_weights = Tensor::randn(&[embed_dim, hidden_dim])
+            .mul_scalar((2.0 / (embed_dim + hidden_dim) as f64).sqrt());
+        let output_weights = Tensor::randn(&[hidden_dim, 3])
+            .mul_scalar((2.0 / (hidden_dim + 3) as f64).sqrt());
+
+        let params = vec![
+            embeddings.clone(),
+            hidden_weights.clone(),
+            output_weights.clone(),
+        ];
+
+        // Configure continuous learning
+        let config = LearnerConfig {
+            learning_rate: 0.0001,           // Small for stability
+            batch_size: 1,                   // Online learning
+            update_frequency: 1,             // Update every example
+            use_replay: true,                // Prevent forgetting
+            replay_buffer_size: 5000,        // Remember last 5000 examples
+            use_ewc: true,                   // Elastic weight consolidation
+            ewc_lambda: 0.4,                 // Moderate forgetting prevention
+            use_calibration: true,           // Calibrate confidence
+            target_ece: 0.05,                // Target 5% ECE
+            safety_bounds: Default::default(),
+            checkpoint_frequency: 1000,      // Save every 1000 examples
+            max_steps: 0,                    // Unlimited
+            warmup_steps: 100,               // Warm up for 100 steps
+            gradient_accumulation: 4,        // Accumulate 4 gradients
+        };
+
+        let mut learner = ContinuousLearner::new(config, params);
+
+        // Add safety constraints
+        learner.add_constraint(Constraint::Soft(
+            SoftConstraint::max_grad_norm(5.0, 0.1)
+        ));
+        learner.add_constraint(Constraint::Soft(
+            SoftConstraint::confidence_range(0.33, 0.99, 0.05)
+        ));
+        learner.add_constraint(Constraint::Hard(
+            HardConstraint::no_loss_explosion(50.0)
+        ));
+
+        // Set up event handling
+        learner = learner.on_event(|event| {
+            match event {
+                LearningEvent::StepComplete { step, loss, .. } => {
+                    if step % 100 == 0 {
+                        println!("Step {}: loss = {:.4}", step, loss);
+                    }
+                }
+                LearningEvent::CheckpointSaved { step, path } => {
+                    println!("Checkpoint saved at step {} to {}", step, path);
+                }
+                LearningEvent::CalibrationUpdated { ece, temperature, .. } => {
+                    println!("Calibration: ECE = {:.4}, temperature = {:.3}", ece, temperature);
+                }
+                LearningEvent::ConstraintViolated { constraint, is_hard, .. } => {
+                    if is_hard {
+                        println!("WARNING: Hard constraint violated: {}", constraint);
+                    }
+                }
+                _ => {}
+            }
+        });
+
+        SentimentClassifier {
+            embeddings,
+            hidden_weights,
+            output_weights,
+            learner,
+            vocab_size,
+            embed_dim,
+            hidden_dim,
+            total_predictions: 0,
+            correct_predictions: 0,
+        }
+    }
+
+    /// Start the learning process
+    pub fn start(&mut self) {
+        self.learner.start();
+    }
+
+    /// Classify sentiment of text
+    pub fn classify(&self, text: &str) -> (Sentiment, f64) {
+        // Tokenize (simplified - in production use proper tokenizer)
+        let tokens = self.tokenize(text);
+
+        // Embed and pool
+        let embedding = self.embed_and_pool(&tokens);
+
+        // Forward pass
+        let hidden = embedding.matmul(&self.hidden_weights).relu();
+        let logits = hidden.matmul(&self.output_weights);
+        let probs = logits.softmax(-1);
+
+        // Get prediction
+        let predicted_idx = probs.argmax();
+        let confidence = probs.get(predicted_idx);
+
+        (Sentiment::from_index(predicted_idx), confidence)
+    }
+
+    /// Classify and learn from feedback
+    pub fn classify_and_learn(
+        &mut self,
+        text: &str,
+        correct_sentiment: Option<Sentiment>,
+    ) -> (Sentiment, f64) {
+        // Get prediction
+        let (prediction, confidence) = self.classify(text);
+
+        self.total_predictions += 1;
+
+        // If user provides correction, learn from it
+        if let Some(correct) = correct_sentiment {
+            let is_correct = prediction.to_index() == correct.to_index();
+
+            if is_correct {
+                self.correct_predictions += 1;
+            }
+
+            // Create tensors for learning
+            let tokens = self.tokenize(text);
+            let input = self.embed_and_pool(&tokens);
+
+            // Current output (probabilities)
+            let hidden = input.matmul(&self.hidden_weights).relu();
+            let logits = hidden.matmul(&self.output_weights);
+            let output = logits.softmax(-1);
+
+            // Target (one-hot for correct sentiment)
+            let mut target = Tensor::zeros(&[3]);
+            target.set(correct.to_index(), 1.0);
+
+            // Feedback signal: positive if correct, negative if wrong
+            let feedback = if is_correct {
+                0.5 + confidence * 0.5  // Reward correct predictions
+            } else {
+                -0.5 - (1.0 - confidence) * 0.5  // Penalize wrong predictions
+            };
+
+            // Learn from this example
+            self.learner.learn(&input, &output, &target, feedback);
+        }
+
+        (prediction, confidence)
+    }
+
+    /// Get current accuracy
+    pub fn accuracy(&self) -> f64 {
+        if self.total_predictions == 0 {
+            0.0
+        } else {
+            self.correct_predictions as f64 / self.total_predictions as f64
+        }
+    }
+
+    /// Simple tokenization (word to index)
+    fn tokenize(&self, text: &str) -> Vec<usize> {
+        text.split_whitespace()
+            .map(|word| self.hash_word(word) % self.vocab_size)
+            .collect()
+    }
+
+    /// Simple word hashing
+    fn hash_word(&self, word: &str) -> usize {
+        let mut hash: usize = 5381;
+        for c in word.chars() {
+            hash = ((hash << 5).wrapping_add(hash)).wrapping_add(c as usize);
+        }
+        hash
+    }
+
+    /// Embed tokens and pool (mean pooling)
+    fn embed_and_pool(&self, tokens: &[usize]) -> Tensor {
+        if tokens.is_empty() {
+            return Tensor::zeros(&[self.embed_dim]);
+        }
+
+        let mut pooled = Tensor::zeros(&[self.embed_dim]);
+
+        for &token_idx in tokens {
+            // Get embedding for this token
+            for i in 0..self.embed_dim {
+                let embed_val = self.embeddings.get(token_idx * self.embed_dim + i);
+                pooled.set(i, pooled.get(i) + embed_val);
+            }
+        }
+
+        // Mean pooling
+        let n = tokens.len() as f64;
+        for i in 0..self.embed_dim {
+            pooled.set(i, pooled.get(i) / n);
+        }
+
+        pooled
+    }
+}
+
+/// Example usage
+fn main() {
+    println!("=== Sentiment Learner Example ===\n");
+
+    let mut classifier = SentimentClassifier::new();
+    classifier.start();
+
+    // Simulated user interactions
+    let examples = vec![
+        ("This product is amazing!", Sentiment::Positive),
+        ("Terrible experience, would not recommend", Sentiment::Negative),
+        ("It's okay, nothing special", Sentiment::Neutral),
+        ("Best purchase I've ever made!", Sentiment::Positive),
+        ("Complete waste of money", Sentiment::Negative),
+        ("Works as expected", Sentiment::Neutral),
+        ("Absolutely love it!", Sentiment::Positive),
+        ("Disappointed with the quality", Sentiment::Negative),
+        ("Average product for the price", Sentiment::Neutral),
+        ("Exceeded all my expectations", Sentiment::Positive),
+    ];
+
+    println!("Processing examples with user corrections...\n");
+
+    for (i, (text, correct_sentiment)) in examples.iter().enumerate() {
+        let (prediction, confidence) = classifier.classify_and_learn(
+            text,
+            Some(correct_sentiment.clone()),
+        );
+
+        let prediction_str = match prediction {
+            Sentiment::Negative => "Negative",
+            Sentiment::Neutral => "Neutral",
+            Sentiment::Positive => "Positive",
+        };
+
+        let correct_str = match correct_sentiment {
+            Sentiment::Negative => "Negative",
+            Sentiment::Neutral => "Neutral",
+            Sentiment::Positive => "Positive",
+        };
+
+        let status = if prediction.to_index() == correct_sentiment.to_index() {
+            "CORRECT"
+        } else {
+            "WRONG"
+        };
+
+        println!("{:2}. \"{}\"", i + 1, text);
+        println!("    Predicted: {} (confidence: {:.2})", prediction_str, confidence);
+        println!("    Correct:   {} [{}]", correct_str, status);
+        println!();
+    }
+
+    println!("Current accuracy: {:.1}%", classifier.accuracy() * 100.0);
+    println!("\nThe classifier will continue to improve as it receives more feedback!");
+}
+
+// Run the example
+main();

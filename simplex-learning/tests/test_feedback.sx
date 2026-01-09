@@ -1,0 +1,818 @@
+// Tests for feedback attribution module
+//
+// Tests:
+// - Temporal credit assignment with eligibility traces
+// - TD(λ) returns computation
+// - GAE advantage estimation
+// - Action-value (Q) estimation
+// - Counterfactual credit assignment
+// - Feedback channels and signals
+// - Multi-step returns
+
+use crate::feedback::{
+    TemporalCredit, GAE, Transition, ActionValueEstimator,
+    CounterfactualCredit, BaselineType, Attribution,
+    GradientCredit, AttentionCredit, NStepReturns,
+    FeedbackChannel, ChannelConfig,
+    ExplicitFeedback, ImplicitFeedback, DownstreamFeedback,
+    FeedbackCategory, ImplicitSignalType, DownstreamSignalType,
+    FeedbackSignal, aggregate_signals, ConsistencyFeedback,
+};
+use std::collections::HashMap;
+
+// ============================================================================
+// Temporal Credit Tests
+// ============================================================================
+
+#[test]
+fn test_temporal_credit_basic() {
+    let mut tc = TemporalCredit::new(0.99);
+
+    // Record some activations
+    tc.record_activation("gate1", 0, 1.0);
+    tc.record_activation("gate2", 1, 0.5);
+    tc.record_activation("gate1", 2, 0.8);
+
+    // Assign credit for reward at step 3
+    let attributions = tc.assign_credit(3, 1.0);
+
+    assert!(!attributions.is_empty());
+
+    // gate1 should have higher credit (more recent, higher activation)
+    let gate1_credit: f64 = attributions.iter()
+        .filter(|a| a.gate_id == "gate1")
+        .map(|a| a.credit)
+        .sum();
+    let gate2_credit: f64 = attributions.iter()
+        .filter(|a| a.gate_id == "gate2")
+        .map(|a| a.credit)
+        .sum();
+
+    // Both should have received some credit
+    assert!(gate1_credit != 0.0 || gate2_credit != 0.0);
+}
+
+#[test]
+fn test_temporal_credit_with_lambda() {
+    let tc = TemporalCredit::with_lambda(0.99, 0.95);
+
+    assert_eq!(tc.discount(), 0.99);
+    assert_eq!(tc.lambda(), 0.95);
+}
+
+#[test]
+fn test_eligibility_traces() {
+    let mut tc = TemporalCredit::with_lambda(0.99, 0.95);
+
+    // Record activation
+    tc.record_activation("gate1", 0, 1.0);
+    let e1 = tc.eligibility("gate1");
+    assert!(e1 > 0.0);
+
+    // Decay eligibility
+    tc.decay_eligibility();
+    let e2 = tc.eligibility("gate1");
+    assert!(e2 < e1);
+
+    // Eligibility should decay by gamma * lambda
+    let expected = e1 * 0.99 * 0.95;
+    assert!((e2 - expected).abs() < 1e-10);
+}
+
+#[test]
+fn test_n_step_returns() {
+    let tc = TemporalCredit::with_lambda(0.9, 0.95);
+
+    // Simple trajectory: rewards [1, 1, 1, 1], values [0, 0, 0, 0]
+    let rewards = vec![1.0, 1.0, 1.0, 1.0];
+    let values = vec![0.0, 0.0, 0.0, 0.0];
+
+    let returns = tc.compute_n_step_returns(&rewards, &values, 2);
+
+    // 2-step return at t=0: r0 + γ*r1 + γ²*V2 = 1 + 0.9*1 + 0.81*0 = 1.9
+    assert!((returns[0] - 1.9).abs() < 1e-10);
+
+    // 2-step return at t=1: r1 + γ*r2 + γ²*V3 = 1 + 0.9*1 + 0.81*0 = 1.9
+    assert!((returns[1] - 1.9).abs() < 1e-10);
+}
+
+#[test]
+fn test_lambda_returns() {
+    let tc = TemporalCredit::with_lambda(0.9, 0.0); // λ=0 means 1-step TD
+
+    let rewards = vec![1.0, 1.0, 1.0];
+    let values = vec![0.5, 0.5, 0.5];
+
+    let lambda_returns = tc.compute_lambda_returns(&rewards, &values);
+
+    // With λ=0, G_t^λ = r_t + γV_{t+1}
+    // G_0 = 1 + 0.9*0.5 = 1.45
+    assert!((lambda_returns[0] - 1.45).abs() < 1e-10);
+}
+
+#[test]
+fn test_lambda_returns_full_lambda() {
+    let tc = TemporalCredit::with_lambda(0.9, 1.0); // λ=1 means Monte Carlo
+
+    let rewards = vec![1.0, 1.0, 1.0];
+    let values = vec![0.0, 0.0, 0.0];
+
+    let lambda_returns = tc.compute_lambda_returns(&rewards, &values);
+
+    // With λ=1, G_t^λ = full discounted return
+    // G_0 = 1 + 0.9*1 + 0.81*1 = 2.71
+    assert!((lambda_returns[0] - 2.71).abs() < 1e-10);
+}
+
+#[test]
+fn test_baseline_update() {
+    let mut tc = TemporalCredit::new(0.99);
+
+    assert_eq!(tc.baseline(), 0.0);
+
+    tc.update_baseline(1.0);
+    assert!(tc.baseline() > 0.0);
+
+    // Multiple updates should move baseline towards reward
+    for _ in 0..100 {
+        tc.update_baseline(1.0);
+    }
+    assert!(tc.baseline() > 0.5);
+}
+
+// ============================================================================
+// GAE Tests
+// ============================================================================
+
+#[test]
+fn test_gae_basic() {
+    let mut gae = GAE::new(0.99, 0.95);
+
+    // Add transitions
+    gae.add_transition(Transition {
+        step: 0,
+        gate_id: "gate1".to_string(),
+        reward: 1.0,
+        value: 0.5,
+        next_value: 0.6,
+        done: false,
+    });
+
+    gae.add_transition(Transition {
+        step: 1,
+        gate_id: "gate1".to_string(),
+        reward: 1.0,
+        value: 0.6,
+        next_value: 0.0,
+        done: true,
+    });
+
+    let advantages = gae.compute_advantages();
+
+    assert_eq!(advantages.len(), 2);
+
+    // Check that advantages are computed
+    for (gate_id, adv, ret) in &advantages {
+        assert_eq!(gate_id, "gate1");
+        // Return = advantage + value
+        assert!(ret.is_finite());
+        assert!(adv.is_finite());
+    }
+}
+
+#[test]
+fn test_gae_done_resets() {
+    let mut gae = GAE::new(0.99, 0.95);
+
+    // Episode 1
+    gae.add_transition(Transition {
+        step: 0,
+        gate_id: "gate1".to_string(),
+        reward: 1.0,
+        value: 0.0,
+        next_value: 0.0,
+        done: true, // Episode ends
+    });
+
+    // Episode 2
+    gae.add_transition(Transition {
+        step: 1,
+        gate_id: "gate1".to_string(),
+        reward: 2.0,
+        value: 0.0,
+        next_value: 0.0,
+        done: true,
+    });
+
+    let advantages = gae.compute_advantages();
+
+    // First transition should have advantage = reward - value = 1.0 - 0.0 = 1.0
+    // (done=true means no bootstrap)
+    assert!((advantages[0].1 - 1.0).abs() < 1e-10);
+    assert!((advantages[1].1 - 2.0).abs() < 1e-10);
+}
+
+#[test]
+fn test_gae_clear() {
+    let mut gae = GAE::new(0.99, 0.95);
+
+    gae.add_transition(Transition {
+        step: 0,
+        gate_id: "gate1".to_string(),
+        reward: 1.0,
+        value: 0.0,
+        next_value: 0.0,
+        done: false,
+    });
+
+    assert_eq!(gae.len(), 1);
+
+    gae.clear();
+
+    assert!(gae.is_empty());
+}
+
+// ============================================================================
+// Action-Value Estimator Tests
+// ============================================================================
+
+#[test]
+fn test_q_learning_basic() {
+    let mut q = ActionValueEstimator::new(0.1, 0.99, 0.1);
+
+    // Initial Q-value should be 0
+    assert_eq!(q.get_q("gate1", "action1"), 0.0);
+
+    // Update Q-value
+    q.update_q("gate1", "action1", 1.0, None, None);
+
+    // Q-value should have increased
+    let new_q = q.get_q("gate1", "action1");
+    assert!(new_q > 0.0);
+    assert!((new_q - 0.1).abs() < 1e-10); // α * (r - Q) = 0.1 * (1 - 0) = 0.1
+}
+
+#[test]
+fn test_q_learning_convergence() {
+    let mut q = ActionValueEstimator::new(0.5, 0.9, 0.0);
+
+    // Repeatedly receive reward of 1.0 for action1
+    for _ in 0..100 {
+        q.update_q("gate1", "action1", 1.0, None, None);
+    }
+
+    // Q-value should converge towards 1.0 / (1 - γ) = 10 for infinite horizon
+    // But with terminal state (None next), it converges to 1.0
+    let final_q = q.get_q("gate1", "action1");
+    assert!((final_q - 1.0).abs() < 0.1);
+}
+
+#[test]
+fn test_sarsa_update() {
+    let mut q = ActionValueEstimator::new(0.1, 0.99, 0.0);
+
+    // Set up initial Q-values
+    q.update_q("gate1", "action1", 1.0, None, None);
+    q.update_q("gate2", "action2", 0.5, None, None);
+
+    // SARSA update: Q(s,a) += α[r + γQ(s',a') - Q(s,a)]
+    let initial_q = q.get_q("gate1", "action1");
+    q.update_q("gate1", "action1", 0.5, Some("gate2"), Some("action2"));
+
+    // Should bootstrap from Q(gate2, action2)
+    let updated_q = q.get_q("gate1", "action1");
+    assert!(updated_q != initial_q);
+}
+
+#[test]
+fn test_max_q() {
+    let mut q = ActionValueEstimator::new(0.1, 0.99, 0.0);
+
+    q.update_q("gate1", "action1", 1.0, None, None);
+    q.update_q("gate1", "action2", 2.0, None, None);
+    q.update_q("gate1", "action3", 0.5, None, None);
+
+    // Max Q should be for action2
+    let max = q.max_q("gate1");
+    assert!(max >= q.get_q("gate1", "action2"));
+}
+
+#[test]
+fn test_best_action() {
+    let mut q = ActionValueEstimator::new(1.0, 0.99, 0.0);
+
+    q.update_q("gate1", "action1", 1.0, None, None);
+    q.update_q("gate1", "action2", 2.0, None, None);
+
+    let best = q.best_action("gate1");
+    assert_eq!(best, Some("action2".to_string()));
+}
+
+#[test]
+fn test_advantage() {
+    let mut q = ActionValueEstimator::new(1.0, 0.99, 0.0);
+
+    q.update_q("gate1", "action1", 1.0, None, None);
+    q.update_q("gate1", "action2", 3.0, None, None);
+
+    // V(s) = average of Q-values = (1 + 3) / 2 = 2
+    // A(s, action1) = Q(s, action1) - V(s) = 1 - 2 = -1
+    let adv = q.advantage("gate1", "action1");
+    assert!((adv - (-1.0)).abs() < 1e-10);
+}
+
+#[test]
+fn test_state_value() {
+    let mut q = ActionValueEstimator::new(1.0, 0.99, 0.0);
+
+    q.update_q("gate1", "action1", 2.0, None, None);
+    q.update_q("gate1", "action2", 4.0, None, None);
+
+    let v = q.state_value("gate1");
+    assert!((v - 3.0).abs() < 1e-10); // (2 + 4) / 2
+}
+
+// ============================================================================
+// Counterfactual Credit Tests
+// ============================================================================
+
+#[test]
+fn test_counterfactual_running_average() {
+    let mut cf = CounterfactualCredit::new(BaselineType::RunningAverage { rate: 0.1 });
+
+    // Record some outcomes
+    cf.record_outcome(0, "gate1", 1.0, 1.0, vec![]);
+    cf.record_outcome(1, "gate1", 1.0, 1.0, vec![]);
+    cf.record_outcome(2, "gate1", 1.0, 1.0, vec![]);
+
+    // Credit for outcome above baseline should be positive
+    let attr = cf.compute_credit("gate1", 2.0);
+    assert!(attr.credit > 0.0);
+
+    // Credit for outcome below baseline should be negative
+    let attr_low = cf.compute_credit("gate1", 0.0);
+    assert!(attr_low.credit < 0.0);
+}
+
+#[test]
+fn test_counterfactual_value_function() {
+    let mut cf = CounterfactualCredit::new(BaselineType::ValueFunction);
+
+    // Record outcomes for gate1 (average = 1.0)
+    cf.record_outcome(0, "gate1", 1.0, 1.0, vec![]);
+    cf.record_outcome(1, "gate1", 1.0, 1.0, vec![]);
+
+    // Record outcomes for gate2 (average = 2.0)
+    cf.record_outcome(2, "gate2", 1.0, 2.0, vec![]);
+    cf.record_outcome(3, "gate2", 1.0, 2.0, vec![]);
+
+    // Credit for gate1 with outcome 2.0: 2.0 - 1.0 = 1.0
+    let attr1 = cf.compute_credit("gate1", 2.0);
+    assert!((attr1.credit - 1.0).abs() < 1e-10);
+
+    // Credit for gate2 with outcome 2.0: 2.0 - 2.0 = 0.0
+    let attr2 = cf.compute_credit("gate2", 2.0);
+    assert!((attr2.credit - 0.0).abs() < 1e-10);
+}
+
+#[test]
+fn test_counterfactual_leave_one_out() {
+    let mut cf = CounterfactualCredit::new(BaselineType::LeaveOneOut);
+
+    // Record outcomes
+    cf.record_outcome(0, "gate1", 1.0, 1.0, vec![]);
+    cf.record_outcome(1, "gate2", 1.0, 3.0, vec![]);
+    cf.record_outcome(2, "gate3", 1.0, 2.0, vec![]);
+
+    // Leave-one-out for gate1: baseline = average of gate2, gate3 = (3 + 2) / 2 = 2.5
+    // Credit for gate1 with outcome 1.0: 1.0 - 2.5 = -1.5
+    let attr = cf.compute_credit("gate1", 1.0);
+    assert!((attr.credit - (-1.5)).abs() < 1e-10);
+}
+
+#[test]
+fn test_counterfactual_confidence() {
+    let mut cf = CounterfactualCredit::new(BaselineType::RunningAverage { rate: 0.1 });
+
+    // Few samples = low confidence
+    cf.record_outcome(0, "gate1", 1.0, 1.0, vec![]);
+    let attr1 = cf.compute_credit("gate1", 1.0);
+    let low_conf = attr1.confidence;
+
+    // More samples = higher confidence
+    for i in 1..50 {
+        cf.record_outcome(i, "gate1", 1.0, 1.0, vec![]);
+    }
+    let attr2 = cf.compute_credit("gate1", 1.0);
+    let high_conf = attr2.confidence;
+
+    assert!(high_conf > low_conf);
+}
+
+// ============================================================================
+// Gradient Credit Tests
+// ============================================================================
+
+#[test]
+fn test_gradient_credit_basic() {
+    let mut gc = GradientCredit::new();
+
+    // Record log probabilities
+    gc.record_log_prob("gate1", 0, -0.5);
+    gc.record_log_prob("gate2", 1, -1.0);
+
+    // Compute gradients with positive reward
+    let grads = gc.compute_gradient(2, 1.0);
+
+    assert_eq!(grads.len(), 2);
+
+    // Higher log_prob (less negative) should have different gradient
+    // than lower log_prob
+    let gate1_grad = grads.iter().find(|(g, _)| g == "gate1").map(|(_, v)| *v);
+    let gate2_grad = grads.iter().find(|(g, _)| g == "gate2").map(|(_, v)| *v);
+
+    assert!(gate1_grad.is_some());
+    assert!(gate2_grad.is_some());
+}
+
+#[test]
+fn test_gradient_credit_with_entropy() {
+    let gc = GradientCredit::with_params(0.01, 0.1); // Higher entropy coef
+
+    assert_eq!(gc.baseline(), 0.0);
+}
+
+#[test]
+fn test_gradient_credit_baseline_update() {
+    let mut gc = GradientCredit::new();
+
+    gc.record_log_prob("gate1", 0, -0.5);
+    gc.compute_gradient(1, 1.0);
+
+    assert!(gc.baseline() > 0.0);
+
+    // Baseline should move towards average reward
+    for _ in 0..100 {
+        gc.record_log_prob("gate1", 0, -0.5);
+        gc.compute_gradient(1, 2.0);
+    }
+
+    assert!(gc.baseline() > 1.0);
+}
+
+// ============================================================================
+// Attention Credit Tests
+// ============================================================================
+
+#[test]
+fn test_attention_credit_basic() {
+    let mut ac = AttentionCredit::new(100);
+
+    let mut weights = HashMap::new();
+    weights.insert("gate1".to_string(), 0.7);
+    weights.insert("gate2".to_string(), 0.3);
+
+    ac.record(0, weights);
+
+    let attributions = ac.assign_credit(1, 1.0);
+
+    assert_eq!(attributions.len(), 2);
+
+    let gate1_credit = attributions.iter()
+        .find(|a| a.gate_id == "gate1")
+        .map(|a| a.credit)
+        .unwrap();
+
+    let gate2_credit = attributions.iter()
+        .find(|a| a.gate_id == "gate2")
+        .map(|a| a.credit)
+        .unwrap();
+
+    assert!((gate1_credit - 0.7).abs() < 1e-10);
+    assert!((gate2_credit - 0.3).abs() < 1e-10);
+}
+
+#[test]
+fn test_attention_credit_window() {
+    let mut ac = AttentionCredit::new(2); // Small window
+
+    let mut w1 = HashMap::new();
+    w1.insert("gate1".to_string(), 1.0);
+
+    let mut w2 = HashMap::new();
+    w2.insert("gate2".to_string(), 1.0);
+
+    let mut w3 = HashMap::new();
+    w3.insert("gate3".to_string(), 1.0);
+
+    ac.record(0, w1);
+    ac.record(1, w2);
+    ac.record(2, w3); // This should push out w1
+
+    // Assign credit at step 3 - should use w3
+    let attributions = ac.assign_credit(3, 1.0);
+
+    assert_eq!(attributions.len(), 1);
+    assert_eq!(attributions[0].gate_id, "gate3");
+}
+
+// ============================================================================
+// N-Step Returns Tests
+// ============================================================================
+
+#[test]
+fn test_n_step_returns_basic() {
+    let mut nstep = NStepReturns::new(3, 0.99);
+
+    nstep.add(1.0, 0.5);
+    assert!(nstep.compute().is_none()); // Not enough steps
+
+    nstep.add(1.0, 0.5);
+    nstep.add(1.0, 0.5);
+
+    let ret = nstep.compute();
+    assert!(ret.is_some());
+
+    // G = r0 + γr1 + γ²r2 = 1 + 0.99 + 0.9801 ≈ 2.9701
+    assert!((ret.unwrap() - 2.9701).abs() < 0.01);
+}
+
+#[test]
+fn test_n_step_returns_with_bootstrap() {
+    let mut nstep = NStepReturns::new(2, 0.9);
+
+    nstep.add(1.0, 0.0);
+    nstep.add(1.0, 0.0);
+    nstep.add(0.0, 5.0); // Bootstrap value
+
+    let ret = nstep.compute();
+    assert!(ret.is_some());
+
+    // G = r0 + γr1 + γ²V2 = 1 + 0.9 + 0.81*5 = 5.95
+    assert!((ret.unwrap() - 5.95).abs() < 0.01);
+}
+
+#[test]
+fn test_n_step_advance() {
+    let mut nstep = NStepReturns::new(2, 0.9);
+
+    nstep.add(1.0, 0.0);
+    nstep.add(2.0, 0.0);
+    nstep.add(3.0, 0.0);
+
+    // First return: 1 + 0.9*2 = 2.8
+    let ret1 = nstep.compute().unwrap();
+    assert!((ret1 - 2.8).abs() < 0.01);
+
+    nstep.advance();
+
+    // After advance, return: 2 + 0.9*3 = 4.7
+    let ret2 = nstep.compute().unwrap();
+    assert!((ret2 - 4.7).abs() < 0.01);
+}
+
+// ============================================================================
+// Feedback Signal Tests
+// ============================================================================
+
+#[test]
+fn test_explicit_feedback_to_reward() {
+    let positive = ExplicitFeedback {
+        rating: 1.0,
+        correction: None,
+        category: FeedbackCategory::Binary { positive: true },
+    };
+    assert_eq!(positive.to_reward(), 1.0);
+
+    let negative = ExplicitFeedback {
+        rating: 0.0,
+        correction: None,
+        category: FeedbackCategory::Binary { positive: false },
+    };
+    assert_eq!(negative.to_reward(), -1.0);
+
+    let rating = ExplicitFeedback {
+        rating: 0.8,
+        correction: None,
+        category: FeedbackCategory::Rating { stars: 5 },
+    };
+    assert!((rating.to_reward() - 1.0).abs() < 1e-10); // 5 stars = +1
+}
+
+#[test]
+fn test_implicit_feedback_to_reward() {
+    let accepted = ImplicitFeedback {
+        signal_type: ImplicitSignalType::Accepted,
+        duration_ms: None,
+    };
+    assert_eq!(accepted.to_reward(), 1.0);
+
+    let rejected = ImplicitFeedback {
+        signal_type: ImplicitSignalType::Rejected,
+        duration_ms: None,
+    };
+    assert_eq!(rejected.to_reward(), -1.0);
+
+    let modified = ImplicitFeedback {
+        signal_type: ImplicitSignalType::Modified { similarity: 0.8 },
+        duration_ms: None,
+    };
+    // similarity 0.8 -> 0.8 * 2 - 1 = 0.6
+    assert!((modified.to_reward() - 0.6).abs() < 1e-10);
+}
+
+#[test]
+fn test_downstream_feedback_to_reward() {
+    let test_passed = DownstreamFeedback {
+        signal_type: DownstreamSignalType::TestPassed,
+        delay_steps: 0,
+    };
+    assert_eq!(test_passed.to_reward(), 0.5);
+
+    let build_failed = DownstreamFeedback {
+        signal_type: DownstreamSignalType::BuildFailed,
+        delay_steps: 0,
+    };
+    assert_eq!(build_failed.to_reward(), -0.8);
+
+    let perf_improved = DownstreamFeedback {
+        signal_type: DownstreamSignalType::PerformanceImproved { delta: 0.5 },
+        delay_steps: 0,
+    };
+    assert_eq!(perf_improved.to_reward(), 0.5);
+}
+
+#[test]
+fn test_downstream_feedback_weight_decay() {
+    let immediate = DownstreamFeedback {
+        signal_type: DownstreamSignalType::TestPassed,
+        delay_steps: 0,
+    };
+
+    let delayed = DownstreamFeedback {
+        signal_type: DownstreamSignalType::TestPassed,
+        delay_steps: 10,
+    };
+
+    // Delayed feedback should have lower weight
+    assert!(delayed.weight() < immediate.weight());
+}
+
+#[test]
+fn test_aggregate_signals() {
+    let signals: Vec<Box<dyn FeedbackSignal>> = vec![
+        Box::new(ExplicitFeedback {
+            rating: 1.0,
+            correction: None,
+            category: FeedbackCategory::Binary { positive: true },
+        }),
+        Box::new(ImplicitFeedback {
+            signal_type: ImplicitSignalType::Accepted,
+            duration_ms: None,
+        }),
+    ];
+
+    let agg = aggregate_signals(&signals);
+    // Both are +1.0, so average should be close to 1.0 (weighted)
+    assert!(agg > 0.5);
+}
+
+// ============================================================================
+// Feedback Channel Tests
+// ============================================================================
+
+#[test]
+fn test_feedback_channel_basic() {
+    let channel: FeedbackChannel<String, String, f64> = FeedbackChannel::new("test");
+
+    // Send feedback
+    channel.send("input".to_string(), "output".to_string(), 1.0);
+
+    assert_eq!(channel.pending(), 1);
+
+    // Receive feedback
+    let received = channel.receive();
+    assert_eq!(received.len(), 1);
+
+    let (input, output, signal, discount) = &received[0];
+    assert_eq!(input, "input");
+    assert_eq!(output, "output");
+    assert_eq!(*signal, 1.0);
+    assert!(*discount > 0.0);
+}
+
+#[test]
+fn test_feedback_channel_with_handle() {
+    let channel: FeedbackChannel<String, i32, String> = FeedbackChannel::new("test");
+
+    // Record output and get handle
+    let handle = channel.record_output("query".to_string(), 42);
+
+    // Later, provide feedback
+    handle.feedback("good".to_string());
+
+    assert_eq!(channel.pending(), 1);
+}
+
+#[test]
+fn test_feedback_channel_buffer_limit() {
+    let config = ChannelConfig {
+        buffer_size: 3,
+        max_delay: 1000,
+        delay_discount: 0.95,
+    };
+
+    let channel: FeedbackChannel<i32, i32, i32> = FeedbackChannel::with_config("test", config);
+
+    // Send more than buffer size
+    for i in 0..5 {
+        channel.send(i, i, i);
+    }
+
+    // Should only have 3 (buffer size)
+    assert_eq!(channel.pending(), 3);
+}
+
+// ============================================================================
+// Integration Tests
+// ============================================================================
+
+#[test]
+fn test_td_lambda_with_gae() {
+    // Compare TD(λ) and GAE on same trajectory
+    let gamma = 0.99;
+    let lambda = 0.95;
+
+    let mut tc = TemporalCredit::with_lambda(gamma, lambda);
+    let mut gae = GAE::new(gamma, lambda);
+
+    let rewards = vec![1.0, 0.5, 2.0, -1.0, 1.5];
+    let values = vec![0.5, 0.6, 0.7, 0.8, 0.9];
+
+    // Feed same data to both
+    for i in 0..rewards.len() {
+        tc.record_activation_with_value(
+            "gate1",
+            i as u64,
+            1.0,
+            values[i],
+            None,
+        );
+
+        let next_value = if i + 1 < values.len() { values[i + 1] } else { 0.0 };
+        gae.add_transition(Transition {
+            step: i as u64,
+            gate_id: "gate1".to_string(),
+            reward: rewards[i],
+            value: values[i],
+            next_value,
+            done: i == rewards.len() - 1,
+        });
+    }
+
+    // Both should compute advantages
+    let gae_advs = gae.compute_advantages();
+    assert_eq!(gae_advs.len(), rewards.len());
+
+    // Lambda returns from TemporalCredit
+    let lambda_returns = tc.compute_lambda_returns(&rewards, &values);
+    assert_eq!(lambda_returns.len(), rewards.len());
+}
+
+#[test]
+fn test_full_attribution_pipeline() {
+    // Simulate a full feedback attribution pipeline
+
+    // 1. Create estimators
+    let mut tc = TemporalCredit::with_lambda(0.99, 0.95);
+    let mut q_estimator = ActionValueEstimator::new(0.1, 0.99, 0.1);
+    let mut cf = CounterfactualCredit::new(BaselineType::RunningAverage { rate: 0.1 });
+
+    // 2. Simulate actions and record
+    for step in 0..10 {
+        let gate_id = if step % 2 == 0 { "gate1" } else { "gate2" };
+        let action = if step % 3 == 0 { "action_a" } else { "action_b" };
+        let reward = if step % 4 == 0 { 1.0 } else { 0.0 };
+
+        // Record activation
+        tc.record_activation(gate_id, step, 1.0);
+
+        // Update Q-value
+        q_estimator.update_q(gate_id, action, reward, None, None);
+
+        // Record for counterfactual
+        cf.record_outcome(step, gate_id, 1.0, reward, vec![]);
+    }
+
+    // 3. Get attributions
+    let temporal_attr = tc.assign_credit(10, 1.0);
+    let cf_attr = cf.compute_all_attributions();
+
+    // 4. Both should have attributions
+    assert!(!temporal_attr.is_empty());
+    assert!(!cf_attr.is_empty());
+
+    // 5. Q-values should have been learned
+    assert!(q_estimator.get_q("gate1", "action_a") > 0.0 ||
+            q_estimator.get_q("gate1", "action_b") > 0.0);
+}

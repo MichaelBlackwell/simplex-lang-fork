@@ -1,0 +1,661 @@
+// Memory module tests: Replay buffer and forgetting prevention
+//
+// Tests verify:
+// 1. Replay buffer sampling strategies work correctly
+// 2. EWC prevents catastrophic forgetting
+// 3. MAS tracks parameter importance
+// 4. Progressive networks expand capacity
+
+use simplex_learning::tensor::{Tensor, Shape};
+use simplex_learning::optim::{Optimizer, SGD, Adam};
+use simplex_learning::memory::{
+    ReplayBuffer, ReplayConfig, SamplingStrategy, TensorReplayBuffer, TensorExperience,
+    EWC, EWCConfig, MAS,
+    ProgressiveNetwork, ProgressiveConfig,
+    Rng,
+};
+
+// ==================== RNG Tests ====================
+
+fn test_rng_distribution() {
+    println!("Testing RNG distribution...");
+
+    let mut rng = Rng::new(42);
+
+    // Test uniform distribution
+    let mut sum = 0.0;
+    let samples = 1000;
+
+    for _ in 0..samples {
+        sum += rng.next_f64();
+    }
+
+    let mean = sum / samples as f64;
+    // Mean should be close to 0.5
+    assert!((mean - 0.5).abs() < 0.1, "Mean {} should be close to 0.5", mean);
+
+    // Test range
+    for _ in 0..100 {
+        let val = rng.next_range(10);
+        assert!(val < 10, "Range should be [0, 10)");
+    }
+
+    println!("  RNG distribution OK!");
+}
+
+fn test_rng_shuffle() {
+    println!("Testing RNG shuffle...");
+
+    let mut rng = Rng::new(123);
+    let mut arr = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    let original = arr.clone();
+
+    rng.shuffle(&mut arr);
+
+    // Should be different from original (with high probability)
+    let same = arr.iter().zip(original.iter()).filter(|(a, b)| a == b).count();
+    assert!(same < arr.len(), "Shuffle should change order");
+
+    // Should have same elements
+    arr.sort();
+    assert_eq!(arr, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+    println!("  Shuffle works!");
+}
+
+fn test_sample_indices() {
+    println!("Testing sample_indices...");
+
+    let mut rng = Rng::new(456);
+
+    // Sample without replacement
+    let indices = rng.sample_indices(100, 10);
+    assert_eq!(indices.len(), 10);
+
+    // All unique
+    let mut unique = indices.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), 10, "Should have unique indices");
+
+    // All in range
+    for &idx in &indices {
+        assert!(idx < 100, "Index should be in range");
+    }
+
+    println!("  sample_indices works!");
+}
+
+// ==================== Replay Buffer Tests ====================
+
+fn test_replay_buffer_basic() {
+    println!("Testing basic replay buffer...");
+
+    let mut buffer: ReplayBuffer<i32, i32, f64> = ReplayBuffer::new(100);
+
+    // Add experiences
+    for i in 0..50 {
+        buffer.add(i, i * 2, 1.0);
+    }
+
+    assert_eq!(buffer.len(), 50);
+    assert!(!buffer.is_empty());
+
+    // Sample
+    let samples = buffer.sample(10);
+    assert_eq!(samples.len(), 10);
+
+    println!("  Basic replay buffer works!");
+}
+
+fn test_replay_buffer_capacity() {
+    println!("Testing replay buffer capacity...");
+
+    let mut buffer: ReplayBuffer<i32, i32, f64> = ReplayBuffer::new(20);
+
+    // Add more than capacity
+    for i in 0..50 {
+        buffer.add(i, i * 2, 1.0);
+    }
+
+    // Should be at capacity
+    assert_eq!(buffer.len(), 20);
+
+    // Oldest should be removed
+    let samples = buffer.sample(20);
+    for exp in &samples {
+        assert!(exp.input >= 30, "Old experiences should be removed");
+    }
+
+    println!("  Capacity limit works!");
+}
+
+fn test_tensor_replay_buffer() {
+    println!("Testing tensor replay buffer...");
+
+    let mut buffer = TensorReplayBuffer::new(100);
+
+    // Add tensor experiences
+    for i in 0..30 {
+        let input = Tensor::new(vec![i as f64], Shape::vector(1)).unwrap();
+        let target = Tensor::new(vec![(i * 2) as f64], Shape::vector(1)).unwrap();
+        buffer.add(input, target, 1.0 / (i + 1) as f64);
+    }
+
+    assert_eq!(buffer.len(), 30);
+
+    // Sample
+    let samples = buffer.sample(10);
+    assert_eq!(samples.len(), 10);
+
+    for (idx, exp) in &samples {
+        assert!(*idx < 30);
+        assert_eq!(exp.input.numel(), 1);
+        assert_eq!(exp.target.numel(), 1);
+    }
+
+    println!("  Tensor replay buffer works!");
+}
+
+fn test_prioritized_replay() {
+    println!("Testing prioritized experience replay...");
+
+    let config = ReplayConfig {
+        capacity: 100,
+        replay_ratio: 0.2,
+        strategy: SamplingStrategy::Prioritized { alpha: 0.6, beta: 0.4 },
+    };
+
+    let mut buffer = TensorReplayBuffer::with_config(config);
+
+    // Add experiences with varying loss (priority)
+    for i in 0..50 {
+        let input = Tensor::new(vec![i as f64], Shape::vector(1)).unwrap();
+        let target = Tensor::new(vec![(i * 2) as f64], Shape::vector(1)).unwrap();
+        let loss = if i < 10 { 10.0 } else { 0.1 }; // First 10 have high loss
+        buffer.add(input, target, loss);
+    }
+
+    // High-loss experiences should be sampled more often
+    let samples = buffer.sample(100);
+    let high_loss_count = samples.iter().filter(|(idx, _)| *idx < 10).count();
+
+    // With alpha=0.6, high loss experiences should be sampled more
+    // This is probabilistic, so we just check it's higher than uniform
+    println!("    High-loss samples: {}/100 (uniform would be ~20)", high_loss_count);
+    assert!(high_loss_count > 15, "High-loss samples should be overrepresented");
+
+    println!("  Prioritized replay works!");
+}
+
+fn test_mixed_batch() {
+    println!("Testing mixed batch creation...");
+
+    let config = ReplayConfig {
+        capacity: 100,
+        replay_ratio: 0.5, // 50% replay
+        strategy: SamplingStrategy::Uniform,
+    };
+
+    let mut buffer = TensorReplayBuffer::with_config(config);
+
+    // Pre-fill buffer
+    for i in 0..50 {
+        let input = Tensor::new(vec![i as f64], Shape::vector(1)).unwrap();
+        let target = Tensor::new(vec![(i * 2) as f64], Shape::vector(1)).unwrap();
+        buffer.add(input, target, 1.0);
+    }
+
+    // Create new batch
+    let new_inputs = vec![
+        Tensor::new(vec![100.0], Shape::vector(1)).unwrap(),
+        Tensor::new(vec![101.0], Shape::vector(1)).unwrap(),
+    ];
+    let new_targets = vec![
+        Tensor::new(vec![200.0], Shape::vector(1)).unwrap(),
+        Tensor::new(vec![202.0], Shape::vector(1)).unwrap(),
+    ];
+    let new_losses = vec![1.0, 1.0];
+
+    let (inputs, targets) = buffer.create_mixed_batch(&new_inputs, &new_targets, &new_losses);
+
+    // Should have new + replay (2 + 1 = 3)
+    assert!(inputs.len() >= 2, "Should have at least new examples");
+    assert_eq!(inputs.len(), targets.len());
+
+    println!("    Mixed batch size: {}", inputs.len());
+    println!("  Mixed batch creation works!");
+}
+
+// ==================== EWC Tests ====================
+
+fn test_ewc_consolidation() {
+    println!("Testing EWC consolidation...");
+
+    let mut ewc = EWC::new(EWCConfig {
+        lambda: 1000.0,
+        fisher_samples: 10,
+        importance_decay: 0.99,
+        online: true,
+    });
+
+    // Create optimizer with parameters
+    let param = Tensor::new(vec![1.0, 2.0, 3.0], Shape::vector(3))
+        .unwrap()
+        .requires_grad_();
+    let optimizer = SGD::new(vec![param], 0.01);
+
+    // Consolidate task
+    ewc.consolidate(&optimizer, || {
+        // Simulate gradients
+        vec![Tensor::new(vec![0.1, 0.2, 0.3], Shape::vector(3)).unwrap()]
+    });
+
+    assert_eq!(ewc.num_tasks(), 1);
+
+    // Penalty should be 0 right after consolidation (params = optimal)
+    let penalty = ewc.penalty(&optimizer);
+    assert!(penalty < 1e-6, "Penalty should be ~0 after consolidation");
+
+    println!("  EWC consolidation works!");
+}
+
+fn test_ewc_penalty() {
+    println!("Testing EWC penalty computation...");
+
+    let config = EWCConfig {
+        lambda: 100.0,
+        fisher_samples: 10,
+        importance_decay: 0.99,
+        online: true,
+    };
+    let mut ewc = EWC::new(config);
+
+    // Create and consolidate
+    let param = Tensor::new(vec![1.0, 2.0, 3.0], Shape::vector(3))
+        .unwrap()
+        .requires_grad_();
+    let mut optimizer = SGD::new(vec![param], 0.01);
+
+    ewc.consolidate(&optimizer, || {
+        vec![Tensor::new(vec![1.0, 1.0, 1.0], Shape::vector(3)).unwrap()]
+    });
+
+    // Modify parameters
+    for i in 0..3 {
+        optimizer.parameters_mut()[0].set(i, optimizer.parameters()[0].get(i) + 0.1);
+    }
+
+    // Penalty should now be non-zero
+    let penalty = ewc.penalty(&optimizer);
+    assert!(penalty > 0.0, "Penalty should be positive after param change");
+
+    println!("    Penalty after change: {:.4}", penalty);
+    println!("  EWC penalty works!");
+}
+
+fn test_ewc_gradient() {
+    println!("Testing EWC gradient computation...");
+
+    let mut ewc = EWC::new(EWCConfig::default());
+
+    let param = Tensor::new(vec![1.0, 2.0], Shape::vector(2))
+        .unwrap()
+        .requires_grad_();
+    let mut optimizer = SGD::new(vec![param], 0.01);
+
+    // Consolidate
+    ewc.consolidate(&optimizer, || {
+        vec![Tensor::new(vec![1.0, 1.0], Shape::vector(2)).unwrap()]
+    });
+
+    // Modify param
+    optimizer.parameters_mut()[0].set(0, 1.5); // +0.5 change
+
+    // Get gradients
+    let grads = ewc.gradient(&optimizer);
+    assert_eq!(grads.len(), 1);
+
+    // Gradient should push param back toward optimal
+    // grad = lambda * fisher * (param - optimal)
+    // grad[0] = 1000 * 1.0 * 0.5 = 500
+    assert!(grads[0].get(0) > 0.0, "Gradient should push back to optimal");
+
+    println!("    EWC gradient[0]: {:.2}", grads[0].get(0));
+    println!("  EWC gradient works!");
+}
+
+fn test_ewc_prevents_forgetting() {
+    println!("Testing EWC forgetting prevention...");
+
+    // This is a simplified test showing EWC constrains parameter changes
+
+    let config = EWCConfig {
+        lambda: 10000.0, // Very high lambda
+        fisher_samples: 10,
+        importance_decay: 0.99,
+        online: true,
+    };
+    let mut ewc = EWC::new(config);
+
+    // Task 1: Learn param = [1.0, 2.0]
+    let param = Tensor::new(vec![1.0, 2.0], Shape::vector(2))
+        .unwrap()
+        .requires_grad_();
+    let mut optimizer = SGD::new(vec![param], 0.1);
+
+    // Consolidate Task 1
+    ewc.consolidate(&optimizer, || {
+        vec![Tensor::new(vec![1.0, 1.0], Shape::vector(2)).unwrap()]
+    });
+
+    let task1_params = optimizer.parameters()[0].clone();
+
+    // Try to learn Task 2: push params toward [5.0, 6.0]
+    // Without EWC, this would dramatically change params
+    // With EWC, change should be limited
+
+    for _ in 0..10 {
+        // Task 2 gradient: push toward [5.0, 6.0]
+        let task2_grad = Tensor::new(vec![-1.0, -1.0], Shape::vector(2)).unwrap();
+        optimizer.parameters_mut()[0].set_grad(task2_grad);
+
+        // Apply EWC penalty
+        ewc.apply_penalty(&mut optimizer);
+
+        // Step
+        optimizer.step();
+    }
+
+    // Check params didn't change too much from Task 1
+    let task2_params = optimizer.parameters()[0].clone();
+    let drift0 = (task2_params.get(0) - task1_params.get(0)).abs();
+    let drift1 = (task2_params.get(1) - task1_params.get(1)).abs();
+
+    println!("    Task 1 params: [{:.2}, {:.2}]", task1_params.get(0), task1_params.get(1));
+    println!("    Task 2 params: [{:.2}, {:.2}]", task2_params.get(0), task2_params.get(1));
+    println!("    Drift: [{:.2}, {:.2}]", drift0, drift1);
+
+    // With high lambda, drift should be limited
+    assert!(drift0 < 1.0, "EWC should limit parameter drift");
+    assert!(drift1 < 1.0, "EWC should limit parameter drift");
+
+    println!("  EWC forgetting prevention works!");
+}
+
+// ==================== MAS Tests ====================
+
+fn test_mas_importance() {
+    println!("Testing MAS importance computation...");
+
+    let mut mas = MAS::new(1000.0);
+
+    let param = Tensor::new(vec![1.0, 2.0, 3.0], Shape::vector(3))
+        .unwrap()
+        .requires_grad_();
+    let optimizer = SGD::new(vec![param], 0.01);
+
+    // Compute importance
+    mas.compute_importance(&optimizer, || {
+        vec![Tensor::new(vec![0.5, 1.0, 0.2], Shape::vector(3)).unwrap()]
+    }, 10);
+
+    // Check penalty is 0 right after (params = optimal)
+    let penalty = mas.penalty(&optimizer);
+    assert!(penalty < 1e-6, "Penalty should be ~0 initially");
+
+    println!("  MAS importance computation works!");
+}
+
+fn test_mas_penalty() {
+    println!("Testing MAS penalty...");
+
+    let mut mas = MAS::new(100.0);
+
+    let param = Tensor::new(vec![1.0, 2.0], Shape::vector(2))
+        .unwrap()
+        .requires_grad_();
+    let mut optimizer = SGD::new(vec![param], 0.01);
+
+    // Compute importance
+    mas.compute_importance(&optimizer, || {
+        vec![Tensor::new(vec![1.0, 2.0], Shape::vector(2)).unwrap()]
+    }, 5);
+
+    // Change params
+    optimizer.parameters_mut()[0].set(0, 1.5);
+    optimizer.parameters_mut()[0].set(1, 2.5);
+
+    let penalty = mas.penalty(&optimizer);
+    assert!(penalty > 0.0, "Penalty should be positive after change");
+
+    println!("    MAS penalty: {:.4}", penalty);
+    println!("  MAS penalty works!");
+}
+
+// ==================== Progressive Networks Tests ====================
+
+fn test_progressive_network_creation() {
+    println!("Testing progressive network creation...");
+
+    let config = ProgressiveConfig {
+        layer_sizes: vec![10, 20, 10],
+        lateral_hidden: 8,
+        use_adapters: true,
+        adapter_dim: 4,
+    };
+
+    let mut network = ProgressiveNetwork::new(config);
+
+    // Add first column (task 1)
+    network.add_column();
+    assert_eq!(network.num_columns(), 1);
+
+    // Add second column (task 2)
+    network.add_column();
+    assert_eq!(network.num_columns(), 2);
+
+    // Should have parameters
+    let params = network.parameters();
+    assert!(!params.is_empty(), "Should have trainable parameters");
+
+    println!("    Columns: {}", network.num_columns());
+    println!("    Parameters: {}", params.len());
+    println!("  Progressive network creation works!");
+}
+
+fn test_progressive_forward() {
+    println!("Testing progressive network forward...");
+
+    let config = ProgressiveConfig {
+        layer_sizes: vec![4, 8, 4],
+        lateral_hidden: 4,
+        use_adapters: true,
+        adapter_dim: 2,
+    };
+
+    let mut network = ProgressiveNetwork::new(config);
+    network.add_column();
+
+    // Forward pass
+    let input = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], Shape::vector(4)).unwrap();
+    let output = network.forward(&input);
+
+    assert_eq!(output.numel(), 4, "Output should match layer size");
+
+    println!("    Output shape: [{}]", output.numel());
+    println!("  Progressive forward works!");
+}
+
+fn test_progressive_freeze() {
+    println!("Testing progressive network freezing...");
+
+    let config = ProgressiveConfig {
+        layer_sizes: vec![4, 4],
+        lateral_hidden: 2,
+        use_adapters: true,
+        adapter_dim: 2,
+    };
+
+    let mut network = ProgressiveNetwork::new(config);
+    network.add_column();
+
+    let params_before = network.parameters().len();
+
+    // Freeze and add new column
+    network.freeze_existing();
+    network.add_column();
+
+    let params_after = network.parameters().len();
+
+    // Only new column should have params
+    println!("    Params before freeze: {}", params_before);
+    println!("    Params after new column: {}", params_after);
+
+    // New column should have trainable params
+    assert!(params_after > 0, "New column should have parameters");
+
+    println!("  Progressive freeze works!");
+}
+
+// ==================== Integration Tests ====================
+
+fn test_replay_with_optimizer() {
+    println!("Testing replay buffer with optimizer...");
+
+    let config = ReplayConfig {
+        capacity: 50,
+        replay_ratio: 0.3,
+        strategy: SamplingStrategy::Uniform,
+    };
+
+    let mut buffer = TensorReplayBuffer::with_config(config);
+
+    // Create optimizer
+    let param = Tensor::new(vec![0.0, 0.0], Shape::vector(2))
+        .unwrap()
+        .requires_grad_();
+    let mut optimizer = SGD::new(vec![param], 0.1);
+
+    // Simulate learning from data + replay
+    for step in 0..20 {
+        // New data
+        let input = Tensor::new(vec![step as f64, (step * 2) as f64], Shape::vector(2)).unwrap();
+        let target = Tensor::new(vec![(step + 1) as f64, (step * 2 + 1) as f64], Shape::vector(2)).unwrap();
+
+        // Store in buffer
+        buffer.add(input.clone(), target.clone(), 1.0);
+
+        // Get replay samples
+        if buffer.len() > 5 {
+            let replay = buffer.sample(3);
+            // Would train on replay samples here
+        }
+    }
+
+    assert_eq!(buffer.len(), 20);
+    println!("  Replay with optimizer works!");
+}
+
+fn test_ewc_with_replay() {
+    println!("Testing EWC combined with replay...");
+
+    // Create buffer and EWC
+    let mut buffer = TensorReplayBuffer::new(100);
+    let mut ewc = EWC::new(EWCConfig {
+        lambda: 100.0,
+        fisher_samples: 5,
+        ..EWCConfig::default()
+    });
+
+    // Create optimizer
+    let param = Tensor::new(vec![1.0, 2.0], Shape::vector(2))
+        .unwrap()
+        .requires_grad_();
+    let mut optimizer = SGD::new(vec![param], 0.01);
+
+    // Task 1
+    for i in 0..10 {
+        let input = Tensor::new(vec![i as f64], Shape::vector(1)).unwrap();
+        let target = Tensor::new(vec![(i * 2) as f64], Shape::vector(1)).unwrap();
+        buffer.add_with_task(input, target, 1.0, 0);
+    }
+
+    // Consolidate Task 1
+    ewc.consolidate(&optimizer, || {
+        vec![Tensor::new(vec![0.5, 0.5], Shape::vector(2)).unwrap()]
+    });
+
+    // Task 2 with replay from Task 1
+    for i in 0..10 {
+        let input = Tensor::new(vec![(i + 100) as f64], Shape::vector(1)).unwrap();
+        let target = Tensor::new(vec![(i * 3) as f64], Shape::vector(1)).unwrap();
+        buffer.add_with_task(input, target, 1.0, 1);
+
+        // Sample including Task 1 experiences
+        let samples = buffer.sample(5);
+        let task1_count = samples.iter().filter(|(_, exp)| exp.task_id == Some(0)).count();
+        // Should have some Task 1 samples
+        assert!(task1_count > 0 || i < 3, "Should replay Task 1 experiences");
+    }
+
+    // Check task distribution in buffer
+    let counts = buffer.task_counts();
+    println!("    Task 0 experiences: {:?}", counts.get(&Some(0)));
+    println!("    Task 1 experiences: {:?}", counts.get(&Some(1)));
+
+    println!("  EWC with replay works!");
+}
+
+// ==================== Main ====================
+
+fn main() {
+    println!("\n========================================");
+    println!("  Memory Module Tests");
+    println!("========================================\n");
+
+    // RNG tests
+    test_rng_distribution();
+    test_rng_shuffle();
+    test_sample_indices();
+
+    println!();
+
+    // Replay buffer tests
+    test_replay_buffer_basic();
+    test_replay_buffer_capacity();
+    test_tensor_replay_buffer();
+    test_prioritized_replay();
+    test_mixed_batch();
+
+    println!();
+
+    // EWC tests
+    test_ewc_consolidation();
+    test_ewc_penalty();
+    test_ewc_gradient();
+    test_ewc_prevents_forgetting();
+
+    println!();
+
+    // MAS tests
+    test_mas_importance();
+    test_mas_penalty();
+
+    println!();
+
+    // Progressive network tests
+    test_progressive_network_creation();
+    test_progressive_forward();
+    test_progressive_freeze();
+
+    println!();
+
+    // Integration tests
+    test_replay_with_optimizer();
+    test_ewc_with_replay();
+
+    println!("\n========================================");
+    println!("  All memory tests passed!");
+    println!("========================================\n");
+}

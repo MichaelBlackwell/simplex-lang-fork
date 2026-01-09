@@ -1,0 +1,681 @@
+// Core Tensor type with shape tracking and gradient support
+//
+// The Tensor is the fundamental data structure for all learning operations.
+// It supports automatic differentiation via Neural IR integration.
+
+use std::vec::Vec;
+use std::option::Option;
+use std::result::Result;
+use std::fmt::{Display, Formatter};
+
+/// Data types supported by tensors
+pub enum DType {
+    F32,
+    F64,
+    BF16,
+    I32,
+    I64,
+}
+
+impl Default for DType {
+    fn default() -> Self {
+        DType::F32
+    }
+}
+
+/// Shape of a tensor (list of dimensions)
+pub struct Shape {
+    dims: Vec<usize>,
+}
+
+impl Shape {
+    pub fn new(dims: Vec<usize>) -> Self {
+        Shape { dims }
+    }
+
+    pub fn scalar() -> Self {
+        Shape { dims: Vec::new() }
+    }
+
+    pub fn vector(n: usize) -> Self {
+        Shape { dims: vec![n] }
+    }
+
+    pub fn matrix(rows: usize, cols: usize) -> Self {
+        Shape { dims: vec![rows, cols] }
+    }
+
+    pub fn ndims(&self) -> usize {
+        self.dims.len()
+    }
+
+    pub fn numel(&self) -> usize {
+        self.dims.iter().product()
+    }
+
+    pub fn dim(&self, i: usize) -> usize {
+        self.dims[i]
+    }
+
+    pub fn dims(&self) -> &[usize] {
+        &self.dims
+    }
+
+    /// Check if shapes are broadcastable
+    pub fn broadcast_with(&self, other: &Shape) -> Option<Shape> {
+        let max_ndims = self.ndims().max(other.ndims());
+        let mut result = Vec::with_capacity(max_ndims);
+
+        for i in 0..max_ndims {
+            let d1 = if i < self.ndims() {
+                self.dims[self.ndims() - 1 - i]
+            } else {
+                1
+            };
+            let d2 = if i < other.ndims() {
+                other.dims[other.ndims() - 1 - i]
+            } else {
+                1
+            };
+
+            if d1 == d2 {
+                result.push(d1);
+            } else if d1 == 1 {
+                result.push(d2);
+            } else if d2 == 1 {
+                result.push(d1);
+            } else {
+                return None; // Not broadcastable
+            }
+        }
+
+        result.reverse();
+        Some(Shape { dims: result })
+    }
+}
+
+impl Display for Shape {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        write!(f, "[")?;
+        for (i, d) in self.dims.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", d)?;
+        }
+        write!(f, "]")
+    }
+}
+
+/// Errors that can occur during tensor operations
+pub enum TensorError {
+    ShapeMismatch { expected: Shape, got: Shape },
+    InvalidShape { reason: String },
+    GradientNotAvailable,
+    BackendError { message: String },
+}
+
+impl Display for TensorError {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        match self {
+            TensorError::ShapeMismatch { expected, got } => {
+                write!(f, "Shape mismatch: expected {}, got {}", expected, got)
+            }
+            TensorError::InvalidShape { reason } => {
+                write!(f, "Invalid shape: {}", reason)
+            }
+            TensorError::GradientNotAvailable => {
+                write!(f, "Gradient not available (requires_grad was false)")
+            }
+            TensorError::BackendError { message } => {
+                write!(f, "Backend error: {}", message)
+            }
+        }
+    }
+}
+
+/// Reference to a gradient function for backpropagation
+type GradFn = fn(&Tensor, &Tensor) -> Vec<Tensor>;
+
+/// Global tensor ID counter
+static mut TENSOR_ID_COUNTER: u64 = 0;
+
+/// Generate a unique tensor ID
+fn next_id() -> u64 {
+    unsafe {
+        TENSOR_ID_COUNTER += 1;
+        TENSOR_ID_COUNTER
+    }
+}
+
+/// Core tensor type
+pub struct Tensor {
+    /// Unique identifier for this tensor
+    id: u64,
+
+    /// Underlying data storage
+    data: Vec<f64>,
+
+    /// Shape of the tensor
+    shape: Shape,
+
+    /// Data type
+    dtype: DType,
+
+    /// Whether this tensor requires gradient computation
+    requires_grad: bool,
+
+    /// Gradient (populated after backward pass)
+    grad: Option<Box<Tensor>>,
+
+    /// Gradient function for backpropagation
+    grad_fn: Option<GradFn>,
+
+    /// Input tensors for gradient computation
+    grad_inputs: Vec<Tensor>,
+
+    /// Whether this is a leaf tensor (not computed from other tensors)
+    is_leaf: bool,
+}
+
+impl Tensor {
+    // ==================== Construction ====================
+
+    /// Create a new tensor from data and shape
+    pub fn new(data: Vec<f64>, shape: Shape) -> Result<Self, TensorError> {
+        if data.len() != shape.numel() {
+            return Err(TensorError::InvalidShape {
+                reason: format!(
+                    "Data length {} doesn't match shape {} (numel={})",
+                    data.len(),
+                    shape,
+                    shape.numel()
+                ),
+            });
+        }
+
+        Ok(Tensor {
+            id: next_id(),
+            data,
+            shape,
+            dtype: DType::F64,
+            requires_grad: false,
+            grad: None,
+            grad_fn: None,
+            grad_inputs: Vec::new(),
+            is_leaf: true,
+        })
+    }
+
+    /// Create a tensor filled with zeros
+    pub fn zeros(shape: Shape) -> Self {
+        let numel = shape.numel();
+        Tensor {
+            id: next_id(),
+            data: vec![0.0; numel],
+            shape,
+            dtype: DType::F64,
+            requires_grad: false,
+            grad: None,
+            grad_fn: None,
+            grad_inputs: Vec::new(),
+            is_leaf: true,
+        }
+    }
+
+    /// Create a tensor filled with ones
+    pub fn ones(shape: Shape) -> Self {
+        let numel = shape.numel();
+        Tensor {
+            id: next_id(),
+            data: vec![1.0; numel],
+            shape,
+            dtype: DType::F64,
+            requires_grad: false,
+            grad: None,
+            grad_fn: None,
+            grad_inputs: Vec::new(),
+            is_leaf: true,
+        }
+    }
+
+    /// Create a tensor with random normal values
+    pub fn randn(shape: Shape) -> Self {
+        let numel = shape.numel();
+        let mut data = Vec::with_capacity(numel);
+
+        // Box-Muller transform for normal distribution
+        for i in 0..numel {
+            let u1 = rand_f64();
+            let u2 = rand_f64();
+            let z = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
+            data.push(z);
+        }
+
+        Tensor {
+            id: next_id(),
+            data,
+            shape,
+            dtype: DType::F64,
+            requires_grad: false,
+            grad: None,
+            grad_fn: None,
+            grad_inputs: Vec::new(),
+            is_leaf: true,
+        }
+    }
+
+    /// Create a tensor with uniform random values in [0, 1)
+    pub fn rand(shape: Shape) -> Self {
+        let numel = shape.numel();
+        let mut data = Vec::with_capacity(numel);
+
+        for _ in 0..numel {
+            data.push(rand_f64());
+        }
+
+        Tensor {
+            id: next_id(),
+            data,
+            shape,
+            dtype: DType::F64,
+            requires_grad: false,
+            grad: None,
+            grad_fn: None,
+            grad_inputs: Vec::new(),
+            is_leaf: true,
+        }
+    }
+
+    /// Create a scalar tensor
+    pub fn scalar(value: f64) -> Self {
+        Tensor {
+            id: next_id(),
+            data: vec![value],
+            shape: Shape::scalar(),
+            dtype: DType::F64,
+            requires_grad: false,
+            grad: None,
+            grad_fn: None,
+            grad_inputs: Vec::new(),
+            is_leaf: true,
+        }
+    }
+
+    // ==================== Properties ====================
+
+    /// Get the unique ID of this tensor
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Get the shape of the tensor
+    pub fn shape(&self) -> &Shape {
+        &self.shape
+    }
+
+    /// Get the number of dimensions
+    pub fn ndims(&self) -> usize {
+        self.shape.ndims()
+    }
+
+    /// Get the total number of elements
+    pub fn numel(&self) -> usize {
+        self.shape.numel()
+    }
+
+    /// Get the data type
+    pub fn dtype(&self) -> &DType {
+        &self.dtype
+    }
+
+    /// Check if gradient computation is enabled
+    pub fn requires_grad(&self) -> bool {
+        self.requires_grad
+    }
+
+    /// Get the gradient (if available)
+    pub fn grad(&self) -> Option<&Tensor> {
+        self.grad.as_ref().map(|b| b.as_ref())
+    }
+
+    /// Check if this is a leaf tensor
+    pub fn is_leaf(&self) -> bool {
+        self.is_leaf
+    }
+
+    // ==================== Gradient Control ====================
+
+    /// Enable gradient computation for this tensor
+    pub fn requires_grad_(mut self) -> Self {
+        self.requires_grad = true;
+        self
+    }
+
+    /// Set requires_grad flag
+    pub fn set_requires_grad(&mut self, requires_grad: bool) {
+        self.requires_grad = requires_grad;
+    }
+
+    /// Zero out the gradient
+    pub fn zero_grad(&mut self) {
+        self.grad = None;
+    }
+
+    /// Set the gradient for this tensor
+    pub fn set_grad(&mut self, grad: Tensor) {
+        self.grad = Some(Box::new(grad));
+    }
+
+    /// Accumulate gradient (add to existing gradient)
+    pub fn accumulate_grad(&mut self, grad: &Tensor) {
+        if let Some(ref mut existing) = self.grad {
+            for i in 0..existing.numel().min(grad.numel()) {
+                existing.set(i, existing.get(i) + grad.get(i));
+            }
+        } else {
+            self.grad = Some(Box::new(grad.clone()));
+        }
+    }
+
+    /// Get mutable reference to gradient
+    pub fn grad_mut(&mut self) -> Option<&mut Tensor> {
+        self.grad.as_mut().map(|b| b.as_mut())
+    }
+
+    /// Detach from computation graph (returns new tensor without grad tracking)
+    pub fn detach(&self) -> Self {
+        Tensor {
+            id: next_id(),
+            data: self.data.clone(),
+            shape: Shape::new(self.shape.dims.clone()),
+            dtype: self.dtype.clone(),
+            requires_grad: false,
+            grad: None,
+            grad_fn: None,
+            grad_inputs: Vec::new(),
+            is_leaf: true,
+        }
+    }
+
+    // ==================== Data Access ====================
+
+    /// Get raw data as slice
+    pub fn data(&self) -> &[f64] {
+        &self.data
+    }
+
+    /// Get mutable raw data
+    pub fn data_mut(&mut self) -> &mut [f64] {
+        &mut self.data
+    }
+
+    /// Get element at index (flat indexing)
+    pub fn get(&self, index: usize) -> f64 {
+        self.data[index]
+    }
+
+    /// Set element at index (flat indexing)
+    pub fn set(&mut self, index: usize, value: f64) {
+        self.data[index] = value;
+    }
+
+    /// Get scalar value (for 0-d tensors)
+    pub fn item(&self) -> Result<f64, TensorError> {
+        if self.numel() != 1 {
+            return Err(TensorError::InvalidShape {
+                reason: "item() requires a scalar tensor".to_string(),
+            });
+        }
+        Ok(self.data[0])
+    }
+
+    // ==================== Shape Operations ====================
+
+    /// Reshape the tensor (returns new tensor)
+    pub fn reshape(&self, new_shape: Shape) -> Result<Self, TensorError> {
+        if new_shape.numel() != self.numel() {
+            return Err(TensorError::InvalidShape {
+                reason: format!(
+                    "Cannot reshape {} elements to shape {}",
+                    self.numel(),
+                    new_shape
+                ),
+            });
+        }
+
+        let result_id = next_id();
+        let original_shape = self.shape.clone();
+
+        let mut result = Tensor {
+            id: result_id,
+            data: self.data.clone(),
+            shape: new_shape,
+            dtype: self.dtype.clone(),
+            requires_grad: self.requires_grad,
+            grad: None,
+            grad_fn: None,
+            grad_inputs: Vec::new(),
+            is_leaf: false,
+        };
+
+        if self.requires_grad {
+            let input_id = self.id;
+            result.grad_fn = Some(Box::new(move |out_grad: &Tensor| {
+                // Reshape gradient: just reshape back to original shape
+                let mut grad = Tensor::zeros(&original_shape.dims);
+                grad.data = out_grad.data.clone();
+                grad
+            }));
+            result.grad_inputs = vec![self.clone()];
+        }
+
+        Ok(result)
+    }
+
+    /// Transpose (for 2D tensors)
+    pub fn t(&self) -> Result<Self, TensorError> {
+        if self.ndims() != 2 {
+            return Err(TensorError::InvalidShape {
+                reason: "transpose requires 2D tensor".to_string(),
+            });
+        }
+
+        let rows = self.shape.dim(0);
+        let cols = self.shape.dim(1);
+        let mut data = vec![0.0; self.numel()];
+
+        for i in 0..rows {
+            for j in 0..cols {
+                data[j * rows + i] = self.data[i * cols + j];
+            }
+        }
+
+        let result_id = next_id();
+        let out_rows = cols;
+        let out_cols = rows;
+
+        let mut result = Tensor {
+            id: result_id,
+            data,
+            shape: Shape::matrix(out_rows, out_cols),
+            dtype: self.dtype.clone(),
+            requires_grad: self.requires_grad,
+            grad: None,
+            grad_fn: None,
+            grad_inputs: Vec::new(),
+            is_leaf: false,
+        };
+
+        if self.requires_grad {
+            result.grad_fn = Some(Box::new(move |out_grad: &Tensor| {
+                // Transpose gradient: transpose the output gradient back
+                // Since transpose is its own inverse for 2D, we just transpose again
+                let grad_rows = out_grad.shape.dim(0);
+                let grad_cols = out_grad.shape.dim(1);
+                let mut grad_data = vec![0.0; out_grad.numel()];
+
+                for i in 0..grad_rows {
+                    for j in 0..grad_cols {
+                        grad_data[j * grad_rows + i] = out_grad.data[i * grad_cols + j];
+                    }
+                }
+
+                Tensor {
+                    id: next_id(),
+                    data: grad_data,
+                    shape: Shape::matrix(grad_cols, grad_rows),
+                    dtype: DType::F64,
+                    requires_grad: false,
+                    grad: None,
+                    grad_fn: None,
+                    grad_inputs: Vec::new(),
+                    is_leaf: true,
+                }
+            }));
+            result.grad_inputs = vec![self.clone()];
+        }
+
+        Ok(result)
+    }
+
+    // ==================== Reductions ====================
+
+    /// Sum all elements
+    pub fn sum(&self) -> Self {
+        let total: f64 = self.data.iter().sum();
+
+        let mut result = Tensor::scalar(total);
+
+        if self.requires_grad {
+            result.requires_grad = true;
+            result.is_leaf = false;
+            result.grad_fn = Some(sum_backward);
+            result.grad_inputs = vec![self.clone()];
+        }
+
+        result
+    }
+
+    /// Mean of all elements
+    pub fn mean(&self) -> Self {
+        let total: f64 = self.data.iter().sum();
+        let mean = total / (self.numel() as f64);
+
+        let mut result = Tensor::scalar(mean);
+
+        if self.requires_grad {
+            result.requires_grad = true;
+            result.is_leaf = false;
+            // grad_fn for mean
+        }
+
+        result
+    }
+
+    /// Maximum element
+    pub fn max(&self) -> f64 {
+        self.data.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+    }
+
+    /// Minimum element
+    pub fn min(&self) -> f64 {
+        self.data.iter().cloned().fold(f64::INFINITY, f64::min)
+    }
+
+    // ==================== Cloning ====================
+
+    /// Clone the tensor (preserves same ID - use for aliasing)
+    pub fn clone(&self) -> Self {
+        Tensor {
+            id: self.id, // Keep same ID for aliasing
+            data: self.data.clone(),
+            shape: Shape::new(self.shape.dims.clone()),
+            dtype: self.dtype.clone(),
+            requires_grad: self.requires_grad,
+            grad: self.grad.as_ref().map(|g| Box::new(g.as_ref().clone())),
+            grad_fn: self.grad_fn,
+            grad_inputs: self.grad_inputs.clone(),
+            is_leaf: self.is_leaf,
+        }
+    }
+
+    /// Deep clone with new ID (creates independent tensor)
+    pub fn deep_clone(&self) -> Self {
+        Tensor {
+            id: next_id(),
+            data: self.data.clone(),
+            shape: Shape::new(self.shape.dims.clone()),
+            dtype: self.dtype.clone(),
+            requires_grad: self.requires_grad,
+            grad: self.grad.as_ref().map(|g| Box::new(g.as_ref().clone())),
+            grad_fn: None,
+            grad_inputs: Vec::new(),
+            is_leaf: true,
+        }
+    }
+}
+
+// Gradient function for sum
+fn sum_backward(output: &Tensor, grad_output: &Tensor) -> Vec<Tensor> {
+    // Gradient of sum is all ones scaled by grad_output
+    let input = &output; // The original tensor
+    let scale = grad_output.data[0];
+    let grad_input = Tensor {
+        id: next_id(),
+        data: vec![scale; input.numel()],
+        shape: Shape::new(input.shape.dims.clone()),
+        dtype: input.dtype.clone(),
+        requires_grad: false,
+        grad: None,
+        grad_fn: None,
+        grad_inputs: Vec::new(),
+        is_leaf: true,
+    };
+    vec![grad_input]
+}
+
+// Random number generation using Xorshift64
+// Uses thread-local state for fast, non-cryptographic randomness
+
+use std::time::{SystemTime, UNIX_EPOCH};
+
+thread_local! {
+    static TENSOR_RNG_STATE: std::cell::RefCell<u64> = std::cell::RefCell::new(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0x123456789ABCDEF0)
+            ^ 0xDEADBEEFCAFEBABE
+    );
+}
+
+fn xorshift64(state: &mut u64) -> u64 {
+    let mut x = *state;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    *state = x;
+    x
+}
+
+fn rand_f64() -> f64 {
+    TENSOR_RNG_STATE.with(|state| {
+        let val = xorshift64(&mut *state.borrow_mut());
+        (val as f64) / (u64::MAX as f64)
+    })
+}
+
+/// Seed the tensor RNG for reproducibility
+pub fn seed_rng(seed: u64) {
+    TENSOR_RNG_STATE.with(|state| {
+        *state.borrow_mut() = if seed == 0 { 1 } else { seed };
+    });
+}
+
+impl Display for Tensor {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        write!(f, "Tensor(shape={}, dtype={:?}, requires_grad={})",
+               self.shape, self.dtype, self.requires_grad)
+    }
+}

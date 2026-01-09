@@ -1,0 +1,461 @@
+// Router Learner Example
+//
+// A query router that learns which specialist to route queries to based on
+// downstream performance feedback. This demonstrates:
+// - Delayed feedback handling (specialist performance is known later)
+// - Multi-signal feedback fusion
+// - Temporal credit assignment
+// - Confidence calibration for routing decisions
+
+use simplex_learning::{
+    ContinuousLearner, LearnerConfig, LearningEvent,
+    Tensor, ReplayBuffer, EWC,
+    OnlineCalibration, FeedbackChannel,
+    TemporalCredit, GAE,
+    SoftConstraint, HardConstraint, Constraint,
+};
+
+/// Available specialists
+#[derive(Clone, Copy, PartialEq)]
+enum Specialist {
+    CodeReviewer,
+    SecurityAnalyzer,
+    PerformanceOptimizer,
+    DocWriter,
+    TestGenerator,
+}
+
+impl Specialist {
+    fn to_index(&self) -> usize {
+        match self {
+            Specialist::CodeReviewer => 0,
+            Specialist::SecurityAnalyzer => 1,
+            Specialist::PerformanceOptimizer => 2,
+            Specialist::DocWriter => 3,
+            Specialist::TestGenerator => 4,
+        }
+    }
+
+    fn from_index(idx: usize) -> Self {
+        match idx % 5 {
+            0 => Specialist::CodeReviewer,
+            1 => Specialist::SecurityAnalyzer,
+            2 => Specialist::PerformanceOptimizer,
+            3 => Specialist::DocWriter,
+            _ => Specialist::TestGenerator,
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            Specialist::CodeReviewer => "CodeReviewer",
+            Specialist::SecurityAnalyzer => "SecurityAnalyzer",
+            Specialist::PerformanceOptimizer => "PerformanceOptimizer",
+            Specialist::DocWriter => "DocWriter",
+            Specialist::TestGenerator => "TestGenerator",
+        }
+    }
+}
+
+/// Delayed feedback entry
+struct DelayedFeedback {
+    query_id: u64,
+    routed_to: Specialist,
+    query_embedding: Tensor,
+    routing_probs: Tensor,
+    timestamp: u64,
+}
+
+/// Query router that learns from downstream feedback
+struct QueryRouter {
+    /// Router parameters
+    query_encoder: Tensor,      // [input_dim, hidden_dim]
+    specialist_embeddings: Tensor,  // [5, hidden_dim]
+    routing_weights: Tensor,    // [hidden_dim, 5]
+
+    /// Continuous learner
+    learner: ContinuousLearner,
+
+    /// Temporal credit assignment
+    credit_assigner: TemporalCredit,
+
+    /// Pending feedback (delayed)
+    pending_feedback: Vec<DelayedFeedback>,
+
+    /// Configuration
+    hidden_dim: usize,
+    feedback_delay_steps: u64,
+
+    /// Statistics
+    query_id_counter: u64,
+    routing_history: Vec<(Specialist, f64)>,  // (specialist, quality)
+}
+
+impl QueryRouter {
+    /// Create a new query router
+    pub fn new() -> Self {
+        let input_dim = 256;  // Query embedding dimension
+        let hidden_dim = 128;
+        let num_specialists = 5;
+
+        // Initialize parameters
+        let query_encoder = Tensor::randn(&[input_dim, hidden_dim])
+            .mul_scalar((2.0 / (input_dim + hidden_dim) as f64).sqrt());
+        let specialist_embeddings = Tensor::randn(&[num_specialists, hidden_dim])
+            .mul_scalar((2.0 / (num_specialists + hidden_dim) as f64).sqrt());
+        let routing_weights = Tensor::randn(&[hidden_dim, num_specialists])
+            .mul_scalar((2.0 / (hidden_dim + num_specialists) as f64).sqrt());
+
+        let params = vec![
+            query_encoder.clone(),
+            specialist_embeddings.clone(),
+            routing_weights.clone(),
+        ];
+
+        // Configure continuous learning
+        let config = LearnerConfig {
+            learning_rate: 0.0005,           // Conservative for routing
+            batch_size: 8,
+            update_frequency: 1,
+            use_replay: true,                // Critical for delayed feedback
+            replay_buffer_size: 10000,       // Large buffer for delayed signals
+            use_ewc: false,                  // Less important for routing
+            ewc_lambda: 0.0,
+            use_calibration: true,           // Important for routing confidence
+            target_ece: 0.1,                 // Routing can tolerate more miscalibration
+            safety_bounds: Default::default(),
+            checkpoint_frequency: 2000,
+            max_steps: 0,
+            warmup_steps: 200,
+            gradient_accumulation: 8,        // Batch multiple delayed feedbacks
+        };
+
+        let mut learner = ContinuousLearner::new(config, params);
+
+        // Add routing-specific constraints
+        learner.add_constraint(Constraint::Soft(
+            SoftConstraint::confidence_range(0.2, 0.95, 0.1)
+        ));
+        learner.add_constraint(Constraint::Hard(
+            HardConstraint::always_valid(|output: &Tensor| {
+                // At least one specialist must have non-zero probability
+                output.sum() > 0.0
+            })
+        ));
+
+        // Set up event handling
+        learner = learner.on_event(|event| {
+            match event {
+                LearningEvent::StepComplete { step, loss, metrics } => {
+                    if step % 500 == 0 {
+                        println!("[Router] Step {}: loss={:.4}, lr={:.6}",
+                            step, loss, metrics.learning_rate);
+                    }
+                }
+                LearningEvent::CalibrationUpdated { ece, .. } => {
+                    println!("[Router] Routing calibration ECE: {:.4}", ece);
+                }
+                _ => {}
+            }
+        });
+
+        // Initialize temporal credit assignment
+        let credit_assigner = TemporalCredit::new(
+            0.95,   // Discount factor (future feedback matters less)
+            0.8,    // Lambda for eligibility traces
+        );
+
+        QueryRouter {
+            query_encoder,
+            specialist_embeddings,
+            routing_weights,
+            learner,
+            credit_assigner,
+            pending_feedback: Vec::new(),
+            hidden_dim,
+            feedback_delay_steps: 10,  // Feedback arrives ~10 steps later
+            query_id_counter: 0,
+            routing_history: Vec::new(),
+        }
+    }
+
+    /// Start the router
+    pub fn start(&mut self) {
+        self.learner.start();
+    }
+
+    /// Route a query to a specialist
+    pub fn route(&mut self, query: &Tensor) -> (Specialist, f64) {
+        // Encode query
+        let encoded = query.matmul(&self.query_encoder).relu();
+
+        // Compute routing scores
+        let scores = encoded.matmul(&self.routing_weights);
+        let probs = scores.softmax(-1);
+
+        // Select specialist (argmax for deterministic, or sample for exploration)
+        let selected_idx = probs.argmax();
+        let confidence = probs.get(selected_idx);
+
+        let specialist = Specialist::from_index(selected_idx);
+
+        // Store pending feedback entry
+        self.query_id_counter += 1;
+        self.pending_feedback.push(DelayedFeedback {
+            query_id: self.query_id_counter,
+            routed_to: specialist,
+            query_embedding: query.clone(),
+            routing_probs: probs,
+            timestamp: self.learner.step(),
+        });
+
+        // Record activation for credit assignment
+        self.credit_assigner.record_activation(
+            self.query_id_counter,
+            selected_idx,
+            confidence,
+        );
+
+        (specialist, confidence)
+    }
+
+    /// Receive feedback about a completed query
+    pub fn receive_feedback(&mut self, query_id: u64, quality: f64) {
+        // Find the pending feedback entry
+        if let Some(idx) = self.pending_feedback.iter()
+            .position(|f| f.query_id == query_id)
+        {
+            let feedback = self.pending_feedback.remove(idx);
+
+            // Record in history
+            self.routing_history.push((feedback.routed_to, quality));
+
+            // Compute credit for this delayed feedback
+            let delay = self.learner.step() - feedback.timestamp;
+            let discounted_quality = quality * 0.95_f64.powi(delay as i32);
+
+            // Create target (one-hot for best specialist, but weighted by quality)
+            let mut target = Tensor::zeros(&[5]);
+            target.set(feedback.routed_to.to_index(), quality);
+
+            // If quality was low, boost probability of other specialists
+            if quality < 0.5 {
+                for i in 0..5 {
+                    if i != feedback.routed_to.to_index() {
+                        target.set(i, (1.0 - quality) / 4.0);
+                    }
+                }
+                target = target.softmax(-1);  // Normalize
+            }
+
+            // Learn from this feedback
+            let feedback_signal = discounted_quality * 2.0 - 1.0;  // Map [0,1] to [-1,1]
+            self.learner.learn(
+                &feedback.query_embedding,
+                &feedback.routing_probs,
+                &target,
+                feedback_signal,
+            );
+
+            // Assign credit to the action
+            self.credit_assigner.assign_credit(query_id, discounted_quality);
+        }
+    }
+
+    /// Process any feedback that's been waiting too long
+    pub fn process_stale_feedback(&mut self) {
+        let current_step = self.learner.step();
+        let stale_threshold = current_step.saturating_sub(self.feedback_delay_steps * 2);
+
+        // Remove stale entries (assume neutral quality if no feedback received)
+        let stale_ids: Vec<u64> = self.pending_feedback.iter()
+            .filter(|f| f.timestamp < stale_threshold)
+            .map(|f| f.query_id)
+            .collect();
+
+        for query_id in stale_ids {
+            self.receive_feedback(query_id, 0.5);  // Neutral quality
+        }
+    }
+
+    /// Get routing statistics for a specialist
+    pub fn specialist_stats(&self, specialist: Specialist) -> (usize, f64) {
+        let relevant: Vec<f64> = self.routing_history.iter()
+            .filter(|(s, _)| *s == specialist)
+            .map(|(_, q)| *q)
+            .collect();
+
+        let count = relevant.len();
+        let avg_quality = if count > 0 {
+            relevant.iter().sum::<f64>() / count as f64
+        } else {
+            0.0
+        };
+
+        (count, avg_quality)
+    }
+
+    /// Get overall routing quality
+    pub fn overall_quality(&self) -> f64 {
+        if self.routing_history.is_empty() {
+            0.0
+        } else {
+            self.routing_history.iter()
+                .map(|(_, q)| *q)
+                .sum::<f64>() / self.routing_history.len() as f64
+        }
+    }
+}
+
+/// Simulated query generator
+fn generate_query(query_type: &str, hidden_dim: usize) -> Tensor {
+    let mut query = Tensor::randn(&[256]);
+
+    // Add query-type-specific patterns
+    match query_type {
+        "code_review" => {
+            // Pattern that should route to CodeReviewer
+            for i in 0..50 {
+                query.set(i, query.get(i) + 0.5);
+            }
+        }
+        "security" => {
+            // Pattern that should route to SecurityAnalyzer
+            for i in 50..100 {
+                query.set(i, query.get(i) + 0.5);
+            }
+        }
+        "performance" => {
+            // Pattern that should route to PerformanceOptimizer
+            for i in 100..150 {
+                query.set(i, query.get(i) + 0.5);
+            }
+        }
+        "documentation" => {
+            // Pattern that should route to DocWriter
+            for i in 150..200 {
+                query.set(i, query.get(i) + 0.5);
+            }
+        }
+        "testing" => {
+            // Pattern that should route to TestGenerator
+            for i in 200..256 {
+                query.set(i, query.get(i) + 0.5);
+            }
+        }
+        _ => {}
+    }
+
+    query
+}
+
+/// Simulate specialist quality (some specialists are better at certain tasks)
+fn simulate_quality(query_type: &str, specialist: Specialist) -> f64 {
+    let base_quality = match (query_type, specialist) {
+        ("code_review", Specialist::CodeReviewer) => 0.9,
+        ("security", Specialist::SecurityAnalyzer) => 0.9,
+        ("performance", Specialist::PerformanceOptimizer) => 0.9,
+        ("documentation", Specialist::DocWriter) => 0.9,
+        ("testing", Specialist::TestGenerator) => 0.9,
+        // Moderate quality for related tasks
+        ("code_review", Specialist::SecurityAnalyzer) => 0.6,
+        ("security", Specialist::CodeReviewer) => 0.5,
+        ("performance", Specialist::CodeReviewer) => 0.4,
+        // Poor quality for unrelated tasks
+        _ => 0.3,
+    };
+
+    // Add some noise
+    let noise = (rng::next_f64() - 0.5) * 0.2;
+    (base_quality + noise).max(0.0).min(1.0)
+}
+
+/// Example usage
+fn main() {
+    println!("=== Query Router Learner Example ===\n");
+
+    let mut router = QueryRouter::new();
+    router.start();
+
+    let query_types = vec!["code_review", "security", "performance", "documentation", "testing"];
+
+    println!("Phase 1: Initial routing (before learning)\n");
+
+    // First batch: route queries without feedback (to establish baseline)
+    let mut pending_queries: Vec<(u64, &str, Specialist)> = Vec::new();
+
+    for i in 0..50 {
+        let query_type = query_types[i % 5];
+        let query = generate_query(query_type, 128);
+        let (specialist, confidence) = router.route(&query);
+
+        pending_queries.push((router.query_id_counter, query_type, specialist));
+
+        if i < 10 {
+            println!("Query '{}' -> {} (confidence: {:.2})",
+                query_type, specialist.name(), confidence);
+        }
+    }
+
+    println!("\n... routing 40 more queries ...\n");
+
+    println!("Phase 2: Receiving delayed feedback\n");
+
+    // Simulate delayed feedback arrival
+    for (query_id, query_type, specialist) in &pending_queries {
+        let quality = simulate_quality(query_type, *specialist);
+        router.receive_feedback(*query_id, quality);
+    }
+
+    println!("Processed {} feedback signals\n", pending_queries.len());
+
+    println!("Phase 3: Continued routing with learning\n");
+
+    // Continue routing - should improve over time
+    for round in 0..10 {
+        pending_queries.clear();
+
+        // Route 50 more queries
+        for i in 0..50 {
+            let query_type = query_types[i % 5];
+            let query = generate_query(query_type, 128);
+            let (specialist, _) = router.route(&query);
+            pending_queries.push((router.query_id_counter, query_type, specialist));
+        }
+
+        // Receive feedback
+        for (query_id, query_type, specialist) in &pending_queries {
+            let quality = simulate_quality(query_type, *specialist);
+            router.receive_feedback(*query_id, quality);
+        }
+
+        // Process any stale feedback
+        router.process_stale_feedback();
+
+        if round % 2 == 0 {
+            println!("Round {}: Overall routing quality = {:.3}",
+                round + 1, router.overall_quality());
+        }
+    }
+
+    println!("\n=== Final Statistics ===\n");
+
+    for specialist in [
+        Specialist::CodeReviewer,
+        Specialist::SecurityAnalyzer,
+        Specialist::PerformanceOptimizer,
+        Specialist::DocWriter,
+        Specialist::TestGenerator,
+    ] {
+        let (count, avg_quality) = router.specialist_stats(specialist);
+        println!("{:20}: {} queries, avg quality {:.3}",
+            specialist.name(), count, avg_quality);
+    }
+
+    println!("\nOverall routing quality: {:.3}", router.overall_quality());
+    println!("\nThe router learns which specialists handle which query types best!");
+}
+
+use simplex_learning::memory::rng;
+
+main();

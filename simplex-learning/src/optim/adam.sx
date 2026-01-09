@@ -1,0 +1,414 @@
+// Adam and AdamW optimizers
+//
+// Adaptive moment estimation optimizers with optional weight decay.
+
+use super::{Optimizer, OptimizerState, ParamState};
+use crate::tensor::{Tensor, Shape};
+
+/// Adam optimizer
+pub struct Adam {
+    /// Parameters to optimize
+    params: Vec<Tensor>,
+
+    /// Learning rate
+    lr: f64,
+
+    /// First moment decay rate
+    beta1: f64,
+
+    /// Second moment decay rate
+    beta2: f64,
+
+    /// Numerical stability epsilon
+    eps: f64,
+
+    /// Weight decay (L2 regularization)
+    weight_decay: f64,
+
+    /// Whether to use AMSGrad variant
+    amsgrad: bool,
+
+    /// First moment estimates
+    m: Vec<Tensor>,
+
+    /// Second moment estimates
+    v: Vec<Tensor>,
+
+    /// Maximum second moment (for AMSGrad)
+    v_max: Vec<Tensor>,
+
+    /// Step count
+    step_count: u64,
+}
+
+impl Adam {
+    /// Create a new Adam optimizer
+    pub fn new(params: Vec<Tensor>, lr: f64) -> Self {
+        let m = params.iter()
+            .map(|p| Tensor::zeros(Shape::new(p.shape().dims().to_vec())))
+            .collect();
+        let v = params.iter()
+            .map(|p| Tensor::zeros(Shape::new(p.shape().dims().to_vec())))
+            .collect();
+        let v_max = params.iter()
+            .map(|p| Tensor::zeros(Shape::new(p.shape().dims().to_vec())))
+            .collect();
+
+        Adam {
+            params,
+            lr,
+            beta1: 0.9,
+            beta2: 0.999,
+            eps: 1e-8,
+            weight_decay: 0.0,
+            amsgrad: false,
+            m,
+            v,
+            v_max,
+            step_count: 0,
+        }
+    }
+
+    /// Set beta values
+    pub fn betas(mut self, beta1: f64, beta2: f64) -> Self {
+        self.beta1 = beta1;
+        self.beta2 = beta2;
+        self
+    }
+
+    /// Set epsilon
+    pub fn eps(mut self, eps: f64) -> Self {
+        self.eps = eps;
+        self
+    }
+
+    /// Set weight decay
+    pub fn weight_decay(mut self, weight_decay: f64) -> Self {
+        self.weight_decay = weight_decay;
+        self
+    }
+
+    /// Enable AMSGrad
+    pub fn amsgrad(mut self, amsgrad: bool) -> Self {
+        self.amsgrad = amsgrad;
+        self
+    }
+}
+
+impl Optimizer for Adam {
+    fn step(&mut self) {
+        self.step_count += 1;
+
+        // Bias correction
+        let bias_correction1 = 1.0 - self.beta1.powi(self.step_count as i32);
+        let bias_correction2 = 1.0 - self.beta2.powi(self.step_count as i32);
+
+        for (i, param) in self.params.iter_mut().enumerate() {
+            let grad = match param.grad() {
+                Some(g) => g.clone(),
+                None => continue,
+            };
+
+            // Apply weight decay (L2 regularization for Adam)
+            let grad = if self.weight_decay != 0.0 {
+                let decay = crate::tensor::ops::scale(param, self.weight_decay);
+                crate::tensor::ops::add(&grad, &decay).unwrap()
+            } else {
+                grad
+            };
+
+            // Update biased first moment estimate
+            // m = beta1 * m + (1 - beta1) * grad
+            for j in 0..param.numel() {
+                let old_m = self.m[i].get(j);
+                let new_m = self.beta1 * old_m + (1.0 - self.beta1) * grad.get(j);
+                self.m[i].set(j, new_m);
+
+                // Update biased second moment estimate
+                // v = beta2 * v + (1 - beta2) * grad^2
+                let old_v = self.v[i].get(j);
+                let new_v = self.beta2 * old_v + (1.0 - self.beta2) * grad.get(j) * grad.get(j);
+                self.v[i].set(j, new_v);
+
+                // AMSGrad: use max of v
+                let v_used = if self.amsgrad {
+                    let old_vmax = self.v_max[i].get(j);
+                    let new_vmax = old_vmax.max(new_v);
+                    self.v_max[i].set(j, new_vmax);
+                    new_vmax
+                } else {
+                    new_v
+                };
+
+                // Bias-corrected estimates
+                let m_hat = new_m / bias_correction1;
+                let v_hat = v_used / bias_correction2;
+
+                // Update parameter
+                // param = param - lr * m_hat / (sqrt(v_hat) + eps)
+                let update = self.lr * m_hat / (v_hat.sqrt() + self.eps);
+                param.set(j, param.get(j) - update);
+            }
+        }
+    }
+
+    fn zero_grad(&mut self) {
+        for param in &mut self.params {
+            param.zero_grad();
+        }
+    }
+
+    fn learning_rate(&self) -> f64 {
+        self.lr
+    }
+
+    fn set_learning_rate(&mut self, lr: f64) {
+        self.lr = lr;
+    }
+
+    fn parameters(&self) -> &[Tensor] {
+        &self.params
+    }
+
+    fn parameters_mut(&mut self) -> &mut [Tensor] {
+        &mut self.params
+    }
+
+    fn state_dict(&self) -> OptimizerState {
+        let param_states = self.m.iter()
+            .zip(self.v.iter())
+            .enumerate()
+            .map(|(i, (m, v))| ParamState {
+                name: format!("param_{}", i),
+                momentum: Some(m.clone()),
+                variance: Some(v.clone()),
+                extra: Vec::new(),
+            })
+            .collect();
+
+        OptimizerState {
+            step: self.step_count,
+            lr: self.lr,
+            param_states,
+        }
+    }
+
+    fn load_state_dict(&mut self, state: OptimizerState) {
+        self.step_count = state.step;
+        self.lr = state.lr;
+
+        for (i, ps) in state.param_states.into_iter().enumerate() {
+            if i < self.m.len() {
+                if let Some(m) = ps.momentum {
+                    self.m[i] = m;
+                }
+                if let Some(v) = ps.variance {
+                    self.v[i] = v;
+                }
+            }
+        }
+    }
+}
+
+/// AdamW optimizer (decoupled weight decay)
+pub struct AdamW {
+    /// Base Adam optimizer
+    base: Adam,
+}
+
+impl AdamW {
+    /// Create a new AdamW optimizer
+    pub fn new(params: Vec<Tensor>, lr: f64) -> Self {
+        AdamW {
+            base: Adam::new(params, lr),
+        }
+    }
+
+    /// Set beta values
+    pub fn betas(mut self, beta1: f64, beta2: f64) -> Self {
+        self.base = self.base.betas(beta1, beta2);
+        self
+    }
+
+    /// Set weight decay
+    pub fn weight_decay(mut self, weight_decay: f64) -> Self {
+        self.base.weight_decay = weight_decay;
+        self
+    }
+}
+
+impl Optimizer for AdamW {
+    fn step(&mut self) {
+        // Apply decoupled weight decay before Adam step
+        if self.base.weight_decay != 0.0 {
+            for param in &mut self.base.params {
+                for j in 0..param.numel() {
+                    let old_val = param.get(j);
+                    param.set(j, old_val * (1.0 - self.base.lr * self.base.weight_decay));
+                }
+            }
+        }
+
+        // Save weight decay and set to 0 for base Adam step
+        let wd = self.base.weight_decay;
+        self.base.weight_decay = 0.0;
+        self.base.step();
+        self.base.weight_decay = wd;
+    }
+
+    fn zero_grad(&mut self) {
+        self.base.zero_grad();
+    }
+
+    fn learning_rate(&self) -> f64 {
+        self.base.learning_rate()
+    }
+
+    fn set_learning_rate(&mut self, lr: f64) {
+        self.base.set_learning_rate(lr);
+    }
+
+    fn parameters(&self) -> &[Tensor] {
+        self.base.parameters()
+    }
+
+    fn parameters_mut(&mut self) -> &mut [Tensor] {
+        self.base.parameters_mut()
+    }
+
+    fn state_dict(&self) -> OptimizerState {
+        self.base.state_dict()
+    }
+
+    fn load_state_dict(&mut self, state: OptimizerState) {
+        self.base.load_state_dict(state);
+    }
+}
+
+/// Streaming Adam for online learning
+pub struct StreamingAdam {
+    /// Base Adam optimizer
+    base: Adam,
+
+    /// Gradient accumulation buffer
+    grad_accum: Vec<Tensor>,
+
+    /// Accumulation count
+    accum_count: usize,
+
+    /// Accumulation steps before update
+    accum_steps: usize,
+}
+
+impl StreamingAdam {
+    /// Create a new streaming Adam optimizer
+    pub fn new(params: Vec<Tensor>, lr: f64) -> Self {
+        let grad_accum = params.iter()
+            .map(|p| Tensor::zeros(Shape::new(p.shape().dims().to_vec())))
+            .collect();
+
+        StreamingAdam {
+            base: Adam::new(params, lr),
+            grad_accum,
+            accum_count: 0,
+            accum_steps: 1,
+        }
+    }
+
+    /// Set gradient accumulation steps
+    pub fn accumulation_steps(mut self, steps: usize) -> Self {
+        self.accum_steps = steps;
+        self
+    }
+
+    /// Set beta values
+    pub fn betas(mut self, beta1: f64, beta2: f64) -> Self {
+        self.base = self.base.betas(beta1, beta2);
+        self
+    }
+
+    /// Set weight decay
+    pub fn weight_decay(mut self, weight_decay: f64) -> Self {
+        self.base = self.base.weight_decay(weight_decay);
+        self
+    }
+
+    /// Accumulate gradients without stepping
+    pub fn accumulate(&mut self) {
+        for (i, param) in self.base.params.iter().enumerate() {
+            if let Some(grad) = param.grad() {
+                for j in 0..grad.numel() {
+                    let old_val = self.grad_accum[i].get(j);
+                    self.grad_accum[i].set(j, old_val + grad.get(j));
+                }
+            }
+        }
+        self.accum_count += 1;
+    }
+
+    /// Check if ready to step
+    pub fn should_step(&self) -> bool {
+        self.accum_count >= self.accum_steps
+    }
+
+    /// Reset accumulation
+    fn reset_accumulation(&mut self) {
+        for accum in &mut self.grad_accum {
+            for j in 0..accum.numel() {
+                accum.set(j, 0.0);
+            }
+        }
+        self.accum_count = 0;
+    }
+}
+
+impl Optimizer for StreamingAdam {
+    fn step(&mut self) {
+        self.accumulate();
+
+        if self.should_step() {
+            // Average accumulated gradients and set on params
+            let scale = 1.0 / self.accum_count as f64;
+            for (i, param) in self.base.params.iter_mut().enumerate() {
+                // Create averaged gradient tensor
+                let mut avg_grad = Tensor::zeros(param.shape());
+                for j in 0..self.grad_accum[i].numel() {
+                    avg_grad.set(j, self.grad_accum[i].get(j) * scale);
+                }
+                // Set averaged gradient on parameter
+                param.set_grad(avg_grad);
+            }
+
+            self.base.step();
+            self.reset_accumulation();
+        }
+    }
+
+    fn zero_grad(&mut self) {
+        self.base.zero_grad();
+    }
+
+    fn learning_rate(&self) -> f64 {
+        self.base.learning_rate()
+    }
+
+    fn set_learning_rate(&mut self, lr: f64) {
+        self.base.set_learning_rate(lr);
+    }
+
+    fn parameters(&self) -> &[Tensor] {
+        self.base.parameters()
+    }
+
+    fn parameters_mut(&mut self) -> &mut [Tensor] {
+        self.base.parameters_mut()
+    }
+
+    fn state_dict(&self) -> OptimizerState {
+        self.base.state_dict()
+    }
+
+    fn load_state_dict(&mut self, state: OptimizerState) {
+        self.base.load_state_dict(state);
+    }
+}

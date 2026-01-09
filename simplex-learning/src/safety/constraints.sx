@@ -1,0 +1,423 @@
+// Constraints for safe learning
+//
+// Soft constraints add penalty to loss; hard constraints block updates.
+
+/// A constraint on learning
+pub enum Constraint {
+    /// Soft constraint (penalty-based)
+    Soft(SoftConstraint),
+
+    /// Hard constraint (blocking)
+    Hard(HardConstraint),
+}
+
+/// Soft constraint configuration
+pub struct SoftConstraint {
+    /// Constraint name
+    pub name: String,
+
+    /// Check function
+    pub check: Box<dyn Fn(&LearningMetrics) -> ConstraintResult>,
+
+    /// Penalty weight when violated
+    pub penalty_weight: f64,
+
+    /// Violation count
+    violations: u64,
+}
+
+/// Hard constraint configuration
+pub struct HardConstraint {
+    /// Constraint name
+    pub name: String,
+
+    /// Check function (must return true to allow update)
+    pub check: Box<dyn Fn(&LearningMetrics) -> bool>,
+
+    /// Fallback to execute when violated
+    pub fallback: Option<Box<dyn Fn() -> ()>>,
+
+    /// Block count
+    blocks: u64,
+}
+
+/// Metrics available for constraint checking
+pub struct LearningMetrics {
+    /// Current loss
+    pub loss: f64,
+
+    /// Gradient norm
+    pub grad_norm: f64,
+
+    /// Learning rate
+    pub learning_rate: f64,
+
+    /// Parameter change magnitude
+    pub param_change: f64,
+
+    /// Output confidence
+    pub confidence: f64,
+
+    /// Prediction entropy
+    pub entropy: f64,
+
+    /// Latency (ms)
+    pub latency_ms: f64,
+
+    /// Memory usage (bytes)
+    pub memory_bytes: usize,
+
+    /// Custom metrics
+    pub custom: std::collections::HashMap<String, f64>,
+}
+
+impl Default for LearningMetrics {
+    fn default() -> Self {
+        LearningMetrics {
+            loss: 0.0,
+            grad_norm: 0.0,
+            learning_rate: 0.001,
+            param_change: 0.0,
+            confidence: 0.5,
+            entropy: 0.0,
+            latency_ms: 0.0,
+            memory_bytes: 0,
+            custom: std::collections::HashMap::new(),
+        }
+    }
+}
+
+/// Result of constraint check
+pub struct ConstraintResult {
+    /// Whether constraint is satisfied
+    pub satisfied: bool,
+
+    /// Violation magnitude (0.0 if satisfied)
+    pub violation: f64,
+
+    /// Penalty to add to loss
+    pub penalty: f64,
+
+    /// Message describing violation
+    pub message: Option<String>,
+}
+
+impl ConstraintResult {
+    pub fn satisfied() -> Self {
+        ConstraintResult {
+            satisfied: true,
+            violation: 0.0,
+            penalty: 0.0,
+            message: None,
+        }
+    }
+
+    pub fn violated(violation: f64, penalty: f64, message: &str) -> Self {
+        ConstraintResult {
+            satisfied: false,
+            violation,
+            penalty,
+            message: Some(message.to_string()),
+        }
+    }
+}
+
+/// Constraint violation record
+pub struct ConstraintViolation {
+    /// Constraint name
+    pub constraint_name: String,
+
+    /// Step when violated
+    pub step: u64,
+
+    /// Violation magnitude
+    pub magnitude: f64,
+
+    /// Whether it was a hard violation
+    pub is_hard: bool,
+
+    /// Action taken
+    pub action: ViolationAction,
+}
+
+/// Action taken on violation
+pub enum ViolationAction {
+    /// Added penalty to loss
+    Penalty(f64),
+
+    /// Blocked the update
+    Blocked,
+
+    /// Executed fallback
+    Fallback,
+
+    /// Reverted parameters
+    Reverted,
+}
+
+impl SoftConstraint {
+    /// Create a latency constraint
+    pub fn max_latency(name: &str, max_ms: f64, penalty_weight: f64) -> Self {
+        SoftConstraint {
+            name: name.to_string(),
+            check: Box::new(move |metrics| {
+                if metrics.latency_ms <= max_ms {
+                    ConstraintResult::satisfied()
+                } else {
+                    let violation = metrics.latency_ms - max_ms;
+                    let penalty = penalty_weight * violation / max_ms;
+                    ConstraintResult::violated(
+                        violation,
+                        penalty,
+                        &format!("Latency {:.1}ms exceeds max {:.1}ms", metrics.latency_ms, max_ms)
+                    )
+                }
+            }),
+            penalty_weight,
+            violations: 0,
+        }
+    }
+
+    /// Create a gradient norm constraint
+    pub fn max_grad_norm(name: &str, max_norm: f64, penalty_weight: f64) -> Self {
+        SoftConstraint {
+            name: name.to_string(),
+            check: Box::new(move |metrics| {
+                if metrics.grad_norm <= max_norm {
+                    ConstraintResult::satisfied()
+                } else {
+                    let violation = metrics.grad_norm - max_norm;
+                    let penalty = penalty_weight * (violation / max_norm).powi(2);
+                    ConstraintResult::violated(
+                        violation,
+                        penalty,
+                        &format!("Gradient norm {:.4} exceeds max {:.4}", metrics.grad_norm, max_norm)
+                    )
+                }
+            }),
+            penalty_weight,
+            violations: 0,
+        }
+    }
+
+    /// Create a confidence range constraint
+    pub fn confidence_range(name: &str, min: f64, max: f64, penalty_weight: f64) -> Self {
+        SoftConstraint {
+            name: name.to_string(),
+            check: Box::new(move |metrics| {
+                if metrics.confidence >= min && metrics.confidence <= max {
+                    ConstraintResult::satisfied()
+                } else {
+                    let violation = if metrics.confidence < min {
+                        min - metrics.confidence
+                    } else {
+                        metrics.confidence - max
+                    };
+                    ConstraintResult::violated(
+                        violation,
+                        penalty_weight * violation,
+                        &format!("Confidence {:.2} outside range [{:.2}, {:.2}]",
+                                 metrics.confidence, min, max)
+                    )
+                }
+            }),
+            penalty_weight,
+            violations: 0,
+        }
+    }
+
+    /// Check the constraint
+    pub fn check(&mut self, metrics: &LearningMetrics) -> ConstraintResult {
+        let result = (self.check)(metrics);
+        if !result.satisfied {
+            self.violations += 1;
+        }
+        result
+    }
+
+    /// Get violation count
+    pub fn violations(&self) -> u64 {
+        self.violations
+    }
+}
+
+impl HardConstraint {
+    /// Create a constraint that output must always be valid
+    pub fn always_valid(name: &str, is_valid: fn(&LearningMetrics) -> bool) -> Self {
+        HardConstraint {
+            name: name.to_string(),
+            check: Box::new(move |metrics| is_valid(metrics)),
+            fallback: None,
+            blocks: 0,
+        }
+    }
+
+    /// Create a memory limit constraint
+    pub fn max_memory(name: &str, max_bytes: usize) -> Self {
+        HardConstraint {
+            name: name.to_string(),
+            check: Box::new(move |metrics| metrics.memory_bytes <= max_bytes),
+            fallback: None,
+            blocks: 0,
+        }
+    }
+
+    /// Create a loss explosion constraint
+    pub fn no_loss_explosion(name: &str, max_loss: f64) -> Self {
+        HardConstraint {
+            name: name.to_string(),
+            check: Box::new(move |metrics| {
+                metrics.loss.is_finite() && metrics.loss <= max_loss
+            }),
+            fallback: None,
+            blocks: 0,
+        }
+    }
+
+    /// Set fallback
+    pub fn with_fallback<F: Fn() + 'static>(mut self, f: F) -> Self {
+        self.fallback = Some(Box::new(f));
+        self
+    }
+
+    /// Check the constraint
+    pub fn check(&mut self, metrics: &LearningMetrics) -> bool {
+        let ok = (self.check)(metrics);
+        if !ok {
+            self.blocks += 1;
+        }
+        ok
+    }
+
+    /// Execute fallback if set
+    pub fn execute_fallback(&self) {
+        if let Some(ref f) = self.fallback {
+            f();
+        }
+    }
+
+    /// Get block count
+    pub fn blocks(&self) -> u64 {
+        self.blocks
+    }
+}
+
+/// Constraint manager
+pub struct ConstraintManager {
+    /// Soft constraints
+    soft: Vec<SoftConstraint>,
+
+    /// Hard constraints
+    hard: Vec<HardConstraint>,
+
+    /// Violation history
+    violations: Vec<ConstraintViolation>,
+
+    /// Maximum history size
+    max_history: usize,
+}
+
+impl ConstraintManager {
+    /// Create new constraint manager
+    pub fn new() -> Self {
+        ConstraintManager {
+            soft: Vec::new(),
+            hard: Vec::new(),
+            violations: Vec::new(),
+            max_history: 1000,
+        }
+    }
+
+    /// Add a soft constraint
+    pub fn add_soft(&mut self, constraint: SoftConstraint) {
+        self.soft.push(constraint);
+    }
+
+    /// Add a hard constraint
+    pub fn add_hard(&mut self, constraint: HardConstraint) {
+        self.hard.push(constraint);
+    }
+
+    /// Check all constraints
+    ///
+    /// Returns (allow_update, total_penalty)
+    pub fn check_all(&mut self, metrics: &LearningMetrics, step: u64) -> (bool, f64) {
+        let mut total_penalty = 0.0;
+
+        // Check hard constraints first
+        for constraint in &mut self.hard {
+            if !constraint.check(metrics) {
+                self.violations.push(ConstraintViolation {
+                    constraint_name: constraint.name.clone(),
+                    step,
+                    magnitude: 1.0,
+                    is_hard: true,
+                    action: ViolationAction::Blocked,
+                });
+
+                constraint.execute_fallback();
+                return (false, 0.0);
+            }
+        }
+
+        // Check soft constraints
+        for constraint in &mut self.soft {
+            let result = constraint.check(metrics);
+            if !result.satisfied {
+                total_penalty += result.penalty;
+
+                self.violations.push(ConstraintViolation {
+                    constraint_name: constraint.name.clone(),
+                    step,
+                    magnitude: result.violation,
+                    is_hard: false,
+                    action: ViolationAction::Penalty(result.penalty),
+                });
+            }
+        }
+
+        // Trim history
+        while self.violations.len() > self.max_history {
+            self.violations.remove(0);
+        }
+
+        (true, total_penalty)
+    }
+
+    /// Get recent violations
+    pub fn recent_violations(&self, n: usize) -> &[ConstraintViolation] {
+        let start = self.violations.len().saturating_sub(n);
+        &self.violations[start..]
+    }
+
+    /// Get statistics
+    pub fn stats(&self) -> ConstraintStats {
+        let mut soft_violations = 0;
+        let mut hard_blocks = 0;
+        let mut total_penalty = 0.0;
+
+        for v in &self.violations {
+            if v.is_hard {
+                hard_blocks += 1;
+            } else {
+                soft_violations += 1;
+                if let ViolationAction::Penalty(p) = v.action {
+                    total_penalty += p;
+                }
+            }
+        }
+
+        ConstraintStats {
+            soft_violations,
+            hard_blocks,
+            total_penalty,
+        }
+    }
+}
+
+/// Constraint statistics
+pub struct ConstraintStats {
+    pub soft_violations: usize,
+    pub hard_blocks: usize,
+    pub total_penalty: f64,
+}
