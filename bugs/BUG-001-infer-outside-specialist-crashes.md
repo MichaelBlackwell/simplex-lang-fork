@@ -1,11 +1,11 @@
 # BUG-001: infer() outside specialist context passes raw string instead of SxString*
 
-**Status:** Fixed
+**Status:** Open
 **Severity:** High
 **Component:** stage0.py compiler
 **Discovered:** 2026-01-10
 **Reporter:** Codex deployment debugging
-**Fixed in:** v0.7.1
+**Fix release:** v0.7.1
 
 ## Summary
 
@@ -38,7 +38,7 @@ clang -O2 test.ll standalone_runtime.c -o test -lm -lssl -lcrypto -lsqlite3
 
 ## Root Cause Analysis
 
-### Compiler Code (stage0.py line 10371-10377, before fix)
+### Compiler Code (stage0.py lines 9364-9370)
 
 ```python
 # Not in specialist context - use default model
@@ -82,15 +82,18 @@ When a raw string pointer like `"default"` is passed:
 
 ### Contrast with Specialist Context
 
-Inside a specialist context, the model comes from `self.__model` which is properly allocated as an SxString* during specialist initialization. This path works correctly.
+Inside a specialist context (lines 9336-9362), the model comes from `self.__model` which is properly allocated as an SxString* during specialist initialization. This path works correctly.
 
-## Fix Applied
+## Expected Behavior
 
-Modified `stage0.py` line 10371-10380 to wrap the string constant using `intrinsic_string_new`:
+`infer()` should work identically whether called inside or outside a specialist context. The compiler should wrap the "default" string constant in an SxString before passing it to `intrinsic_ai_infer`.
+
+## Proposed Fix
+
+Modify stage0.py lines 9364-9370 to use `intrinsic_string_new`:
 
 ```python
 # Not in specialist context - use default model
-# BUG-001 fix: wrap raw string constant in SxString via intrinsic_string_new
 model_const = self.add_string_constant("default")
 model_ptr = self.new_temp()
 self.emit(f'  {model_ptr} = call ptr @intrinsic_string_new(ptr {model_const})')
@@ -98,17 +101,31 @@ result_ptr = self.new_temp()
 self.emit(f'  {result_ptr} = call ptr @intrinsic_ai_infer(ptr {model_ptr}, ptr {prompt_ptr}, i64 70)')
 ```
 
-This now generates correct LLVM IR:
+This would generate:
 ```llvm
-@.str.test.1 = private unnamed_addr constant [8 x i8] c"default\00"
+@.str.test.5 = private unnamed_addr constant [8 x i8] c"default\00"
 ...
-%t3 = call ptr @intrinsic_string_new(ptr @.str.test.1)
-%t4 = call ptr @intrinsic_ai_infer(ptr %t3, ptr %t2, i64 70)
+%model = call ptr @intrinsic_string_new(ptr @.str.test.5)
+%t104 = call ptr @intrinsic_ai_infer(ptr %model, ptr %t103, i64 70)
 ```
+
+The compiler already uses `intrinsic_string_new` in other places for the same purpose (see lines 5977, 6408, 6423, 6843).
+
+## Impact
+
+- Any Simplex program using `infer()` outside a specialist will crash
+- This affects all users trying to use AI inference in regular functions
+- Workaround: Only use `infer()` inside specialist actors
+
+## Related Files
+
+- `stage0.py` lines 9325-9370 (InferExpr handling)
+- `standalone_runtime.c` (intrinsic_ai_infer implementation)
+- Discovered while deploying Codex project which uses `infer()` in a regular function
 
 ## Test Coverage Gap
 
-**No existing tests covered `infer()` outside a specialist context.**
+**No existing tests cover `infer()` outside a specialist context.**
 
 All current tests in `tests/ai/` only use `infer()` inside specialist `receive` handlers:
 
@@ -121,19 +138,24 @@ All current tests in `tests/ai/` only use `infer()` inside specialist `receive` 
 
 This bug was never caught because the untested code path was never exercised.
 
-## Test Added
+## Required Test Addition
 
-New test file `tests/ai/test_infer_standalone.sx` added to prevent regression:
+Add new test file `tests/ai/test_infer_standalone.sx`:
 
 ```simplex
 // Test for infer() outside specialist context
 // This tests the "default model" code path in stage0.py
-// Added as part of BUG-001 fix
 
 fn test_infer_in_function() -> i64 {
     println("Testing infer() in regular function...");
+
+    // This should work - infer() outside specialist uses "default" model
     let response = infer("What is 2 + 2?");
+
     if response != 0 {
+        print("Response: ");
+        print_string(response);
+        println("");
         println("PASS: infer() works outside specialist");
         return 1;
     } else {
@@ -144,8 +166,10 @@ fn test_infer_in_function() -> i64 {
 
 fn test_infer_with_concat() -> i64 {
     println("Testing infer() with string concatenation...");
+
     let prompt = string_concat("Explain ", "briefly");
     let response = infer(prompt);
+
     if response != 0 {
         println("PASS: infer() works with dynamic prompt");
         return 1;
@@ -157,8 +181,23 @@ fn test_infer_with_concat() -> i64 {
 
 fn main() -> i64 {
     println("=== Testing infer() Outside Specialist Context ===");
-    let passed = test_infer_in_function() + test_infer_with_concat();
-    if passed == 2 {
+    println("");
+
+    let passed = 0;
+    let total = 2;
+
+    passed = passed + test_infer_in_function();
+    println("");
+    passed = passed + test_infer_with_concat();
+
+    println("");
+    print("Results: ");
+    print_i64(passed);
+    print("/");
+    print_i64(total);
+    println(" tests passed");
+
+    if passed == total {
         println("=== ALL TESTS PASSED ===");
         0
     } else {
@@ -168,28 +207,7 @@ fn main() -> i64 {
 }
 ```
 
-## Files Changed
-
-| File | Change |
-|------|--------|
-| `stage0.py` | Fixed line 10371-10380: wrap "default" string in SxString before calling intrinsic_ai_infer |
-| `tests/ai/test_infer_standalone.sx` | New test file for infer() outside specialist context |
-
-## Verification
-
-After fix, compiled test program generates correct IR:
-```
-%t3 = call ptr @intrinsic_string_new(ptr @.str.test_bug001.1)
-%t4 = call ptr @intrinsic_ai_infer(ptr %t3, ptr %t2, i64 70)
-```
-
-The model parameter `%t3` is now a proper `SxString*` created by `intrinsic_string_new`.
-
-## Related Files
-
-- `stage0.py` lines 10331-10380 (InferExpr handling)
-- `standalone_runtime.c` (intrinsic_ai_infer implementation)
-- Discovered while deploying Codex project which uses `infer()` in a regular function
+This test should be added alongside the compiler fix to prevent regression.
 
 ## Notes
 
