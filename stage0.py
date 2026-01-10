@@ -10369,9 +10369,12 @@ class CodeGen:
                     return result
 
             # Not in specialist context - use default model
-            model_label = self.add_string_constant("default")
+            # BUG-001 fix: wrap raw string constant in SxString via intrinsic_string_new
+            model_const = self.add_string_constant("default")
+            model_ptr = self.new_temp()
+            self.emit(f'  {model_ptr} = call ptr @intrinsic_string_new(ptr {model_const})')
             result_ptr = self.new_temp()
-            self.emit(f'  {result_ptr} = call ptr @intrinsic_ai_infer(ptr {model_label}, ptr {prompt_ptr}, i64 70)')
+            self.emit(f'  {result_ptr} = call ptr @intrinsic_ai_infer(ptr {model_ptr}, ptr {prompt_ptr}, i64 70)')
             result = self.new_temp()
             self.emit(f'  {result} = ptrtoint ptr {result_ptr} to i64')
             return result
