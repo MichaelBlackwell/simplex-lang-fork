@@ -299,8 +299,226 @@ int64_t http_response_status(int64_t resp_ptr);
 int64_t http_response_body(int64_t resp_ptr);
 void http_response_free(int64_t resp_ptr);
 
+// ========================================
+// Native LLM Integration (llama.cpp)
+// ========================================
+#ifdef SIMPLEX_LLAMA
+#include "llama.h"
+#include "common.h"
+
+// Global model state for the hive
+typedef struct {
+    struct llama_model* model;
+    struct llama_context* ctx;
+    char* model_path;
+    int n_ctx;       // context size
+    int n_threads;   // inference threads
+} NativeModel;
+
+static NativeModel* g_native_model = NULL;
+static pthread_mutex_t g_model_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// Load a GGUF model natively
+int64_t native_model_load(int64_t path_ptr) {
+    SxString* path = (SxString*)path_ptr;
+    if (!path || !path->data) return 0;
+
+    pthread_mutex_lock(&g_model_mutex);
+
+    // Free existing model if any
+    if (g_native_model) {
+        if (g_native_model->ctx) llama_free(g_native_model->ctx);
+        if (g_native_model->model) llama_free_model(g_native_model->model);
+        if (g_native_model->model_path) free(g_native_model->model_path);
+        free(g_native_model);
+        g_native_model = NULL;
+    }
+
+    // Initialize llama backend
+    llama_backend_init();
+
+    // Model parameters
+    struct llama_model_params model_params = llama_model_default_params();
+    model_params.n_gpu_layers = 0;  // CPU only for now
+
+    // Load model
+    struct llama_model* model = llama_load_model_from_file(path->data, model_params);
+    if (!model) {
+        fprintf(stderr, "[Native LLM] Failed to load model: %s\n", path->data);
+        pthread_mutex_unlock(&g_model_mutex);
+        return 0;
+    }
+
+    // Context parameters
+    struct llama_context_params ctx_params = llama_context_default_params();
+    ctx_params.n_ctx = 4096;       // Context window
+    ctx_params.n_threads = 4;      // CPU threads
+    ctx_params.n_threads_batch = 4;
+
+    // Create context
+    struct llama_context* ctx = llama_new_context_with_model(model, ctx_params);
+    if (!ctx) {
+        fprintf(stderr, "[Native LLM] Failed to create context\n");
+        llama_free_model(model);
+        pthread_mutex_unlock(&g_model_mutex);
+        return 0;
+    }
+
+    // Store in global state
+    g_native_model = (NativeModel*)malloc(sizeof(NativeModel));
+    g_native_model->model = model;
+    g_native_model->ctx = ctx;
+    g_native_model->model_path = strdup(path->data);
+    g_native_model->n_ctx = 4096;
+    g_native_model->n_threads = 4;
+
+    fprintf(stderr, "[Native LLM] Loaded model: %s\n", path->data);
+    pthread_mutex_unlock(&g_model_mutex);
+    return (int64_t)g_native_model;
+}
+
+// Run inference on loaded model
+int64_t native_model_infer(int64_t prompt_ptr, int64_t max_tokens) {
+    SxString* prompt = (SxString*)prompt_ptr;
+    if (!prompt || !prompt->data) return (int64_t)intrinsic_string_new("[Error: No prompt]");
+
+    pthread_mutex_lock(&g_model_mutex);
+
+    if (!g_native_model || !g_native_model->ctx) {
+        pthread_mutex_unlock(&g_model_mutex);
+        return (int64_t)intrinsic_string_new("[Error: No model loaded]");
+    }
+
+    // Tokenize input
+    int n_tokens = llama_tokenize(g_native_model->model, prompt->data, prompt->len, NULL, 0, true, false);
+    llama_token* tokens = (llama_token*)malloc((n_tokens + 1) * sizeof(llama_token));
+    llama_tokenize(g_native_model->model, prompt->data, prompt->len, tokens, n_tokens + 1, true, false);
+
+    // Clear context
+    llama_kv_cache_clear(g_native_model->ctx);
+
+    // Evaluate prompt
+    struct llama_batch batch = llama_batch_init(512, 0, 1);
+    for (int i = 0; i < n_tokens; i++) {
+        llama_batch_add(&batch, tokens[i], i, (llama_seq_id[]){0}, 1, false);
+    }
+    batch.logits[batch.n_tokens - 1] = true;  // Only get logits for last token
+
+    if (llama_decode(g_native_model->ctx, batch) != 0) {
+        free(tokens);
+        llama_batch_free(batch);
+        pthread_mutex_unlock(&g_model_mutex);
+        return (int64_t)intrinsic_string_new("[Error: Decode failed]");
+    }
+
+    // Generate response
+    char* output = (char*)malloc(max_tokens * 4 + 1);  // Rough estimate
+    int output_len = 0;
+
+    int n_cur = batch.n_tokens;
+    int n_gen = 0;
+
+    while (n_gen < max_tokens) {
+        float* logits = llama_get_logits_ith(g_native_model->ctx, batch.n_tokens - 1);
+        int n_vocab = llama_n_vocab(g_native_model->model);
+
+        // Simple greedy sampling
+        llama_token new_token_id = 0;
+        float max_logit = logits[0];
+        for (int i = 1; i < n_vocab; i++) {
+            if (logits[i] > max_logit) {
+                max_logit = logits[i];
+                new_token_id = i;
+            }
+        }
+
+        // Check for end of generation
+        if (llama_token_is_eog(g_native_model->model, new_token_id)) {
+            break;
+        }
+
+        // Convert token to text
+        char token_buf[256];
+        int token_len = llama_token_to_piece(g_native_model->model, new_token_id, token_buf, sizeof(token_buf), 0, false);
+        if (token_len > 0 && output_len + token_len < max_tokens * 4) {
+            memcpy(output + output_len, token_buf, token_len);
+            output_len += token_len;
+        }
+
+        // Prepare next batch
+        llama_batch_clear(&batch);
+        llama_batch_add(&batch, new_token_id, n_cur, (llama_seq_id[]){0}, 1, true);
+
+        if (llama_decode(g_native_model->ctx, batch) != 0) {
+            break;
+        }
+
+        n_cur++;
+        n_gen++;
+    }
+
+    output[output_len] = '\0';
+
+    free(tokens);
+    llama_batch_free(batch);
+    pthread_mutex_unlock(&g_model_mutex);
+
+    SxString* result = intrinsic_string_new(output);
+    free(output);
+    return (int64_t)result;
+}
+
+// Free the loaded model
+void native_model_free(void) {
+    pthread_mutex_lock(&g_model_mutex);
+    if (g_native_model) {
+        if (g_native_model->ctx) llama_free(g_native_model->ctx);
+        if (g_native_model->model) llama_free_model(g_native_model->model);
+        if (g_native_model->model_path) free(g_native_model->model_path);
+        free(g_native_model);
+        g_native_model = NULL;
+    }
+    llama_backend_free();
+    pthread_mutex_unlock(&g_model_mutex);
+}
+
+// Check if native model is loaded
+int64_t native_model_loaded(void) {
+    pthread_mutex_lock(&g_model_mutex);
+    int64_t loaded = (g_native_model != NULL) ? 1 : 0;
+    pthread_mutex_unlock(&g_model_mutex);
+    return loaded;
+}
+
+#else
+// Stub implementations when llama.cpp not available
+int64_t native_model_load(int64_t path_ptr) {
+    (void)path_ptr;
+    fprintf(stderr, "[Native LLM] Not compiled with SIMPLEX_LLAMA support\n");
+    return 0;
+}
+
+int64_t native_model_infer(int64_t prompt_ptr, int64_t max_tokens) {
+    (void)prompt_ptr;
+    (void)max_tokens;
+    return (int64_t)intrinsic_string_new("[Native LLM not available - compile with -DSIMPLEX_LLAMA]");
+}
+
+void native_model_free(void) {}
+
+int64_t native_model_loaded(void) { return 0; }
+#endif // SIMPLEX_LLAMA
+
 // AI intrinsics (real implementation with fallback)
 SxString* intrinsic_ai_infer(SxString* model, SxString* prompt, int64_t temperature) {
+    (void)temperature;  // TODO: Use temperature in native inference
+
+    // Try native inference first if model is loaded
+    if (native_model_loaded()) {
+        return (SxString*)native_model_infer((int64_t)prompt, 512);
+    }
+
+    // Fallback to API if no native model
     const char* api_key = getenv("ANTHROPIC_API_KEY");
     if (!api_key) api_key = getenv("OPENAI_API_KEY");
 

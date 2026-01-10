@@ -3090,9 +3090,14 @@ class CodeGen:
         self.emit('declare ptr @intrinsic_get_args()')
         self.emit('declare ptr @intrinsic_read_file(ptr)')
         self.emit('declare void @intrinsic_write_file(ptr, ptr)')
-        self.emit('; AI intrinsics (mock implementation)')
+        self.emit('; AI intrinsics')
         self.emit('declare ptr @intrinsic_ai_infer(ptr, ptr, i64)')
         self.emit('declare ptr @intrinsic_ai_embed(ptr)')
+        self.emit('; Native LLM intrinsics')
+        self.emit('declare i64 @native_model_load(i64)')
+        self.emit('declare i64 @native_model_infer(i64, i64)')
+        self.emit('declare void @native_model_free()')
+        self.emit('declare i64 @native_model_loaded()')
         self.emit('; Timing intrinsics for performance measurement')
         self.emit('declare i64 @intrinsic_get_time_ms()')
         self.emit('declare i64 @intrinsic_get_time_us()')
@@ -9357,9 +9362,12 @@ class CodeGen:
                     return result
 
             # Not in specialist context - use default model
-            model_label = self.add_string_constant("default")
+            # BUG-001 fix: wrap raw string constant in SxString via intrinsic_string_new
+            model_const = self.add_string_constant("default")
+            model_ptr = self.new_temp()
+            self.emit(f'  {model_ptr} = call ptr @intrinsic_string_new(ptr {model_const})')
             result_ptr = self.new_temp()
-            self.emit(f'  {result_ptr} = call ptr @intrinsic_ai_infer(ptr {model_label}, ptr {prompt_ptr}, i64 70)')
+            self.emit(f'  {result_ptr} = call ptr @intrinsic_ai_infer(ptr {model_ptr}, ptr {prompt_ptr}, i64 70)')
             result = self.new_temp()
             self.emit(f'  {result} = ptrtoint ptr {result_ptr} to i64')
             return result

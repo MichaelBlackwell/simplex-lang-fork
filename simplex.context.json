@@ -87,6 +87,65 @@
         "divine": "Global memory - accessed via runtime"
       }
     },
+    "neural_gates_v060": {
+      "description": "Learnable control flow with differentiable decision points (v0.6.0)",
+      "spec": "simplex-docs/spec/14-neural-ir.md",
+      "keywords": {
+        "neural_gate": "Differentiable decision gate that can be trained from data",
+        "branch": "Named branch within a neural gate (learned path selection)",
+        "requires": "Precondition contract for neural gate input validation",
+        "ensures": "Postcondition contract for neural gate output guarantees",
+        "fallback": "Default behavior when gate confidence is below threshold",
+        "invariant": "Invariant constraint that must hold across gate execution"
+      },
+      "compilation_modes": {
+        "train": "sxc --mode=train - Differentiable, gradients flow through all branches",
+        "infer": "sxc --mode=infer - Discrete execution, zero overhead",
+        "profile": "sxc --mode=profile - Track gate decisions with statistics"
+      },
+      "annotations": {
+        "@gpu": "Target tensor operations to GPU",
+        "@cpu": "Target control flow and branching to CPU",
+        "@npu": "Target SLM inference to Neural Processing Unit",
+        "@speculative": "Enable speculative execution of all branches",
+        "@temperature": "Temperature annealing schedule for gate softness"
+      },
+      "syntax_examples": [
+        "neural_gate should_retry(confidence: f64) -> bool { confidence > 0.7 }",
+        "neural_gate classify(text: String) -> Category requires text.len() > 0 ensures result.is_valid() fallback Category::Unknown { ... }"
+      ]
+    },
+    "real_time_learning_v070": {
+      "description": "Online adaptation during runtime without offline training (v0.7.0)",
+      "spec": "simplex-docs/spec/15-real-time-learning.md",
+      "library": "simplex_learning",
+      "import_syntax": "use simplex_learning::{OnlineLearner, StreamingAdam, SafeFallback}",
+      "core_types": {
+        "OnlineLearner": "Central component for real-time adaptation",
+        "Tensor": "Multi-dimensional array with autograd support",
+        "StreamingSGD": "SGD optimizer with momentum, constant memory",
+        "StreamingAdam": "Adam optimizer with bounded memory for moment estimates",
+        "StreamingAdamW": "AdamW with decoupled weight decay"
+      },
+      "safety_types": {
+        "SafeFallback": "Fallback strategies when learning fails (Default, LastGood, Function, Checkpoint, SkipUpdate)",
+        "SafeLearner": "Wrapper with runtime safety bounds and validation",
+        "ConstraintManager": "Soft and hard constraint enforcement"
+      },
+      "distributed_types": {
+        "FederatedLearner": "Privacy-preserving learning across hives",
+        "HiveBeliefManager": "Cross-specialist belief conflict resolution",
+        "HiveLearningCoordinator": "Orchestrates all learning components in a hive",
+        "KnowledgeDistiller": "Teacher-student knowledge transfer",
+        "SelfDistillation": "EMA-based self-distillation"
+      },
+      "aggregation_strategies": [
+        "FedAvg", "WeightedAvg", "PerformanceWeighted", "Median", "TrimmedMean", "AttentionWeighted"
+      ],
+      "conflict_resolution": [
+        "HighestConfidence", "MostRecent", "MostEvidence", "EvidenceWeighted", "BayesianCombination", "SemanticWeighted", "MajorityVote"
+      ]
+    },
     "async": {
       "async": "Async function modifier",
       "await": "Await future completion",
@@ -242,6 +301,20 @@
       "examples": [
         "async fn fetch_all(urls: List<String>) -> List<Response> {\n  let futures = urls.map(url => fetch(url))\n  await parallel(futures)\n}"
       ]
+    },
+    "neural_gate": {
+      "syntax": "neural_gate name(params) -> ReturnType [requires precond] [ensures postcond] [fallback expr] { branches }",
+      "description": "Learnable control flow that compiles to differentiable ops during training, zero-overhead branches during inference",
+      "branch_syntax": "branch name { expression }",
+      "examples": [
+        "neural_gate should_retry(confidence: f64) -> bool {\n  confidence > 0.7\n}",
+        "neural_gate classify_intent(text: String) -> Intent {\n  branch question { Intent::Question }\n  branch command { Intent::Command }\n  branch statement { Intent::Statement }\n}",
+        "neural_gate route_payment(amount: f64, risk: Tensor) -> PaymentRoute\n  requires amount > 0.0\n  ensures result.is_auditable()\n  fallback PaymentRoute::ManualReview\n{\n  branch instant { PaymentRoute::Instant }\n  branch standard { PaymentRoute::Standard }\n}"
+      ],
+      "compilation": {
+        "train": "Gumbel-Softmax for categorical, sigmoid for binary - gradients flow through all branches",
+        "infer": "Standard argmax/conditional - zero overhead, identical to if/match"
+      }
     }
   },
 
@@ -298,7 +371,12 @@
     "std::net": ["TcpListener", "TcpStream", "UdpSocket", "IpAddr", "SocketAddr"],
     "std::env": ["args", "var", "set_var", "current_dir", "home_dir"],
     "std::process": ["Command", "spawn", "output", "status"],
-    "std::fmt": ["Display", "Debug", "format"]
+    "std::fmt": ["Display", "Debug", "format"],
+    "simplex_learning::tensor": ["Tensor", "zeros", "ones", "randn", "requires_grad_", "backward", "grad"],
+    "simplex_learning::optim": ["StreamingSGD", "StreamingAdam", "AdamW", "clip_grad_norm", "clip_grad_value"],
+    "simplex_learning::safety": ["SafeFallback", "SafeLearner", "ConstraintManager", "MaxLatency", "NoLossExplosion"],
+    "simplex_learning::distributed": ["FederatedLearner", "HiveBeliefManager", "HiveLearningCoordinator", "KnowledgeDistiller"],
+    "simplex_learning::runtime": ["OnlineLearner", "Checkpoint", "Metrics"]
   },
 
   "supervision": {
@@ -371,15 +449,47 @@
     }
   },
 
-  "implemented_keywords_from_lexer": [
-    "fn", "let", "var", "if", "else", "while", "for", "in", "return",
-    "enum", "struct", "impl", "trait", "type", "use", "mod", "const", "pub",
-    "true", "false", "self", "match", "break", "continue",
-    "async", "await", "yield", "dyn",
-    "actor", "receive", "init", "spawn",
-    "specialist", "infer", "hive", "anima",
-    "_"
-  ],
+  "implemented_keywords": {
+    "description": "Keywords implemented in stage0.py bootstrap and lexer.sx compilers",
+    "core": [
+      "fn", "let", "var", "const", "type", "struct", "enum", "trait", "impl", "pub"
+    ],
+    "control_flow": [
+      "if", "else", "match", "while", "for", "in", "break", "continue", "return", "loop"
+    ],
+    "actor_system": [
+      "actor", "receive", "spawn", "send", "ask", "init"
+    ],
+    "ai_cognitive": [
+      "specialist", "hive", "anima", "infer"
+    ],
+    "async": [
+      "async", "await", "yield"
+    ],
+    "module_system": [
+      "mod", "module", "use"
+    ],
+    "other": [
+      "self", "Self", "true", "false", "where", "mut", "dyn", "_"
+    ],
+    "neural_gates_v060": {
+      "status": "specified",
+      "note": "Defined in spec/14-neural-ir.md, implementation in progress",
+      "keywords": [
+        "neural_gate", "branch", "requires", "ensures", "fallback", "invariant"
+      ]
+    },
+    "all_keywords_flat": [
+      "fn", "let", "var", "const", "type", "struct", "enum", "trait", "impl", "pub",
+      "if", "else", "match", "while", "for", "in", "break", "continue", "return", "loop",
+      "actor", "receive", "spawn", "send", "ask", "init",
+      "specialist", "hive", "anima", "infer",
+      "async", "await", "yield",
+      "mod", "module", "use",
+      "self", "Self", "true", "false", "where", "mut", "dyn", "_",
+      "neural_gate", "branch", "requires", "ensures", "fallback", "invariant"
+    ]
+  },
 
   "llm_hints": {
     "receiver_is_self": "Methods use 'self' as receiver (Rust-style)",
@@ -390,6 +500,26 @@
     "immutable_by_default": "Use 'let' for immutable, 'var' for mutable",
     "expression_oriented": "if/match are expressions that return values",
     "fstring_interpolation": "Use f\"text {expr}\" for string interpolation, not plain \"text {expr}\"",
-    "underscore_wildcard": "Use _ as wildcard pattern in match expressions"
+    "underscore_wildcard": "Use _ as wildcard pattern in match expressions",
+    "neural_gates_are_learnable": "neural_gate defines differentiable control flow that trains from data",
+    "neural_gate_contracts": "Use requires/ensures/fallback for safety guarantees in neural gates",
+    "simplex_learning_library": "Real-time learning uses simplex_learning library, imported with 'use'",
+    "safe_learning": "Always wrap OnlineLearner with SafeLearner for production safety"
+  },
+
+  "reserved_words": {
+    "description": "Words reserved for future use - not currently keywords but should not be used as identifiers",
+    "reserved": [
+      "abstract", "become", "box", "do", "final", "macro", "override", "priv",
+      "try", "typeof", "unsized", "virtual", "crate", "extern", "ref", "super",
+      "union", "unsafe", "static", "move"
+    ]
+  },
+
+  "version_history": {
+    "0.5.0": "Specialists, Anima, Hives, HiveMnemonic, cognitive architecture",
+    "0.6.0": "Neural IR - neural_gate, differentiable control flow, contracts, hardware targeting",
+    "0.7.0": "Real-Time Learning - simplex_learning library, OnlineLearner, federated learning, safety constraints"
   }
 }
+
