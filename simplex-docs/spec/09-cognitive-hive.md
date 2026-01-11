@@ -1,6 +1,6 @@
 # Cognitive Hive AI Architecture
 
-**Version 0.7.0**
+**Version 0.9.0**
 
 **The future of AI is not one giant mind, but a swarm of specialists.**
 
@@ -8,11 +8,177 @@ Simplex embraces the Cognitive Hive AI (CHAI) philosophy as a core architectural
 
 ---
 
-## v0.5.0 Key Architecture: Per-Hive SLM
+## v0.9.0 Enhancements
+
+### High-Performance Inference via llama.cpp
+
+![Inference Pipeline](../diagrams/inference-pipeline.svg)
+
+Native llama.cpp bindings provide optimized inference for hive specialists:
+
+```simplex
+use simplex_inference::{InferencePipeline, BatchConfig, ModelLoadConfig};
+
+// Configure inference backend
+let config = ModelLoadConfig {
+    gpu_layers: 32,           // Offload to GPU
+    context_size: 4096,
+    flash_attention: true,    // Enable flash attention
+    ..Default::default()
+};
+
+// Create batched inference pipeline
+let pipeline = InferencePipeline::builder()
+    .with_model("simplex-cognitive-7b.gguf", config)
+    .with_batching(BatchConfig { max_size: 8, timeout_ms: 50 })
+    .with_prompt_cache(1000)
+    .with_response_cache(CacheConfig { capacity: 10000, ttl_ms: 3600000 })
+    .build();
+```
+
+### Self-Learning Specialist Schedules
+
+Specialists can now learn optimal training and inference schedules:
+
+```simplex
+use simplex::optimize::anneal::{LearnableSchedule, MetaOptimizer};
+
+specialist AdaptiveAnalyzer {
+    schedule: LearnableSchedule,  // Temperature, cooling rate learned automatically
+
+    fn optimize_hyperparams(&mut self, objective: fn(&Config) -> dual) {
+        let optimizer = MetaOptimizer::new(self.schedule);
+        self.schedule = optimizer.optimize(initial_config, neighbor_fn, 100);
+    }
+}
+```
+
+### Meta-Gradient Temperature Control
+
+![Meta-Gradient Annealing](../diagrams/meta-gradient-annealing.svg)
+
+Simplex's self-learning annealing uses **meta-gradients** to automatically control temperature schedules for neural gates. This is fundamentally different from traditional fixed annealing schedules.
+
+#### The Core Formula: Dual Numbers
+
+```
+a + bε   where ε² = 0
+```
+
+- `a` = the computed value
+- `b` = the derivative (gradient)
+- `ε` = infinitesimal (nilpotent)
+
+This dual number representation enables **forward-mode automatic differentiation**, computing both values and their derivatives in a single pass. The meta-gradient `∂Loss/∂τ` tells the system whether to heat up or cool down.
+
+#### Two Training Scenarios
+
+**Scenario 1: Rapid Convergence (Simple Problems)**
+
+For simple problems like XOR gates, the temperature schedule follows standard annealing:
+
+```
+Temperature (τ)
+    │
+1.0 ┤  ╲                          High τ: Explore (Fuzzy Logic)
+    │    ╲
+    │      ╲   Meta-gradient: ∂L/∂τ < 0
+    │        ╲   (keep cooling)
+    │          ╲
+0.0 ┤            ╲___________     Low τ: Exploit (Hard Logic Found!)
+    └────────────────────────────
+    0           Training Steps →
+```
+
+- **High τ (start)**: Neural gates output soft/fuzzy probabilities (exploration)
+- **Meta-gradient negative**: `∂Loss/∂τ < 0` signals continued cooling is beneficial
+- **Low τ (end)**: Gates converge to hard discrete decisions (exploitation)
+
+**Scenario 2: Complex Patterns (Self-Learning Kicks In)**
+
+For complex pattern recognition, the meta-gradient detects local minima and triggers re-heating:
+
+```
+Temperature (τ)
+    │
+1.0 ┤  ╲           ╱╲
+    │    ╲       ╱    ╲           Meta-gradient: Re-heat to Explore!
+    │      ╲   ╱        ╲
+    │        ╲╱           ╲       τ plateaus: Stuck in Local Minima?
+    │    (local min)        ╲
+0.0 ┤                         ╲___  Eventually Converges (Optimal Logic)
+    └────────────────────────────
+    0           Training Steps →
+```
+
+- **Initial cooling**: Temperature drops but loss plateaus (stuck)
+- **Meta-gradient detection**: `∂Loss/∂τ > 0` signals re-heating would help
+- **Automatic re-heat**: System increases τ to escape local minimum
+- **Final convergence**: After exploration, converges to optimal solution
+
+#### How Temperature Controls Neural Gates
+
+Temperature (τ) controls the "hardness" of neural gate decisions via Gumbel-Softmax:
+
+```simplex
+// High τ (exploration): soft probabilistic output
+// gate outputs ≈ [0.4, 0.35, 0.25] - uncertain, exploring
+
+// Low τ (exploitation): hard discrete output
+// gate outputs ≈ [0.99, 0.005, 0.005] - confident, committed
+```
+
+#### The Meta-Optimizer
+
+```simplex
+use simplex::optimize::anneal::{MetaOptimizer, LearnableSchedule};
+
+// Create learnable schedule with dual number parameters
+let schedule = LearnableSchedule::new(
+    initial_temp: dual(1.0),      // τ₀ as dual number
+    cooling_rate: dual(0.95),     // α as dual number
+    min_temp: dual(0.01),         // τ_min as dual number
+);
+
+// Meta-optimizer computes ∂Loss/∂τ automatically
+let meta_opt = MetaOptimizer::new(schedule)
+    .learning_rate(0.01)
+    .momentum(0.9);
+
+// Training loop with meta-gradient updates
+for epoch in 0..1000 {
+    let loss = train_step(model, data, schedule.current_temp());
+
+    // Meta-gradient tells us: should we heat up or cool down?
+    let meta_grad = loss.derivative();  // ∂Loss/∂τ from dual numbers
+
+    if meta_grad > 0.0 {
+        // Positive gradient: re-heat to escape local minimum
+        schedule.increase_temp();
+    } else {
+        // Negative gradient: continue cooling
+        schedule.step();
+    }
+}
+```
+
+#### Key Insight
+
+> **"Simplex learns the best τᵢ schedule using Meta-Gradients."**
+
+Instead of hand-tuning annealing schedules, Simplex automatically discovers the optimal temperature trajectory for each problem. Simple problems get smooth cooling; complex problems get adaptive re-heating when stuck.
+
+This is the core innovation of self-learning annealing: the system uses the same dual number infrastructure that powers automatic differentiation to also learn *how to learn* more effectively.
+
+---
+
+## Key Architecture: Per-Hive SLM
+
+![Cognitive Hive Architecture](../diagrams/cognitive-hive-architecture.svg)
 
 **Each hive provisions ONE shared SLM that all its specialists use.**
 
-This is the core architectural decision of Simplex v0.5.0:
+This is the core architectural decision:
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -572,6 +738,8 @@ fn confidence_weighted<T>(responses: List<(T, f64)>) -> T {
 The HiveMnemonic is the shared memory layer that creates collective consciousness across all specialists in a hive.
 
 ### Three-Level Memory Hierarchy
+
+![Memory Hierarchy](../diagrams/memory-hierarchy.svg)
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -1169,7 +1337,7 @@ hive ResilientHive {
 | `learner` | Online learning for adaptive specialists (v0.7.0) |
 | `coordinator` | Orchestrate federated learning across hive (v0.7.0) |
 
-### v0.7.0 Architecture Summary
+### v0.9.0 Architecture Summary
 
 ```
 Per-Hive SLM Architecture:
@@ -1177,6 +1345,25 @@ Per-Hive SLM Architecture:
   - HiveMnemonic for shared consciousness
   - Specialist Anima for individual memory
   - Three-tier hierarchy: Divine → Hive → Specialist
+
+High-Performance Inference (v0.9.0):
+  - Native llama.cpp bindings via simplex-inference
+  - Continuous batching for throughput optimization
+  - Prompt caching for repeated context
+  - Response caching for deterministic queries
+  - GPU offloading (CUDA, Metal) support
+
+Self-Learning Optimization (v0.9.0):
+  - LearnableSchedule for temperature control
+  - MetaOptimizer learns hyperparameters via gradients
+  - Soft acceptance for differentiable annealing
+  - Schedule adapts to problem characteristics
+
+Dual Numbers (v0.8.0):
+  - Native forward-mode automatic differentiation
+  - Zero-overhead abstraction (struct elimination)
+  - All transcendental functions differentiable
+  - Multi-dimensional gradients via multidual<N>
 
 Real-Time Learning (v0.7.0):
   - OnlineLearner for adaptive specialists

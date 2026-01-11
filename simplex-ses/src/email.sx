@@ -1,0 +1,210 @@
+// Email types
+
+/// Email address with optional name
+#[derive(Clone)]
+pub struct EmailAddress {
+    pub email: String,
+    pub name: Option<String>,
+}
+
+impl EmailAddress {
+    pub fn new(email: &str) -> Self {
+        EmailAddress {
+            email: email.to_string(),
+            name: None,
+        }
+    }
+
+    pub fn with_name(email: &str, name: &str) -> Self {
+        EmailAddress {
+            email: email.to_string(),
+            name: Some(name.to_string()),
+        }
+    }
+
+    pub fn to_string(&self) -> String {
+        match &self.name {
+            Some(name) => format!("{} <{}>", name, self.email),
+            None => self.email.clone(),
+        }
+    }
+}
+
+impl From<&str> for EmailAddress {
+    fn from(s: &str) -> Self {
+        // Parse "Name <email@example.com>" format
+        if let Some(start) = s.find('<') {
+            if let Some(end) = s.find('>') {
+                let name = s[..start].trim().to_string();
+                let email = s[start + 1..end].trim().to_string();
+                return EmailAddress {
+                    email,
+                    name: if name.is_empty() { None } else { Some(name) },
+                };
+            }
+        }
+        EmailAddress::new(s)
+    }
+}
+
+/// Email attachment
+pub struct Attachment {
+    pub filename: String,
+    pub content_type: String,
+    pub data: Vec<u8>,
+}
+
+impl Attachment {
+    pub fn new(filename: &str, content_type: &str, data: Vec<u8>) -> Self {
+        Attachment {
+            filename: filename.to_string(),
+            content_type: content_type.to_string(),
+            data,
+        }
+    }
+
+    pub fn from_file(path: &str) -> Result<Self, std::io::Error> {
+        let data = std::fs::read(path)?;
+        let filename = std::path::Path::new(path)
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "attachment".to_string());
+
+        let content_type = guess_mime_type(&filename);
+
+        Ok(Attachment {
+            filename,
+            content_type,
+            data,
+        })
+    }
+}
+
+/// Email builder
+pub struct Email {
+    pub from: EmailAddress,
+    pub to: Vec<EmailAddress>,
+    pub cc: Vec<EmailAddress>,
+    pub bcc: Vec<EmailAddress>,
+    pub reply_to: Option<EmailAddress>,
+    pub subject: String,
+    pub text_body: Option<String>,
+    pub html_body: Option<String>,
+    pub attachments: Vec<Attachment>,
+    pub headers: Vec<(String, String)>,
+}
+
+impl Email {
+    pub fn new() -> Self {
+        Email {
+            from: EmailAddress::new(""),
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            reply_to: None,
+            subject: String::new(),
+            text_body: None,
+            html_body: None,
+            attachments: Vec::new(),
+            headers: Vec::new(),
+        }
+    }
+
+    pub fn from(mut self, email: &str) -> Self {
+        self.from = EmailAddress::from(email);
+        self
+    }
+
+    pub fn from_address(mut self, address: EmailAddress) -> Self {
+        self.from = address;
+        self
+    }
+
+    pub fn to(mut self, email: &str) -> Self {
+        self.to.push(EmailAddress::from(email));
+        self
+    }
+
+    pub fn to_address(mut self, address: EmailAddress) -> Self {
+        self.to.push(address);
+        self
+    }
+
+    pub fn to_many(mut self, emails: &[&str]) -> Self {
+        for email in emails {
+            self.to.push(EmailAddress::from(*email));
+        }
+        self
+    }
+
+    pub fn cc(mut self, email: &str) -> Self {
+        self.cc.push(EmailAddress::from(email));
+        self
+    }
+
+    pub fn bcc(mut self, email: &str) -> Self {
+        self.bcc.push(EmailAddress::from(email));
+        self
+    }
+
+    pub fn reply_to(mut self, email: &str) -> Self {
+        self.reply_to = Some(EmailAddress::from(email));
+        self
+    }
+
+    pub fn subject(mut self, subject: &str) -> Self {
+        self.subject = subject.to_string();
+        self
+    }
+
+    pub fn text(mut self, body: &str) -> Self {
+        self.text_body = Some(body.to_string());
+        self
+    }
+
+    pub fn html(mut self, body: &str) -> Self {
+        self.html_body = Some(body.to_string());
+        self
+    }
+
+    pub fn attach(mut self, attachment: Attachment) -> Self {
+        self.attachments.push(attachment);
+        self
+    }
+
+    pub fn header(mut self, key: &str, value: &str) -> Self {
+        self.headers.push((key.to_string(), value.to_string()));
+        self
+    }
+}
+
+fn guess_mime_type(filename: &str) -> String {
+    let ext = filename.rsplit('.').next().unwrap_or("").to_lowercase();
+    match ext.as_str() {
+        "txt" => "text/plain",
+        "html" | "htm" => "text/html",
+        "css" => "text/css",
+        "js" => "application/javascript",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "pdf" => "application/pdf",
+        "zip" => "application/zip",
+        "gz" | "gzip" => "application/gzip",
+        "tar" => "application/x-tar",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "svg" => "image/svg+xml",
+        "webp" => "image/webp",
+        "mp3" => "audio/mpeg",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "doc" => "application/msword",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls" => "application/vnd.ms-excel",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        _ => "application/octet-stream",
+    }.to_string()
+}

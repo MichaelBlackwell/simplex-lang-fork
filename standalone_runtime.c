@@ -314,7 +314,22 @@ void http_response_free(int64_t resp_ptr);
 // ========================================
 #ifdef SIMPLEX_LLAMA
 #include "llama.h"
-#include "common.h"
+
+// Helper functions (from common.h, implemented here to avoid C++ dependency)
+static void llama_batch_add_token(struct llama_batch *batch, llama_token id, llama_pos pos, const llama_seq_id *seq_ids, size_t n_seq, bool logits) {
+    batch->token[batch->n_tokens] = id;
+    batch->pos[batch->n_tokens] = pos;
+    batch->n_seq_id[batch->n_tokens] = n_seq;
+    for (size_t i = 0; i < n_seq; ++i) {
+        batch->seq_id[batch->n_tokens][i] = seq_ids[i];
+    }
+    batch->logits[batch->n_tokens] = logits;
+    batch->n_tokens++;
+}
+
+static void llama_batch_clear_tokens(struct llama_batch *batch) {
+    batch->n_tokens = 0;
+}
 
 // Global model state for the hive
 typedef struct {
@@ -338,7 +353,7 @@ int64_t native_model_load(int64_t path_ptr) {
     // Free existing model if any
     if (g_native_model) {
         if (g_native_model->ctx) llama_free(g_native_model->ctx);
-        if (g_native_model->model) llama_free_model(g_native_model->model);
+        if (g_native_model->model) llama_model_free(g_native_model->model);
         if (g_native_model->model_path) free(g_native_model->model_path);
         free(g_native_model);
         g_native_model = NULL;
@@ -347,29 +362,34 @@ int64_t native_model_load(int64_t path_ptr) {
     // Initialize llama backend
     llama_backend_init();
 
-    // Model parameters
+    // Model parameters - use all GPU layers if available
     struct llama_model_params model_params = llama_model_default_params();
-    model_params.n_gpu_layers = 0;  // CPU only for now
+    model_params.n_gpu_layers = -1;  // -1 = all layers on GPU (falls back to CPU if no GPU)
 
     // Load model
-    struct llama_model* model = llama_load_model_from_file(path->data, model_params);
+    struct llama_model* model = llama_model_load_from_file(path->data, model_params);
     if (!model) {
         fprintf(stderr, "[Native LLM] Failed to load model: %s\n", path->data);
         pthread_mutex_unlock(&g_model_mutex);
         return 0;
     }
 
-    // Context parameters
+    // Detect CPU cores for optimal threading
+    int n_threads = sysconf(_SC_NPROCESSORS_ONLN);
+    if (n_threads <= 0) n_threads = 4;
+    if (n_threads > 8) n_threads = 8;  // Cap at 8 for efficiency
+
+    // Context parameters - optimized for speed
     struct llama_context_params ctx_params = llama_context_default_params();
-    ctx_params.n_ctx = 4096;       // Context window
-    ctx_params.n_threads = 4;      // CPU threads
-    ctx_params.n_threads_batch = 4;
+    ctx_params.n_ctx = 2048;          // Reduced context for faster processing
+    ctx_params.n_threads = n_threads;
+    ctx_params.n_threads_batch = n_threads;
 
     // Create context
-    struct llama_context* ctx = llama_new_context_with_model(model, ctx_params);
+    struct llama_context* ctx = llama_init_from_model(model, ctx_params);
     if (!ctx) {
         fprintf(stderr, "[Native LLM] Failed to create context\n");
-        llama_free_model(model);
+        llama_model_free(model);
         pthread_mutex_unlock(&g_model_mutex);
         return 0;
     }
@@ -379,8 +399,8 @@ int64_t native_model_load(int64_t path_ptr) {
     g_native_model->model = model;
     g_native_model->ctx = ctx;
     g_native_model->model_path = strdup(path->data);
-    g_native_model->n_ctx = 4096;
-    g_native_model->n_threads = 4;
+    g_native_model->n_ctx = 2048;
+    g_native_model->n_threads = n_threads;
 
     fprintf(stderr, "[Native LLM] Loaded model: %s\n", path->data);
     pthread_mutex_unlock(&g_model_mutex);
@@ -399,18 +419,29 @@ int64_t native_model_infer(int64_t prompt_ptr, int64_t max_tokens) {
         return (int64_t)intrinsic_string_new("[Error: No model loaded]");
     }
 
-    // Tokenize input
-    int n_tokens = llama_tokenize(g_native_model->model, prompt->data, prompt->len, NULL, 0, true, false);
-    llama_token* tokens = (llama_token*)malloc((n_tokens + 1) * sizeof(llama_token));
-    llama_tokenize(g_native_model->model, prompt->data, prompt->len, tokens, n_tokens + 1, true, false);
+    // Get vocab from model
+    const struct llama_vocab* vocab = llama_model_get_vocab(g_native_model->model);
 
-    // Clear context
-    llama_kv_cache_clear(g_native_model->ctx);
+    // Tokenize input - first call returns NEGATIVE count when buffer too small
+    int n_tokens = llama_tokenize(vocab, prompt->data, prompt->len, NULL, 0, true, false);
+    if (n_tokens < 0) {
+        n_tokens = -n_tokens;  // Negate to get actual token count
+    }
+    if (n_tokens == 0) {
+        pthread_mutex_unlock(&g_model_mutex);
+        return (int64_t)intrinsic_string_new("[Error: Empty prompt or tokenization failed]");
+    }
+    llama_token* tokens = (llama_token*)malloc((n_tokens + 1) * sizeof(llama_token));
+    int actual = llama_tokenize(vocab, prompt->data, prompt->len, tokens, n_tokens + 1, true, false);
+    if (actual < 0) actual = -actual;  // Handle negative return
+
+    // Clear context memory (use llama_get_memory to get memory handle)
+    llama_memory_clear(llama_get_memory(g_native_model->ctx), true);
 
     // Evaluate prompt
     struct llama_batch batch = llama_batch_init(512, 0, 1);
     for (int i = 0; i < n_tokens; i++) {
-        llama_batch_add(&batch, tokens[i], i, (llama_seq_id[]){0}, 1, false);
+        llama_batch_add_token(&batch, tokens[i], i, (llama_seq_id[]){0}, 1, false);
     }
     batch.logits[batch.n_tokens - 1] = true;  // Only get logits for last token
 
@@ -421,43 +452,48 @@ int64_t native_model_infer(int64_t prompt_ptr, int64_t max_tokens) {
         return (int64_t)intrinsic_string_new("[Error: Decode failed]");
     }
 
-    // Generate response
-    char* output = (char*)malloc(max_tokens * 4 + 1);  // Rough estimate
+    // Generate response using optimized llama sampler
+    char* output = (char*)malloc(max_tokens * 4 + 1);
     int output_len = 0;
+
+    // Create optimized greedy sampler chain
+    struct llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
+    struct llama_sampler* smpl = llama_sampler_chain_init(sparams);
+    llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
 
     int n_cur = batch.n_tokens;
     int n_gen = 0;
 
     while (n_gen < max_tokens) {
-        float* logits = llama_get_logits_ith(g_native_model->ctx, batch.n_tokens - 1);
-        int n_vocab = llama_n_vocab(g_native_model->model);
-
-        // Simple greedy sampling
-        llama_token new_token_id = 0;
-        float max_logit = logits[0];
-        for (int i = 1; i < n_vocab; i++) {
-            if (logits[i] > max_logit) {
-                max_logit = logits[i];
-                new_token_id = i;
-            }
-        }
+        // Use optimized sampler instead of manual O(vocab) loop
+        llama_token new_token_id = llama_sampler_sample(smpl, g_native_model->ctx, batch.n_tokens - 1);
 
         // Check for end of generation
-        if (llama_token_is_eog(g_native_model->model, new_token_id)) {
+        if (llama_vocab_is_eog(vocab, new_token_id)) {
             break;
         }
 
         // Convert token to text
         char token_buf[256];
-        int token_len = llama_token_to_piece(g_native_model->model, new_token_id, token_buf, sizeof(token_buf), 0, false);
+        int token_len = llama_token_to_piece(vocab, new_token_id, token_buf, sizeof(token_buf), 0, false);
         if (token_len > 0 && output_len + token_len < max_tokens * 4) {
             memcpy(output + output_len, token_buf, token_len);
             output_len += token_len;
         }
 
+        // Check for Qwen chat end token in output
+        if (output_len >= 10) {
+            const char* end_marker = "<|im_end|>";
+            if (strstr(output + output_len - 15, end_marker) != NULL) {
+                char* pos = strstr(output, end_marker);
+                if (pos) *pos = '\0';
+                break;
+            }
+        }
+
         // Prepare next batch
-        llama_batch_clear(&batch);
-        llama_batch_add(&batch, new_token_id, n_cur, (llama_seq_id[]){0}, 1, true);
+        llama_batch_clear_tokens(&batch);
+        llama_batch_add_token(&batch, new_token_id, n_cur, (llama_seq_id[]){0}, 1, true);
 
         if (llama_decode(g_native_model->ctx, batch) != 0) {
             break;
@@ -468,6 +504,7 @@ int64_t native_model_infer(int64_t prompt_ptr, int64_t max_tokens) {
     }
 
     output[output_len] = '\0';
+    llama_sampler_free(smpl);
 
     free(tokens);
     llama_batch_free(batch);
@@ -483,7 +520,7 @@ void native_model_free(void) {
     pthread_mutex_lock(&g_model_mutex);
     if (g_native_model) {
         if (g_native_model->ctx) llama_free(g_native_model->ctx);
-        if (g_native_model->model) llama_free_model(g_native_model->model);
+        if (g_native_model->model) llama_model_free(g_native_model->model);
         if (g_native_model->model_path) free(g_native_model->model_path);
         free(g_native_model);
         g_native_model = NULL;
@@ -524,8 +561,9 @@ SxString* intrinsic_ai_infer(SxString* model, SxString* prompt, int64_t temperat
     (void)temperature;  // TODO: Use temperature in native inference
 
     // Try native inference first if model is loaded
+    // Use 256 max tokens for complete responses (GPU makes this fast)
     if (native_model_loaded()) {
-        return (SxString*)native_model_infer((int64_t)prompt, 512);
+        return (SxString*)native_model_infer((int64_t)prompt, 256);
     }
 
     // Fallback to API if no native model

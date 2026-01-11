@@ -1,0 +1,185 @@
+// HTTP Request types and parsing
+
+use simplex_std::collections::HashMap;
+
+/// HTTP Methods
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Method {
+    GET,
+    POST,
+    PUT,
+    PATCH,
+    DELETE,
+    HEAD,
+    OPTIONS,
+}
+
+impl Method {
+    pub fn from_str(s: &str) -> Result<Self, HttpError> {
+        match s.to_uppercase().as_str() {
+            "GET" => Ok(Method::GET),
+            "POST" => Ok(Method::POST),
+            "PUT" => Ok(Method::PUT),
+            "PATCH" => Ok(Method::PATCH),
+            "DELETE" => Ok(Method::DELETE),
+            "HEAD" => Ok(Method::HEAD),
+            "OPTIONS" => Ok(Method::OPTIONS),
+            _ => Err(HttpError::MalformedRequest(f"Unknown method: {s}")),
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            Method::GET => "GET",
+            Method::POST => "POST",
+            Method::PUT => "PUT",
+            Method::PATCH => "PATCH",
+            Method::DELETE => "DELETE",
+            Method::HEAD => "HEAD",
+            Method::OPTIONS => "OPTIONS",
+        }
+    }
+}
+
+/// HTTP Headers
+pub type Headers = HashMap<String, String>;
+
+/// Query parameters
+pub type Query = HashMap<String, String>;
+
+/// HTTP Request
+pub struct Request {
+    pub method: Method,
+    pub path: String,
+    pub version: String,
+    pub headers: Headers,
+    pub body: Option<Vec<u8>>,
+    pub query: Query,
+    pub params: HashMap<String, String>,  // Route parameters like :id
+}
+
+impl Request {
+    pub fn new(method: Method, path: &str) -> Self {
+        let (path, query) = Self::parse_path_and_query(path);
+        Request {
+            method,
+            path,
+            version: "HTTP/1.1".to_string(),
+            headers: Headers::new(),
+            body: None,
+            query,
+            params: HashMap::new(),
+        }
+    }
+
+    fn parse_path_and_query(full_path: &str) -> (String, Query) {
+        if let Some(idx) = full_path.find('?') {
+            let path = full_path[..idx].to_string();
+            let query_str = &full_path[idx + 1..];
+            let query = Self::parse_query_string(query_str);
+            (path, query)
+        } else {
+            (full_path.to_string(), Query::new())
+        }
+    }
+
+    fn parse_query_string(s: &str) -> Query {
+        let mut query = Query::new();
+        for pair in s.split('&') {
+            if let Some((key, value)) = pair.split_once('=') {
+                query.insert(
+                    url_decode(key),
+                    url_decode(value),
+                );
+            }
+        }
+        query
+    }
+
+    /// Get a header value
+    pub fn header(&self, key: &str) -> Option<&str> {
+        self.headers.get(&key.to_lowercase()).map(|s| s.as_str())
+    }
+
+    /// Get a query parameter
+    pub fn query_param(&self, key: &str) -> Option<&str> {
+        self.query.get(key).map(|s| s.as_str())
+    }
+
+    /// Get a route parameter
+    pub fn param(&self, key: &str) -> Option<&str> {
+        self.params.get(key).map(|s| s.as_str())
+    }
+
+    /// Get body as string
+    pub fn body_string(&self) -> Option<String> {
+        self.body.as_ref().map(|b| String::from_utf8_lossy(b).to_string())
+    }
+
+    /// Parse body as JSON
+    pub fn json<T: Deserialize>(&self) -> Result<T, JsonError> {
+        let body = self.body_string().ok_or(JsonError::EmptyBody)?;
+        from_json(&body)
+    }
+
+    /// Get content type
+    pub fn content_type(&self) -> Option<&str> {
+        self.header("content-type")
+    }
+
+    /// Get authorization header
+    pub fn authorization(&self) -> Option<&str> {
+        self.header("authorization")
+    }
+
+    /// Extract Bearer token
+    pub fn bearer_token(&self) -> Option<&str> {
+        self.authorization()
+            .and_then(|auth| auth.strip_prefix("Bearer "))
+    }
+
+    /// Check if request accepts SSE
+    pub fn accepts_sse(&self) -> bool {
+        self.header("accept")
+            .map(|a| a.contains("text/event-stream"))
+            .unwrap_or(false)
+    }
+}
+
+/// URL decode a string
+fn url_decode(s: &str) -> String {
+    let mut result = String::new();
+    let mut chars = s.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            let hex: String = chars.by_ref().take(2).collect();
+            if let Ok(byte) = u8::from_str_radix(&hex, 16) {
+                result.push(byte as char);
+            }
+        } else if c == '+' {
+            result.push(' ');
+        } else {
+            result.push(c);
+        }
+    }
+
+    result
+}
+
+/// URL encode a string
+pub fn url_encode(s: &str) -> String {
+    let mut result = String::new();
+    for c in s.chars() {
+        match c {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' | '~' => {
+                result.push(c);
+            }
+            ' ' => result.push('+'),
+            _ => {
+                result.push_str(&format!("%{:02X}", c as u8));
+            }
+        }
+    }
+    result
+}

@@ -1,0 +1,241 @@
+// Learnable Curriculum Schedule
+//
+// Optimal training order and mixing for specialist models.
+// All parameters are dual numbers for meta-gradient optimization.
+
+use simplex_std::dual;
+
+/// Learnable curriculum for specialist training order and mixing
+pub struct LearnableCurriculum {
+    // Specialist ordering (learned priority scores)
+    pub specialist_priority: Vec<dual>,
+
+    // Cross-domain mixing matrix (learned)
+    // mixing[i][j] = how much specialist j data to mix into specialist i training
+    pub mixing_matrix: Vec<Vec<dual>>,
+
+    // Specialization schedule
+    pub specialization_start: dual,   // When to start specializing
+    pub specialization_rate: dual,    // How fast to specialize
+
+    // Difficulty curriculum within each specialist
+    pub difficulty_start: dual,       // Starting difficulty (0 = easiest)
+    pub difficulty_ramp: dual,        // How fast to increase difficulty
+
+    // Transfer learning weights
+    pub transfer_decay: dual,         // How much prior learning decays
+}
+
+impl LearnableCurriculum {
+    /// Create curriculum for N specialists
+    pub fn new(num_specialists: usize) -> Self {
+        // Default: uniform priority, minimal mixing
+        let specialist_priority = (0..num_specialists)
+            .map(|i| dual::variable(1.0 / num_specialists as f64))
+            .collect();
+
+        // Initialize mixing matrix (diagonal = 1, off-diagonal = small)
+        let mixing_matrix = (0..num_specialists)
+            .map(|i| {
+                (0..num_specialists)
+                    .map(|j| {
+                        if i == j {
+                            dual::variable(0.9) // Self-data
+                        } else {
+                            dual::variable(0.1 / (num_specialists - 1) as f64) // Cross-domain
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+
+        LearnableCurriculum {
+            specialist_priority,
+            mixing_matrix,
+            specialization_start: dual::variable(0.3),
+            specialization_rate: dual::variable(0.01),
+            difficulty_start: dual::variable(0.2),
+            difficulty_ramp: dual::variable(0.001),
+            transfer_decay: dual::variable(0.1),
+        }
+    }
+
+    /// Get training order for specialists at current step
+    pub fn training_order(&self, step: dual) -> Vec<usize> {
+        // Sort by priority (higher = train earlier)
+        let mut indices: Vec<usize> = (0..self.specialist_priority.len()).collect();
+        indices.sort_by(|&a, &b| {
+            self.specialist_priority[b].val
+                .partial_cmp(&self.specialist_priority[a].val)
+                .unwrap()
+        });
+        indices
+    }
+
+    /// Get data mixing weights for a specialist at current step
+    pub fn mixing_weights(&self, specialist_idx: usize, step: dual) -> Vec<dual> {
+        if specialist_idx >= self.mixing_matrix.len() {
+            return vec![];
+        }
+
+        // Specialization factor increases over training
+        let progress = (step - self.specialization_start).max(dual::constant(0.0));
+        let spec_factor = (self.specialization_rate * progress).sigmoid();
+
+        // Blend toward pure specialist data as training progresses
+        self.mixing_matrix[specialist_idx].iter()
+            .enumerate()
+            .map(|(j, base_mix)| {
+                if j == specialist_idx {
+                    // Self-mixing increases with specialization
+                    *base_mix + (dual::constant(1.0) - *base_mix) * spec_factor
+                } else {
+                    // Cross-mixing decreases with specialization
+                    *base_mix * (dual::constant(1.0) - spec_factor)
+                }
+            })
+            .collect()
+    }
+
+    /// Get difficulty level for samples at current step
+    pub fn difficulty(&self, step: dual) -> dual {
+        let diff = self.difficulty_start + self.difficulty_ramp * step;
+        diff.min(dual::constant(1.0))
+    }
+
+    /// Get transfer weight from previous specialist
+    pub fn transfer_weight(&self, steps_since_switch: dual) -> dual {
+        (-self.transfer_decay * steps_since_switch).exp()
+    }
+
+    /// Extract gradient for meta-update
+    pub fn gradient(&self) -> CurriculumGradient {
+        CurriculumGradient {
+            d_specialist_priority: self.specialist_priority.iter().map(|d| d.der).collect(),
+            d_mixing_matrix: self.mixing_matrix.iter()
+                .map(|row| row.iter().map(|d| d.der).collect())
+                .collect(),
+            d_specialization_start: self.specialization_start.der,
+            d_specialization_rate: self.specialization_rate.der,
+            d_difficulty_start: self.difficulty_start.der,
+            d_difficulty_ramp: self.difficulty_ramp.der,
+            d_transfer_decay: self.transfer_decay.der,
+        }
+    }
+
+    /// Apply meta-gradient update
+    pub fn update(&mut self, grad: CurriculumGradient, learning_rate: f64) {
+        // Update priorities (keep them positive and normalized)
+        for (i, d_priority) in grad.d_specialist_priority.iter().enumerate() {
+            if i < self.specialist_priority.len() {
+                self.specialist_priority[i] = dual::variable(
+                    (self.specialist_priority[i].val - learning_rate * d_priority).max(0.01)
+                );
+            }
+        }
+        // Normalize priorities
+        let sum: f64 = self.specialist_priority.iter().map(|p| p.val).sum();
+        for p in &mut self.specialist_priority {
+            *p = dual::variable(p.val / sum);
+        }
+
+        // Update mixing matrix (keep rows summing to 1)
+        for (i, row_grad) in grad.d_mixing_matrix.iter().enumerate() {
+            if i < self.mixing_matrix.len() {
+                for (j, d_mix) in row_grad.iter().enumerate() {
+                    if j < self.mixing_matrix[i].len() {
+                        self.mixing_matrix[i][j] = dual::variable(
+                            (self.mixing_matrix[i][j].val - learning_rate * d_mix).max(0.0)
+                        );
+                    }
+                }
+                // Normalize row
+                let row_sum: f64 = self.mixing_matrix[i].iter().map(|m| m.val).sum();
+                if row_sum > 0.0 {
+                    for m in &mut self.mixing_matrix[i] {
+                        *m = dual::variable(m.val / row_sum);
+                    }
+                }
+            }
+        }
+
+        self.specialization_start = dual::variable(
+            (self.specialization_start.val - learning_rate * grad.d_specialization_start).clamp(0.0, 0.9)
+        );
+        self.specialization_rate = dual::variable(
+            (self.specialization_rate.val - learning_rate * grad.d_specialization_rate).max(0.0)
+        );
+        self.difficulty_start = dual::variable(
+            (self.difficulty_start.val - learning_rate * grad.d_difficulty_start).clamp(0.0, 1.0)
+        );
+        self.difficulty_ramp = dual::variable(
+            (self.difficulty_ramp.val - learning_rate * grad.d_difficulty_ramp).max(0.0)
+        );
+        self.transfer_decay = dual::variable(
+            (self.transfer_decay.val - learning_rate * grad.d_transfer_decay).clamp(0.0, 1.0)
+        );
+    }
+}
+
+/// Gradient of curriculum parameters
+#[derive(Clone, Default)]
+pub struct CurriculumGradient {
+    pub d_specialist_priority: Vec<f64>,
+    pub d_mixing_matrix: Vec<Vec<f64>>,
+    pub d_specialization_start: f64,
+    pub d_specialization_rate: f64,
+    pub d_difficulty_start: f64,
+    pub d_difficulty_ramp: f64,
+    pub d_transfer_decay: f64,
+}
+
+/// Specialist domain identifiers
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SpecialistDomain {
+    /// General reasoning and chat
+    General,
+    /// Code generation and analysis
+    Code,
+    /// Mathematical reasoning
+    Math,
+    /// Scientific knowledge
+    Science,
+    /// Creative writing
+    Creative,
+    /// Factual Q&A
+    Factual,
+    /// Instruction following
+    Instructions,
+    /// Multi-turn dialogue
+    Dialogue,
+}
+
+impl SpecialistDomain {
+    /// All domains in default order
+    pub fn all() -> Vec<Self> {
+        vec![
+            SpecialistDomain::General,
+            SpecialistDomain::Code,
+            SpecialistDomain::Math,
+            SpecialistDomain::Science,
+            SpecialistDomain::Creative,
+            SpecialistDomain::Factual,
+            SpecialistDomain::Instructions,
+            SpecialistDomain::Dialogue,
+        ]
+    }
+
+    /// Index for this domain
+    pub fn index(&self) -> usize {
+        match self {
+            SpecialistDomain::General => 0,
+            SpecialistDomain::Code => 1,
+            SpecialistDomain::Math => 2,
+            SpecialistDomain::Science => 3,
+            SpecialistDomain::Creative => 4,
+            SpecialistDomain::Factual => 5,
+            SpecialistDomain::Instructions => 6,
+            SpecialistDomain::Dialogue => 7,
+        }
+    }
+}

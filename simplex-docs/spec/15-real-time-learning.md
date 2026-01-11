@@ -1,6 +1,6 @@
 # Real-Time Continuous Learning
 
-**Version 0.7.0**
+**Version 0.9.0**
 
 ---
 
@@ -101,6 +101,146 @@ loss.backward();
 // Access gradients
 let grad_w = w.grad();  // Tensor of same shape as w
 ```
+
+---
+
+## Dual Numbers (v0.8.0)
+
+Simplex provides native **dual numbers** for forward-mode automatic differentiation. Dual numbers extend real numbers with an infinitesimal component (ε), encoding the chain rule directly into arithmetic.
+
+### The Dual Number Type
+
+A dual number has the form:
+
+```
+a + bε    where ε² = 0
+```
+
+- **a** is the value (the function output)
+- **b** is the derivative (the sensitivity to the input)
+
+### Creating Dual Numbers
+
+```simplex
+use simplex::dual::dual;
+
+// Constant: value only, derivative = 0
+let c = dual::constant(3.0);     // 3 + 0ε
+
+// Variable: value with derivative seed = 1
+let x = dual::variable(3.0);     // 3 + 1ε
+
+// Explicit construction
+let d = dual::new(3.0, 1.0);     // 3 + 1ε
+```
+
+### Arithmetic Operations
+
+Dual numbers propagate derivatives automatically through the chain rule:
+
+```simplex
+// Addition: (a + bε) + (c + dε) = (a+c) + (b+d)ε
+let sum = x + y;
+
+// Multiplication: (a + bε)(c + dε) = ac + (ad + bc)ε
+let product = x * y;
+
+// Division: (a + bε)/(c + dε) = a/c + (bc - ad)/c²ε
+let quotient = x / y;
+```
+
+### Transcendental Functions
+
+All common mathematical functions are differentiable:
+
+```simplex
+let x = dual::variable(3.0);
+
+x.sin()      // sin(x), derivative: cos(x)
+x.cos()      // cos(x), derivative: -sin(x)
+x.exp()      // e^x, derivative: e^x
+x.ln()       // ln(x), derivative: 1/x
+x.sqrt()     // √x, derivative: 1/(2√x)
+x.tanh()     // tanh(x), derivative: 1 - tanh²(x)
+x.sigmoid()  // σ(x), derivative: σ(x)(1-σ(x))
+```
+
+### Computing Derivatives
+
+```simplex
+use simplex::diff::derivative;
+
+// Define a function using dual numbers
+fn f(x: dual) -> dual {
+    x * x + x.sin()
+}
+
+// Compute f'(3)
+let df = derivative(f, 3.0);  // Exact derivative, not numerical approximation
+```
+
+### Multi-Dimensional Gradients
+
+Use `multidual<N>` to compute all N partial derivatives in a single forward pass:
+
+```simplex
+use simplex::dual::multidual;
+
+// Compute gradient of f(x,y,z) = x²y + sin(z)
+fn gradient_example(x: f64, y: f64, z: f64) -> [f64; 3] {
+    let dx = multidual::<3>::variable(x, 0);  // ∂/∂x
+    let dy = multidual::<3>::variable(y, 1);  // ∂/∂y
+    let dz = multidual::<3>::variable(z, 2);  // ∂/∂z
+
+    let result = dx * dx * dy + dz.sin();
+    result.gradient()  // Returns [2xy, x², cos(z)]
+}
+```
+
+### Second-Order Derivatives (Hessians)
+
+Use `dual2` for second derivatives:
+
+```simplex
+use simplex::dual::dual2;
+
+let x = dual2::variable(3.0);
+let y = x * x * x;  // x³
+
+y.val   // 27 (function value)
+y.d1    // 27 (first derivative: 3x²)
+y.d2    // 18 (second derivative: 6x)
+```
+
+### Zero-Overhead Abstraction
+
+Dual numbers compile to the same assembly as hand-written derivative code:
+
+```simplex
+// Source code
+let x = dual::variable(3.0);
+let y = x * x;
+println(y.der);
+
+// Conceptual compilation (struct eliminated)
+let x_val = 3.0;
+let x_der = 1.0;
+let y_val = x_val * x_val;
+let y_der = 2.0 * x_val * x_der;  // = 6.0
+println(y_der);
+```
+
+### Forward vs Reverse Mode
+
+| Aspect | Forward-Mode (Dual Numbers) | Reverse-Mode (Backprop) |
+|--------|----------------------------|------------------------|
+| Computes | Jacobian-vector product (Jv) | Vector-Jacobian product (vᵀJ) |
+| Complexity | O(n) for n inputs | O(m) for m outputs |
+| Memory | Constant (no graph storage) | O(computation depth) |
+| Best for | Few inputs, many outputs | Many inputs, few outputs |
+| Use case | Sensitivity analysis, Jacobians | Neural network training |
+
+Simplex supports both modes. The `@differentiable` annotation lets the compiler choose automatically.
 
 ---
 

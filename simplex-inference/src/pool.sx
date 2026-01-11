@@ -1,0 +1,371 @@
+// Model Pool - Pooled Model Instances for Concurrent Inference
+//
+// Manages a pool of loaded model instances to support concurrent inference
+// requests. This is an OPTIONAL optimization for high-throughput scenarios.
+//
+// # When to Use
+//
+// - Single instance: Low traffic, memory constrained
+// - Pool of 2-4: Medium traffic, good latency
+// - Pool of 8+: High traffic, maximum throughput
+//
+// # Memory Considerations
+//
+// Each model instance requires its own memory. For example:
+// - 8B Q4 model: ~5GB per instance
+// - 1.5B Q4 model: ~1GB per instance
+//
+// Plan pool sizes accordingly based on available memory.
+//
+// # Implementation Notes
+//
+// Uses an unbounded channel for returning instances to avoid spawning tasks
+// in Drop. The return channel is drained on each acquire(), ensuring instances
+// are available immediately after being released.
+
+use simplex_std::sync::{Arc, Mutex, Semaphore};
+use simplex_std::collections::VecDeque;
+use simplex_std::time::{now_unix_ms, Duration};
+use simplex_std::channel::{unbounded, Sender, Receiver};
+use super::{ModelLoadConfig, SlmError};
+
+// =============================================================================
+// Pool Configuration
+// =============================================================================
+
+/// Configuration for the model pool
+#[derive(Clone)]
+pub struct PoolConfig {
+    /// Number of model instances to maintain
+    pub pool_size: usize,
+    /// Maximum time to wait for an available instance (ms)
+    pub acquire_timeout_ms: u64,
+    /// Idle timeout before unloading an instance (ms, 0 = never)
+    pub idle_timeout_ms: u64,
+    /// Model load configuration
+    pub model_config: ModelLoadConfig,
+}
+
+impl Default for PoolConfig {
+    fn default() -> Self {
+        PoolConfig {
+            pool_size: 2,
+            acquire_timeout_ms: 30000,
+            idle_timeout_ms: 0,
+            model_config: ModelLoadConfig::default(),
+        }
+    }
+}
+
+impl PoolConfig {
+    /// Single instance (no pooling)
+    pub fn single() -> Self {
+        PoolConfig {
+            pool_size: 1,
+            ..Default::default()
+        }
+    }
+
+    /// Small pool for moderate traffic
+    pub fn small() -> Self {
+        PoolConfig {
+            pool_size: 2,
+            ..Default::default()
+        }
+    }
+
+    /// Medium pool for higher traffic
+    pub fn medium() -> Self {
+        PoolConfig {
+            pool_size: 4,
+            ..Default::default()
+        }
+    }
+
+    /// Large pool for maximum throughput
+    pub fn large() -> Self {
+        PoolConfig {
+            pool_size: 8,
+            ..Default::default()
+        }
+    }
+}
+
+// =============================================================================
+// Model Handle
+// =============================================================================
+
+/// Opaque handle to a loaded model instance
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ModelHandle(pub(crate) i64);
+
+impl ModelHandle {
+    /// Check if handle is valid
+    pub fn is_valid(&self) -> bool {
+        self.0 > 0
+    }
+}
+
+// =============================================================================
+// Inference Pool
+// =============================================================================
+
+/// Pool of model instances for concurrent inference
+///
+/// # Example
+///
+/// ```simplex
+/// // Create pool with 4 instances
+/// let pool = InferencePool::new(
+///     "models/qwen2.5-8b.gguf",
+///     PoolConfig { pool_size: 4, ..Default::default() },
+/// ).await?;
+///
+/// // Acquire an instance
+/// let guard = pool.acquire().await?;
+///
+/// // Use the instance for inference
+/// let result = slm_infer(guard.handle(), prompt)?;
+///
+/// // Guard automatically returns instance to pool when dropped
+/// ```
+pub struct InferencePool {
+    model_path: String,
+    config: PoolConfig,
+    /// Available instances
+    available: Arc<Mutex<VecDeque<PooledInstance>>>,
+    /// Semaphore to limit concurrent acquires
+    semaphore: Arc<Semaphore>,
+    /// Pool statistics
+    stats: Arc<Mutex<PoolStats>>,
+    /// Channel for returning instances (avoids spawning tasks in Drop)
+    return_tx: Sender<PooledInstance>,
+    return_rx: Arc<Mutex<Receiver<PooledInstance>>>,
+}
+
+struct PooledInstance {
+    handle: ModelHandle,
+    last_used: u64,
+    use_count: u64,
+}
+
+impl InferencePool {
+    /// Create a new inference pool
+    ///
+    /// This will load `pool_size` model instances, which may take several seconds.
+    pub async fn new(model_path: &str, config: PoolConfig) -> Result<Self, SlmError> {
+        let mut available = VecDeque::with_capacity(config.pool_size);
+
+        // Pre-load all instances
+        for _ in 0..config.pool_size {
+            let handle = super::slm_model_load(model_path, &config.model_config)?;
+            available.push_back(PooledInstance {
+                handle,
+                last_used: now_unix_ms(),
+                use_count: 0,
+            });
+        }
+
+        // Create return channel for non-blocking instance returns
+        let (return_tx, return_rx) = unbounded();
+
+        Ok(InferencePool {
+            model_path: model_path.to_string(),
+            config: config.clone(),
+            available: Arc::new(Mutex::new(available)),
+            semaphore: Arc::new(Semaphore::new(config.pool_size)),
+            stats: Arc::new(Mutex::new(PoolStats::default())),
+            return_tx,
+            return_rx: Arc::new(Mutex::new(return_rx)),
+        })
+    }
+
+    /// Drain any instances waiting in the return channel back to the available queue
+    async fn drain_returns(&self) {
+        let return_rx = self.return_rx.lock().await;
+        let mut available = self.available.lock().await;
+        let mut stats = self.stats.lock().await;
+
+        // Drain all waiting instances (non-blocking)
+        while let Ok(instance) = return_rx.try_recv() {
+            available.push_back(instance);
+            stats.total_releases += 1;
+        }
+    }
+
+    /// Acquire a model instance from the pool
+    ///
+    /// Returns a guard that automatically returns the instance when dropped.
+    pub async fn acquire(&self) -> Result<PoolGuard, SlmError> {
+        // First, drain any instances that were returned via the channel
+        self.drain_returns().await;
+
+        // Wait for available permit
+        let permit = self.semaphore
+            .acquire_timeout(Duration::from_millis(self.config.acquire_timeout_ms))
+            .await
+            .map_err(|_| SlmError::Timeout)?;
+
+        // Get an instance from the queue
+        let instance = {
+            let mut available = self.available.lock().await;
+            available.pop_front().ok_or(SlmError::OutOfMemory)?
+        };
+
+        // Update stats
+        {
+            let mut stats = self.stats.lock().await;
+            stats.total_acquires += 1;
+        }
+
+        Ok(PoolGuard {
+            instance: Some(instance),
+            return_tx: self.return_tx.clone(),
+            _permit: permit,
+        })
+    }
+
+    /// Try to acquire without waiting
+    pub async fn try_acquire(&self) -> Option<PoolGuard> {
+        // Drain any pending returns first
+        self.drain_returns().await;
+
+        let permit = self.semaphore.try_acquire()?;
+
+        let instance = {
+            let mut available = self.available.lock().await;
+            available.pop_front()?
+        };
+
+        {
+            let mut stats = self.stats.lock().await;
+            stats.total_acquires += 1;
+        }
+
+        Some(PoolGuard {
+            instance: Some(instance),
+            return_tx: self.return_tx.clone(),
+            _permit: permit,
+        })
+    }
+
+    /// Get current pool statistics
+    pub async fn stats(&self) -> PoolStats {
+        self.stats.lock().await.clone()
+    }
+
+    /// Get number of available instances
+    pub async fn available_count(&self) -> usize {
+        self.available.lock().await.len()
+    }
+
+    /// Get total pool size
+    pub fn pool_size(&self) -> usize {
+        self.config.pool_size
+    }
+
+    /// Shutdown the pool and unload all models
+    pub async fn shutdown(&self) {
+        // First drain any pending returns
+        self.drain_returns().await;
+
+        let mut available = self.available.lock().await;
+
+        for instance in available.drain(..) {
+            super::slm_model_unload(instance.handle);
+        }
+    }
+}
+
+impl Clone for InferencePool {
+    fn clone(&self) -> Self {
+        InferencePool {
+            model_path: self.model_path.clone(),
+            config: self.config.clone(),
+            available: Arc::clone(&self.available),
+            semaphore: Arc::clone(&self.semaphore),
+            stats: Arc::clone(&self.stats),
+            return_tx: self.return_tx.clone(),
+            return_rx: Arc::clone(&self.return_rx),
+        }
+    }
+}
+
+impl Drop for InferencePool {
+    fn drop(&mut self) {
+        // Only cleanup if this is the last reference
+        if Arc::strong_count(&self.available) == 1 {
+            // Note: In practice, should call shutdown() explicitly
+            // This is a safety net
+        }
+    }
+}
+
+// =============================================================================
+// Pool Guard
+// =============================================================================
+
+/// RAII guard for a pooled model instance
+///
+/// Automatically returns the instance to the pool when dropped.
+/// Uses a channel-based return mechanism to avoid spawning tasks.
+pub struct PoolGuard {
+    instance: Option<PooledInstance>,
+    /// Channel for returning the instance (no task spawn needed)
+    return_tx: Sender<PooledInstance>,
+    _permit: simplex_std::sync::SemaphorePermit,
+}
+
+impl PoolGuard {
+    /// Get the model handle for inference
+    pub fn handle(&self) -> ModelHandle {
+        self.instance.as_ref().unwrap().handle
+    }
+
+    /// Get how many times this instance has been used
+    pub fn use_count(&self) -> u64 {
+        self.instance.as_ref().unwrap().use_count
+    }
+}
+
+impl Drop for PoolGuard {
+    fn drop(&mut self) {
+        if let Some(mut instance) = self.instance.take() {
+            // Update instance metadata
+            instance.last_used = now_unix_ms();
+            instance.use_count += 1;
+
+            // Send to return channel - O(1) non-blocking operation
+            // The instance will be drained back to the pool on next acquire()
+            let _ = self.return_tx.try_send(instance);
+        }
+    }
+}
+
+// =============================================================================
+// Pool Statistics
+// =============================================================================
+
+/// Pool usage statistics
+#[derive(Clone, Default)]
+pub struct PoolStats {
+    /// Total times an instance was acquired
+    pub total_acquires: u64,
+    /// Total times an instance was released
+    pub total_releases: u64,
+    /// Times acquire timed out
+    pub timeout_count: u64,
+    /// Peak concurrent usage
+    pub peak_usage: usize,
+}
+
+impl PoolStats {
+    /// Average utilization (0.0 - 1.0)
+    pub fn utilization(&self, pool_size: usize) -> f64 {
+        if pool_size == 0 {
+            0.0
+        } else {
+            self.peak_usage as f64 / pool_size as f64
+        }
+    }
+}

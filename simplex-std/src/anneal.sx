@@ -1,0 +1,1084 @@
+// simplex-std::anneal - Self-Learning Annealing
+//
+// Implements self-learning annealing where optimization schedules (cooling rate,
+// reheating triggers, temperature bounds) are learned through meta-gradients.
+//
+// Instead of hand-tuning annealing hyperparameters, the system discovers optimal
+// schedules through differentiable optimization using dual numbers.
+//
+// # Example
+//
+// ```simplex
+// use simplex_std::anneal::{LearnableSchedule, MetaOptimizer, AnnealConfig};
+// use simplex_std::dual::dual;
+//
+// // Create a learnable schedule
+// let schedule = LearnableSchedule::new();
+//
+// // Define objective function
+// let objective = |x: &f64| -> dual {
+//     let xd = dual::constant(*x);
+//     xd * xd + dual::constant(10.0) * xd.cos()  // Rastrigin-like
+// };
+//
+// // Run self-learning annealing
+// let result = self_learn_anneal(
+//     objective,
+//     0.0,  // initial
+//     |x| x + random_normal() * 0.1,  // neighbor
+//     AnnealConfig::default()
+// );
+// ```
+//
+// # Mathematical Foundation
+//
+// Self-learning annealing parameterizes the temperature schedule and acceptance
+// function with learnable variables (dual numbers). The meta-objective measures
+// optimization quality, and gradients flow back through the schedule parameters.
+//
+// Key equations:
+// - Soft acceptance: A(ΔE, T; τ) = σ((τ - ΔE) / T)
+// - Temperature: T(t; θ) = T₀ · exp(-α·t) · (1 + β·sin(ω·t)) + γ·R(t)
+// - Meta-loss: L = E[f(x_final)] + λ₁·convergence_time + λ₂·||θ||²
+
+use super::dual::dual;
+use super::{Clone, Copy, Default, Vec};
+
+// =============================================================================
+// Schedule Gradient Types
+// =============================================================================
+
+/// Gradient of learnable schedule parameters
+#[derive(Clone, Copy)]
+pub struct ScheduleGradient {
+    /// Gradient w.r.t. initial temperature
+    pub d_initial_temp: f64,
+    /// Gradient w.r.t. cooling rate
+    pub d_cool_rate: f64,
+    /// Gradient w.r.t. minimum temperature
+    pub d_min_temp: f64,
+    /// Gradient w.r.t. reheat threshold
+    pub d_reheat_threshold: f64,
+    /// Gradient w.r.t. reheat intensity
+    pub d_reheat_intensity: f64,
+    /// Gradient w.r.t. reheat decay
+    pub d_reheat_decay: f64,
+    /// Gradient w.r.t. oscillation amplitude
+    pub d_oscillation_amp: f64,
+    /// Gradient w.r.t. oscillation frequency
+    pub d_oscillation_freq: f64,
+    /// Gradient w.r.t. acceptance threshold
+    pub d_accept_threshold: f64,
+    /// Gradient w.r.t. acceptance sharpness
+    pub d_accept_sharpness: f64,
+}
+
+impl Default for ScheduleGradient {
+    fn default() -> ScheduleGradient {
+        ScheduleGradient {
+            d_initial_temp: 0.0,
+            d_cool_rate: 0.0,
+            d_min_temp: 0.0,
+            d_reheat_threshold: 0.0,
+            d_reheat_intensity: 0.0,
+            d_reheat_decay: 0.0,
+            d_oscillation_amp: 0.0,
+            d_oscillation_freq: 0.0,
+            d_accept_threshold: 0.0,
+            d_accept_sharpness: 0.0,
+        }
+    }
+}
+
+impl ScheduleGradient {
+    /// L2 norm of gradient (for regularization)
+    pub fn norm(&self) -> f64 {
+        (self.d_initial_temp * self.d_initial_temp +
+         self.d_cool_rate * self.d_cool_rate +
+         self.d_min_temp * self.d_min_temp +
+         self.d_reheat_threshold * self.d_reheat_threshold +
+         self.d_reheat_intensity * self.d_reheat_intensity +
+         self.d_reheat_decay * self.d_reheat_decay +
+         self.d_oscillation_amp * self.d_oscillation_amp +
+         self.d_oscillation_freq * self.d_oscillation_freq +
+         self.d_accept_threshold * self.d_accept_threshold +
+         self.d_accept_sharpness * self.d_accept_sharpness).sqrt()
+    }
+
+    /// Scale gradient by factor
+    pub fn scale(&mut self, factor: f64) {
+        self.d_initial_temp = self.d_initial_temp * factor;
+        self.d_cool_rate = self.d_cool_rate * factor;
+        self.d_min_temp = self.d_min_temp * factor;
+        self.d_reheat_threshold = self.d_reheat_threshold * factor;
+        self.d_reheat_intensity = self.d_reheat_intensity * factor;
+        self.d_reheat_decay = self.d_reheat_decay * factor;
+        self.d_oscillation_amp = self.d_oscillation_amp * factor;
+        self.d_oscillation_freq = self.d_oscillation_freq * factor;
+        self.d_accept_threshold = self.d_accept_threshold * factor;
+        self.d_accept_sharpness = self.d_accept_sharpness * factor;
+    }
+
+    /// Add another gradient
+    pub fn add(&mut self, other: &ScheduleGradient) {
+        self.d_initial_temp = self.d_initial_temp + other.d_initial_temp;
+        self.d_cool_rate = self.d_cool_rate + other.d_cool_rate;
+        self.d_min_temp = self.d_min_temp + other.d_min_temp;
+        self.d_reheat_threshold = self.d_reheat_threshold + other.d_reheat_threshold;
+        self.d_reheat_intensity = self.d_reheat_intensity + other.d_reheat_intensity;
+        self.d_reheat_decay = self.d_reheat_decay + other.d_reheat_decay;
+        self.d_oscillation_amp = self.d_oscillation_amp + other.d_oscillation_amp;
+        self.d_oscillation_freq = self.d_oscillation_freq + other.d_oscillation_freq;
+        self.d_accept_threshold = self.d_accept_threshold + other.d_accept_threshold;
+        self.d_accept_sharpness = self.d_accept_sharpness + other.d_accept_sharpness;
+    }
+}
+
+// =============================================================================
+// Learnable Schedule
+// =============================================================================
+
+/// Learnable annealing schedule with meta-gradient support.
+///
+/// All parameters are dual numbers for gradient tracking through
+/// the entire annealing process.
+#[derive(Clone)]
+pub struct LearnableSchedule {
+    // Core temperature parameters
+    /// Initial temperature T₀
+    pub initial_temp: dual,
+    /// Cooling rate α (exponential decay)
+    pub cool_rate: dual,
+    /// Minimum temperature floor
+    pub min_temp: dual,
+
+    // Reheating parameters
+    /// Stagnation steps before reheat triggers
+    pub reheat_threshold: dual,
+    /// How much to increase temperature on reheat
+    pub reheat_intensity: dual,
+    /// How quickly reheat effect fades
+    pub reheat_decay: dual,
+
+    // Oscillation parameters (periodic reheating)
+    /// Amplitude of temperature oscillation
+    pub oscillation_amp: dual,
+    /// Frequency of oscillation
+    pub oscillation_freq: dual,
+
+    // Acceptance parameters
+    /// Soft acceptance threshold τ
+    pub accept_threshold: dual,
+    /// Sharpness of acceptance boundary
+    pub accept_sharpness: dual,
+}
+
+impl LearnableSchedule {
+    /// Create a new learnable schedule with default initial values.
+    ///
+    /// Parameters are initialized to reasonable defaults that work
+    /// for many problems. Meta-optimization will refine them.
+    pub fn new() -> LearnableSchedule {
+        LearnableSchedule {
+            initial_temp: dual::variable(1.0),
+            cool_rate: dual::variable(0.01),
+            min_temp: dual::constant(0.001),
+            reheat_threshold: dual::variable(50.0),
+            reheat_intensity: dual::variable(0.5),
+            reheat_decay: dual::variable(0.1),
+            oscillation_amp: dual::variable(0.0),  // Disabled by default
+            oscillation_freq: dual::variable(0.1),
+            accept_threshold: dual::variable(0.0),
+            accept_sharpness: dual::variable(1.0),
+        }
+    }
+
+    /// Create schedule from explicit parameter values
+    pub fn from_params(
+        initial_temp: f64,
+        cool_rate: f64,
+        min_temp: f64,
+        reheat_threshold: f64,
+        reheat_intensity: f64,
+    ) -> LearnableSchedule {
+        LearnableSchedule {
+            initial_temp: dual::variable(initial_temp),
+            cool_rate: dual::variable(cool_rate),
+            min_temp: dual::constant(min_temp),
+            reheat_threshold: dual::variable(reheat_threshold),
+            reheat_intensity: dual::variable(reheat_intensity),
+            reheat_decay: dual::variable(0.1),
+            oscillation_amp: dual::variable(0.0),
+            oscillation_freq: dual::variable(0.1),
+            accept_threshold: dual::variable(0.0),
+            accept_sharpness: dual::variable(1.0),
+        }
+    }
+
+    /// Compute temperature at given step with stagnation info.
+    ///
+    /// Temperature follows exponential cooling with optional
+    /// periodic oscillation and stagnation-triggered reheating.
+    ///
+    /// T(t) = T₀ · exp(-α·t) · (1 + β·sin(ω·t)) + γ·R(t)
+    pub fn temperature(&self, step: dual, stagnation: dual) -> dual {
+        // Base exponential cooling
+        let neg_alpha_t = (dual::zero() - self.cool_rate) * step;
+        let base = self.initial_temp * neg_alpha_t.exp();
+
+        // Periodic oscillation (optional reheating cycles)
+        let oscillation = dual::constant(1.0) +
+            self.oscillation_amp * (self.oscillation_freq * step).sin();
+
+        // Stagnation-triggered reheat
+        let stag_diff = stagnation - self.reheat_threshold;
+        let reheat_trigger = (stag_diff / dual::constant(10.0)).sigmoid();
+        let neg_decay_stag = (dual::zero() - self.reheat_decay) * stag_diff;
+        let reheat = self.reheat_intensity * reheat_trigger * neg_decay_stag.exp();
+
+        // Combined temperature (clamped to minimum)
+        let temp = base * oscillation + reheat;
+        temp.max(self.min_temp)
+    }
+
+    /// Compute soft acceptance probability (differentiable).
+    ///
+    /// Unlike hard acceptance (binary), this returns a smooth probability
+    /// that allows gradients to flow through rejected moves.
+    ///
+    /// A(ΔE, T) = σ((τ - ΔE) / (T · sharpness))
+    pub fn accept_probability(&self, delta_e: dual, temp: dual) -> dual {
+        let scaled = (self.accept_threshold - delta_e) /
+                     (temp * self.accept_sharpness);
+        scaled.sigmoid()
+    }
+
+    /// Extract gradient vector from all parameters.
+    pub fn gradient(&self) -> ScheduleGradient {
+        ScheduleGradient {
+            d_initial_temp: self.initial_temp.der,
+            d_cool_rate: self.cool_rate.der,
+            d_min_temp: self.min_temp.der,
+            d_reheat_threshold: self.reheat_threshold.der,
+            d_reheat_intensity: self.reheat_intensity.der,
+            d_reheat_decay: self.reheat_decay.der,
+            d_oscillation_amp: self.oscillation_amp.der,
+            d_oscillation_freq: self.oscillation_freq.der,
+            d_accept_threshold: self.accept_threshold.der,
+            d_accept_sharpness: self.accept_sharpness.der,
+        }
+    }
+
+    /// Apply meta-gradient update to all parameters.
+    pub fn update(&mut self, grad: &ScheduleGradient, learning_rate: f64) {
+        self.initial_temp = dual::new(
+            self.initial_temp.val - learning_rate * grad.d_initial_temp,
+            1.0
+        );
+        self.cool_rate = dual::new(
+            self.cool_rate.val - learning_rate * grad.d_cool_rate,
+            1.0
+        );
+        self.reheat_threshold = dual::new(
+            self.reheat_threshold.val - learning_rate * grad.d_reheat_threshold,
+            1.0
+        );
+        self.reheat_intensity = dual::new(
+            self.reheat_intensity.val - learning_rate * grad.d_reheat_intensity,
+            1.0
+        );
+        self.reheat_decay = dual::new(
+            self.reheat_decay.val - learning_rate * grad.d_reheat_decay,
+            1.0
+        );
+        self.oscillation_amp = dual::new(
+            self.oscillation_amp.val - learning_rate * grad.d_oscillation_amp,
+            1.0
+        );
+        self.oscillation_freq = dual::new(
+            self.oscillation_freq.val - learning_rate * grad.d_oscillation_freq,
+            1.0
+        );
+        self.accept_threshold = dual::new(
+            self.accept_threshold.val - learning_rate * grad.d_accept_threshold,
+            1.0
+        );
+        self.accept_sharpness = dual::new(
+            self.accept_sharpness.val - learning_rate * grad.d_accept_sharpness,
+            1.0
+        );
+
+        // Ensure valid parameter ranges
+        self.clamp_parameters();
+    }
+
+    /// Ensure parameters stay in valid ranges
+    fn clamp_parameters(&mut self) {
+        // Temperature must be positive
+        if self.initial_temp.val < 0.001 {
+            self.initial_temp = dual::new(0.001, self.initial_temp.der);
+        }
+        // Cooling rate must be positive
+        if self.cool_rate.val < 0.0001 {
+            self.cool_rate = dual::new(0.0001, self.cool_rate.der);
+        }
+        // Reheat threshold must be positive
+        if self.reheat_threshold.val < 1.0 {
+            self.reheat_threshold = dual::new(1.0, self.reheat_threshold.der);
+        }
+        // Sharpness must be positive
+        if self.accept_sharpness.val < 0.01 {
+            self.accept_sharpness = dual::new(0.01, self.accept_sharpness.der);
+        }
+    }
+
+    /// L2 norm of parameters (for regularization)
+    pub fn l2_norm(&self) -> dual {
+        self.initial_temp * self.initial_temp +
+        self.cool_rate * self.cool_rate +
+        self.reheat_threshold * self.reheat_threshold +
+        self.reheat_intensity * self.reheat_intensity +
+        self.oscillation_amp * self.oscillation_amp
+    }
+
+    /// Compute temperature variance over a window (for exploration bonus)
+    pub fn temperature_variance(&self, steps: i64) -> dual {
+        // Sample temperatures at several points
+        var temps: Vec<dual> = Vec::new();
+        for i in 0..steps {
+            let step = dual::constant(i as f64);
+            let stag = dual::constant(0.0);
+            temps.push(self.temperature(step, stag));
+        }
+
+        // Compute variance
+        var sum = dual::zero();
+        for t in temps.iter() {
+            sum = sum + *t;
+        }
+        let mean = sum / dual::constant(steps as f64);
+
+        var var_sum = dual::zero();
+        for t in temps.iter() {
+            let diff = *t - mean;
+            var_sum = var_sum + diff * diff;
+        }
+        var_sum / dual::constant(steps as f64)
+    }
+
+    /// Get a snapshot of current parameter values (for logging)
+    pub fn snapshot(&self) -> ScheduleSnapshot {
+        ScheduleSnapshot {
+            initial_temp: self.initial_temp.val,
+            cool_rate: self.cool_rate.val,
+            min_temp: self.min_temp.val,
+            reheat_threshold: self.reheat_threshold.val,
+            reheat_intensity: self.reheat_intensity.val,
+            oscillation_amp: self.oscillation_amp.val,
+        }
+    }
+}
+
+impl Default for LearnableSchedule {
+    fn default() -> LearnableSchedule {
+        LearnableSchedule::new()
+    }
+}
+
+/// Snapshot of schedule parameters (non-dual, for logging)
+#[derive(Clone, Copy)]
+pub struct ScheduleSnapshot {
+    pub initial_temp: f64,
+    pub cool_rate: f64,
+    pub min_temp: f64,
+    pub reheat_threshold: f64,
+    pub reheat_intensity: f64,
+    pub oscillation_amp: f64,
+}
+
+// =============================================================================
+// Annealing State
+// =============================================================================
+
+/// State of a differentiable annealing process.
+#[derive(Clone)]
+pub struct AnnealState<S: Clone> {
+    /// Current solution
+    pub solution: S,
+    /// Current objective value (dual for gradient tracking)
+    pub energy: dual,
+    /// Current temperature
+    pub temperature: dual,
+    /// Steps since last improvement
+    pub stagnation: i64,
+    /// Total steps taken
+    pub step: i64,
+    /// Best solution found so far
+    pub best_solution: S,
+    /// Best energy found so far
+    pub best_energy: dual,
+}
+
+impl<S: Clone> AnnealState<S> {
+    /// Create initial annealing state
+    pub fn new(initial: S, initial_energy: dual) -> AnnealState<S> {
+        AnnealState {
+            solution: initial.clone(),
+            energy: initial_energy,
+            temperature: dual::constant(1.0),
+            stagnation: 0,
+            step: 0,
+            best_solution: initial,
+            best_energy: initial_energy,
+        }
+    }
+
+    /// Update state when accepting a new solution
+    pub fn accept(&mut self, new_solution: S, new_energy: dual) {
+        self.solution = new_solution.clone();
+        self.energy = new_energy;
+        self.step = self.step + 1;
+
+        if new_energy.val < self.best_energy.val {
+            self.best_solution = new_solution;
+            self.best_energy = new_energy;
+            self.stagnation = 0;
+        } else {
+            self.stagnation = self.stagnation + 1;
+        }
+    }
+
+    /// Update state when rejecting a solution
+    pub fn reject(&mut self) {
+        self.step = self.step + 1;
+        self.stagnation = self.stagnation + 1;
+    }
+
+    /// Check if converged (stagnation exceeds threshold)
+    pub fn is_converged(&self, threshold: i64) -> bool {
+        self.stagnation > threshold
+    }
+}
+
+// =============================================================================
+// Meta Loss
+// =============================================================================
+
+/// Meta-loss for evaluating schedule quality
+#[derive(Clone)]
+pub struct MetaLoss {
+    /// Total meta-loss (for gradient computation)
+    pub total: dual,
+    /// Quality component: final objective value
+    pub quality: dual,
+    /// Efficiency component: convergence speed
+    pub efficiency: dual,
+    /// Compression/simplicity component
+    pub simplicity: dual,
+}
+
+impl MetaLoss {
+    /// Create meta-loss from components
+    pub fn new(quality: dual, efficiency: dual, simplicity: dual) -> MetaLoss {
+        let total = quality +
+                   dual::constant(0.1) * efficiency +
+                   dual::constant(0.01) * simplicity;
+        MetaLoss { total, quality, efficiency, simplicity }
+    }
+
+    /// Create from just quality (simple version)
+    pub fn from_quality(quality: dual) -> MetaLoss {
+        MetaLoss {
+            total: quality,
+            quality: quality,
+            efficiency: dual::zero(),
+            simplicity: dual::zero(),
+        }
+    }
+}
+
+// =============================================================================
+// Meta History
+// =============================================================================
+
+/// Record of a single meta-training epoch
+#[derive(Clone)]
+pub struct MetaEpoch {
+    /// Final objective value achieved
+    pub final_energy: f64,
+    /// Steps to convergence
+    pub convergence_step: i64,
+    /// Schedule parameters at this epoch
+    pub schedule_params: ScheduleSnapshot,
+}
+
+/// History of meta-training for analysis
+#[derive(Clone)]
+pub struct MetaHistory {
+    /// All recorded epochs
+    pub epochs: Vec<MetaEpoch>,
+}
+
+impl MetaHistory {
+    /// Create empty history
+    pub fn new() -> MetaHistory {
+        MetaHistory { epochs: Vec::new() }
+    }
+
+    /// Add an epoch record
+    pub fn push(&mut self, epoch: MetaEpoch) {
+        self.epochs.push(epoch);
+    }
+
+    /// Get best energy achieved
+    pub fn best_energy(&self) -> f64 {
+        var best = f64::MAX;
+        for e in self.epochs.iter() {
+            if e.final_energy < best {
+                best = e.final_energy;
+            }
+        }
+        best
+    }
+
+    /// Check if improving (last N epochs)
+    pub fn is_improving(&self, window: usize) -> bool {
+        let len = self.epochs.len();
+        if len < window * 2 {
+            return true;
+        }
+
+        var early_avg = 0.0;
+        var late_avg = 0.0;
+
+        for i in 0..window {
+            early_avg = early_avg + self.epochs[len - window * 2 + i].final_energy;
+            late_avg = late_avg + self.epochs[len - window + i].final_energy;
+        }
+
+        late_avg / (window as f64) < early_avg / (window as f64)
+    }
+}
+
+impl Default for MetaHistory {
+    fn default() -> MetaHistory {
+        MetaHistory::new()
+    }
+}
+
+// =============================================================================
+// Annealing Configuration
+// =============================================================================
+
+/// Configuration for self-learning annealing
+#[derive(Clone)]
+pub struct AnnealConfig {
+    /// Number of meta-training epochs
+    pub meta_epochs: i64,
+    /// Annealing steps per meta-epoch
+    pub steps_per_epoch: i64,
+    /// Learning rate for schedule parameters
+    pub meta_learning_rate: f64,
+    /// L2 regularization strength
+    pub regularization: f64,
+    /// Convergence threshold (stagnation steps)
+    pub convergence_threshold: i64,
+}
+
+impl AnnealConfig {
+    /// Default configuration suitable for many problems
+    pub fn default() -> AnnealConfig {
+        AnnealConfig {
+            meta_epochs: 100,
+            steps_per_epoch: 1000,
+            meta_learning_rate: 0.001,
+            regularization: 0.0001,
+            convergence_threshold: 200,
+        }
+    }
+
+    /// Quick configuration for fast exploration
+    pub fn quick() -> AnnealConfig {
+        AnnealConfig {
+            meta_epochs: 20,
+            steps_per_epoch: 200,
+            meta_learning_rate: 0.01,
+            regularization: 0.001,
+            convergence_threshold: 50,
+        }
+    }
+
+    /// Thorough configuration for difficult problems
+    pub fn thorough() -> AnnealConfig {
+        AnnealConfig {
+            meta_epochs: 500,
+            steps_per_epoch: 5000,
+            meta_learning_rate: 0.0001,
+            regularization: 0.00001,
+            convergence_threshold: 500,
+        }
+    }
+}
+
+impl Default for AnnealConfig {
+    fn default() -> AnnealConfig {
+        AnnealConfig::default()
+    }
+}
+
+// =============================================================================
+// Fixed Schedules (for comparison)
+// =============================================================================
+
+/// Fixed (non-learnable) temperature schedules for comparison
+pub mod fixed {
+    use super::dual;
+
+    /// Exponential cooling: T(t) = T₀ · exp(-α·t)
+    pub fn exponential(t0: f64, alpha: f64, step: i64) -> f64 {
+        t0 * (-alpha * (step as f64)).exp()
+    }
+
+    /// Linear cooling: T(t) = T₀ - (T₀ - T_final) · t / steps
+    pub fn linear(t0: f64, t_final: f64, step: i64, total_steps: i64) -> f64 {
+        let progress = (step as f64) / (total_steps as f64);
+        t0 - (t0 - t_final) * progress.min(1.0)
+    }
+
+    /// Logarithmic cooling: T(t) = c / ln(t + 2)
+    pub fn logarithmic(c: f64, step: i64) -> f64 {
+        c / ((step as f64) + 2.0).ln()
+    }
+
+    /// Cosine annealing: T(t) = T_min + (T₀ - T_min) · (1 + cos(π·t/steps)) / 2
+    pub fn cosine(t0: f64, t_min: f64, step: i64, total_steps: i64) -> f64 {
+        let progress = (step as f64) / (total_steps as f64);
+        let cos_val = (std::f64::consts::PI * progress).cos();
+        t_min + (t0 - t_min) * (1.0 + cos_val) / 2.0
+    }
+}
+
+// =============================================================================
+// Utility Functions
+// =============================================================================
+
+/// Generate random f64 in [0, 1)
+#[inline]
+fn random_f64() -> f64 {
+    // Use runtime-provided random function
+    extern fn random_float() -> f64;
+    random_float()
+}
+
+/// Generate random normal (standard normal distribution)
+fn random_normal() -> f64 {
+    // Box-Muller transform
+    let u1 = random_f64();
+    let u2 = random_f64();
+    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+}
+
+// =============================================================================
+// Module Constants
+// =============================================================================
+
+mod std {
+    pub mod f64 {
+        pub mod consts {
+            pub const PI: f64 = 3.141592653589793;
+            pub const E: f64 = 2.718281828459045;
+        }
+    }
+}
+
+// =============================================================================
+// Meta Optimizer
+// =============================================================================
+
+/// Meta-optimizer that learns the annealing schedule through gradient descent.
+///
+/// The MetaOptimizer wraps a LearnableSchedule and provides methods to:
+/// 1. Run annealing episodes with gradient tracking
+/// 2. Compute meta-loss measuring schedule quality
+/// 3. Update schedule parameters via meta-gradients
+pub struct MetaOptimizer {
+    /// The learnable schedule being optimized
+    pub schedule: LearnableSchedule,
+    /// Learning rate for meta-updates
+    pub meta_learning_rate: f64,
+    /// L2 regularization strength
+    pub regularization: f64,
+    /// History of meta-training
+    pub history: MetaHistory,
+}
+
+impl MetaOptimizer {
+    /// Create a new meta-optimizer with default schedule
+    pub fn new() -> MetaOptimizer {
+        MetaOptimizer {
+            schedule: LearnableSchedule::new(),
+            meta_learning_rate: 0.001,
+            regularization: 0.0001,
+            history: MetaHistory::new(),
+        }
+    }
+
+    /// Create with custom schedule
+    pub fn with_schedule(schedule: LearnableSchedule) -> MetaOptimizer {
+        MetaOptimizer {
+            schedule,
+            meta_learning_rate: 0.001,
+            regularization: 0.0001,
+            history: MetaHistory::new(),
+        }
+    }
+
+    /// Set meta-learning rate
+    pub fn learning_rate(mut self, lr: f64) -> MetaOptimizer {
+        self.meta_learning_rate = lr;
+        self
+    }
+
+    /// Set regularization strength
+    pub fn regularization(mut self, reg: f64) -> MetaOptimizer {
+        self.regularization = reg;
+        self
+    }
+
+    /// Run a single annealing episode with gradient tracking.
+    ///
+    /// Returns the best solution found and the final energy (as dual
+    /// for gradient tracking back to schedule parameters).
+    pub fn anneal_episode<S: Clone, F, N>(
+        &self,
+        initial: S,
+        objective: F,
+        neighbor_fn: N,
+        max_steps: i64
+    ) -> (S, dual)
+    where
+        F: Fn(&S) -> dual,
+        N: Fn(&S) -> S,
+    {
+        let initial_energy = objective(&initial);
+        var state = AnnealState::new(initial, initial_energy);
+
+        for step in 0..max_steps {
+            let step_dual = dual::constant(step as f64);
+            let stagnation_dual = dual::constant(state.stagnation as f64);
+
+            // Get current temperature (differentiable through schedule)
+            let temp = self.schedule.temperature(step_dual, stagnation_dual);
+            state.temperature = temp;
+
+            // Propose neighbor solution
+            let neighbor = neighbor_fn(&state.solution);
+            let neighbor_energy = objective(&neighbor);
+            let delta_e = neighbor_energy - state.energy;
+
+            // Compute soft acceptance probability (differentiable)
+            let accept_prob = self.schedule.accept_probability(delta_e, temp);
+
+            // Soft transition for gradient flow:
+            // Energy is updated as weighted mix even for rejected moves
+            // This allows gradients to flow through the entire trajectory
+            state.energy = state.energy * (dual::constant(1.0) - accept_prob) +
+                          neighbor_energy * accept_prob;
+
+            // Hard transition for actual solution
+            if accept_prob.val > random_f64() {
+                state.accept(neighbor, neighbor_energy);
+            } else {
+                state.reject();
+            }
+
+            // Early termination on convergence
+            if state.is_converged(200) {
+                break;
+            }
+        }
+
+        (state.best_solution, state.best_energy)
+    }
+
+    /// Compute meta-loss that measures schedule quality.
+    ///
+    /// Components:
+    /// - Quality: final objective value (lower is better)
+    /// - Efficiency: steps to convergence (lower is better)
+    /// - Regularization: schedule parameter magnitudes
+    pub fn compute_meta_loss(
+        &self,
+        final_energy: dual,
+        steps: i64,
+        max_steps: i64
+    ) -> MetaLoss {
+        // Primary: final model quality
+        let quality = final_energy;
+
+        // Efficiency: normalized convergence time
+        let efficiency = dual::constant((steps as f64) / (max_steps as f64));
+
+        // Regularization: prefer simple schedules
+        let reg_term = self.schedule.l2_norm() * dual::constant(self.regularization);
+
+        // Exploration bonus: encourage temperature variance
+        let exploration = self.schedule.temperature_variance(100) * dual::constant(-0.01);
+
+        MetaLoss {
+            total: quality + dual::constant(0.1) * efficiency + reg_term + exploration,
+            quality,
+            efficiency,
+            simplicity: reg_term,
+        }
+    }
+
+    /// Update schedule parameters based on meta-loss.
+    pub fn update_schedule(&mut self, meta_loss: &MetaLoss) {
+        let grad = self.schedule.gradient();
+
+        // Apply gradient clipping
+        var clipped_grad = grad.clone();
+        let norm = clipped_grad.norm();
+        if norm > 1.0 {
+            clipped_grad.scale(1.0 / norm);
+        }
+
+        self.schedule.update(&clipped_grad, self.meta_learning_rate);
+    }
+
+    /// Run complete meta-optimization loop.
+    ///
+    /// Trains the schedule over multiple epochs, improving it based
+    /// on how well it performs across annealing runs.
+    pub fn optimize<S: Clone, F, N>(
+        &mut self,
+        initial: S,
+        objective: F,
+        neighbor_fn: N,
+        config: &AnnealConfig
+    ) -> S
+    where
+        F: Fn(&S) -> dual,
+        N: Fn(&S) -> S,
+    {
+        var best_overall = initial.clone();
+        var best_overall_energy = f64::MAX;
+
+        for epoch in 0..config.meta_epochs {
+            // Run annealing with current schedule
+            let (solution, final_energy) = self.anneal_episode(
+                initial.clone(),
+                &objective,
+                &neighbor_fn,
+                config.steps_per_epoch
+            );
+
+            // Compute meta-loss
+            let meta_loss = self.compute_meta_loss(
+                final_energy,
+                config.steps_per_epoch,  // TODO: track actual convergence step
+                config.steps_per_epoch
+            );
+
+            // Update schedule based on meta-loss
+            self.update_schedule(&meta_loss);
+
+            // Track best solution
+            if final_energy.val < best_overall_energy {
+                best_overall = solution;
+                best_overall_energy = final_energy.val;
+            }
+
+            // Record history
+            self.history.push(MetaEpoch {
+                final_energy: final_energy.val,
+                convergence_step: config.steps_per_epoch,
+                schedule_params: self.schedule.snapshot(),
+            });
+        }
+
+        best_overall
+    }
+
+    /// Get current schedule (for inspection)
+    pub fn get_schedule(&self) -> &LearnableSchedule {
+        &self.schedule
+    }
+
+    /// Get training history
+    pub fn get_history(&self) -> &MetaHistory {
+        &self.history
+    }
+}
+
+impl Default for MetaOptimizer {
+    fn default() -> MetaOptimizer {
+        MetaOptimizer::new()
+    }
+}
+
+// =============================================================================
+// Convenience Functions
+// =============================================================================
+
+/// Run self-learning annealing with default configuration.
+///
+/// This is the main entry point for using self-learning annealing.
+/// The schedule learns itself through meta-gradients.
+///
+/// # Arguments
+///
+/// * `objective` - Function mapping solution to objective value (as dual for gradients)
+/// * `initial` - Initial solution
+/// * `neighbor` - Function generating neighbor solutions
+/// * `config` - Annealing configuration
+///
+/// # Returns
+///
+/// Best solution found
+///
+/// # Example
+///
+/// ```simplex
+/// use simplex_std::anneal::{self_learn_anneal, AnnealConfig};
+/// use simplex_std::dual::dual;
+///
+/// // Minimize x² + 10*cos(x)
+/// let objective = |x: &f64| {
+///     let xd = dual::constant(*x);
+///     xd * xd + dual::constant(10.0) * xd.cos()
+/// };
+///
+/// let neighbor = |x: &f64| x + random_normal() * 0.1;
+///
+/// let result = self_learn_anneal(objective, 5.0, neighbor, AnnealConfig::default());
+/// ```
+pub fn self_learn_anneal<S: Clone, F, N>(
+    objective: F,
+    initial: S,
+    neighbor: N,
+    config: AnnealConfig
+) -> S
+where
+    F: Fn(&S) -> dual,
+    N: Fn(&S) -> S,
+{
+    var optimizer = MetaOptimizer::new();
+    optimizer.meta_learning_rate = config.meta_learning_rate;
+    optimizer.regularization = config.regularization;
+
+    optimizer.optimize(initial, objective, neighbor, &config)
+}
+
+/// Run simple (non-learning) simulated annealing with fixed schedule.
+///
+/// Useful for comparison with self-learning annealing.
+pub fn simple_anneal<S: Clone, F, N>(
+    objective: F,
+    initial: S,
+    neighbor: N,
+    initial_temp: f64,
+    cool_rate: f64,
+    max_steps: i64
+) -> S
+where
+    F: Fn(&S) -> f64,
+    N: Fn(&S) -> S,
+{
+    var current = initial.clone();
+    var current_energy = objective(&current);
+    var best = current.clone();
+    var best_energy = current_energy;
+
+    for step in 0..max_steps {
+        // Fixed exponential cooling
+        let temp = fixed::exponential(initial_temp, cool_rate, step);
+
+        // Generate neighbor
+        let candidate = neighbor(&current);
+        let candidate_energy = objective(&candidate);
+        let delta_e = candidate_energy - current_energy;
+
+        // Hard acceptance
+        let accept = if delta_e < 0.0 {
+            true
+        } else {
+            random_f64() < (-delta_e / temp).exp()
+        };
+
+        if accept {
+            current = candidate;
+            current_energy = candidate_energy;
+
+            if current_energy < best_energy {
+                best = current.clone();
+                best_energy = current_energy;
+            }
+        }
+    }
+
+    best
+}
+
+// =============================================================================
+// Tests Module
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_dual_temperature() {
+        let schedule = LearnableSchedule::new();
+        let step = dual::constant(10.0);
+        let stag = dual::constant(0.0);
+
+        let temp = schedule.temperature(step, stag);
+
+        // Temperature should be positive
+        assert!(temp.val > 0.0);
+        // Temperature should decay from initial
+        assert!(temp.val < schedule.initial_temp.val);
+    }
+
+    fn test_acceptance_probability() {
+        let schedule = LearnableSchedule::new();
+        let temp = dual::constant(1.0);
+
+        // Improving move (negative delta) should have high acceptance
+        let p_improve = schedule.accept_probability(dual::constant(-1.0), temp);
+        assert!(p_improve.val > 0.5);
+
+        // Worsening move (positive delta) should have lower acceptance
+        let p_worsen = schedule.accept_probability(dual::constant(1.0), temp);
+        assert!(p_worsen.val < 0.5);
+    }
+
+    fn test_gradient_flow() {
+        var schedule = LearnableSchedule::new();
+        let step = dual::variable(10.0);
+        let stag = dual::constant(0.0);
+
+        let temp = schedule.temperature(step, stag);
+
+        // Gradient should flow through temperature
+        assert!(temp.der != 0.0);
+    }
+
+    fn test_meta_update() {
+        var schedule = LearnableSchedule::new();
+        let initial_cool_rate = schedule.cool_rate.val;
+
+        // Create artificial gradient
+        let grad = ScheduleGradient {
+            d_cool_rate: 0.1,
+            ..Default::default()
+        };
+
+        schedule.update(&grad, 0.01);
+
+        // Parameter should have changed
+        assert!(schedule.cool_rate.val != initial_cool_rate);
+    }
+}

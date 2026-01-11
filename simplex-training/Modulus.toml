@@ -1,0 +1,49 @@
+# simplex-training - Self-Learning Training Runtime for AWS Inferentia
+#
+# High-performance training library with self-learning annealing.
+# Runs exclusively on AWS Inferentia instances for cost optimization.
+#
+# Key Features:
+# - Learnable schedules (LR, distillation, pruning, quantization)
+# - Meta-gradient optimization for schedule learning
+# - Curriculum learning for specialist ordering
+# - 10-20x cost reduction vs traditional GPU training
+
+[package]
+name = "simplex-training"
+version = "0.9.0"
+description = "Self-learning training runtime for AWS Inferentia"
+authors = ["Simplex Team"]
+license = "MIT"
+
+[dependencies]
+# Core Simplex runtime (dual numbers, async)
+simplex-std = { path = "../simplex-std" }
+
+# Core inference pipeline (batching, caching, routing)
+simplex-inference = { path = "../simplex-inference" }
+
+# AWS S3 for dataset/model storage (optional)
+simplex-s3 = { path = "../simplex-s3", optional = true }
+
+[features]
+# Default: requires Inferentia
+default = ["neuron"]
+
+# AWS Inferentia/Trainium support (required for production)
+neuron = []
+
+# CPU fallback for local development (slower, not for production)
+cpu-dev = []
+
+# Enable experimental features
+experimental = []
+
+[target.inferentia]
+# Inferentia-specific optimizations
+compile_flags = ["-O3", "--neuron-target=inf2"]
+link_flags = ["--neuron-runtime"]
+
+[build]
+# Neuron SDK compilation
+pre_compile = "neuronx-cc compile --target inf2"

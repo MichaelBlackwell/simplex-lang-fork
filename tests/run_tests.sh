@@ -1,19 +1,37 @@
 #!/bin/bash
 # Simplex Test Runner
-# Runs all tests in the test suite
+# Runs all tests in the test suite with support for filtering by category and type
 #
-# Usage: ./run_tests.sh [category]
-#   category: all, language, neural, stdlib, runtime, ai, integration, toolchain
+# Usage: ./run_tests.sh [category] [type]
+#
+# Categories:
+#   all, language, types, neural, stdlib, runtime, ai, integration,
+#   toolchain, basics, async, actors, learning, observability
+#
+# Types (based on naming convention):
+#   all   - Run all test types
+#   unit  - Run unit_*.sx tests (isolated function/module tests)
+#   spec  - Run spec_*.sx tests (language specification tests)
+#   integ - Run integ_*.sx tests (integration tests)
+#   e2e   - Run e2e_*.sx tests (end-to-end workflow tests)
 #
 # Examples:
-#   ./run_tests.sh           # Run all tests
-#   ./run_tests.sh neural    # Run only neural IR tests
-#   ./run_tests.sh language  # Run only language tests
+#   ./run_tests.sh                    # Run all tests
+#   ./run_tests.sh neural             # Run only neural IR tests
+#   ./run_tests.sh stdlib unit        # Run only stdlib unit tests
+#   ./run_tests.sh all spec           # Run all spec tests across categories
+#   ./run_tests.sh language           # Run all language tests
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-RUNTIME="$PROJECT_ROOT/standalone_runtime.c"
-COMPILER="$PROJECT_ROOT/stage0.py"
+RUNTIME="$PROJECT_ROOT/runtime/standalone_runtime.c"
+# Use compiled sxc instead of Python bootstrap
+COMPILER="$PROJECT_ROOT/build/sxc"
+# Fallback to stage0.py if sxc not built
+if [ ! -x "$COMPILER" ]; then
+    COMPILER="$PROJECT_ROOT/stage0.py"
+    USE_PYTHON=1
+fi
 
 # Colors
 GREEN='\033[0;32m'
@@ -21,12 +39,16 @@ RED='\033[0;31m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 BLUE='\033[0;34m'
+MAGENTA='\033[0;35m'
 NC='\033[0m' # No Color
 
 PASSED=0
 FAILED=0
 SKIPPED=0
 WARNINGS=0
+
+# Test type filter (unit, spec, integ, e2e, or all)
+TEST_TYPE="${2:-all}"
 
 # Check if compiler exists
 if [ ! -f "$COMPILER" ]; then
@@ -39,6 +61,49 @@ if [ ! -f "$RUNTIME" ]; then
     exit 1
 fi
 
+# Check if test matches the type filter
+matches_type_filter() {
+    local test_name="$1"
+
+    if [ "$TEST_TYPE" = "all" ]; then
+        return 0
+    fi
+
+    case "$TEST_TYPE" in
+        unit)
+            [[ "$test_name" == unit_* ]] && return 0
+            ;;
+        spec)
+            [[ "$test_name" == spec_* ]] && return 0
+            ;;
+        integ)
+            [[ "$test_name" == integ_* ]] && return 0
+            ;;
+        e2e)
+            [[ "$test_name" == e2e_* ]] && return 0
+            ;;
+    esac
+
+    return 1
+}
+
+# Get test type label with color
+get_type_label() {
+    local test_name="$1"
+
+    if [[ "$test_name" == unit_* ]]; then
+        echo -e "${BLUE}[unit]${NC}"
+    elif [[ "$test_name" == spec_* ]]; then
+        echo -e "${CYAN}[spec]${NC}"
+    elif [[ "$test_name" == integ_* ]]; then
+        echo -e "${MAGENTA}[integ]${NC}"
+    elif [[ "$test_name" == e2e_* ]]; then
+        echo -e "${YELLOW}[e2e]${NC}"
+    else
+        echo "[test]"
+    fi
+}
+
 run_test() {
     local test_file="$1"
     local test_name=$(basename "$test_file" .sx)
@@ -46,18 +111,28 @@ run_test() {
     local display_name="${test_dir#$SCRIPT_DIR/}/$test_name"
 
     # Skip library/helper files
-    if [[ "$test_name" == "mathlib" ]] || [[ "$test_name" == "helpers" ]]; then
+    if [[ "$test_name" == "spec_mathlib" ]] || [[ "$test_name" == "helpers" ]]; then
         return
     fi
 
-    printf "    %-50s " "$display_name"
+    # Check type filter
+    if ! matches_type_filter "$test_name"; then
+        return
+    fi
+
+    local type_label=$(get_type_label "$test_name")
+    printf "    %-45s %s " "$display_name" "$type_label"
 
     local orig_dir=$(pwd)
     cd "$test_dir"
 
-    # Compile - capture stderr for warnings
+    # Compile - use sxc or fall back to python
     local compile_output
-    compile_output=$(python3 "$COMPILER" "$test_name.sx" 2>&1)
+    if [ -n "$USE_PYTHON" ]; then
+        compile_output=$(python3 "$COMPILER" "$test_name.sx" 2>&1)
+    else
+        compile_output=$("$COMPILER" "$test_name.sx" 2>&1)
+    fi
     local compile_status=$?
 
     # Check for static analysis warnings
@@ -72,8 +147,17 @@ run_test() {
         return
     fi
 
-    # Link
-    if ! clang -O2 "$test_name.ll" "$RUNTIME" -o "$test_name.bin" -lssl -lcrypto -lsqlite3 -lm 2>/dev/null; then
+    # Link with platform-specific libs
+    local LINK_LIBS="-lm"
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        OPENSSL_PREFIX=$(brew --prefix openssl 2>/dev/null || echo "/usr/local/opt/openssl")
+        SQLITE_PREFIX=$(brew --prefix sqlite 2>/dev/null || echo "/usr/local/opt/sqlite")
+        LINK_LIBS="-lm -lssl -lcrypto -lsqlite3 -L$OPENSSL_PREFIX/lib -L$SQLITE_PREFIX/lib"
+    elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        LINK_LIBS="-lm -lssl -lcrypto -lsqlite3 -lpthread"
+    fi
+
+    if ! clang -O2 "$test_name.ll" "$RUNTIME" -o "$test_name.bin" $LINK_LIBS 2>/dev/null; then
         echo -e "${RED}LINK FAIL${NC}"
         ((FAILED++))
         rm -f "$test_name.ll"
@@ -103,14 +187,16 @@ run_category() {
     if [ -d "$category_path" ]; then
         local has_tests=false
 
-        # Check for .sx files (excluding helpers)
+        # Check for .sx files matching filter (excluding helpers)
         shopt -s nullglob
         for test in "$category_path"/*.sx; do
             if [ -f "$test" ]; then
                 local name=$(basename "$test" .sx)
-                if [[ "$name" != "mathlib" ]] && [[ "$name" != "helpers" ]]; then
-                    has_tests=true
-                    break
+                if [[ "$name" != "spec_mathlib" ]] && [[ "$name" != "helpers" ]]; then
+                    if matches_type_filter "$name"; then
+                        has_tests=true
+                        break
+                    fi
                 fi
             fi
         done
@@ -137,6 +223,14 @@ print_header() {
     echo "=============================================="
     echo "         Simplex Language Test Suite"
     echo "=============================================="
+    if [ -n "$USE_PYTHON" ]; then
+        echo -e "  Compiler: ${YELLOW}stage0.py (Python bootstrap)${NC}"
+    else
+        echo -e "  Compiler: ${GREEN}sxc v0.9.0 (self-hosted)${NC}"
+    fi
+    if [ "$TEST_TYPE" != "all" ]; then
+        echo -e "  Filter: ${CYAN}$TEST_TYPE${NC} tests only"
+    fi
     echo ""
 }
 
@@ -153,18 +247,78 @@ print_summary() {
         PERCENT=$((PASSED * 100 / TOTAL))
         echo -e "  Total:    $TOTAL ($PERCENT% pass rate)"
     fi
+    echo ""
+    echo "  Test Types:"
+    echo -e "    ${BLUE}unit${NC}  - Isolated function/module tests"
+    echo -e "    ${CYAN}spec${NC}  - Language specification tests"
+    echo -e "    ${MAGENTA}integ${NC} - Integration tests"
+    echo -e "    ${YELLOW}e2e${NC}   - End-to-end workflow tests"
     echo "=============================================="
 }
 
-run_all_tests() {
-    # Neural IR Tests (new)
-    echo -e "${YELLOW}Neural IR${NC}"
-    run_category "$SCRIPT_DIR/neural" "" "  "
+print_usage() {
+    echo "Usage: ./run_tests.sh [category] [type]"
     echo ""
+    echo "Categories:"
+    echo "  all          Run all categories"
+    echo "  language     Core language feature tests"
+    echo "  types        Type system tests"
+    echo "  basics       Basic language construct tests"
+    echo "  async        Async/await tests"
+    echo "  actors       Actor model tests"
+    echo "  neural       Neural IR and gates tests"
+    echo "  stdlib       Standard library tests"
+    echo "  runtime      Runtime system tests"
+    echo "  ai           AI/cognitive framework tests"
+    echo "  learning     Automatic differentiation tests"
+    echo "  toolchain    Compiler toolchain tests"
+    echo "  integration  End-to-end integration tests"
+    echo "  observability Metrics and tracing tests"
+    echo ""
+    echo "Types (filter by naming convention):"
+    echo "  all   - Run all test types (default)"
+    echo "  unit  - Run unit_*.sx tests only"
+    echo "  spec  - Run spec_*.sx tests only"
+    echo "  integ - Run integ_*.sx tests only"
+    echo "  e2e   - Run e2e_*.sx tests only"
+    echo ""
+    echo "Examples:"
+    echo "  ./run_tests.sh                    # All tests"
+    echo "  ./run_tests.sh stdlib             # All stdlib tests"
+    echo "  ./run_tests.sh stdlib unit        # Only stdlib unit tests"
+    echo "  ./run_tests.sh all spec           # All spec tests"
+    echo "  ./run_tests.sh neural spec        # Neural spec tests"
+}
 
+run_all_tests() {
     # Language Tests
     echo -e "${YELLOW}Language${NC}"
     run_category "$SCRIPT_DIR/language" "" "  "
+    echo ""
+
+    # Type System Tests
+    echo -e "${YELLOW}Types${NC}"
+    run_category "$SCRIPT_DIR/types" "" "  "
+    echo ""
+
+    # Basics Tests
+    echo -e "${YELLOW}Basics${NC}"
+    run_category "$SCRIPT_DIR/basics" "" "  "
+    echo ""
+
+    # Async Tests
+    echo -e "${YELLOW}Async${NC}"
+    run_category "$SCRIPT_DIR/async" "" "  "
+    echo ""
+
+    # Actor Tests
+    echo -e "${YELLOW}Actors${NC}"
+    run_category "$SCRIPT_DIR/actors" "" "  "
+    echo ""
+
+    # Neural IR Tests
+    echo -e "${YELLOW}Neural IR${NC}"
+    run_category "$SCRIPT_DIR/neural" "" "  "
     echo ""
 
     # Standard Library Tests
@@ -180,6 +334,11 @@ run_all_tests() {
     # AI/Cognitive Tests
     echo -e "${YELLOW}AI / Cognitive${NC}"
     run_category "$SCRIPT_DIR/ai" "" "  "
+    echo ""
+
+    # Learning Tests
+    echo -e "${YELLOW}Learning / AD${NC}"
+    run_category "$SCRIPT_DIR/learning" "" "  "
     echo ""
 
     # Toolchain Tests
@@ -198,22 +357,59 @@ run_all_tests() {
     echo ""
 }
 
+# Validate test type
+validate_type() {
+    case "$TEST_TYPE" in
+        all|unit|spec|integ|e2e)
+            return 0
+            ;;
+        *)
+            echo -e "${RED}Unknown test type: $TEST_TYPE${NC}"
+            echo "Available types: all, unit, spec, integ, e2e"
+            exit 1
+            ;;
+    esac
+}
+
 # Main execution
 CATEGORY="${1:-all}"
 
+# Handle help
+if [ "$CATEGORY" = "-h" ] || [ "$CATEGORY" = "--help" ] || [ "$CATEGORY" = "help" ]; then
+    print_usage
+    exit 0
+fi
+
+validate_type
 print_header
 
 case "$CATEGORY" in
     all)
         run_all_tests
         ;;
-    neural)
-        echo -e "${YELLOW}Neural IR${NC}"
-        run_category "$SCRIPT_DIR/neural" "" "  "
-        ;;
     language)
         echo -e "${YELLOW}Language${NC}"
         run_category "$SCRIPT_DIR/language" "" "  "
+        ;;
+    types)
+        echo -e "${YELLOW}Types${NC}"
+        run_category "$SCRIPT_DIR/types" "" "  "
+        ;;
+    basics)
+        echo -e "${YELLOW}Basics${NC}"
+        run_category "$SCRIPT_DIR/basics" "" "  "
+        ;;
+    async)
+        echo -e "${YELLOW}Async${NC}"
+        run_category "$SCRIPT_DIR/async" "" "  "
+        ;;
+    actors)
+        echo -e "${YELLOW}Actors${NC}"
+        run_category "$SCRIPT_DIR/actors" "" "  "
+        ;;
+    neural)
+        echo -e "${YELLOW}Neural IR${NC}"
+        run_category "$SCRIPT_DIR/neural" "" "  "
         ;;
     stdlib)
         echo -e "${YELLOW}Standard Library${NC}"
@@ -226,6 +422,10 @@ case "$CATEGORY" in
     ai)
         echo -e "${YELLOW}AI / Cognitive${NC}"
         run_category "$SCRIPT_DIR/ai" "" "  "
+        ;;
+    learning)
+        echo -e "${YELLOW}Learning / AD${NC}"
+        run_category "$SCRIPT_DIR/learning" "" "  "
         ;;
     toolchain)
         echo -e "${YELLOW}Toolchain${NC}"
@@ -241,7 +441,8 @@ case "$CATEGORY" in
         ;;
     *)
         echo -e "${RED}Unknown category: $CATEGORY${NC}"
-        echo "Available: all, neural, language, stdlib, runtime, ai, toolchain, integration, observability"
+        echo ""
+        print_usage
         exit 1
         ;;
 esac

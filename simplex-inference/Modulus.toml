@@ -1,0 +1,32 @@
+[package]
+name = "simplex-inference"
+version = "0.9.0"
+description = "High-performance inference optimization runtime for Simplex SLM applications"
+authors = ["Simplex Team"]
+license = "Apache-2.0"
+
+# This library provides generic inference optimizations that can be used by any
+# Simplex application using SLM/LLM models. It's designed to be eventually
+# merged into simplex-std as part of the core runtime.
+#
+# Features:
+# - Continuous Batching: Process multiple requests in single GPU/CPU passes
+# - Request Coalescing: Queue and batch similar requests automatically
+# - Prompt Caching: Cache tokenized system prompts to avoid re-tokenization
+# - Response Caching: LRU cache for deterministic responses
+# - Smart Routing: Route queries to appropriately-sized models
+
+[dependencies]
+# Core Simplex runtime
+simplex-std = { path = "../simplex-std" }
+
+[features]
+default = ["full"]
+full = ["batching", "caching", "routing"]
+batching = []      # Enable request batching
+caching = []       # Enable prompt and response caching
+routing = []       # Enable smart model routing
+
+[native]
+# FFI bindings for llama.cpp integration
+llama_cpp = true

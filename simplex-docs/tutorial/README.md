@@ -61,6 +61,13 @@ By the end of this tutorial, you'll understand:
 |---------|-------|-------------------|
 | [11](11-capstone.md) | Capstone Project | Build a complete AI-powered document processor |
 
+### Part 5: Advanced Topics (v0.8.0+)
+
+| Chapter | Topic | What You'll Learn |
+|---------|-------|-------------------|
+| [13](13-dual-numbers.md) | Dual Numbers | Automatic differentiation, exact derivatives, gradients |
+| [14](14-self-learning-annealing.md) | Self-Learning Annealing | Meta-gradients, adaptive temperature schedules, neurosymbolic transition |
+
 ---
 
 ## How to Use This Tutorial
@@ -105,6 +112,8 @@ As you work through the tutorials, you might find these helpful:
 - [Language Syntax Reference](../spec/04-language-syntax.md)
 - [AI Integration Reference](../spec/07-ai-integration.md)
 - [Cognitive Hive AI Specification](../spec/09-cognitive-hive.md)
+- [Neural IR and Differentiable Execution](../spec/14-neural-ir.md)
+- [Real-Time Learning](../spec/15-real-time-learning.md)
 - [Complete Example](../examples/document-pipeline.md)
 
 ---

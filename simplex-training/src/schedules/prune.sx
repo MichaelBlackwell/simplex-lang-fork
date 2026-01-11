@@ -1,0 +1,174 @@
+// Learnable Pruning Schedule
+//
+// Magnitude-based pruning with learned sparsity targets.
+// All parameters are dual numbers for meta-gradient optimization.
+
+use simplex_std::dual;
+use super::super::Tensor;
+
+/// Learnable pruning with adaptive sparsity schedule
+pub struct LearnablePruning {
+    // Global sparsity schedule (learned)
+    pub initial_sparsity: dual,   // Starting sparsity (0 = dense)
+    pub target_sparsity: dual,    // Final target sparsity
+    pub ramp_steps: dual,         // Steps to reach target
+
+    // Layer-wise sparsity multipliers (learned)
+    pub layer_sparsity_scale: Vec<dual>,
+
+    // Importance-aware pruning (learned thresholds)
+    pub magnitude_threshold: dual,    // Base magnitude threshold
+    pub gradient_weight: dual,        // How much gradient info matters
+    pub activation_weight: dual,      // How much activation info matters
+
+    // Recovery schedule (allow regrowth)
+    pub regrowth_rate: dual,          // Fraction to regrow each step
+    pub regrowth_decay: dual,         // How to reduce regrowth over time
+}
+
+impl LearnablePruning {
+    /// Create pruning schedule with default values
+    pub fn new() -> Self {
+        LearnablePruning {
+            initial_sparsity: dual::constant(0.0),
+            target_sparsity: dual::variable(0.5),
+            ramp_steps: dual::variable(1000.0),
+            layer_sparsity_scale: vec![dual::variable(1.0); 32],
+            magnitude_threshold: dual::variable(0.01),
+            gradient_weight: dual::variable(0.3),
+            activation_weight: dual::variable(0.2),
+            regrowth_rate: dual::variable(0.1),
+            regrowth_decay: dual::variable(0.001),
+        }
+    }
+
+    /// Create for specific number of layers
+    pub fn with_layers(num_layers: usize) -> Self {
+        let mut schedule = Self::new();
+        schedule.layer_sparsity_scale = (0..num_layers)
+            .map(|i| {
+                // Default: less pruning in first/last layers
+                let position = i as f64 / num_layers as f64;
+                let scale = if position < 0.1 || position > 0.9 {
+                    0.5 // Prune less at edges
+                } else {
+                    1.0
+                };
+                dual::variable(scale)
+            })
+            .collect();
+        schedule
+    }
+
+    /// Compute current sparsity target
+    pub fn sparsity(&self, step: dual) -> dual {
+        let progress = (step / self.ramp_steps).min(dual::constant(1.0));
+        self.initial_sparsity + (self.target_sparsity - self.initial_sparsity) * progress
+    }
+
+    /// Compute layer-specific sparsity target
+    pub fn layer_sparsity(&self, step: dual, layer_idx: usize) -> dual {
+        let base = self.sparsity(step);
+        if layer_idx < self.layer_sparsity_scale.len() {
+            base * self.layer_sparsity_scale[layer_idx]
+        } else {
+            base
+        }
+    }
+
+    /// Compute importance score for a weight tensor
+    pub fn importance_score(
+        &self,
+        weights: &Tensor,
+        gradients: &Tensor,
+        activations: &Tensor
+    ) -> Tensor {
+        // Importance = |w| + gradient_weight * |grad| + activation_weight * |act|
+        // This is differentiable through the weight parameters
+        Tensor::zeros(&weights.shape) // Placeholder
+    }
+
+    /// Create pruning mask based on importance and sparsity target
+    pub fn create_mask(
+        &self,
+        importance: &Tensor,
+        target_sparsity: dual,
+        step: dual
+    ) -> Tensor {
+        // Top-k selection based on importance
+        // k = (1 - target_sparsity) * num_weights
+        Tensor::zeros(&importance.shape) // Placeholder
+    }
+
+    /// Compute regrowth mask for sparse training
+    pub fn regrowth_mask(
+        &self,
+        current_mask: &Tensor,
+        gradients: &Tensor,
+        step: dual
+    ) -> Tensor {
+        // Allow high-gradient pruned weights to regrow
+        let regrowth = self.regrowth_rate * (-self.regrowth_decay * step).exp();
+        Tensor::zeros(&current_mask.shape) // Placeholder
+    }
+
+    /// Extract gradient for meta-update
+    pub fn gradient(&self) -> PruneGradient {
+        PruneGradient {
+            d_target_sparsity: self.target_sparsity.der,
+            d_ramp_steps: self.ramp_steps.der,
+            d_magnitude_threshold: self.magnitude_threshold.der,
+            d_gradient_weight: self.gradient_weight.der,
+            d_activation_weight: self.activation_weight.der,
+            d_regrowth_rate: self.regrowth_rate.der,
+            d_regrowth_decay: self.regrowth_decay.der,
+            d_layer_sparsity_scale: self.layer_sparsity_scale.iter().map(|d| d.der).collect(),
+        }
+    }
+
+    /// Apply meta-gradient update
+    pub fn update(&mut self, grad: PruneGradient, learning_rate: f64) {
+        self.target_sparsity = dual::variable(
+            (self.target_sparsity.val - learning_rate * grad.d_target_sparsity).clamp(0.0, 0.95)
+        );
+        self.ramp_steps = dual::variable(
+            (self.ramp_steps.val - learning_rate * grad.d_ramp_steps).max(100.0)
+        );
+        self.magnitude_threshold = dual::variable(
+            (self.magnitude_threshold.val - learning_rate * grad.d_magnitude_threshold).max(0.0)
+        );
+        self.gradient_weight = dual::variable(
+            (self.gradient_weight.val - learning_rate * grad.d_gradient_weight).clamp(0.0, 1.0)
+        );
+        self.activation_weight = dual::variable(
+            (self.activation_weight.val - learning_rate * grad.d_activation_weight).clamp(0.0, 1.0)
+        );
+        self.regrowth_rate = dual::variable(
+            (self.regrowth_rate.val - learning_rate * grad.d_regrowth_rate).clamp(0.0, 0.5)
+        );
+        self.regrowth_decay = dual::variable(
+            (self.regrowth_decay.val - learning_rate * grad.d_regrowth_decay).max(0.0)
+        );
+
+        for (i, d_scale) in grad.d_layer_sparsity_scale.iter().enumerate() {
+            if i < self.layer_sparsity_scale.len() {
+                self.layer_sparsity_scale[i] = dual::variable(
+                    (self.layer_sparsity_scale[i].val - learning_rate * d_scale).clamp(0.1, 2.0)
+                );
+            }
+        }
+    }
+}
+
+/// Gradient of pruning parameters
+#[derive(Clone, Default)]
+pub struct PruneGradient {
+    pub d_target_sparsity: f64,
+    pub d_ramp_steps: f64,
+    pub d_magnitude_threshold: f64,
+    pub d_gradient_weight: f64,
+    pub d_activation_weight: f64,
+    pub d_regrowth_rate: f64,
+    pub d_regrowth_decay: f64,
+    pub d_layer_sparsity_scale: Vec<f64>,
+}

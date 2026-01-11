@@ -1,6 +1,6 @@
 # Simplex Language Documentation
 
-**Version 0.7.0**
+**Version 0.9.0**
 
 Simplex (Latin for "simple") is a programming language designed for the AI era. It combines the fault-tolerance of Erlang, the memory safety of Rust, the distributed computing model of Ray, and the content-addressable code of Unison into a cohesive system built for intelligent, distributed workloads.
 
@@ -103,11 +103,54 @@ Start the tutorial: [Tutorial Index](tutorial/README.md)
 
 ---
 
-## Key Features (v0.7.0)
+## Key Features (v0.9.0)
 
-### NEW in v0.7.0: Real-Time Continuous Learning
+### NEW in v0.9.0: Self-Learning Annealing
 
-**The headline feature**: AI specialists learn and adapt during runtime without batch retraining.
+**The headline feature**: Optimization schedules that learn themselves through meta-gradients.
+
+```simplex
+use simplex::optimize::anneal::{self_learn_anneal, AnnealConfig};
+
+// Self-learning annealing: the schedule learns itself
+let schedule = AnnealSchedule::learnable();
+let optimizer = MetaOptimizer::new(schedule);
+
+for epoch in 0..epochs {
+    let (solution, meta_loss) = optimizer.anneal_with_grad(objective);
+    schedule.update(meta_loss.gradient());  // Schedule improves each epoch
+}
+// After training: schedule.cool_rate, schedule.reheat_threshold are optimal
+```
+
+- **Learnable schedules**: Temperature, cooling rate, reheating all learned via meta-gradients
+- **Test restructure**: 156 tests across 13 categories with consistent naming
+- **simplex-training**: New library for self-optimizing training pipelines
+- **llama.cpp integration**: High-performance inference via native bindings in `simplex-inference`
+
+See [RELEASE-0.9.0.md](RELEASE-0.9.0.md) for complete release notes.
+
+### v0.8.0: Dual Numbers and Forward-Mode AD
+
+Native `dual` type for forward-mode automatic differentiation with zero overhead:
+
+```simplex
+let x: dual = dual::variable(3.0);
+let y = x * x + x.sin();
+
+println(y.val);  // f(3) = 9.1411...
+println(y.der);  // f'(3) = 6.9899... (exact, not numerical)
+```
+
+- **Zero overhead**: Compiles to same assembly as hand-written derivatives
+- **Full math support**: sin, cos, exp, ln, sqrt, tanh, sigmoid all differentiable
+- **Gradients**: `multidual<N>` for computing N partial derivatives at once
+
+See [RELEASE-0.8.0.md](RELEASE-0.8.0.md) for complete release notes.
+
+### v0.7.0: Real-Time Continuous Learning
+
+AI specialists learn and adapt during runtime without batch retraining:
 
 ```simplex
 use simplex_learning::{OnlineLearner, StreamingAdam, SafeFallback};
@@ -116,18 +159,11 @@ let learner = OnlineLearner::new(model_params)
     .optimizer(StreamingAdam::new(0.001))
     .fallback(SafeFallback::with_default(safe_output));
 
-// Learn from each interaction
 for (input, feedback) in interactions {
     let output = learner.forward(&input);
     learner.learn(&feedback);  // Adapts in real-time
 }
 ```
-
-- **Online learning**: Streaming optimizers (SGD, Adam, AdamW) with gradient accumulation
-- **Safety constraints**: Fallback strategies, validation, bounds checking
-- **Federated learning**: 6 aggregation strategies for distributed hives
-- **Knowledge distillation**: Teacher-student, self-distillation, progressive
-- **Belief resolution**: Reconcile conflicting beliefs across specialists
 
 See [RELEASE-0.7.0.md](RELEASE-0.7.0.md) for complete release notes.
 
@@ -229,6 +265,30 @@ See [RELEASE-0.5.0.md](RELEASE-0.5.0.md) for complete release notes.
 - Belief conflict resolution across hives
 - Experience replay and checkpointing
 
+### Dual Numbers (v0.8.0)
+- Native `dual` type for forward-mode automatic differentiation
+- Zero-overhead compilation (same assembly as hand-written derivatives)
+- Transcendental functions: sin, cos, exp, ln, sqrt, tanh, sigmoid
+- `multidual<N>` for computing gradients (N partial derivatives)
+- `dual2` for second-order derivatives (Hessians)
+- `diff::derivative()`, `diff::gradient()`, `diff::jacobian()`, `diff::hessian()`
+
+### Self-Learning Annealing (v0.9.0)
+- Learnable temperature schedules via meta-gradients
+- Soft acceptance function using differentiable sigmoid
+- Stagnation-triggered reheating with learned thresholds
+- Meta-optimization for schedule parameter learning
+- `simplex-training` library for self-optimizing pipelines
+- Learnable LR, distillation, pruning, and quantization schedules
+
+### High-Performance Inference (v0.9.0)
+- Native llama.cpp integration via `simplex-inference`
+- Continuous batching for throughput optimization
+- Prompt caching for repeated context
+- Response caching for deterministic queries
+- GPU offloading (CUDA, Metal) support
+- Smart routing based on query complexity
+
 ### Observability
 - Metrics (counter, gauge, histogram)
 - Distributed tracing
@@ -242,6 +302,19 @@ See [RELEASE-0.5.0.md](RELEASE-0.5.0.md) for complete release notes.
 - `sxdoc` - Documentation generator
 - `sxlsp` - Language server
 - `cursus` - Build system
+
+### Cross-Platform Support (v0.9.0)
+The entire toolchain is **fully cross-platform**:
+
+| Platform | Bootstrap | Compiler | Tools |
+|----------|-----------|----------|-------|
+| **macOS** (Intel/ARM) | ✅ | ✅ | ✅ |
+| **Linux** (x86_64/ARM64) | ✅ | ✅ | ✅ |
+| **Windows** (x86_64) | ✅ | ✅ | ✅ |
+
+- `stage0.py` automatically detects the platform and generates appropriate target triples
+- All tools use platform-appropriate path separators and commands
+- See [Compiler Toolchain](spec/10-compiler-toolchain.md) for build instructions
 
 ---
 
@@ -285,6 +358,8 @@ Simplex uses the following terminology for its module system:
 | 0.5.1 | 2026-01-07 | Type aliases, AGPL-3.0 license change, LLM context specification |
 | 0.6.0 | 2026-01-08 | Neural IR: neural gates, Gumbel-Softmax, dual compilation, hardware targeting |
 | 0.7.0 | 2026-01-09 | Real-Time Learning: simplex-learning library, streaming optimizers, federated learning |
+| 0.8.0 | 2026-01-10 | Dual Numbers: native forward-mode AD, zero-overhead compilation, multidual for gradients |
+| 0.9.0 | 2026-01-11 | Self-Learning Annealing: learnable schedules, test restructure (156 tests), simplex-training library |
 
 ---
 

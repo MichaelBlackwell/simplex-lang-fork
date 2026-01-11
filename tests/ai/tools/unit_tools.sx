@@ -1,0 +1,180 @@
+// Test file for Tool/Function Calling System
+// Phase 4: Tool System
+
+// External declarations for tool functions
+fn tool_registry_new() -> i64;
+fn tool_register(reg: i64, name: i64, desc: i64, schema: i64) -> i64;
+fn tool_get(reg: i64, name: i64) -> i64;
+fn tool_count(reg: i64) -> i64;
+fn tool_list(reg: i64) -> i64;
+fn tool_execute(reg: i64, name: i64, args: i64) -> i64;
+fn tool_register_builtins(reg: i64) -> i64;
+fn tool_get_schema(reg: i64, name: i64) -> i64;
+fn tool_get_all_schemas(reg: i64) -> i64;
+fn tool_result_output(result: i64) -> i64;
+fn tool_result_free(result: i64);
+fn tool_registry_close(reg: i64);
+
+fn main() {
+    println("=== Tool System Test ===");
+    println("");
+
+    // Create tool registry
+    println("--- Creating Tool Registry ---");
+    let reg: i64 = tool_registry_new();
+    if reg != 0 {
+        println("Created tool registry");
+    } else {
+        println("ERROR: Failed to create registry!");
+    }
+
+    // Register built-in tools
+    println("");
+    println("--- Registering Built-in Tools ---");
+    let builtin_count: i64 = tool_register_builtins(reg);
+    print("Registered ");
+    print_i64(builtin_count);
+    println(" built-in tools");
+
+    // Check tool count
+    print("Total tools: ");
+    print_i64(tool_count(reg));
+    println("");
+
+    // List all tools
+    println("");
+    println("--- Listing Tools ---");
+    let names: i64 = tool_list(reg);
+    if names != 0 {
+        let len: i64 = vec_len(names);
+        print("Found ");
+        print_i64(len);
+        println(" tools");
+    }
+
+    // Get tool schema
+    println("");
+    println("--- Getting Tool Schemas ---");
+    let schema: i64 = tool_get_schema(reg, string_from("file_read"));
+    if schema != 0 {
+        print("file_read schema: ");
+        print_string(schema);
+        println("");
+    }
+
+    // Test file_write tool
+    println("");
+    println("--- Testing file_write Tool ---");
+    let write_args: i64 = string_from("{\"path\": \"/tmp/test_tool_output.txt\", \"content\": \"Hello from Simplex tools!\"}");
+    let write_result: i64 = tool_execute(reg, string_from("file_write"), write_args);
+    let write_output: i64 = tool_result_output(write_result);
+    if write_output != 0 {
+        print("Write result: ");
+        print_string(write_output);
+        println("");
+    }
+    tool_result_free(write_result);
+
+    // Test file_read tool
+    println("");
+    println("--- Testing file_read Tool ---");
+    let read_args: i64 = string_from("{\"path\": \"/tmp/test_tool_output.txt\"}");
+    let read_result: i64 = tool_execute(reg, string_from("file_read"), read_args);
+    let read_output: i64 = tool_result_output(read_result);
+    if read_output != 0 {
+        print("Read result: ");
+        print_string(read_output);
+        println("");
+    }
+    tool_result_free(read_result);
+
+    // Test file_exists tool
+    println("");
+    println("--- Testing file_exists Tool ---");
+    let exists_args: i64 = string_from("{\"path\": \"/tmp/test_tool_output.txt\"}");
+    let exists_result: i64 = tool_execute(reg, string_from("file_exists"), exists_args);
+    let exists_output: i64 = tool_result_output(exists_result);
+    if exists_output != 0 {
+        print("File exists: ");
+        print_string(exists_output);
+        println("");
+    }
+    tool_result_free(exists_result);
+
+    // Test list_dir tool
+    println("");
+    println("--- Testing list_dir Tool ---");
+    let dir_args: i64 = string_from("{\"path\": \"/tmp\"}");
+    let dir_result: i64 = tool_execute(reg, string_from("list_dir"), dir_args);
+    let dir_output: i64 = tool_result_output(dir_result);
+    if dir_output != 0 {
+        print("Directory listing (first 100 chars): ");
+        // Note: output may be very long, just show partial
+        print_string(dir_output);
+        println("");
+    }
+    tool_result_free(dir_result);
+
+    // Test shell_exec tool
+    println("");
+    println("--- Testing shell_exec Tool ---");
+    let shell_args: i64 = string_from("{\"command\": \"echo 'Hello from shell!'\"}");
+    let shell_result: i64 = tool_execute(reg, string_from("shell_exec"), shell_args);
+    let shell_output: i64 = tool_result_output(shell_result);
+    if shell_output != 0 {
+        print("Shell output: ");
+        print_string(shell_output);
+        // Shell output includes newline
+    }
+    tool_result_free(shell_result);
+
+    // Test file_delete tool
+    println("");
+    println("--- Testing file_delete Tool ---");
+    let delete_args: i64 = string_from("{\"path\": \"/tmp/test_tool_output.txt\"}");
+    let delete_result: i64 = tool_execute(reg, string_from("file_delete"), delete_args);
+    let delete_output: i64 = tool_result_output(delete_result);
+    if delete_output != 0 {
+        print("Delete result: ");
+        print_string(delete_output);
+        println("");
+    }
+    tool_result_free(delete_result);
+
+    // Verify file is deleted
+    let exists2_result: i64 = tool_execute(reg, string_from("file_exists"), exists_args);
+    let exists2_output: i64 = tool_result_output(exists2_result);
+    if exists2_output != 0 {
+        print("File exists after delete: ");
+        print_string(exists2_output);
+        println("");
+    }
+    tool_result_free(exists2_result);
+
+    // Test unknown tool
+    println("");
+    println("--- Testing Unknown Tool ---");
+    let unknown_result: i64 = tool_execute(reg, string_from("nonexistent_tool"), string_from("{}"));
+    let unknown_output: i64 = tool_result_output(unknown_result);
+    if unknown_output != 0 {
+        print("Unknown tool result: ");
+        print_string(unknown_output);
+        println("");
+    }
+    tool_result_free(unknown_result);
+
+    // Get all schemas (for LLM integration)
+    println("");
+    println("--- Getting All Schemas (for LLM) ---");
+    let all_schemas: i64 = tool_get_all_schemas(reg);
+    if all_schemas != 0 {
+        print("All schemas JSON (first line): ");
+        print_string(all_schemas);
+        println("");
+    }
+
+    // Cleanup
+    tool_registry_close(reg);
+    println("");
+    println("=== Tool System Test Complete! ===");
+}

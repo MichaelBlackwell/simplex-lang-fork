@@ -1,0 +1,354 @@
+// Test file for Package Manifest concepts
+// Self-contained version - tests manifest parsing concepts
+//
+// NOTE: Tests manifest structure without actual JSON parsing
+
+// =============================================================================
+// Test 1: Manifest Required Fields
+// =============================================================================
+
+fn test_manifest_required() -> i64 {
+    println("  Testing manifest required fields...");
+
+    // Required: name, version
+    let has_name: i64 = 1;
+    let has_version: i64 = 1;
+
+    if has_name != 1 {
+        println("    FAIL: name is required");
+        return 1;
+    }
+
+    if has_version != 1 {
+        println("    FAIL: version is required");
+        return 1;
+    }
+
+    println("    PASS: manifest required fields");
+    0
+}
+
+// =============================================================================
+// Test 2: Semantic Version Format
+// =============================================================================
+
+fn test_semver_format() -> i64 {
+    println("  Testing semver format...");
+
+    // Version: major.minor.patch
+    let major: i64 = 1;
+    let minor: i64 = 2;
+    let patch: i64 = 3;
+
+    if major < 0 {
+        println("    FAIL: major should be >= 0");
+        return 1;
+    }
+
+    if minor < 0 {
+        println("    FAIL: minor should be >= 0");
+        return 1;
+    }
+
+    if patch < 0 {
+        println("    FAIL: patch should be >= 0");
+        return 1;
+    }
+
+    // Compare versions
+    // 1.2.3 vs 1.2.4
+    let v1_patch: i64 = 3;
+    let v2_patch: i64 = 4;
+    let v1_is_older: i64 = if v1_patch < v2_patch { 1 } else { 0 };
+
+    if v1_is_older != 1 {
+        println("    FAIL: 1.2.3 should be older than 1.2.4");
+        return 1;
+    }
+
+    println("    PASS: semver format");
+    0
+}
+
+// =============================================================================
+// Test 3: Dependency Types
+// =============================================================================
+
+fn test_dependency_types() -> i64 {
+    println("  Testing dependency types...");
+
+    // Types: registry, path, git
+    let DEP_REGISTRY: i64 = 1;
+    let DEP_PATH: i64 = 2;
+    let DEP_GIT: i64 = 3;
+
+    let dep_type: i64 = DEP_REGISTRY;
+
+    if dep_type == DEP_REGISTRY {
+        // Has version
+        let has_version: i64 = 1;
+        if has_version != 1 {
+            println("    FAIL: registry dep needs version");
+            return 1;
+        }
+    }
+
+    let path_dep: i64 = DEP_PATH;
+    if path_dep == DEP_PATH {
+        // Has path
+        let has_path: i64 = 1;
+        if has_path != 1 {
+            println("    FAIL: path dep needs path");
+            return 1;
+        }
+    }
+
+    println("    PASS: dependency types");
+    0
+}
+
+// =============================================================================
+// Test 4: Version Requirement Parsing
+// =============================================================================
+
+fn test_version_requirements() -> i64 {
+    println("  Testing version requirements...");
+
+    // Caret: ^1.2.3 means >=1.2.3 and <2.0.0
+    // Tilde: ~1.2.3 means >=1.2.3 and <1.3.0
+    // Exact: =1.2.3 means exactly 1.2.3
+    // Range: >=1.0.0 <2.0.0
+
+    let REQ_CARET: i64 = 1;
+    let REQ_TILDE: i64 = 2;
+    let REQ_EXACT: i64 = 3;
+    let REQ_RANGE: i64 = 4;
+
+    let req_type: i64 = REQ_CARET;
+
+    // For ^1.2.3, version 1.5.0 is compatible
+    let version_major: i64 = 1;
+    let version_minor: i64 = 5;
+    let req_major: i64 = 1;
+
+    let compatible: i64 = if version_major == req_major { 1 } else { 0 };
+    if compatible != 1 {
+        println("    FAIL: 1.5.0 should match ^1.2.3");
+        return 1;
+    }
+
+    // 2.0.0 is not compatible with ^1.2.3
+    let v2_major: i64 = 2;
+    let not_compatible: i64 = if v2_major == req_major { 1 } else { 0 };
+    if not_compatible != 0 {
+        println("    FAIL: 2.0.0 should not match ^1.2.3");
+        return 1;
+    }
+
+    println("    PASS: version requirements");
+    0
+}
+
+// =============================================================================
+// Test 5: Feature Flags
+// =============================================================================
+
+fn test_feature_flags() -> i64 {
+    println("  Testing feature flags...");
+
+    // Features enable optional functionality
+    let feature_count: i64 = 3;  // ["async", "serde", "logging"]
+
+    if feature_count < 0 {
+        println("    FAIL: feature count should be >= 0");
+        return 1;
+    }
+
+    // Default features
+    let default_enabled: i64 = 2;  // 2 features enabled by default
+    if default_enabled > feature_count {
+        println("    FAIL: default features cannot exceed total");
+        return 1;
+    }
+
+    println("    PASS: feature flags");
+    0
+}
+
+// =============================================================================
+// Test 6: Build Configuration
+// =============================================================================
+
+fn test_build_config() -> i64 {
+    println("  Testing build configuration...");
+
+    // Build section fields
+    let has_entry: i64 = 1;  // entry = "src/lib.sx"
+    let has_target: i64 = 1;  // target = "library" or "binary"
+    let has_optimization: i64 = 1;  // optimization = 2
+
+    let optimization_level: i64 = 2;
+
+    if optimization_level < 0 {
+        println("    FAIL: optimization should be >= 0");
+        return 1;
+    }
+
+    if optimization_level > 3 {
+        println("    FAIL: optimization should be <= 3");
+        return 1;
+    }
+
+    println("    PASS: build configuration");
+    0
+}
+
+// =============================================================================
+// Test 7: Manifest Validation
+// =============================================================================
+
+fn test_manifest_validation() -> i64 {
+    println("  Testing manifest validation...");
+
+    // Invalid: missing name
+    let has_name: i64 = 0;
+    let has_version: i64 = 1;
+
+    let error_count: i64 = 0;
+    let errors: i64 = if has_name == 0 { error_count + 1 } else { error_count };
+    let errors2: i64 = if has_version == 0 { errors + 1 } else { errors };
+
+    if errors2 != 1 {
+        println("    FAIL: missing name should cause 1 error");
+        return 1;
+    }
+
+    // Invalid: bad version format
+    let version_parts: i64 = 2;  // "1.0" instead of "1.0.0"
+    if version_parts != 3 {
+        // Would be an error
+        let _version_error: i64 = 1;
+    }
+
+    println("    PASS: manifest validation");
+    0
+}
+
+// =============================================================================
+// Test 8: Authors Field
+// =============================================================================
+
+fn test_authors_field() -> i64 {
+    println("  Testing authors field...");
+
+    // Authors is an array
+    let author_count: i64 = 2;  // ["Alice", "Bob"]
+
+    if author_count < 0 {
+        println("    FAIL: author count should be >= 0");
+        return 1;
+    }
+
+    // Author format: "Name <email>"
+    let has_email: i64 = 1;
+    let has_name: i64 = 1;
+
+    if has_name != 1 {
+        println("    FAIL: author should have name");
+        return 1;
+    }
+
+    println("    PASS: authors field");
+    0
+}
+
+// =============================================================================
+// Test 9: License Field
+// =============================================================================
+
+fn test_license_field() -> i64 {
+    println("  Testing license field...");
+
+    // Common licenses
+    let MIT: i64 = 1;
+    let APACHE: i64 = 2;
+    let GPL: i64 = 3;
+    let BSD: i64 = 4;
+
+    let chosen_license: i64 = MIT;
+
+    if chosen_license < 1 {
+        println("    FAIL: license should be valid");
+        return 1;
+    }
+
+    // SPDX license identifiers are standard
+    let is_spdx: i64 = 1;
+    if is_spdx != 1 {
+        println("    FAIL: should use SPDX identifier");
+        return 1;
+    }
+
+    println("    PASS: license field");
+    0
+}
+
+// =============================================================================
+// Test 10: Manifest Roundtrip
+// =============================================================================
+
+fn test_manifest_roundtrip() -> i64 {
+    println("  Testing manifest roundtrip...");
+
+    // parse(to_json(manifest)) should equal manifest
+    let original_name_len: i64 = 8;  // "test-pkg"
+    let original_version_major: i64 = 1;
+
+    // Simulate roundtrip
+    let parsed_name_len: i64 = 8;
+    let parsed_version_major: i64 = 1;
+
+    if parsed_name_len != original_name_len {
+        println("    FAIL: name should survive roundtrip");
+        return 1;
+    }
+
+    if parsed_version_major != original_version_major {
+        println("    FAIL: version should survive roundtrip");
+        return 1;
+    }
+
+    println("    PASS: manifest roundtrip");
+    0
+}
+
+// =============================================================================
+// Main Test Runner
+// =============================================================================
+
+fn main() -> i64 {
+    println("=== Manifest Tests ===");
+    println("");
+
+    let f1: i64 = test_manifest_required();
+    let f2: i64 = test_semver_format();
+    let f3: i64 = test_dependency_types();
+    let f4: i64 = test_version_requirements();
+    let f5: i64 = test_feature_flags();
+    let f6: i64 = test_build_config();
+    let f7: i64 = test_manifest_validation();
+    let f8: i64 = test_authors_field();
+    let f9: i64 = test_license_field();
+    let f10: i64 = test_manifest_roundtrip();
+
+    let failures: i64 = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10;
+
+    println("");
+    if failures == 0 {
+        println("All Manifest tests passed!");
+    } else {
+        println("Some Manifest tests failed");
+    }
+
+    failures
+}

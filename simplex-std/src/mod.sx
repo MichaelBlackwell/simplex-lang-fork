@@ -1,0 +1,206 @@
+// simplex-std - Simplex Standard Library
+//
+// The core standard library for the Simplex programming language.
+// All Simplex programs implicitly depend on this library.
+//
+// # Modules
+//
+// - `prelude`: Commonly used items, auto-imported
+// - `collections`: HashMap, HashSet, VecDeque, Vec utilities
+// - `sync`: Synchronization primitives (Arc, Mutex, RwLock)
+// - `time`: Time and duration utilities
+// - `crypto`: Cryptographic functions (SHA256)
+// - `task`: Async task management
+// - `dual`: Dual numbers for automatic differentiation
+// - `anneal`: Self-learning annealing with meta-gradients
+// - `fmt`: Formatting and printing
+// - `math`: Mathematical functions
+// - `string`: String utilities
+// - `assert`: Testing assertions
+// - `cli`: Command-line interface utilities
+// - `regex`: Regular expression support
+// - `log`: Logging framework
+// - `io`: Async I/O traits and utilities
+// - `net`: TCP/UDP networking
+// - `compress`: Compression (gzip, deflate)
+// - `http`: Actor-based HTTP server with Hive integration
+//
+// # Example
+//
+// ```simplex
+// use simplex_std::prelude::*;
+// use simplex_std::collections::HashMap;
+// use simplex_std::sync::Arc;
+//
+// fn main() {
+//     let map = HashMap::new();
+//     map.insert("key", "value");
+//     println(format!("Got: {}", map.get("key").unwrap()));
+// }
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under MIT License
+
+// =============================================================================
+// Public API - Module Exports
+// =============================================================================
+
+pub mod core;
+pub mod prelude;
+pub mod collections;
+pub mod sync;
+pub mod time;
+pub mod crypto;
+pub mod task;
+pub mod dual;
+pub mod anneal;
+pub mod fmt;
+pub mod math;
+pub mod string;
+pub mod assert;
+pub mod cli;
+pub mod regex;
+pub mod log;
+pub mod io;
+pub mod net;
+pub mod compress;
+pub mod env;
+pub mod signal;
+pub mod runtime;
+pub mod http;
+
+// =============================================================================
+// Re-exports for convenience
+// =============================================================================
+
+// Dual numbers (most commonly used for ML)
+pub use dual::dual;
+
+// Common sync primitives
+pub use sync::{Arc, Mutex, RwLock};
+
+// Common collections
+pub use collections::{Vec, HashMap, HashSet};
+
+// Common crypto functions
+pub use crypto::{sha256, sha256_hex, bcrypt_hash, bcrypt_verify, generate_token};
+
+// Async runtime
+pub use runtime::{spawn, block_on};
+
+// HTTP server
+pub use http::{HttpServer, Router, Request, Response, Handler, Middleware};
+
+// =============================================================================
+// Core Types (provided by C runtime)
+// =============================================================================
+
+// These types are provided by the C runtime (standalone_runtime.c).
+// They are declared here for documentation but implemented in C.
+
+/// Optional value - either Some(T) or None
+/// Provided by C runtime.
+#[lang = "option"]
+pub enum Option<T> {
+    Some(T),
+    None,
+}
+
+/// Result of an operation - either Ok(T) or Err(E)
+/// Provided by C runtime.
+#[lang = "result"]
+pub enum Result<T, E> {
+    Ok(T),
+    Err(E),
+}
+
+// =============================================================================
+// Core Traits
+// =============================================================================
+
+/// Types that can be cloned
+pub trait Clone {
+    fn clone(&self) -> Self;
+}
+
+/// Types that can be copied (implicit clone)
+pub trait Copy: Clone {}
+
+/// Types that can be compared for equality
+pub trait Eq {
+    fn eq(&self, other: &Self) -> bool;
+    fn ne(&self, other: &Self) -> bool {
+        !self.eq(other)
+    }
+}
+
+/// Types that can be ordered
+pub trait Ord: Eq {
+    fn cmp(&self, other: &Self) -> Ordering;
+    fn lt(&self, other: &Self) -> bool { self.cmp(other) == Ordering::Less }
+    fn le(&self, other: &Self) -> bool { self.cmp(other) != Ordering::Greater }
+    fn gt(&self, other: &Self) -> bool { self.cmp(other) == Ordering::Greater }
+    fn ge(&self, other: &Self) -> bool { self.cmp(other) != Ordering::Less }
+}
+
+/// Ordering result
+pub enum Ordering {
+    Less,
+    Equal,
+    Greater,
+}
+
+/// Types that can be hashed
+pub trait Hash {
+    fn hash(&self) -> u64;
+}
+
+/// Types that can be displayed as strings
+pub trait Display {
+    fn fmt(&self) -> String;
+}
+
+/// Types that can be debugged
+pub trait Debug {
+    fn debug_fmt(&self) -> String;
+}
+
+/// Default value for a type
+pub trait Default {
+    fn default() -> Self;
+}
+
+/// Types that can be sent between threads
+pub trait Send {}
+
+/// Types that can be shared between threads
+pub trait Sync {}
+
+// =============================================================================
+// Primitive Type Implementations
+// =============================================================================
+
+impl Clone for i64 { fn clone(&self) -> Self { *self } }
+impl Clone for f64 { fn clone(&self) -> Self { *self } }
+impl Clone for bool { fn clone(&self) -> Self { *self } }
+
+impl Copy for i64 {}
+impl Copy for f64 {}
+impl Copy for bool {}
+
+impl Eq for i64 { fn eq(&self, other: &Self) -> bool { *self == *other } }
+impl Eq for f64 { fn eq(&self, other: &Self) -> bool { *self == *other } }
+impl Eq for bool { fn eq(&self, other: &Self) -> bool { *self == *other } }
+
+impl Default for i64 { fn default() -> Self { 0 } }
+impl Default for f64 { fn default() -> Self { 0.0 } }
+impl Default for bool { fn default() -> Self { false } }
+
+impl Send for i64 {}
+impl Send for f64 {}
+impl Send for bool {}
+
+impl Sync for i64 {}
+impl Sync for f64 {}
+impl Sync for bool {}

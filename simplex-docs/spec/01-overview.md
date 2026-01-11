@@ -1,6 +1,6 @@
 # Simplex Overview and Philosophy
 
-**Version 0.7.0**
+**Version 0.9.0**
 
 ---
 
@@ -10,13 +10,75 @@ Simplex is built on a singular premise: modern software runs on distributed, eph
 
 ---
 
+## What's New in v0.9.0
+
+### Self-Learning Annealing
+
+Optimization schedules that learn themselves through meta-gradients. The core formula uses dual numbers (`a + bε` where `ε² = 0`) to compute both values and derivatives simultaneously:
+
+```simplex
+use simplex::optimize::anneal::{self_learn_anneal, AnnealConfig};
+
+// Schedule parameters are learned, not hand-tuned
+let best = self_learn_anneal(
+    objective,
+    initial_solution,
+    neighbor_fn,
+    AnnealConfig::default()
+);
+```
+
+The meta-gradient `∂Loss/∂τ` automatically controls temperature:
+- **Simple problems**: Temperature smoothly decreases (standard annealing)
+- **Complex problems**: System detects local minima and automatically re-heats to escape
+
+See [Meta-Gradient Temperature Control](09-cognitive-hive.md#meta-gradient-temperature-control) for visual diagrams and detailed explanation.
+
+### Dual Numbers (v0.8.0)
+
+Native forward-mode automatic differentiation:
+
+```simplex
+let x: dual = dual::variable(3.0);
+let y = x * x + x.sin();
+println(y.val);  // f(3) = 9.1411...
+println(y.der);  // f'(3) = 6.9899... (exact, not numerical)
+```
+
+### llama.cpp Integration
+
+High-performance inference via native llama.cpp bindings:
+
+```simplex
+use simplex_inference::{InferencePipeline, BatchConfig};
+
+let pipeline = InferencePipeline::builder()
+    .with_batching(BatchConfig { max_size: 8, timeout_ms: 50 })
+    .with_prompt_cache(1000)
+    .build();
+```
+
+### Test Suite Restructure
+
+156 tests organized across 13 categories with consistent naming:
+
+```bash
+./tests/run_tests.sh neural    # Run neural IR tests
+./tests/run_tests.sh learning  # Run AD tests
+./tests/run_tests.sh all unit  # Run all unit tests
+```
+
+---
+
 ## Primary Goals
 
 - **AI-native**: Artificial intelligence primitives built into the language semantics
+- **Differentiable**: Native dual numbers enable automatic differentiation (v0.8.0)
+- **Self-optimizing**: Hyperparameters learn themselves via meta-gradients (v0.9.0)
 - **Distributed-first**: Programs naturally decompose across swarms of virtual machines
 - **Fault-tolerant**: Any worker can die at any time; the system continues
 - **Resumable**: Computations checkpoint and resume transparently
-- **Lightweight syntax**: Simple, readable code that compiles to efficient bytecode
+- **Lightweight syntax**: Simple, readable code that compiles to efficient native binaries
 
 ---
 
@@ -31,6 +93,8 @@ Simplex is built on a singular premise: modern software runs on distributed, eph
 ## Core Philosophy
 
 ### Let It Crash
+
+![Actor Supervision](../diagrams/actor-supervision.svg)
 
 Borrowed from Erlang, Simplex embraces failure as normal. Rather than defensive programming with extensive error handling, Simplex programs are structured as supervision trees where failures are isolated, detected, and recovered automatically.
 

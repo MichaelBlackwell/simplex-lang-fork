@@ -1,0 +1,79 @@
+// Test: Phase 4 Weight Magnitude Pruning
+// This test verifies the simple weight magnitude pruning API
+
+fn main() -> i64 {
+    println("Test: Weight Magnitude Pruning");
+
+    // Register some gates with weights
+    neural_register_gate_weight(1, 0.8, 0);   // High weight - should not be pruned
+    neural_register_gate_weight(2, 0.5, 0);   // Medium weight
+    neural_register_gate_weight(3, 0.05, 0);  // Low weight - should be pruned
+    neural_register_gate_weight(4, 0.01, 0);  // Very low weight - should be pruned
+    neural_register_gate_weight(5, 0.9, 0);   // High weight - should not be pruned
+
+    println("Registered 5 gates");
+
+    // Check initial count
+    let count: i64 = neural_get_gate_count();
+    print_string("Gate count: ");
+    print_i64(count);
+    println("");
+
+    if count != 5 {
+        println("FAILED: Expected 5 gates");
+        return 1;
+    }
+
+    // Check initial pruned count (should be 0)
+    let pruned: i64 = neural_get_pruned_gate_count();
+    if pruned != 0 {
+        println("FAILED: Expected 0 pruned initially");
+        return 1;
+    }
+
+    // Prune gates with |weight| < 0.1
+    let pruned_count: i64 = neural_prune_by_weight_magnitude(0.1);
+    print_string("Pruned count: ");
+    print_i64(pruned_count);
+    println("");
+
+    if pruned_count != 2 {
+        println("FAILED: Expected 2 gates pruned");
+        return 1;
+    }
+
+    // Check that gates 3 and 4 are pruned
+    if neural_is_gate_pruned(3) != 1 {
+        println("FAILED: Gate 3 should be pruned");
+        return 1;
+    }
+
+    if neural_is_gate_pruned(4) != 1 {
+        println("FAILED: Gate 4 should be pruned");
+        return 1;
+    }
+
+    // Check that gates 1, 2, 5 are NOT pruned
+    if neural_is_gate_pruned(1) != 0 {
+        println("FAILED: Gate 1 should not be pruned");
+        return 1;
+    }
+
+    if neural_is_gate_pruned(2) != 0 {
+        println("FAILED: Gate 2 should not be pruned");
+        return 1;
+    }
+
+    // Test reset pruning
+    neural_reset_pruning();
+    if neural_get_pruned_gate_count() != 0 {
+        println("FAILED: Reset should clear pruning");
+        return 1;
+    }
+
+    // Clean up
+    neural_clear_gate_registry();
+
+    println("ALL TESTS PASSED");
+    0
+}

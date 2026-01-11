@@ -1,0 +1,609 @@
+// JSON parsing and serialization
+// Pure Simplex implementation
+
+use simplex_std::collections::HashMap;
+
+/// JSON Value type
+#[derive(Debug, Clone, PartialEq)]
+pub enum JsonValue {
+    Null,
+    Bool(bool),
+    Number(f64),
+    String(String),
+    Array(Vec<JsonValue>),
+    Object(HashMap<String, JsonValue>),
+}
+
+impl JsonValue {
+    pub fn null() -> Self {
+        JsonValue::Null
+    }
+
+    pub fn bool(b: bool) -> Self {
+        JsonValue::Bool(b)
+    }
+
+    pub fn number(n: f64) -> Self {
+        JsonValue::Number(n)
+    }
+
+    pub fn string(s: &str) -> Self {
+        JsonValue::String(s.to_string())
+    }
+
+    pub fn array(items: Vec<JsonValue>) -> Self {
+        JsonValue::Array(items)
+    }
+
+    pub fn object(pairs: impl IntoIterator<Item = (&str, JsonValue)>) -> Self {
+        let map: HashMap<String, JsonValue> = pairs
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+        JsonValue::Object(map)
+    }
+
+    // Accessors
+    pub fn is_null(&self) -> bool {
+        matches!(self, JsonValue::Null)
+    }
+
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            JsonValue::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
+    pub fn as_number(&self) -> Option<f64> {
+        match self {
+            JsonValue::Number(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    pub fn as_i64(&self) -> Option<i64> {
+        self.as_number().map(|n| n as i64)
+    }
+
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            JsonValue::String(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn as_array(&self) -> Option<&Vec<JsonValue>> {
+        match self {
+            JsonValue::Array(arr) => Some(arr),
+            _ => None,
+        }
+    }
+
+    pub fn as_object(&self) -> Option<&HashMap<String, JsonValue>> {
+        match self {
+            JsonValue::Object(obj) => Some(obj),
+            _ => None,
+        }
+    }
+
+    /// Get field from object
+    pub fn get(&self, key: &str) -> Option<&JsonValue> {
+        self.as_object().and_then(|obj| obj.get(key))
+    }
+
+    /// Get array element
+    pub fn index(&self, idx: usize) -> Option<&JsonValue> {
+        self.as_array().and_then(|arr| arr.get(idx))
+    }
+}
+
+/// Serialize trait
+pub trait Serialize {
+    fn to_json_value(&self) -> JsonValue;
+}
+
+/// Deserialize trait
+pub trait Deserialize: Sized {
+    fn from_json_value(value: &JsonValue) -> Result<Self, JsonError>;
+}
+
+/// Convert to JSON string
+pub fn to_json<T: Serialize>(value: &T) -> String {
+    let json_value = value.to_json_value();
+    stringify(&json_value)
+}
+
+/// Parse JSON string
+pub fn from_json<T: Deserialize>(s: &str) -> Result<T, JsonError> {
+    let value = parse(s)?;
+    T::from_json_value(&value)
+}
+
+/// Stringify JsonValue
+pub fn stringify(value: &JsonValue) -> String {
+    match value {
+        JsonValue::Null => "null".to_string(),
+        JsonValue::Bool(true) => "true".to_string(),
+        JsonValue::Bool(false) => "false".to_string(),
+        JsonValue::Number(n) => {
+            if n.is_nan() || n.is_infinite() {
+                "null".to_string()
+            } else if n.fract() == 0.0 && *n >= i64::MIN as f64 && *n <= i64::MAX as f64 {
+                (*n as i64).to_string()
+            } else {
+                n.to_string()
+            }
+        }
+        JsonValue::String(s) => {
+            let mut result = String::from("\"");
+            for c in s.chars() {
+                match c {
+                    '"' => result.push_str("\\\""),
+                    '\\' => result.push_str("\\\\"),
+                    '\n' => result.push_str("\\n"),
+                    '\r' => result.push_str("\\r"),
+                    '\t' => result.push_str("\\t"),
+                    c if c.is_control() => {
+                        result.push_str(&format!("\\u{:04x}", c as u32));
+                    }
+                    c => result.push(c),
+                }
+            }
+            result.push('"');
+            result
+        }
+        JsonValue::Array(arr) => {
+            let items: Vec<String> = arr.iter().map(stringify).collect();
+            format!("[{}]", items.join(","))
+        }
+        JsonValue::Object(obj) => {
+            let pairs: Vec<String> = obj.iter()
+                .map(|(k, v)| format!("{}:{}", stringify(&JsonValue::String(k.clone())), stringify(v)))
+                .collect();
+            format!("{{{}}}", pairs.join(","))
+        }
+    }
+}
+
+/// Pretty print JSON
+pub fn stringify_pretty(value: &JsonValue) -> String {
+    stringify_indent(value, 0)
+}
+
+fn stringify_indent(value: &JsonValue, indent: usize) -> String {
+    let spaces = "  ".repeat(indent);
+    let next_spaces = "  ".repeat(indent + 1);
+
+    match value {
+        JsonValue::Array(arr) if arr.is_empty() => "[]".to_string(),
+        JsonValue::Array(arr) => {
+            let items: Vec<String> = arr.iter()
+                .map(|v| format!("{}{}", next_spaces, stringify_indent(v, indent + 1)))
+                .collect();
+            format!("[\n{}\n{}]", items.join(",\n"), spaces)
+        }
+        JsonValue::Object(obj) if obj.is_empty() => "{}".to_string(),
+        JsonValue::Object(obj) => {
+            let pairs: Vec<String> = obj.iter()
+                .map(|(k, v)| format!(
+                    "{}{}: {}",
+                    next_spaces,
+                    stringify(&JsonValue::String(k.clone())),
+                    stringify_indent(v, indent + 1)
+                ))
+                .collect();
+            format!("{{\n{}\n{}}}", pairs.join(",\n"), spaces)
+        }
+        _ => stringify(value),
+    }
+}
+
+/// Parse JSON string to JsonValue
+pub fn parse(s: &str) -> Result<JsonValue, JsonError> {
+    let mut parser = JsonParser::new(s);
+    parser.parse_value()
+}
+
+struct JsonParser<'a> {
+    chars: std::iter::Peekable<std::str::Chars<'a>>,
+    pos: usize,
+}
+
+impl<'a> JsonParser<'a> {
+    fn new(s: &'a str) -> Self {
+        JsonParser {
+            chars: s.chars().peekable(),
+            pos: 0,
+        }
+    }
+
+    fn parse_value(&mut self) -> Result<JsonValue, JsonError> {
+        self.skip_whitespace();
+
+        match self.peek() {
+            Some('n') => self.parse_null(),
+            Some('t') | Some('f') => self.parse_bool(),
+            Some('"') => self.parse_string(),
+            Some('[') => self.parse_array(),
+            Some('{') => self.parse_object(),
+            Some(c) if c == '-' || c.is_ascii_digit() => self.parse_number(),
+            Some(c) => Err(JsonError::UnexpectedChar(c, self.pos)),
+            None => Err(JsonError::UnexpectedEnd),
+        }
+    }
+
+    fn peek(&mut self) -> Option<char> {
+        self.chars.peek().copied()
+    }
+
+    fn next(&mut self) -> Option<char> {
+        let c = self.chars.next();
+        if c.is_some() {
+            self.pos += 1;
+        }
+        c
+    }
+
+    fn skip_whitespace(&mut self) {
+        while let Some(c) = self.peek() {
+            if c.is_whitespace() {
+                self.next();
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn expect(&mut self, expected: &str) -> Result<(), JsonError> {
+        for exp_char in expected.chars() {
+            match self.next() {
+                Some(c) if c == exp_char => continue,
+                Some(c) => return Err(JsonError::UnexpectedChar(c, self.pos)),
+                None => return Err(JsonError::UnexpectedEnd),
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_null(&mut self) -> Result<JsonValue, JsonError> {
+        self.expect("null")?;
+        Ok(JsonValue::Null)
+    }
+
+    fn parse_bool(&mut self) -> Result<JsonValue, JsonError> {
+        match self.peek() {
+            Some('t') => {
+                self.expect("true")?;
+                Ok(JsonValue::Bool(true))
+            }
+            Some('f') => {
+                self.expect("false")?;
+                Ok(JsonValue::Bool(false))
+            }
+            _ => Err(JsonError::InvalidValue(self.pos)),
+        }
+    }
+
+    fn parse_string(&mut self) -> Result<JsonValue, JsonError> {
+        self.expect("\"")?;
+        let mut result = String::new();
+
+        loop {
+            match self.next() {
+                Some('"') => break,
+                Some('\\') => {
+                    match self.next() {
+                        Some('"') => result.push('"'),
+                        Some('\\') => result.push('\\'),
+                        Some('/') => result.push('/'),
+                        Some('n') => result.push('\n'),
+                        Some('r') => result.push('\r'),
+                        Some('t') => result.push('\t'),
+                        Some('u') => {
+                            let hex: String = (0..4)
+                                .filter_map(|_| self.next())
+                                .collect();
+                            if let Ok(code) = u32::from_str_radix(&hex, 16) {
+                                if let Some(c) = char::from_u32(code) {
+                                    result.push(c);
+                                }
+                            }
+                        }
+                        Some(c) => return Err(JsonError::InvalidEscape(c, self.pos)),
+                        None => return Err(JsonError::UnexpectedEnd),
+                    }
+                }
+                Some(c) => result.push(c),
+                None => return Err(JsonError::UnexpectedEnd),
+            }
+        }
+
+        Ok(JsonValue::String(result))
+    }
+
+    fn parse_number(&mut self) -> Result<JsonValue, JsonError> {
+        let mut num_str = String::new();
+
+        // Optional negative sign
+        if self.peek() == Some('-') {
+            num_str.push(self.next().unwrap());
+        }
+
+        // Integer part
+        while let Some(c) = self.peek() {
+            if c.is_ascii_digit() {
+                num_str.push(self.next().unwrap());
+            } else {
+                break;
+            }
+        }
+
+        // Fractional part
+        if self.peek() == Some('.') {
+            num_str.push(self.next().unwrap());
+            while let Some(c) = self.peek() {
+                if c.is_ascii_digit() {
+                    num_str.push(self.next().unwrap());
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // Exponent
+        if let Some('e') | Some('E') = self.peek() {
+            num_str.push(self.next().unwrap());
+            if let Some('+') | Some('-') = self.peek() {
+                num_str.push(self.next().unwrap());
+            }
+            while let Some(c) = self.peek() {
+                if c.is_ascii_digit() {
+                    num_str.push(self.next().unwrap());
+                } else {
+                    break;
+                }
+            }
+        }
+
+        num_str.parse::<f64>()
+            .map(JsonValue::Number)
+            .map_err(|_| JsonError::InvalidNumber(self.pos))
+    }
+
+    fn parse_array(&mut self) -> Result<JsonValue, JsonError> {
+        self.expect("[")?;
+        self.skip_whitespace();
+
+        let mut items = Vec::new();
+
+        if self.peek() == Some(']') {
+            self.next();
+            return Ok(JsonValue::Array(items));
+        }
+
+        loop {
+            items.push(self.parse_value()?);
+            self.skip_whitespace();
+
+            match self.peek() {
+                Some(',') => {
+                    self.next();
+                    self.skip_whitespace();
+                }
+                Some(']') => {
+                    self.next();
+                    break;
+                }
+                Some(c) => return Err(JsonError::UnexpectedChar(c, self.pos)),
+                None => return Err(JsonError::UnexpectedEnd),
+            }
+        }
+
+        Ok(JsonValue::Array(items))
+    }
+
+    fn parse_object(&mut self) -> Result<JsonValue, JsonError> {
+        self.expect("{")?;
+        self.skip_whitespace();
+
+        let mut obj = HashMap::new();
+
+        if self.peek() == Some('}') {
+            self.next();
+            return Ok(JsonValue::Object(obj));
+        }
+
+        loop {
+            // Parse key
+            let key = match self.parse_value()? {
+                JsonValue::String(s) => s,
+                _ => return Err(JsonError::ExpectedString(self.pos)),
+            };
+
+            self.skip_whitespace();
+            self.expect(":")?;
+            self.skip_whitespace();
+
+            // Parse value
+            let value = self.parse_value()?;
+            obj.insert(key, value);
+
+            self.skip_whitespace();
+
+            match self.peek() {
+                Some(',') => {
+                    self.next();
+                    self.skip_whitespace();
+                }
+                Some('}') => {
+                    self.next();
+                    break;
+                }
+                Some(c) => return Err(JsonError::UnexpectedChar(c, self.pos)),
+                None => return Err(JsonError::UnexpectedEnd),
+            }
+        }
+
+        Ok(JsonValue::Object(obj))
+    }
+}
+
+#[derive(Debug)]
+pub enum JsonError {
+    UnexpectedChar(char, usize),
+    UnexpectedEnd,
+    InvalidValue(usize),
+    InvalidNumber(usize),
+    InvalidEscape(char, usize),
+    ExpectedString(usize),
+    EmptyBody,
+    TypeMismatch(String),
+    MissingField(String),
+}
+
+// Implement Serialize for common types
+impl Serialize for bool {
+    fn to_json_value(&self) -> JsonValue {
+        JsonValue::Bool(*self)
+    }
+}
+
+impl Serialize for i32 {
+    fn to_json_value(&self) -> JsonValue {
+        JsonValue::Number(*self as f64)
+    }
+}
+
+impl Serialize for i64 {
+    fn to_json_value(&self) -> JsonValue {
+        JsonValue::Number(*self as f64)
+    }
+}
+
+impl Serialize for u32 {
+    fn to_json_value(&self) -> JsonValue {
+        JsonValue::Number(*self as f64)
+    }
+}
+
+impl Serialize for u64 {
+    fn to_json_value(&self) -> JsonValue {
+        JsonValue::Number(*self as f64)
+    }
+}
+
+impl Serialize for f64 {
+    fn to_json_value(&self) -> JsonValue {
+        JsonValue::Number(*self)
+    }
+}
+
+impl Serialize for String {
+    fn to_json_value(&self) -> JsonValue {
+        JsonValue::String(self.clone())
+    }
+}
+
+impl Serialize for &str {
+    fn to_json_value(&self) -> JsonValue {
+        JsonValue::String(self.to_string())
+    }
+}
+
+impl<T: Serialize> Serialize for Vec<T> {
+    fn to_json_value(&self) -> JsonValue {
+        JsonValue::Array(self.iter().map(|x| x.to_json_value()).collect())
+    }
+}
+
+impl<T: Serialize> Serialize for Option<T> {
+    fn to_json_value(&self) -> JsonValue {
+        match self {
+            Some(v) => v.to_json_value(),
+            None => JsonValue::Null,
+        }
+    }
+}
+
+impl Serialize for JsonValue {
+    fn to_json_value(&self) -> JsonValue {
+        self.clone()
+    }
+}
+
+// Implement Deserialize for common types
+impl Deserialize for bool {
+    fn from_json_value(value: &JsonValue) -> Result<Self, JsonError> {
+        value.as_bool().ok_or(JsonError::TypeMismatch("bool".to_string()))
+    }
+}
+
+impl Deserialize for i64 {
+    fn from_json_value(value: &JsonValue) -> Result<Self, JsonError> {
+        value.as_i64().ok_or(JsonError::TypeMismatch("i64".to_string()))
+    }
+}
+
+impl Deserialize for f64 {
+    fn from_json_value(value: &JsonValue) -> Result<Self, JsonError> {
+        value.as_number().ok_or(JsonError::TypeMismatch("f64".to_string()))
+    }
+}
+
+impl Deserialize for String {
+    fn from_json_value(value: &JsonValue) -> Result<Self, JsonError> {
+        value.as_str().map(|s| s.to_string()).ok_or(JsonError::TypeMismatch("string".to_string()))
+    }
+}
+
+impl<T: Deserialize> Deserialize for Vec<T> {
+    fn from_json_value(value: &JsonValue) -> Result<Self, JsonError> {
+        let arr = value.as_array().ok_or(JsonError::TypeMismatch("array".to_string()))?;
+        arr.iter().map(|v| T::from_json_value(v)).collect()
+    }
+}
+
+impl<T: Deserialize> Deserialize for Option<T> {
+    fn from_json_value(value: &JsonValue) -> Result<Self, JsonError> {
+        if value.is_null() {
+            Ok(None)
+        } else {
+            T::from_json_value(value).map(Some)
+        }
+    }
+}
+
+impl Deserialize for JsonValue {
+    fn from_json_value(value: &JsonValue) -> Result<Self, JsonError> {
+        Ok(value.clone())
+    }
+}
+
+/// Helper macro for JSON objects
+#[macro_export]
+macro_rules! json {
+    (null) => { JsonValue::Null };
+    (true) => { JsonValue::Bool(true) };
+    (false) => { JsonValue::Bool(false) };
+    ($e:expr) => { JsonValue::from($e) };
+    ([$($elem:tt),* $(,)?]) => {
+        JsonValue::Array(vec![$(json!($elem)),*])
+    };
+    ({$($key:tt: $value:tt),* $(,)?}) => {
+        JsonValue::Object({
+            let mut map = HashMap::new();
+            $(map.insert($key.to_string(), json!($value));)*
+            map
+        })
+    };
+}
+
+/// Type alias for JSON response/request wrapper
+pub struct Json<T>(pub T);
+
+impl<T: Serialize> From<T> for Json<T> {
+    fn from(value: T) -> Self {
+        Json(value)
+    }
+}

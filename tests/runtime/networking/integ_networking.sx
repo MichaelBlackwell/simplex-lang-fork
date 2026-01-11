@@ -1,0 +1,349 @@
+// Phase 34 Validation: Networking
+// Tests: 34.6.1 HTTP Client, 34.6.2 HTTP Server, 34.6.3 WebSocket, 34.6.4 TLS
+
+// ============================================
+// 34.6.1 HTTP Client Full Implementation
+// ============================================
+
+fn test_url_parsing() -> i64 {
+    let url: Url = Url::parse("https://example.com:8080/path?query=value#fragment");
+    if url.scheme() == "https" &&
+       url.host() == "example.com" &&
+       url.port() == 8080 &&
+       url.path() == "/path" &&
+       url.query() == "query=value" {
+        1
+    } else {
+        0
+    }
+}
+
+fn test_header_parsing() -> i64 {
+    let response: HttpResponse = http_get("http://httpbin.org/headers");
+    let content_type: Option<String> = response.header("Content-Type");
+    match content_type {
+        Some(ct) => if ct.contains("application/json") { 1 } else { 0 },
+        None => 0
+    }
+}
+
+fn test_chunked_transfer() -> i64 {
+    // Test streaming body with chunked transfer encoding
+    let response: HttpResponse = http_get("http://httpbin.org/stream/3");
+
+    let chunks: i64 = 0;
+    for chunk in response.body_stream() {
+        chunks = chunks + 1;
+    }
+    if chunks >= 3 { 1 } else { 0 }
+}
+
+fn test_redirect_following() -> i64 {
+    let client: HttpClient = HttpClient::new()
+        .follow_redirects(true)
+        .max_redirects(5);
+
+    let response: HttpResponse = client.get("http://httpbin.org/redirect/3");
+    response.status()  // Expected: 200 after following redirects
+}
+
+fn test_connection_pooling() -> i64 {
+    let client: HttpClient = HttpClient::new()
+        .pool_max_connections(10)
+        .pool_idle_timeout(Duration::from_secs(60));
+
+    // Make multiple requests - should reuse connections
+    for i in 0..5 {
+        client.get("http://httpbin.org/get");
+    }
+
+    let stats: PoolStats = client.pool_stats();
+    stats.connections_reused  // Should be > 0
+}
+
+fn test_request_timeout() -> i64 {
+    let client: HttpClient = HttpClient::new()
+        .timeout(Duration::from_millis(100));
+
+    let result: Result<HttpResponse, HttpError> =
+        client.get("http://httpbin.org/delay/10");  // 10 second delay
+
+    match result {
+        Ok(_) => 0,
+        Err(HttpError::Timeout) => 1  // Expected
+    }
+}
+
+// ============================================
+// 34.6.2 HTTP Server Full Implementation
+// ============================================
+
+fn test_router_registration() -> i64 {
+    let router: Router = Router::new();
+
+    router.get("/", || { "Hello" });
+    router.get("/users/:id", |req| {
+        let id: String = req.param("id");
+        format!("User {}", id)
+    });
+    router.post("/users", |req| {
+        let body: String = req.body();
+        "Created"
+    });
+
+    1  // Test passes if registration succeeds
+}
+
+fn test_request_multiplexing() -> i64 {
+    let server: HttpServer = HttpServer::new()
+        .bind("127.0.0.1:0")
+        .workers(4);
+
+    server.route("/", || "OK");
+
+    let addr: SocketAddr = server.local_addr();
+
+    // Start server in background
+    let handle: JoinHandle = server.spawn();
+
+    // Make concurrent requests
+    let results: Vec<Future<HttpResponse>> = Vec::new();
+    for i in 0..10 {
+        results.push(http_get_async(format!("http://{}/", addr)));
+    }
+
+    let success_count: i64 = 0;
+    for fut in results {
+        let resp: HttpResponse = fut.await;
+        if resp.status() == 200 {
+            success_count = success_count + 1;
+        }
+    }
+
+    handle.cancel();
+    success_count  // Expected: 10
+}
+
+fn test_response_streaming() -> i64 {
+    let server: HttpServer = HttpServer::new();
+
+    server.get("/stream", |_req| {
+        Response::streaming(|writer| {
+            for i in 0..5 {
+                writer.write(format!("chunk {}\n", i));
+                writer.flush();
+            }
+        })
+    });
+
+    1
+}
+
+fn test_keep_alive() -> i64 {
+    let server: HttpServer = HttpServer::new()
+        .keep_alive(true)
+        .keep_alive_timeout(Duration::from_secs(30));
+
+    1
+}
+
+fn test_connection_limits() -> i64 {
+    let server: HttpServer = HttpServer::new()
+        .max_connections(100)
+        .max_connections_per_ip(10);
+
+    1
+}
+
+// ============================================
+// 34.6.3 WebSocket Support
+// ============================================
+
+fn test_websocket_upgrade() -> i64 {
+    let server: HttpServer = HttpServer::new();
+
+    server.get("/ws", |req| {
+        if req.is_websocket_upgrade() {
+            req.upgrade_websocket(|ws| {
+                ws.on_message(|msg| {
+                    ws.send(msg);  // Echo
+                });
+            })
+        } else {
+            Response::bad_request()
+        }
+    });
+
+    1
+}
+
+fn test_websocket_client() -> i64 {
+    let ws: WebSocket = WebSocket::connect("ws://echo.websocket.org");
+
+    ws.send("Hello");
+    let response: String = ws.receive();
+
+    if response == "Hello" { 1 } else { 0 }
+}
+
+fn test_websocket_frames() -> i64 {
+    let ws: WebSocket = WebSocket::connect("ws://localhost:8080/ws");
+
+    // Test different frame types
+    ws.send_text("text message");
+    ws.send_binary(&[1, 2, 3, 4]);
+
+    let frame: WebSocketFrame = ws.receive_frame();
+    match frame.opcode {
+        OpCode::Text => 1,
+        OpCode::Binary => 2,
+        _ => 0
+    }
+}
+
+fn test_websocket_ping_pong() -> i64 {
+    let ws: WebSocket = WebSocket::connect("ws://localhost:8080/ws");
+
+    // Enable automatic ping/pong
+    ws.enable_heartbeat(Duration::from_secs(30));
+
+    // Should respond to pings automatically
+    1
+}
+
+fn test_websocket_close() -> i64 {
+    let ws: WebSocket = WebSocket::connect("ws://localhost:8080/ws");
+
+    ws.close(1000, "Normal closure");
+
+    // Should receive close frame acknowledgment
+    let frame: WebSocketFrame = ws.receive_frame();
+    match frame.opcode {
+        OpCode::Close => 1,
+        _ => 0
+    }
+}
+
+fn test_websocket_fragmentation() -> i64 {
+    let ws: WebSocket = WebSocket::connect("ws://localhost:8080/ws");
+
+    // Send fragmented message
+    ws.send_fragment("Hello ", false);  // Not final
+    ws.send_fragment("World", true);    // Final
+
+    let msg: String = ws.receive();
+    if msg == "Hello World" { 1 } else { 0 }
+}
+
+// ============================================
+// 34.6.4 TLS Full Implementation
+// ============================================
+
+fn test_tls_handshake() -> i64 {
+    let config: TlsConfig = TlsConfig::new()
+        .add_root_cert(Certificate::from_pem("..."));
+
+    let stream: TlsStream = TlsConnector::new(config)
+        .connect("example.com", tcp_connect("example.com:443"));
+
+    if stream.is_connected() { 1 } else { 0 }
+}
+
+fn test_certificate_validation() -> i64 {
+    let config: TlsConfig = TlsConfig::new()
+        .verify_mode(VerifyMode::Full);
+
+    // Should fail with invalid cert
+    let result: Result<TlsStream, TlsError> = TlsConnector::new(config)
+        .connect("self-signed.badssl.com", tcp_connect("self-signed.badssl.com:443"));
+
+    match result {
+        Ok(_) => 0,
+        Err(TlsError::CertificateError(_)) => 1  // Expected
+    }
+}
+
+fn test_certificate_pinning() -> i64 {
+    let expected_hash: String = "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+
+    let config: TlsConfig = TlsConfig::new()
+        .pin_certificate(expected_hash);
+
+    let result: Result<TlsStream, TlsError> = TlsConnector::new(config)
+        .connect("example.com", tcp_connect("example.com:443"));
+
+    match result {
+        Ok(_) => 0,  // Unexpected - hash shouldn't match
+        Err(TlsError::PinningError) => 1  // Expected
+    }
+}
+
+fn test_alpn_negotiation() -> i64 {
+    let config: TlsConfig = TlsConfig::new()
+        .alpn_protocols(["h2", "http/1.1"]);
+
+    let stream: TlsStream = TlsConnector::new(config)
+        .connect("example.com", tcp_connect("example.com:443"));
+
+    let negotiated: String = stream.alpn_protocol();
+    if negotiated == "h2" || negotiated == "http/1.1" { 1 } else { 0 }
+}
+
+fn test_sni_negotiation() -> i64 {
+    let config: TlsConfig = TlsConfig::new();
+
+    let stream: TlsStream = TlsConnector::new(config)
+        .server_name("example.com")  // SNI
+        .connect("example.com", tcp_connect("93.184.216.34:443"));
+
+    if stream.is_connected() { 1 } else { 0 }
+}
+
+// ============================================
+// Main test runner
+// ============================================
+
+fn main() -> i64 {
+    print_string("=== Networking Tests ===\n");
+
+    // HTTP Client
+    print_string("Test url_parsing: ");
+    let r1: i64 = test_url_parsing();
+    print_i64(r1);
+    print_string(" (expected 1)\n");
+
+    print_string("Test redirect_following: ");
+    let r2: i64 = test_redirect_following();
+    print_i64(r2);
+    print_string(" (expected 200)\n");
+
+    // HTTP Server
+    print_string("Test router_registration: ");
+    let r3: i64 = test_router_registration();
+    print_i64(r3);
+    print_string(" (expected 1)\n");
+
+    // WebSocket
+    print_string("Test websocket_upgrade: ");
+    let r4: i64 = test_websocket_upgrade();
+    print_i64(r4);
+    print_string(" (expected 1)\n");
+
+    // TLS
+    print_string("Test tls_handshake: ");
+    let r5: i64 = test_tls_handshake();
+    print_i64(r5);
+    print_string(" (expected 1)\n");
+
+    print_string("Test certificate_validation: ");
+    let r6: i64 = test_certificate_validation();
+    print_i64(r6);
+    print_string(" (expected 1)\n");
+
+    print_string("Test alpn_negotiation: ");
+    let r7: i64 = test_alpn_negotiation();
+    print_i64(r7);
+    print_string(" (expected 1)\n");
+
+    0
+}

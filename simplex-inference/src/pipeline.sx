@@ -1,0 +1,506 @@
+// Inference Pipeline - Unified Optimization Layer
+//
+// Combines all optimization strategies into a single, easy-to-use pipeline.
+// This is the recommended entry point for applications using simplex-inference.
+//
+// # Pipeline Stages
+//
+// 1. Response Cache Check → Return immediately if cached
+// 2. Smart Routing → Select appropriate model tier
+// 3. Prompt Cache → Use cached tokenized prompts
+// 4. Request Batching → Batch with similar requests
+// 5. Model Inference → Execute on selected model
+// 6. Response Caching → Cache result if appropriate
+//
+// All stages are OPTIONAL and can be enabled/disabled via configuration.
+
+use simplex_std::sync::Arc;
+use simplex_std::time::now_unix_ms;
+use super::{
+    Batcher, BatchConfig, BatchHandle, BatchError,
+    PromptCache, ResponseCache, CacheConfig, CacheStats,
+    Router, RouterConfig, ModelTier, QueryComplexity,
+    InferencePool, PoolConfig, ModelHandle,
+    InferenceMetrics, SlmError,
+};
+
+// =============================================================================
+// Pipeline Builder
+// =============================================================================
+
+/// Builder for constructing inference pipelines
+///
+/// # Example
+///
+/// ```simplex
+/// let pipeline = InferencePipeline::builder()
+///     .with_batching(BatchConfig::default())
+///     .with_prompt_cache(1000)
+///     .with_response_cache(CacheConfig::long_lived())
+///     .with_routing(RouterConfig::cost_optimized())
+///     .build(inference_fn);
+/// ```
+pub struct PipelineBuilder {
+    batch_config: Option<BatchConfig>,
+    prompt_cache_capacity: Option<usize>,
+    response_cache_config: Option<CacheConfig>,
+    router_config: Option<RouterConfig>,
+    pool_config: Option<PoolConfig>,
+}
+
+impl PipelineBuilder {
+    /// Create a new builder with no optimizations enabled
+    pub fn new() -> Self {
+        PipelineBuilder {
+            batch_config: None,
+            prompt_cache_capacity: None,
+            response_cache_config: None,
+            router_config: None,
+            pool_config: None,
+        }
+    }
+
+    /// Enable request batching
+    pub fn with_batching(mut self, config: BatchConfig) -> Self {
+        self.batch_config = Some(config);
+        self
+    }
+
+    /// Enable prompt caching with the given capacity
+    pub fn with_prompt_cache(mut self, capacity: usize) -> Self {
+        self.prompt_cache_capacity = Some(capacity);
+        self
+    }
+
+    /// Enable response caching
+    pub fn with_response_cache(mut self, config: CacheConfig) -> Self {
+        self.response_cache_config = Some(config);
+        self
+    }
+
+    /// Enable smart routing
+    pub fn with_routing(mut self, config: RouterConfig) -> Self {
+        self.router_config = Some(config);
+        self
+    }
+
+    /// Enable model pooling
+    pub fn with_pool(mut self, config: PoolConfig) -> Self {
+        self.pool_config = Some(config);
+        self
+    }
+
+    /// Enable all optimizations with default configs
+    pub fn with_all_defaults(self) -> Self {
+        self.with_batching(BatchConfig::default())
+            .with_prompt_cache(100)
+            .with_response_cache(CacheConfig::default())
+            .with_routing(RouterConfig::default())
+    }
+
+    /// Build the pipeline with a custom inference function
+    pub fn build<F>(self, inference_fn: F) -> InferencePipeline<F>
+    where
+        F: Fn(ModelTier, String) -> Result<String, SlmError> + Send + Sync + Clone + 'static,
+    {
+        let prompt_cache = self.prompt_cache_capacity.map(PromptCache::new);
+        let response_cache = self.response_cache_config.map(ResponseCache::new);
+        let router = self.router_config.map(Router::new);
+
+        // Create batcher if enabled
+        let batcher = self.batch_config.map(|config| {
+            let inference_fn = inference_fn.clone();
+            Batcher::new(config, move |requests: Vec<BatchedInferRequest>| {
+                requests.into_iter().map(|req| {
+                    inference_fn(req.tier, req.prompt)
+                        .map_err(|e| BatchError::ExecutorError(format!("{:?}", e)))
+                }).collect()
+            })
+        });
+
+        InferencePipeline {
+            batcher,
+            prompt_cache,
+            response_cache,
+            router,
+            inference_fn,
+            metrics: Arc::new(PipelineMetrics::default()),
+        }
+    }
+}
+
+// =============================================================================
+// Inference Pipeline
+// =============================================================================
+
+/// Unified inference pipeline with all optimizations
+pub struct InferencePipeline<F>
+where
+    F: Fn(ModelTier, String) -> Result<String, SlmError> + Send + Sync + Clone + 'static,
+{
+    batcher: Option<Batcher<BatchedInferRequest, String>>,
+    prompt_cache: Option<PromptCache>,
+    response_cache: Option<ResponseCache<String, String>>,
+    router: Option<Router>,
+    inference_fn: F,
+    metrics: Arc<PipelineMetrics>,
+}
+
+#[derive(Clone)]
+struct BatchedInferRequest {
+    prompt: String,
+    tier: ModelTier,
+}
+
+impl<F> InferencePipeline<F>
+where
+    F: Fn(ModelTier, String) -> Result<String, SlmError> + Send + Sync + Clone + 'static,
+{
+    /// Create a pipeline builder
+    pub fn builder() -> PipelineBuilder {
+        PipelineBuilder::new()
+    }
+
+    /// Process an inference request through the pipeline
+    pub async fn infer(&self, request: InferenceRequest) -> Result<InferenceResult, PipelineError> {
+        let start_time = now_unix_ms();
+
+        // Stage 1: Response cache check
+        if let Some(ref cache) = self.response_cache {
+            let cache_key = self.compute_cache_key(&request);
+            if let Some(cached) = cache.get(&cache_key).await {
+                self.metrics.record_cache_hit().await;
+                return Ok(InferenceResult {
+                    content: cached,
+                    tier: ModelTier::Cached,
+                    from_cache: true,
+                    latency_ms: (now_unix_ms() - start_time) as u32,
+                });
+            }
+        }
+
+        // Stage 2: Smart routing
+        let tier = if let Some(ref router) = self.router {
+            let decision = router.route(&request.prompt).await;
+            decision.tier
+        } else {
+            ModelTier::Full
+        };
+
+        // Stage 3: Prompt cache (prepare prompt with cached prefix if available)
+        let prepared_prompt = if let Some(ref prompt_cache) = self.prompt_cache {
+            if let Some(system_prompt) = &request.system_prompt {
+                if let Some(_cached_tokens) = prompt_cache.get(system_prompt).await {
+                    // In a real implementation, we'd use the cached tokens
+                    // For now, just use the prompt as-is
+                    format!("{}\n\n{}", system_prompt, request.prompt)
+                } else {
+                    request.prompt.clone()
+                }
+            } else {
+                request.prompt.clone()
+            }
+        } else {
+            request.prompt.clone()
+        };
+
+        // Stage 4 & 5: Batching and inference
+        let content = if let Some(ref batcher) = self.batcher {
+            let batched_request = BatchedInferRequest {
+                prompt: prepared_prompt,
+                tier,
+            };
+            let handle = batcher.submit(batched_request).await
+                .map_err(|e| PipelineError::BatchError(e))?;
+            handle.wait().await
+                .map_err(|e| PipelineError::BatchError(e))?
+        } else {
+            // Direct inference without batching
+            (self.inference_fn)(tier, prepared_prompt)
+                .map_err(|e| PipelineError::InferenceError(e))?
+        };
+
+        // Stage 6: Cache response if appropriate
+        if let Some(ref cache) = self.response_cache {
+            if self.should_cache(&request, &content, tier) {
+                let cache_key = self.compute_cache_key(&request);
+                cache.put(cache_key, content.clone()).await;
+            }
+        }
+
+        let latency = (now_unix_ms() - start_time) as u32;
+        self.metrics.record_inference(tier, latency).await;
+
+        Ok(InferenceResult {
+            content,
+            tier,
+            from_cache: false,
+            latency_ms: latency,
+        })
+    }
+
+    /// Get pipeline metrics
+    pub async fn metrics(&self) -> PipelineMetricsSnapshot {
+        self.metrics.snapshot().await
+    }
+
+    /// Clear all caches
+    pub async fn clear_caches(&self) {
+        if let Some(ref cache) = self.prompt_cache {
+            cache.clear().await;
+        }
+        if let Some(ref cache) = self.response_cache {
+            cache.clear().await;
+        }
+    }
+
+    /// Get cache statistics
+    pub async fn cache_stats(&self) -> Option<CacheStats> {
+        self.response_cache.as_ref().map(|c| {
+            // Note: This would need to be async in practice
+            CacheStats::default()
+        })
+    }
+
+    // Internal helpers
+
+    fn compute_cache_key(&self, request: &InferenceRequest) -> String {
+        use super::cache::compute_cache_key_multi;
+
+        let parts: Vec<&str> = vec![
+            request.prompt.as_str(),
+            request.system_prompt.as_deref().unwrap_or(""),
+        ];
+        compute_cache_key_multi(&parts)
+    }
+
+    fn should_cache(&self, request: &InferenceRequest, response: &str, tier: ModelTier) -> bool {
+        // Don't cache complex model responses (they're more context-dependent)
+        if tier == ModelTier::Full {
+            return false;
+        }
+
+        // Don't cache very short responses (might be errors)
+        if response.len() < 10 {
+            return false;
+        }
+
+        // Don't cache very long responses (memory efficiency)
+        if response.len() > 2000 {
+            return false;
+        }
+
+        // Don't cache if the request was clearly conversational
+        if request.prompt.len() > 500 {
+            return false;
+        }
+
+        true
+    }
+}
+
+// =============================================================================
+// Request and Result Types
+// =============================================================================
+
+/// Inference request
+#[derive(Clone)]
+pub struct InferenceRequest {
+    /// The user prompt
+    pub prompt: String,
+    /// Optional system prompt
+    pub system_prompt: Option<String>,
+    /// Maximum tokens to generate
+    pub max_tokens: Option<u32>,
+    /// Temperature for sampling
+    pub temperature: Option<f32>,
+    /// Optional user ID for personalization
+    pub user_id: Option<String>,
+}
+
+impl InferenceRequest {
+    /// Create a simple request with just a prompt
+    pub fn new(prompt: impl Into<String>) -> Self {
+        InferenceRequest {
+            prompt: prompt.into(),
+            system_prompt: None,
+            max_tokens: None,
+            temperature: None,
+            user_id: None,
+        }
+    }
+
+    /// Add a system prompt
+    pub fn with_system_prompt(mut self, system_prompt: impl Into<String>) -> Self {
+        self.system_prompt = Some(system_prompt.into());
+        self
+    }
+
+    /// Set max tokens
+    pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
+        self.max_tokens = Some(max_tokens);
+        self
+    }
+
+    /// Set temperature
+    pub fn with_temperature(mut self, temperature: f32) -> Self {
+        self.temperature = Some(temperature);
+        self
+    }
+
+    /// Set user ID
+    pub fn with_user_id(mut self, user_id: impl Into<String>) -> Self {
+        self.user_id = Some(user_id.into());
+        self
+    }
+}
+
+/// Inference result
+pub struct InferenceResult {
+    /// Generated content
+    pub content: String,
+    /// Model tier that was used
+    pub tier: ModelTier,
+    /// Whether result came from cache
+    pub from_cache: bool,
+    /// Total latency in milliseconds
+    pub latency_ms: u32,
+}
+
+// =============================================================================
+// Metrics
+// =============================================================================
+
+use simplex_std::sync::RwLock;
+
+struct PipelineMetrics {
+    inner: RwLock<PipelineMetricsInner>,
+}
+
+#[derive(Default)]
+struct PipelineMetricsInner {
+    total_requests: u64,
+    cache_hits: u64,
+    tiny_calls: u64,
+    light_calls: u64,
+    full_calls: u64,
+    total_latency_ms: u64,
+}
+
+impl Default for PipelineMetrics {
+    fn default() -> Self {
+        PipelineMetrics {
+            inner: RwLock::new(PipelineMetricsInner::default()),
+        }
+    }
+}
+
+impl PipelineMetrics {
+    async fn record_cache_hit(&self) {
+        let mut inner = self.inner.write().await;
+        inner.total_requests += 1;
+        inner.cache_hits += 1;
+    }
+
+    async fn record_inference(&self, tier: ModelTier, latency_ms: u32) {
+        let mut inner = self.inner.write().await;
+        inner.total_requests += 1;
+        inner.total_latency_ms += latency_ms as u64;
+        match tier {
+            ModelTier::Tiny => inner.tiny_calls += 1,
+            ModelTier::Light => inner.light_calls += 1,
+            ModelTier::Full => inner.full_calls += 1,
+            ModelTier::Cached => inner.cache_hits += 1,
+        }
+    }
+
+    async fn snapshot(&self) -> PipelineMetricsSnapshot {
+        let inner = self.inner.read().await;
+        PipelineMetricsSnapshot {
+            total_requests: inner.total_requests,
+            cache_hits: inner.cache_hits,
+            tiny_calls: inner.tiny_calls,
+            light_calls: inner.light_calls,
+            full_calls: inner.full_calls,
+            total_latency_ms: inner.total_latency_ms,
+        }
+    }
+}
+
+/// Snapshot of pipeline metrics
+#[derive(Clone, Default)]
+pub struct PipelineMetricsSnapshot {
+    pub total_requests: u64,
+    pub cache_hits: u64,
+    pub tiny_calls: u64,
+    pub light_calls: u64,
+    pub full_calls: u64,
+    pub total_latency_ms: u64,
+}
+
+impl PipelineMetricsSnapshot {
+    /// Cache hit rate (0.0 - 1.0)
+    pub fn cache_hit_rate(&self) -> f64 {
+        if self.total_requests == 0 {
+            0.0
+        } else {
+            self.cache_hits as f64 / self.total_requests as f64
+        }
+    }
+
+    /// Average latency in ms
+    pub fn avg_latency_ms(&self) -> f64 {
+        let non_cached = self.total_requests - self.cache_hits;
+        if non_cached == 0 {
+            0.0
+        } else {
+            self.total_latency_ms as f64 / non_cached as f64
+        }
+    }
+
+    /// Percentage of requests routed to small models
+    pub fn small_model_percent(&self) -> f64 {
+        let total_inferences = self.tiny_calls + self.light_calls + self.full_calls;
+        if total_inferences == 0 {
+            0.0
+        } else {
+            (self.tiny_calls + self.light_calls) as f64 / total_inferences as f64 * 100.0
+        }
+    }
+
+    /// Estimated cost savings from routing + caching
+    pub fn estimated_savings_percent(&self) -> f64 {
+        let tiny_savings = self.tiny_calls as f64 * 0.9; // 90% savings
+        let light_savings = self.light_calls as f64 * 0.7; // 70% savings
+        let cache_savings = self.cache_hits as f64 * 1.0; // 100% savings
+
+        if self.total_requests == 0 {
+            0.0
+        } else {
+            (tiny_savings + light_savings + cache_savings) / self.total_requests as f64 * 100.0
+        }
+    }
+}
+
+// =============================================================================
+// Errors
+// =============================================================================
+
+#[derive(Debug)]
+pub enum PipelineError {
+    BatchError(BatchError),
+    InferenceError(SlmError),
+    CacheError(String),
+}
+
+impl std::error::Error for PipelineError {}
+
+impl std::fmt::Display for PipelineError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PipelineError::BatchError(e) => write!(f, "Batch error: {}", e),
+            PipelineError::InferenceError(e) => write!(f, "Inference error: {}", e),
+            PipelineError::CacheError(msg) => write!(f, "Cache error: {}", msg),
+        }
+    }
+}

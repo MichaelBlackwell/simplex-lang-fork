@@ -1,0 +1,167 @@
+// S3 Object types
+
+use simplex_std::collections::HashMap;
+
+/// S3 Object
+pub struct Object {
+    pub bucket: String,
+    pub key: String,
+    pub body: Vec<u8>,
+    pub metadata: ObjectMeta,
+}
+
+/// Object metadata
+pub struct ObjectMeta {
+    pub key: String,
+    pub size: u64,
+    pub content_type: Option<String>,
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+    pub metadata: HashMap<String, String>,
+}
+
+/// Put object request
+pub struct PutObjectRequest {
+    pub bucket: String,
+    pub key: String,
+    pub body: Vec<u8>,
+    pub content_type: Option<String>,
+    pub acl: Option<String>,
+    pub metadata: HashMap<String, String>,
+    pub cache_control: Option<String>,
+    pub content_disposition: Option<String>,
+    pub storage_class: Option<String>,
+}
+
+impl PutObjectRequest {
+    pub fn new(bucket: &str, key: &str, body: Vec<u8>) -> Self {
+        PutObjectRequest {
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            body,
+            content_type: None,
+            acl: None,
+            metadata: HashMap::new(),
+            cache_control: None,
+            content_disposition: None,
+            storage_class: None,
+        }
+    }
+
+    pub fn content_type(mut self, content_type: &str) -> Self {
+        self.content_type = Some(content_type.to_string());
+        self
+    }
+
+    pub fn acl(mut self, acl: &str) -> Self {
+        self.acl = Some(acl.to_string());
+        self
+    }
+
+    pub fn public_read(mut self) -> Self {
+        self.acl = Some("public-read".to_string());
+        self
+    }
+
+    pub fn private(mut self) -> Self {
+        self.acl = Some("private".to_string());
+        self
+    }
+
+    pub fn metadata(mut self, key: &str, value: &str) -> Self {
+        self.metadata.insert(key.to_string(), value.to_string());
+        self
+    }
+
+    pub fn cache_control(mut self, cache_control: &str) -> Self {
+        self.cache_control = Some(cache_control.to_string());
+        self
+    }
+
+    pub fn content_disposition(mut self, disposition: &str) -> Self {
+        self.content_disposition = Some(disposition.to_string());
+        self
+    }
+
+    pub fn storage_class(mut self, storage_class: &str) -> Self {
+        self.storage_class = Some(storage_class.to_string());
+        self
+    }
+}
+
+/// Get object response
+pub struct GetObjectResponse {
+    pub body: Vec<u8>,
+    pub content_type: Option<String>,
+    pub content_length: u64,
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+    pub metadata: HashMap<String, String>,
+}
+
+impl GetObjectResponse {
+    /// Get body as string
+    pub fn text(&self) -> String {
+        String::from_utf8_lossy(&self.body).to_string()
+    }
+
+    /// Get body as JSON
+    pub fn json<T: Deserialize>(&self) -> Result<T, JsonError> {
+        let text = self.text();
+        from_json(&text)
+    }
+}
+
+// Storage classes
+pub mod storage_class {
+    pub const STANDARD: &str = "STANDARD";
+    pub const STANDARD_IA: &str = "STANDARD_IA";
+    pub const ONEZONE_IA: &str = "ONEZONE_IA";
+    pub const INTELLIGENT_TIERING: &str = "INTELLIGENT_TIERING";
+    pub const GLACIER: &str = "GLACIER";
+    pub const GLACIER_IR: &str = "GLACIER_IR";
+    pub const DEEP_ARCHIVE: &str = "DEEP_ARCHIVE";
+}
+
+// ACL values
+pub mod acl {
+    pub const PRIVATE: &str = "private";
+    pub const PUBLIC_READ: &str = "public-read";
+    pub const PUBLIC_READ_WRITE: &str = "public-read-write";
+    pub const AUTHENTICATED_READ: &str = "authenticated-read";
+    pub const AWS_EXEC_READ: &str = "aws-exec-read";
+    pub const BUCKET_OWNER_READ: &str = "bucket-owner-read";
+    pub const BUCKET_OWNER_FULL_CONTROL: &str = "bucket-owner-full-control";
+}
+
+/// Content type helper
+pub fn guess_content_type(filename: &str) -> &'static str {
+    let ext = filename.rsplit('.').next().unwrap_or("").to_lowercase();
+    match ext.as_str() {
+        "txt" => "text/plain",
+        "html" | "htm" => "text/html",
+        "css" => "text/css",
+        "js" => "application/javascript",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "pdf" => "application/pdf",
+        "zip" => "application/zip",
+        "gz" | "gzip" => "application/gzip",
+        "tar" => "application/x-tar",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "svg" => "image/svg+xml",
+        "webp" => "image/webp",
+        "ico" => "image/x-icon",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        _ => "application/octet-stream",
+    }
+}

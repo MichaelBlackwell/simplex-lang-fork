@@ -1,0 +1,329 @@
+// simplex-std/net - Networking primitives
+//
+// Provides TCP/UDP networking capabilities for Simplex applications.
+//
+// # Core Types
+//
+// - `TcpListener`: Accept incoming TCP connections
+// - `TcpStream`: Bidirectional TCP connection
+// - `SocketAddr`: Network address (IP + port)
+//
+// # Example
+//
+// ```simplex
+// use simplex_std::net::{TcpListener, TcpStream};
+//
+// // Server
+// let listener = TcpListener::bind("0.0.0.0:8080").await?;
+// loop {
+//     let (stream, addr) = listener.accept().await?;
+//     spawn(handle_connection(stream));
+// }
+//
+// // Client
+// let stream = TcpStream::connect("localhost:8080").await?;
+// stream.write_all(b"Hello").await?;
+// ```
+//
+// # Implementation Notes
+//
+// These types wrap the C runtime's networking implementation.
+
+use crate::io::{AsyncRead, AsyncWrite, IoError};
+
+// =============================================================================
+// Socket Address
+// =============================================================================
+
+/// Network socket address (IP address + port)
+#[derive(Clone, Debug)]
+pub struct SocketAddr {
+    /// IP address as string (e.g., "127.0.0.1" or "::1")
+    pub ip: String,
+    /// Port number
+    pub port: u16,
+}
+
+impl SocketAddr {
+    /// Create from IP and port
+    pub fn new(ip: &str, port: u16) -> Self {
+        SocketAddr {
+            ip: ip.to_string(),
+            port,
+        }
+    }
+
+    /// Parse from "ip:port" string
+    pub fn parse(addr: &str) -> Result<Self, IoError> {
+        let parts: Vec<&str> = addr.rsplitn(2, ':').collect();
+        if parts.len() != 2 {
+            return Err(IoError::Other("invalid address format".to_string()));
+        }
+        let port = parts[0].parse::<u16>()
+            .map_err(|_| IoError::Other("invalid port".to_string()))?;
+        let ip = parts[1].to_string();
+        Ok(SocketAddr { ip, port })
+    }
+}
+
+impl std::fmt::Display for SocketAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.ip, self.port)
+    }
+}
+
+// =============================================================================
+// TCP Listener
+// =============================================================================
+
+/// TCP listener for accepting incoming connections
+///
+/// # Example
+///
+/// ```simplex
+/// let listener = TcpListener::bind("0.0.0.0:8080").await?;
+/// while let Ok((stream, addr)) = listener.accept().await {
+///     println("Connection from: {}", addr);
+///     spawn(handle_client(stream));
+/// }
+/// ```
+pub struct TcpListener {
+    /// Native handle (provided by C runtime)
+    handle: i64,
+    /// Local address
+    local_addr: SocketAddr,
+}
+
+impl TcpListener {
+    /// Bind to an address and start listening
+    ///
+    /// # Arguments
+    /// * `addr` - Address to bind to (e.g., "0.0.0.0:8080")
+    pub async fn bind(addr: &str) -> Result<Self, IoError> {
+        let socket_addr = SocketAddr::parse(addr)?;
+        let handle = tcp_listener_bind(addr)?;
+        Ok(TcpListener {
+            handle,
+            local_addr: socket_addr,
+        })
+    }
+
+    /// Accept an incoming connection
+    ///
+    /// Returns the connected stream and remote address.
+    pub async fn accept(&self) -> Result<(TcpStream, SocketAddr), IoError> {
+        let (stream_handle, remote_addr) = tcp_listener_accept(self.handle).await?;
+        let stream = TcpStream {
+            handle: stream_handle,
+            peer_addr: remote_addr.clone(),
+        };
+        Ok((stream, remote_addr))
+    }
+
+    /// Get local address
+    pub fn local_addr(&self) -> &SocketAddr {
+        &self.local_addr
+    }
+}
+
+impl Drop for TcpListener {
+    fn drop(&mut self) {
+        tcp_listener_close(self.handle);
+    }
+}
+
+// =============================================================================
+// TCP Stream
+// =============================================================================
+
+/// Bidirectional TCP connection
+///
+/// Implements both AsyncRead and AsyncWrite for full-duplex communication.
+pub struct TcpStream {
+    /// Native handle (provided by C runtime)
+    handle: i64,
+    /// Remote address
+    peer_addr: SocketAddr,
+}
+
+impl TcpStream {
+    /// Connect to a remote address
+    ///
+    /// # Arguments
+    /// * `addr` - Address to connect to (e.g., "localhost:8080")
+    pub async fn connect(addr: &str) -> Result<Self, IoError> {
+        let socket_addr = SocketAddr::parse(addr)?;
+        let handle = tcp_stream_connect(addr).await?;
+        Ok(TcpStream {
+            handle,
+            peer_addr: socket_addr,
+        })
+    }
+
+    /// Connect with timeout
+    pub async fn connect_timeout(addr: &str, timeout_ms: u64) -> Result<Self, IoError> {
+        let socket_addr = SocketAddr::parse(addr)?;
+        let handle = tcp_stream_connect_timeout(addr, timeout_ms).await?;
+        Ok(TcpStream {
+            handle,
+            peer_addr: socket_addr,
+        })
+    }
+
+    /// Get peer address
+    pub fn peer_addr(&self) -> &SocketAddr {
+        &self.peer_addr
+    }
+
+    /// Shutdown the connection
+    pub async fn shutdown(&self) -> Result<(), IoError> {
+        tcp_stream_shutdown(self.handle).await
+    }
+
+    /// Set read timeout
+    pub fn set_read_timeout(&self, timeout_ms: Option<u64>) {
+        tcp_stream_set_read_timeout(self.handle, timeout_ms);
+    }
+
+    /// Set write timeout
+    pub fn set_write_timeout(&self, timeout_ms: Option<u64>) {
+        tcp_stream_set_write_timeout(self.handle, timeout_ms);
+    }
+
+    /// Set TCP nodelay (disable Nagle's algorithm)
+    pub fn set_nodelay(&self, nodelay: bool) {
+        tcp_stream_set_nodelay(self.handle, nodelay);
+    }
+}
+
+impl AsyncRead for TcpStream {
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, IoError> {
+        tcp_stream_read(self.handle, buf).await
+    }
+
+    async fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), IoError> {
+        let mut total = 0;
+        while total < buf.len() {
+            let n = self.read(&mut buf[total..]).await?;
+            if n == 0 {
+                return Err(IoError::UnexpectedEof);
+            }
+            total += n;
+        }
+        Ok(())
+    }
+
+    async fn read_to_end(&mut self) -> Result<Vec<u8>, IoError> {
+        let mut result = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = self.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            result.extend_from_slice(&buf[..n]);
+        }
+        Ok(result)
+    }
+
+    async fn read_line(&mut self) -> Result<String, IoError> {
+        let mut result = Vec::new();
+        let mut buf = [0u8; 1];
+        loop {
+            let n = self.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            if buf[0] == b'\n' {
+                break;
+            }
+            result.push(buf[0]);
+        }
+        String::from_utf8(result).map_err(|_| IoError::InvalidData)
+    }
+}
+
+impl AsyncWrite for TcpStream {
+    async fn write(&mut self, buf: &[u8]) -> Result<usize, IoError> {
+        tcp_stream_write(self.handle, buf).await
+    }
+
+    async fn write_all(&mut self, buf: &[u8]) -> Result<(), IoError> {
+        let mut written = 0;
+        while written < buf.len() {
+            let n = self.write(&buf[written..]).await?;
+            if n == 0 {
+                return Err(IoError::WriteZero);
+            }
+            written += n;
+        }
+        Ok(())
+    }
+
+    async fn flush(&mut self) -> Result<(), IoError> {
+        tcp_stream_flush(self.handle).await
+    }
+}
+
+impl Clone for TcpStream {
+    fn clone(&self) -> Self {
+        TcpStream {
+            handle: tcp_stream_clone(self.handle),
+            peer_addr: self.peer_addr.clone(),
+        }
+    }
+}
+
+impl Drop for TcpStream {
+    fn drop(&mut self) {
+        tcp_stream_close(self.handle);
+    }
+}
+
+// =============================================================================
+// Native FFI Functions (implemented in C runtime)
+// =============================================================================
+
+// These functions are implemented in standalone_runtime.c
+
+/// Bind TCP listener
+fn tcp_listener_bind(addr: &str) -> Result<i64, IoError>;
+
+/// Accept connection on listener
+async fn tcp_listener_accept(handle: i64) -> Result<(i64, SocketAddr), IoError>;
+
+/// Close listener
+fn tcp_listener_close(handle: i64);
+
+/// Connect TCP stream
+async fn tcp_stream_connect(addr: &str) -> Result<i64, IoError>;
+
+/// Connect with timeout
+async fn tcp_stream_connect_timeout(addr: &str, timeout_ms: u64) -> Result<i64, IoError>;
+
+/// Read from stream
+async fn tcp_stream_read(handle: i64, buf: &mut [u8]) -> Result<usize, IoError>;
+
+/// Write to stream
+async fn tcp_stream_write(handle: i64, buf: &[u8]) -> Result<usize, IoError>;
+
+/// Flush stream
+async fn tcp_stream_flush(handle: i64) -> Result<(), IoError>;
+
+/// Shutdown stream
+async fn tcp_stream_shutdown(handle: i64) -> Result<(), IoError>;
+
+/// Clone stream handle
+fn tcp_stream_clone(handle: i64) -> i64;
+
+/// Close stream
+fn tcp_stream_close(handle: i64);
+
+/// Set read timeout
+fn tcp_stream_set_read_timeout(handle: i64, timeout_ms: Option<u64>);
+
+/// Set write timeout
+fn tcp_stream_set_write_timeout(handle: i64, timeout_ms: Option<u64>);
+
+/// Set TCP nodelay
+fn tcp_stream_set_nodelay(handle: i64, nodelay: bool);

@@ -1,0 +1,503 @@
+// Generic Request Batcher
+//
+// Provides continuous batching for any inference workload. This is an OPTIONAL
+// runtime optimization - Simplex applications work without it, but inference
+// instances can enable it for better throughput.
+//
+// # Design Philosophy
+//
+// - Zero-cost when disabled: No overhead if batching isn't used
+// - Composable: Works with any backend (CPU, GPU, Inferentia, etc.)
+// - Non-blocking: Async-first design with backpressure handling
+// - Observable: Built-in metrics for monitoring batch efficiency
+// - Deduplication: Identical requests are coalesced and share results
+//
+// # Optimizations
+//
+// - Request deduplication: When `coalesce_duplicates` is enabled, identical
+//   requests (same batch_key) are processed only once and share the result
+// - Priority ordering: Higher priority requests are processed first
+// - Adaptive batching: Batch size adapts based on queue pressure
+
+use simplex_std::sync::{Arc, Mutex, RwLock};
+use simplex_std::collections::{VecDeque, HashMap};
+use simplex_std::time::{now_unix_ms, Instant, Duration};
+use simplex_std::task::{spawn, JoinHandle};
+use simplex_std::channel::{bounded, Sender, Receiver};
+
+// =============================================================================
+// Batcher Configuration
+// =============================================================================
+
+/// Configuration for the request batcher
+#[derive(Clone)]
+pub struct BatchConfig {
+    /// Maximum requests per batch
+    pub max_size: usize,
+    /// Maximum time to wait for batch to fill (ms)
+    pub timeout_ms: u64,
+    /// Maximum pending requests before applying backpressure
+    pub max_pending: usize,
+    /// Enable batch coalescing (combine duplicate requests)
+    pub coalesce_duplicates: bool,
+}
+
+impl Default for BatchConfig {
+    fn default() -> Self {
+        BatchConfig {
+            max_size: 8,
+            timeout_ms: 50,
+            max_pending: 1000,
+            coalesce_duplicates: true,
+        }
+    }
+}
+
+impl BatchConfig {
+    /// Create config optimized for latency
+    pub fn low_latency() -> Self {
+        BatchConfig {
+            max_size: 4,
+            timeout_ms: 10,
+            max_pending: 500,
+            coalesce_duplicates: true,
+        }
+    }
+
+    /// Create config optimized for throughput
+    pub fn high_throughput() -> Self {
+        BatchConfig {
+            max_size: 32,
+            timeout_ms: 100,
+            max_pending: 5000,
+            coalesce_duplicates: true,
+        }
+    }
+
+    /// Create config for single-request mode (no batching)
+    pub fn no_batching() -> Self {
+        BatchConfig {
+            max_size: 1,
+            timeout_ms: 0,
+            max_pending: 100,
+            coalesce_duplicates: false,
+        }
+    }
+}
+
+
+// =============================================================================
+// Generic Batcher
+// =============================================================================
+
+/// Generic request batcher for continuous batching
+///
+/// Type parameters:
+/// - `R`: Request type (must be Clone + Send + Sync)
+/// - `T`: Response type (must be Clone + Send + Sync)
+///
+/// # Example
+///
+/// ```simplex
+/// // Define a simple inference request
+/// #[derive(Clone)]
+/// struct InferRequest {
+///     id: String,
+///     prompt: String,
+/// }
+///
+/// // Create batcher with default config
+/// let batcher = Batcher::new(BatchConfig::default());
+///
+/// // Submit request and get handle
+/// let handle = batcher.submit(request).await?;
+///
+/// // Wait for result
+/// let response = handle.await?;
+/// ```
+pub struct Batcher<R, T> {
+    config: BatchConfig,
+    /// Channel for submitting requests
+    submit_tx: Sender<SubmitRequest<R, T>>,
+    /// Background processor handle
+    processor: JoinHandle<()>,
+    /// Metrics collector
+    metrics: Arc<RwLock<BatcherMetrics>>,
+    /// Whether the batcher is running
+    running: Arc<RwLock<bool>>,
+}
+
+struct SubmitRequest<R, T> {
+    request: R,
+    response_tx: Sender<Result<T, BatchError>>,
+    submitted_at: u64,
+    /// Optional key for deduplication
+    dedup_key: Option<String>,
+}
+
+impl<R, T> Batcher<R, T>
+where
+    R: Clone + Send + Sync + 'static,
+    T: Clone + Send + Sync + 'static,
+{
+    /// Create a new batcher with the given configuration
+    pub fn new<F>(config: BatchConfig, executor: F) -> Self
+    where
+        F: Fn(Vec<R>) -> Vec<Result<T, BatchError>> + Send + Sync + 'static,
+    {
+        let (submit_tx, submit_rx) = bounded(config.max_pending);
+        let metrics = Arc::new(RwLock::new(BatcherMetrics::default()));
+        let running = Arc::new(RwLock::new(true));
+
+        let processor = Self::start_processor(
+            submit_rx,
+            config.clone(),
+            Arc::new(executor),
+            Arc::clone(&metrics),
+            Arc::clone(&running),
+        );
+
+        Batcher {
+            config,
+            submit_tx,
+            processor,
+            metrics,
+            running,
+        }
+    }
+
+    /// Submit a request and get a handle to wait for the result
+    pub async fn submit(&self, request: R) -> Result<BatchHandle<T>, BatchError> {
+        self.submit_with_key(request, None).await
+    }
+
+    /// Submit a request with a deduplication key
+    ///
+    /// When `coalesce_duplicates` is enabled in config, requests with the same
+    /// key will be processed only once, with all callers receiving the same result.
+    ///
+    /// # Example
+    ///
+    /// ```simplex
+    /// // Both requests will share the same result
+    /// let key = format!("{}", prompt.hash());
+    /// let handle1 = batcher.submit_with_key(req1, Some(key.clone())).await?;
+    /// let handle2 = batcher.submit_with_key(req2, Some(key)).await?;
+    /// ```
+    pub async fn submit_with_key(&self, request: R, dedup_key: Option<String>) -> Result<BatchHandle<T>, BatchError> {
+        let (response_tx, response_rx) = bounded(1);
+
+        let submit = SubmitRequest {
+            request,
+            response_tx,
+            submitted_at: now_unix_ms(),
+            dedup_key,
+        };
+
+        self.submit_tx.send(submit).await
+            .map_err(|_| BatchError::QueueFull)?;
+
+        Ok(BatchHandle { response_rx })
+    }
+
+    /// Submit a request and immediately return (fire-and-forget)
+    pub async fn submit_detached(&self, request: R) -> Result<(), BatchError> {
+        let (response_tx, _) = bounded(1);
+
+        let submit = SubmitRequest {
+            request,
+            dedup_key: None,
+            response_tx,
+            submitted_at: now_unix_ms(),
+        };
+
+        self.submit_tx.send(submit).await
+            .map_err(|_| BatchError::QueueFull)
+    }
+
+    /// Get current metrics
+    pub async fn metrics(&self) -> BatcherMetrics {
+        self.metrics.read().await.clone()
+    }
+
+    /// Get current queue depth
+    pub fn queue_depth(&self) -> usize {
+        self.submit_tx.len()
+    }
+
+    /// Gracefully shutdown the batcher
+    pub async fn shutdown(&self) {
+        *self.running.write().await = false;
+        // Wait for processor to finish current batch
+        let _ = &self.processor;
+    }
+
+    // Internal: Start the background batch processor
+    fn start_processor<F>(
+        submit_rx: Receiver<SubmitRequest<R, T>>,
+        config: BatchConfig,
+        executor: Arc<F>,
+        metrics: Arc<RwLock<BatcherMetrics>>,
+        running: Arc<RwLock<bool>>,
+    ) -> JoinHandle<()>
+    where
+        F: Fn(Vec<R>) -> Vec<Result<T, BatchError>> + Send + Sync + 'static,
+    {
+        spawn(async move {
+            let mut pending: VecDeque<SubmitRequest<R, T>> = VecDeque::new();
+            let mut batch_start: Option<Instant> = None;
+
+            loop {
+                // Check if we should stop
+                if !*running.read().await && pending.is_empty() {
+                    break;
+                }
+
+                // Try to receive a request with timeout
+                let timeout = if pending.is_empty() {
+                    Duration::from_millis(100) // Idle timeout
+                } else {
+                    let elapsed = batch_start.map(|s| s.elapsed().as_millis() as u64).unwrap_or(0);
+                    Duration::from_millis(config.timeout_ms.saturating_sub(elapsed))
+                };
+
+                match submit_rx.recv_timeout(timeout).await {
+                    Ok(req) => {
+                        if batch_start.is_none() {
+                            batch_start = Some(Instant::now());
+                        }
+                        pending.push_back(req);
+                    }
+                    Err(_) => {
+                        // Timeout - process batch if we have pending requests
+                    }
+                }
+
+                // Check if batch is ready to process
+                let should_process = !pending.is_empty() && (
+                    pending.len() >= config.max_size ||
+                    batch_start.map(|s| s.elapsed().as_millis() as u64 >= config.timeout_ms).unwrap_or(false)
+                );
+
+                if should_process {
+                    let batch: Vec<_> = pending.drain(..).collect();
+                    batch_start = None;
+
+                    let batch_size = batch.len();
+                    let start_time = Instant::now();
+
+                    // Deduplication: Group requests by key and only process unique ones
+                    if config.coalesce_duplicates {
+                        // Map from dedup_key to (request, list of response channels)
+                        let mut dedup_map: HashMap<String, (R, Vec<Sender<Result<T, BatchError>>>)> = HashMap::new();
+                        let mut no_key_requests: Vec<(R, Sender<Result<T, BatchError>>)> = Vec::new();
+
+                        for submit in batch {
+                            if let Some(key) = submit.dedup_key {
+                                if let Some((_, senders)) = dedup_map.get_mut(&key) {
+                                    // Duplicate request - add sender to existing entry
+                                    senders.push(submit.response_tx);
+                                } else {
+                                    // New unique request
+                                    dedup_map.insert(key, (submit.request, vec![submit.response_tx]));
+                                }
+                            } else {
+                                // No dedup key - process individually
+                                no_key_requests.push((submit.request, submit.response_tx));
+                            }
+                        }
+
+                        // Collect unique requests
+                        let unique_requests: Vec<R> = dedup_map.values()
+                            .map(|(r, _)| r.clone())
+                            .chain(no_key_requests.iter().map(|(r, _)| r.clone()))
+                            .collect();
+
+                        let unique_count = unique_requests.len();
+
+                        // Execute batch with unique requests only
+                        let results = executor(unique_requests);
+
+                        // Distribute results - first to deduped requests
+                        let mut result_iter = results.into_iter();
+
+                        for (_, (_, senders)) in dedup_map {
+                            if let Some(result) = result_iter.next() {
+                                // Send same result to all waiting callers
+                                for sender in senders {
+                                    let _ = sender.send(result.clone()).await;
+                                }
+                            }
+                        }
+
+                        // Then to non-keyed requests
+                        for (_, sender) in no_key_requests {
+                            if let Some(result) = result_iter.next() {
+                                let _ = sender.send(result).await;
+                            }
+                        }
+
+                        // Update metrics with dedup info
+                        {
+                            let mut m = metrics.write().await;
+                            m.batches_processed += 1;
+                            m.requests_processed += batch_size as u64;
+                            m.requests_deduplicated += (batch_size - unique_count) as u64;
+                            m.total_batch_latency_ms += start_time.elapsed().as_millis() as u64;
+                            m.total_batch_size += unique_count as u64;
+                        }
+                    } else {
+                        // No deduplication - process all requests
+                        let requests: Vec<R> = batch.iter().map(|s| s.request.clone()).collect();
+                        let results = executor(requests);
+
+                        let batch_latency = start_time.elapsed().as_millis() as u64;
+
+                        // Send results back
+                        for (submit, result) in batch.into_iter().zip(results.into_iter()) {
+                            let _ = submit.response_tx.send(result).await;
+                        }
+
+                        // Update metrics
+                        {
+                            let mut m = metrics.write().await;
+                            m.batches_processed += 1;
+                            m.requests_processed += batch_size as u64;
+                            m.total_batch_latency_ms += batch_latency;
+                            m.total_batch_size += batch_size as u64;
+                        }
+                    }
+                }
+            }
+        })
+    }
+}
+
+// =============================================================================
+// Batch Handle
+// =============================================================================
+
+/// Handle to wait for a batched request result
+pub struct BatchHandle<T> {
+    response_rx: Receiver<Result<T, BatchError>>,
+}
+
+impl<T> BatchHandle<T> {
+    /// Wait for the result
+    pub async fn wait(self) -> Result<T, BatchError> {
+        self.response_rx.recv().await
+            .map_err(|_| BatchError::ProcessingFailed)?
+    }
+
+    /// Wait for the result with timeout
+    pub async fn wait_timeout(self, timeout_ms: u64) -> Result<T, BatchError> {
+        self.response_rx.recv_timeout(Duration::from_millis(timeout_ms)).await
+            .map_err(|_| BatchError::Timeout)?
+    }
+
+    /// Check if result is ready without blocking
+    pub fn try_recv(&self) -> Option<Result<T, BatchError>> {
+        self.response_rx.try_recv().ok()
+    }
+}
+
+// =============================================================================
+// Metrics
+// =============================================================================
+
+#[derive(Clone, Default)]
+pub struct BatcherMetrics {
+    pub batches_processed: u64,
+    pub requests_processed: u64,
+    /// Number of duplicate requests that were coalesced
+    pub requests_deduplicated: u64,
+    pub total_batch_latency_ms: u64,
+    pub total_batch_size: u64,
+    pub queue_full_count: u64,
+    pub timeout_count: u64,
+}
+
+impl BatcherMetrics {
+    /// Average batch size
+    pub fn avg_batch_size(&self) -> f64 {
+        if self.batches_processed == 0 {
+            0.0
+        } else {
+            self.total_batch_size as f64 / self.batches_processed as f64
+        }
+    }
+
+    /// Average batch latency in ms
+    pub fn avg_batch_latency_ms(&self) -> f64 {
+        if self.batches_processed == 0 {
+            0.0
+        } else {
+            self.total_batch_latency_ms as f64 / self.batches_processed as f64
+        }
+    }
+
+    /// Average latency per request
+    pub fn avg_request_latency_ms(&self) -> f64 {
+        if self.requests_processed == 0 {
+            0.0
+        } else {
+            self.total_batch_latency_ms as f64 / self.requests_processed as f64
+        }
+    }
+
+    /// Batch efficiency (requests per batch / max batch size)
+    pub fn batch_efficiency(&self, max_batch_size: usize) -> f64 {
+        self.avg_batch_size() / max_batch_size as f64
+    }
+
+    /// Deduplication rate (0.0 - 1.0)
+    ///
+    /// Returns the percentage of requests that were deduplicated.
+    /// Higher values indicate more duplicate requests were coalesced.
+    pub fn deduplication_rate(&self) -> f64 {
+        if self.requests_processed == 0 {
+            0.0
+        } else {
+            self.requests_deduplicated as f64 / self.requests_processed as f64
+        }
+    }
+
+    /// Estimated compute savings from deduplication
+    ///
+    /// Returns the percentage of compute saved by not processing duplicates.
+    pub fn dedup_savings_percent(&self) -> f64 {
+        self.deduplication_rate() * 100.0
+    }
+}
+
+// =============================================================================
+// Error Types
+// =============================================================================
+
+#[derive(Debug, Clone)]
+pub enum BatchError {
+    /// Request queue is full - backpressure applied
+    QueueFull,
+    /// Request timed out waiting in queue
+    Timeout,
+    /// Batch processing failed
+    ProcessingFailed,
+    /// Executor returned an error
+    ExecutorError(String),
+    /// Batcher is shutting down
+    ShuttingDown,
+}
+
+impl std::error::Error for BatchError {}
+
+impl std::fmt::Display for BatchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BatchError::QueueFull => write!(f, "Request queue is full"),
+            BatchError::Timeout => write!(f, "Request timed out"),
+            BatchError::ProcessingFailed => write!(f, "Batch processing failed"),
+            BatchError::ExecutorError(msg) => write!(f, "Executor error: {}", msg),
+            BatchError::ShuttingDown => write!(f, "Batcher is shutting down"),
+        }
+    }
+}

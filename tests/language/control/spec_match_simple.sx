@@ -1,0 +1,44 @@
+// Phase 36 Test: C2.1 - Simple match pattern binding
+
+enum Option<T> {
+    Some(T),
+    None
+}
+
+fn test_option_match() -> i64 {
+    let opt: Option<i64> = Some(42);
+    match opt {
+        Some(x) => x,      // x must be bound to 42
+        None => 0
+    }
+}
+
+fn test_nested_match() -> i64 {
+    let opt: Option<Option<i64>> = Some(Some(100));
+    match opt {
+        Some(Some(x)) => x,
+        Some(None) => -1,
+        None => -2
+    }
+}
+
+fn main() -> i64 {
+    print("Testing C2.1: Match pattern binding");
+
+    let r1: i64 = test_option_match();
+    if r1 != 42 {
+        print("FAIL: Option match binding");
+        return 1;
+    }
+    print("  PASS: Option Some(x) binding");
+
+    let r2: i64 = test_nested_match();
+    if r2 != 100 {
+        print("FAIL: Nested match binding");
+        return 1;
+    }
+    print("  PASS: Nested Some(Some(x)) binding");
+
+    print("All C2.1 simple tests passed!");
+    0
+}

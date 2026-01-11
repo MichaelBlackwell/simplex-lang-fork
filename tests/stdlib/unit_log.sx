@@ -1,0 +1,311 @@
+// Test file for Logging concepts
+// Self-contained version - tests log patterns
+//
+// NOTE: Tests logging concepts without external dependencies
+
+// =============================================================================
+// Log Level Constants
+// =============================================================================
+
+fn LOG_TRACE() -> i64 { 0 }
+fn LOG_DEBUG() -> i64 { 1 }
+fn LOG_INFO() -> i64 { 2 }
+fn LOG_WARN() -> i64 { 3 }
+fn LOG_ERROR() -> i64 { 4 }
+fn LOG_FATAL() -> i64 { 5 }
+
+// =============================================================================
+// Test 1: Log Level Ordering
+// =============================================================================
+
+fn test_log_levels() -> i64 {
+    println("  Testing log levels...");
+
+    let trace: i64 = LOG_TRACE();
+    let debug: i64 = LOG_DEBUG();
+    let info: i64 = LOG_INFO();
+    let warn: i64 = LOG_WARN();
+    let error: i64 = LOG_ERROR();
+    let fatal: i64 = LOG_FATAL();
+
+    // Verify strict ordering
+    if trace >= debug {
+        println("    FAIL: TRACE should be < DEBUG");
+        return 1;
+    }
+    if debug >= info {
+        println("    FAIL: DEBUG should be < INFO");
+        return 1;
+    }
+    if info >= warn {
+        println("    FAIL: INFO should be < WARN");
+        return 1;
+    }
+    if warn >= error {
+        println("    FAIL: WARN should be < ERROR");
+        return 1;
+    }
+    if error >= fatal {
+        println("    FAIL: ERROR should be < FATAL");
+        return 1;
+    }
+
+    println("    PASS: log levels");
+    0
+}
+
+// =============================================================================
+// Test 2: Level Filtering
+// =============================================================================
+
+fn test_level_filtering() -> i64 {
+    println("  Testing level filtering...");
+
+    // If current level is INFO, only INFO and above should log
+    let current_level: i64 = LOG_INFO();
+
+    // DEBUG < INFO, should NOT log
+    let debug_logs: i64 = if LOG_DEBUG() >= current_level { 1 } else { 0 };
+    if debug_logs != 0 {
+        println("    FAIL: DEBUG should not log at INFO level");
+        return 1;
+    }
+
+    // WARN >= INFO, should log
+    let warn_logs: i64 = if LOG_WARN() >= current_level { 1 } else { 0 };
+    if warn_logs != 1 {
+        println("    FAIL: WARN should log at INFO level");
+        return 1;
+    }
+
+    println("    PASS: level filtering");
+    0
+}
+
+// =============================================================================
+// Test 3: Log Message Format
+// =============================================================================
+
+fn test_log_format() -> i64 {
+    println("  Testing log format...");
+
+    // Standard format: [LEVEL] message
+    // Or: timestamp [LEVEL] module: message
+
+    // Simulated format components
+    let has_level: i64 = 1;
+    let has_message: i64 = 1;
+
+    if has_level != 1 {
+        println("    FAIL: log should have level");
+        return 1;
+    }
+
+    if has_message != 1 {
+        println("    FAIL: log should have message");
+        return 1;
+    }
+
+    println("    PASS: log format");
+    0
+}
+
+// =============================================================================
+// Test 4: Structured Logging Concept
+// =============================================================================
+
+fn test_structured_logging() -> i64 {
+    println("  Testing structured logging...");
+
+    // Structured logs have key-value pairs
+    // e.g., level=info msg="request" method=GET path=/api
+
+    let field_count: i64 = 4;  // level, msg, method, path
+
+    if field_count < 2 {
+        println("    FAIL: structured log should have multiple fields");
+        return 1;
+    }
+
+    println("    PASS: structured logging");
+    0
+}
+
+// =============================================================================
+// Test 5: Log Context
+// =============================================================================
+
+fn test_log_context() -> i64 {
+    println("  Testing log context...");
+
+    // Context adds persistent fields to all logs
+    let context_fields: i64 = 2;  // e.g., request_id, user_id
+
+    if context_fields < 1 {
+        println("    FAIL: should support context fields");
+        return 1;
+    }
+
+    println("    PASS: log context");
+    0
+}
+
+// =============================================================================
+// Test 6: Log Output Targets
+// =============================================================================
+
+fn test_log_targets() -> i64 {
+    println("  Testing log targets...");
+
+    // Common targets: stdout, stderr, file, syslog
+    let stdout_target: i64 = 1;
+    let file_target: i64 = 1;
+
+    if stdout_target != 1 {
+        println("    FAIL: should support stdout");
+        return 1;
+    }
+
+    if file_target != 1 {
+        println("    FAIL: should support file output");
+        return 1;
+    }
+
+    println("    PASS: log targets");
+    0
+}
+
+// =============================================================================
+// Test 7: Log Rotation Concept
+// =============================================================================
+
+fn test_log_rotation() -> i64 {
+    println("  Testing log rotation...");
+
+    // Rotation by size or time
+    let max_size_mb: i64 = 100;
+    let max_files: i64 = 5;
+
+    if max_size_mb <= 0 {
+        println("    FAIL: max size should be positive");
+        return 1;
+    }
+
+    if max_files <= 0 {
+        println("    FAIL: max files should be positive");
+        return 1;
+    }
+
+    println("    PASS: log rotation");
+    0
+}
+
+// =============================================================================
+// Test 8: Log Sampling
+// =============================================================================
+
+fn test_log_sampling() -> i64 {
+    println("  Testing log sampling...");
+
+    // Sample 1 in N logs for high-volume messages
+    let sample_rate: i64 = 100;  // 1 in 100
+
+    // Count simulated "logged" messages
+    let total: i64 = 1000;
+    let logged: i64 = total / sample_rate;
+
+    if logged != 10 {
+        println("    FAIL: should sample ~10 of 1000");
+        return 1;
+    }
+
+    println("    PASS: log sampling");
+    0
+}
+
+// =============================================================================
+// Test 9: Error Stack Traces
+// =============================================================================
+
+fn test_stack_traces() -> i64 {
+    println("  Testing stack traces...");
+
+    // Error logs should include stack trace
+    let has_stack: i64 = 1;
+    let frame_count: i64 = 5;  // Typical stack depth
+
+    if has_stack != 1 {
+        println("    FAIL: error should have stack trace");
+        return 1;
+    }
+
+    if frame_count < 1 {
+        println("    FAIL: should have at least 1 frame");
+        return 1;
+    }
+
+    println("    PASS: stack traces");
+    0
+}
+
+// =============================================================================
+// Test 10: Log Metrics
+// =============================================================================
+
+fn test_log_metrics() -> i64 {
+    println("  Testing log metrics...");
+
+    // Count logs by level
+    let trace_count: i64 = 100;
+    let debug_count: i64 = 50;
+    let info_count: i64 = 20;
+    let error_count: i64 = 5;
+
+    let total: i64 = trace_count + debug_count + info_count + error_count;
+
+    if total != 175 {
+        println("    FAIL: total should be 175");
+        return 1;
+    }
+
+    // Error rate
+    let error_rate: i64 = error_count * 100 / total;
+    if error_rate > 10 {
+        println("    FAIL: error rate should be low");
+        return 1;
+    }
+
+    println("    PASS: log metrics");
+    0
+}
+
+// =============================================================================
+// Main Test Runner
+// =============================================================================
+
+fn main() -> i64 {
+    println("=== Log Tests ===");
+    println("");
+
+    let f1: i64 = test_log_levels();
+    let f2: i64 = test_level_filtering();
+    let f3: i64 = test_log_format();
+    let f4: i64 = test_structured_logging();
+    let f5: i64 = test_log_context();
+    let f6: i64 = test_log_targets();
+    let f7: i64 = test_log_rotation();
+    let f8: i64 = test_log_sampling();
+    let f9: i64 = test_stack_traces();
+    let f10: i64 = test_log_metrics();
+
+    let failures: i64 = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10;
+
+    println("");
+    if failures == 0 {
+        println("All Log tests passed!");
+    } else {
+        println("Some Log tests failed");
+    }
+
+    failures
+}

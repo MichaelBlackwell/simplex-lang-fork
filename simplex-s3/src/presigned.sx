@@ -1,0 +1,66 @@
+// Presigned URL generation
+
+/// Presigned URL
+pub struct PresignedUrl {
+    pub url: String,
+    pub expires_in: u64,
+    pub method: String,
+}
+
+impl PresignedUrl {
+    /// Get the URL string
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// Check if URL is still valid
+    pub fn is_valid(&self) -> bool {
+        // This would need to track creation time
+        true
+    }
+}
+
+/// Presigned URL configuration
+pub struct PresignedConfig {
+    pub expires_in_secs: u64,
+    pub content_type: Option<String>,
+    pub content_disposition: Option<String>,
+}
+
+impl PresignedConfig {
+    pub fn new(expires_in_secs: u64) -> Self {
+        PresignedConfig {
+            expires_in_secs,
+            content_type: None,
+            content_disposition: None,
+        }
+    }
+
+    pub fn content_type(mut self, content_type: &str) -> Self {
+        self.content_type = Some(content_type.to_string());
+        self
+    }
+
+    pub fn content_disposition(mut self, disposition: &str) -> Self {
+        self.content_disposition = Some(disposition.to_string());
+        self
+    }
+
+    pub fn download(mut self, filename: &str) -> Self {
+        self.content_disposition = Some(format!("attachment; filename=\"{}\"", filename));
+        self
+    }
+
+    pub fn inline(mut self) -> Self {
+        self.content_disposition = Some("inline".to_string());
+        self
+    }
+}
+
+// Default expiration times
+pub mod expiry {
+    pub const ONE_HOUR: u64 = 3600;
+    pub const ONE_DAY: u64 = 86400;
+    pub const ONE_WEEK: u64 = 604800;
+    pub const MAX: u64 = 604800;  // AWS max is 7 days
+}

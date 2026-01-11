@@ -1,0 +1,502 @@
+// simplex-std::regex - Regular Expression Matching
+//
+// Provides pattern matching, finding, and replacement using POSIX extended regex.
+//
+// # Core Functions
+// - `Regex::new`: Compile a pattern
+// - `is_match`: Check if pattern matches
+// - `find`: Find first match
+// - `find_all`: Find all matches
+// - `replace`: Replace matches
+// - `split`: Split by pattern
+//
+// # Example
+//
+// ```simplex
+// use simplex_std::regex::*;
+//
+// // Create and use a regex
+// let re = Regex::new(r"\d+").unwrap();
+// assert!(re.is_match("hello123world"));
+//
+// // Find matches
+// if let Some(m) = re.find("price: $42.50") {
+//     println(&m.as_str());  // "42"
+// }
+//
+// // Replace
+// let result = re.replace_all("a1b2c3", "X");
+// assert_eq!(result, "aXbXcX");
+// ```
+
+// =============================================================================
+// Regex Flags
+// =============================================================================
+
+/// Regex compilation flags.
+pub mod flags {
+    /// Case-insensitive matching.
+    pub const ICASE: u32 = 1;
+    /// Treat newlines as normal characters (. matches newline).
+    pub const DOTALL: u32 = 2;
+    /// Multi-line mode (^ and $ match line boundaries).
+    pub const MULTILINE: u32 = 4;
+    /// Extended syntax (ignore whitespace and comments).
+    pub const EXTENDED: u32 = 8;
+}
+
+// =============================================================================
+// Regex Type
+// =============================================================================
+
+/// A compiled regular expression.
+pub struct Regex {
+    handle: i64,
+    pattern: String,
+}
+
+impl Regex {
+    /// Compile a regular expression pattern.
+    ///
+    /// Returns an error if the pattern is invalid.
+    ///
+    /// # Example
+    /// ```simplex
+    /// let re = Regex::new(r"\d{3}-\d{4}").unwrap();
+    /// ```
+    pub fn new(pattern: &str) -> Result<Regex, RegexError> {
+        Self::with_flags(pattern, 0)
+    }
+
+    /// Compile a regex with specific flags.
+    ///
+    /// # Example
+    /// ```simplex
+    /// let re = Regex::with_flags("hello", flags::ICASE).unwrap();
+    /// assert!(re.is_match("HELLO"));
+    /// ```
+    pub fn with_flags(pattern: &str, flags: u32) -> Result<Regex, RegexError> {
+        let handle = unsafe { ffi_regex_new(pattern, flags as i64) };
+        if handle == 0 {
+            let err = unsafe { ffi_regex_error(pattern) };
+            Err(RegexError { message: err })
+        } else {
+            Ok(Regex {
+                handle,
+                pattern: String::from(pattern),
+            })
+        }
+    }
+
+    /// Get the pattern string.
+    pub fn pattern(&self) -> &str {
+        &self.pattern
+    }
+
+    /// Check if the pattern matches anywhere in the text.
+    ///
+    /// # Example
+    /// ```simplex
+    /// let re = Regex::new(r"\d+").unwrap();
+    /// assert!(re.is_match("hello123"));
+    /// assert!(!re.is_match("hello"));
+    /// ```
+    pub fn is_match(&self, text: &str) -> bool {
+        unsafe { ffi_regex_is_match(self.handle, text) == 1 }
+    }
+
+    /// Find the first match in the text.
+    ///
+    /// Returns None if no match is found.
+    ///
+    /// # Example
+    /// ```simplex
+    /// let re = Regex::new(r"\d+").unwrap();
+    /// if let Some(m) = re.find("abc123def") {
+    ///     assert_eq!(m.start(), 3);
+    ///     assert_eq!(m.end(), 6);
+    ///     assert_eq!(m.as_str(), "123");
+    /// }
+    /// ```
+    pub fn find<'t>(&self, text: &'t str) -> Option<Match<'t>> {
+        let pos = unsafe { ffi_regex_find(self.handle, text) };
+        if pos < 0 {
+            None
+        } else {
+            let start = (pos >> 32) as usize;
+            let end = (pos & 0xFFFFFFFF) as usize;
+            Some(Match { text, start, end })
+        }
+    }
+
+    /// Find all non-overlapping matches.
+    ///
+    /// # Example
+    /// ```simplex
+    /// let re = Regex::new(r"\d+").unwrap();
+    /// let matches: Vec<_> = re.find_all("a1b22c333").collect();
+    /// assert_eq!(matches.len(), 3);
+    /// ```
+    pub fn find_iter<'r, 't>(&'r self, text: &'t str) -> Matches<'r, 't> {
+        Matches {
+            regex: self,
+            text,
+            last_end: 0,
+        }
+    }
+
+    /// Find all matches and return as a vector.
+    pub fn find_all<'t>(&self, text: &'t str) -> Vec<Match<'t>> {
+        self.find_iter(text).collect()
+    }
+
+    /// Count the number of matches.
+    pub fn count(&self, text: &str) -> usize {
+        unsafe { ffi_regex_count(self.handle, text) as usize }
+    }
+
+    /// Replace the first match with the replacement string.
+    ///
+    /// # Example
+    /// ```simplex
+    /// let re = Regex::new(r"\d+").unwrap();
+    /// assert_eq!(re.replace("a1b2", "X"), "aXb2");
+    /// ```
+    pub fn replace(&self, text: &str, replacement: &str) -> String {
+        unsafe { ffi_regex_replace_first(self.handle, text, replacement) }
+    }
+
+    /// Replace all matches with the replacement string.
+    ///
+    /// # Example
+    /// ```simplex
+    /// let re = Regex::new(r"\d+").unwrap();
+    /// assert_eq!(re.replace_all("a1b2c3", "X"), "aXbXcX");
+    /// ```
+    pub fn replace_all(&self, text: &str, replacement: &str) -> String {
+        unsafe { ffi_regex_replace(self.handle, text, replacement) }
+    }
+
+    /// Split the text by the pattern.
+    ///
+    /// # Example
+    /// ```simplex
+    /// let re = Regex::new(r"[,\s]+").unwrap();
+    /// let parts: Vec<_> = re.split("a, b,  c").collect();
+    /// assert_eq!(parts, vec!["a", "b", "c"]);
+    /// ```
+    pub fn split<'t>(&self, text: &'t str) -> Split<'t> {
+        let handle = unsafe { ffi_regex_split(self.handle, text) };
+        Split { handle, index: 0 }
+    }
+
+    /// Get capture groups from the first match.
+    ///
+    /// Returns None if no match is found.
+    /// The first element is the full match, followed by each capture group.
+    ///
+    /// # Example
+    /// ```simplex
+    /// let re = Regex::new(r"(\d+)-(\d+)").unwrap();
+    /// if let Some(caps) = re.captures("phone: 123-4567") {
+    ///     assert_eq!(caps.get(0), Some("123-4567"));
+    ///     assert_eq!(caps.get(1), Some("123"));
+    ///     assert_eq!(caps.get(2), Some("4567"));
+    /// }
+    /// ```
+    pub fn captures<'t>(&self, text: &'t str) -> Option<Captures<'t>> {
+        let handle = unsafe { ffi_regex_captures(self.handle, text) };
+        if handle == 0 {
+            None
+        } else {
+            Some(Captures { handle, text })
+        }
+    }
+
+    /// Get the number of capture groups in the pattern.
+    pub fn captures_len(&self) -> usize {
+        unsafe { ffi_regex_group_count(self.handle) as usize }
+    }
+}
+
+impl Drop for Regex {
+    fn drop(&mut self) {
+        unsafe { ffi_regex_free(self.handle); }
+    }
+}
+
+impl Clone for Regex {
+    fn clone(&self) -> Regex {
+        // Recompile the pattern
+        Regex::new(&self.pattern).expect("pattern was valid before")
+    }
+}
+
+// =============================================================================
+// Match Type
+// =============================================================================
+
+/// A single match from a regex search.
+#[derive(Clone, Debug)]
+pub struct Match<'t> {
+    text: &'t str,
+    start: usize,
+    end: usize,
+}
+
+impl<'t> Match<'t> {
+    /// Get the starting byte offset of the match.
+    pub fn start(&self) -> usize {
+        self.start
+    }
+
+    /// Get the ending byte offset of the match.
+    pub fn end(&self) -> usize {
+        self.end
+    }
+
+    /// Get the length of the match in bytes.
+    pub fn len(&self) -> usize {
+        self.end - self.start
+    }
+
+    /// Check if the match is empty.
+    pub fn is_empty(&self) -> bool {
+        self.start == self.end
+    }
+
+    /// Get the matched text.
+    pub fn as_str(&self) -> &'t str {
+        &self.text[self.start..self.end]
+    }
+
+    /// Get the byte range of the match.
+    pub fn range(&self) -> std::ops::Range<usize> {
+        self.start..self.end
+    }
+}
+
+// =============================================================================
+// Matches Iterator
+// =============================================================================
+
+/// Iterator over all non-overlapping matches.
+pub struct Matches<'r, 't> {
+    regex: &'r Regex,
+    text: &'t str,
+    last_end: usize,
+}
+
+impl<'r, 't> Iterator for Matches<'r, 't> {
+    type Item = Match<'t>;
+
+    fn next(&mut self) -> Option<Match<'t>> {
+        if self.last_end > self.text.len() {
+            return None;
+        }
+
+        let remaining = &self.text[self.last_end..];
+        match self.regex.find(remaining) {
+            Some(m) => {
+                let start = self.last_end + m.start;
+                let end = self.last_end + m.end;
+                self.last_end = end.max(self.last_end + 1); // Advance at least 1
+                Some(Match {
+                    text: self.text,
+                    start,
+                    end,
+                })
+            }
+            None => None,
+        }
+    }
+}
+
+// =============================================================================
+// Split Iterator
+// =============================================================================
+
+/// Iterator over split parts.
+pub struct Split<'t> {
+    handle: i64,
+    index: usize,
+}
+
+impl<'t> Iterator for Split<'t> {
+    type Item = String;
+
+    fn next(&mut self) -> Option<String> {
+        let part = unsafe { ffi_split_get(self.handle, self.index as i64) };
+        if part.is_empty() && self.index > 0 {
+            None
+        } else {
+            self.index += 1;
+            Some(part)
+        }
+    }
+}
+
+impl<'t> Drop for Split<'t> {
+    fn drop(&mut self) {
+        unsafe { ffi_split_free(self.handle); }
+    }
+}
+
+// =============================================================================
+// Captures Type
+// =============================================================================
+
+/// Capture groups from a regex match.
+pub struct Captures<'t> {
+    handle: i64,
+    text: &'t str,
+}
+
+impl<'t> Captures<'t> {
+    /// Get a capture group by index.
+    ///
+    /// Index 0 is the full match, 1 is the first group, etc.
+    pub fn get(&self, index: usize) -> Option<&'t str> {
+        let s = unsafe { ffi_captures_get(self.handle, index as i64) };
+        if s.is_empty() && index > 0 {
+            None
+        } else {
+            Some(&s)
+        }
+    }
+
+    /// Get the number of capture groups (including the full match).
+    pub fn len(&self) -> usize {
+        unsafe { ffi_captures_len(self.handle) as usize }
+    }
+
+    /// Check if there are no captures.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl<'t> Drop for Captures<'t> {
+    fn drop(&mut self) {
+        unsafe { ffi_captures_free(self.handle); }
+    }
+}
+
+// =============================================================================
+// Error Type
+// =============================================================================
+
+/// Error returned when a regex pattern is invalid.
+#[derive(Debug, Clone)]
+pub struct RegexError {
+    message: String,
+}
+
+impl RegexError {
+    /// Get the error message.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl std::fmt::Display for RegexError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "regex error: {}", self.message)
+    }
+}
+
+// =============================================================================
+// Convenience Functions
+// =============================================================================
+
+/// Check if a pattern matches the text.
+///
+/// This is a convenience function that compiles the pattern, matches, and frees.
+/// For repeated matching, use `Regex::new()` instead.
+///
+/// # Example
+/// ```simplex
+/// if is_match(r"\d+", "hello123") {
+///     println("Found digits!");
+/// }
+/// ```
+pub fn is_match(pattern: &str, text: &str) -> bool {
+    match Regex::new(pattern) {
+        Ok(re) => re.is_match(text),
+        Err(_) => false,
+    }
+}
+
+/// Replace all matches with a replacement string.
+///
+/// Convenience function that compiles, replaces, and frees.
+///
+/// # Example
+/// ```simplex
+/// let result = replace_all(r"\s+", "hello   world", " ");
+/// assert_eq!(result, "hello world");
+/// ```
+pub fn replace_all(pattern: &str, text: &str, replacement: &str) -> String {
+    match Regex::new(pattern) {
+        Ok(re) => re.replace_all(text, replacement),
+        Err(_) => String::from(text),
+    }
+}
+
+/// Check if a pattern is valid.
+///
+/// # Example
+/// ```simplex
+/// assert!(is_valid(r"\d+"));
+/// assert!(!is_valid(r"[invalid"));
+/// ```
+pub fn is_valid(pattern: &str) -> bool {
+    Regex::new(pattern).is_ok()
+}
+
+/// Escape special regex characters in a string.
+///
+/// Returns a string that will match the literal input.
+///
+/// # Example
+/// ```simplex
+/// let escaped = escape("hello.world");
+/// assert_eq!(escaped, r"hello\.world");
+/// ```
+pub fn escape(text: &str) -> String {
+    const SPECIAL: &[char] = &['.', '^', '$', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '\\'];
+
+    var result = String::with_capacity(text.len() * 2);
+    for c in text.chars() {
+        if SPECIAL.contains(&c) {
+            result.push('\\');
+        }
+        result.push(c);
+    }
+    result
+}
+
+// =============================================================================
+// FFI Declarations
+// =============================================================================
+
+extern "C" {
+    fn ffi_regex_new(pattern: &str, flags: i64) -> i64;
+    fn ffi_regex_free(handle: i64);
+    fn ffi_regex_is_match(handle: i64, text: &str) -> i64;
+    fn ffi_regex_find(handle: i64, text: &str) -> i64;
+    fn ffi_regex_count(handle: i64, text: &str) -> i64;
+    fn ffi_regex_replace(handle: i64, text: &str, replacement: &str) -> String;
+    fn ffi_regex_replace_first(handle: i64, text: &str, replacement: &str) -> String;
+    fn ffi_regex_split(handle: i64, text: &str) -> i64;
+    fn ffi_regex_captures(handle: i64, text: &str) -> i64;
+    fn ffi_regex_group_count(handle: i64) -> i64;
+    fn ffi_regex_error(pattern: &str) -> String;
+
+    fn ffi_split_get(handle: i64, index: i64) -> String;
+    fn ffi_split_free(handle: i64);
+
+    fn ffi_captures_get(handle: i64, index: i64) -> String;
+    fn ffi_captures_len(handle: i64) -> i64;
+    fn ffi_captures_free(handle: i64);
+}
