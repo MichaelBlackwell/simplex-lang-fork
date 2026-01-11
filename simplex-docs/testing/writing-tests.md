@@ -1,38 +1,40 @@
 # Writing Simplex Tests
 
-**Version:** 0.5.0
+**Version:** 0.9.0
 
 ## Getting Started
 
-### 1. Choose the Right Location
+### 1. Choose the Right Location and Prefix
 
-Place tests in the appropriate category directory:
+Place tests in the appropriate category directory with the correct prefix:
 
-| Test Type | Directory | Example |
-|-----------|-----------|---------|
-| Language feature | `tests/language/{feature}/` | `tests/language/types/test_generics.sx` |
-| Standard library | `tests/stdlib/` | `tests/stdlib/test_hashmap.sx` |
-| Runtime behavior | `tests/runtime/` | `tests/runtime/test_actors.sx` |
-| AI/Cognitive | `tests/ai/{component}/` | `tests/ai/hive/test_mnemonic.sx` |
-| Toolchain | `tests/toolchain/{tool}/` | `tests/toolchain/sxpm/test_build.sx` |
-| End-to-end | `tests/integration/` | `tests/integration/test_workflow.sx` |
+| Test Type | Prefix | Directory | Example |
+|-----------|--------|-----------|---------|
+| Unit | `unit_` | `tests/stdlib/` | `tests/stdlib/unit_hashmap.sx` |
+| Specification | `spec_` | `tests/language/types/` | `tests/language/types/spec_generics.sx` |
+| Integration | `integ_` | `tests/runtime/` | `tests/runtime/integ_networking.sx` |
+| End-to-End | `e2e_` | `tests/integration/` | `tests/integration/e2e_data_processor.sx` |
 
-### 2. Name Your Test File
+### Category Guidelines
 
-Use the `test_` prefix:
+| Category | Test Types | Description |
+|----------|------------|-------------|
+| `tests/language/` | `spec_` | Core language features |
+| `tests/types/` | `spec_` | Type system tests |
+| `tests/neural/` | `spec_` | Neural IR tests |
+| `tests/stdlib/` | `unit_`, `integ_` | Standard library tests |
+| `tests/ai/` | `unit_`, `integ_` | AI/Cognitive tests |
+| `tests/learning/` | `unit_` | Dual numbers and AD tests |
+| `tests/toolchain/` | `unit_`, `integ_` | Compiler toolchain tests |
+| `tests/runtime/` | `integ_` | Runtime system tests |
+| `tests/integration/` | `e2e_` | End-to-end scenarios |
 
-```
-test_feature_name.sx
-test_component_behavior.sx
-test_scenario_description.sx
-```
-
-### 3. Basic Template
+### 2. Basic Template
 
 ```simplex
-// Test file: test_my_feature.sx
+// Test file: unit_my_feature.sx
 // Description: Tests the my_feature functionality
-// v0.5.0
+// v0.9.0
 
 // External declarations
 fn println(s: i64);
@@ -88,6 +90,11 @@ fn vec_close(v: i64);
 // AI (if needed)
 fn anima_memory_new(capacity: i64) -> i64;
 fn anima_memory_close(mem: i64);
+
+// Dual numbers (if needed)
+fn dual_variable(val: f64) -> i64;
+fn dual_val(x: i64) -> f64;
+fn dual_der(x: i64) -> f64;
 ```
 
 ### Step 2: Write Test Cases
@@ -180,9 +187,249 @@ fn main() -> i64 {
 }
 ```
 
+## Writing Different Test Types
+
+### Unit Tests (`unit_*.sx`)
+
+Test individual functions or modules in isolation:
+
+```simplex
+// unit_crypto.sx - Tests crypto module functions
+
+fn main() -> i64 {
+    println("=== Crypto Unit Tests ===");
+
+    // Test SHA256
+    println("--- Test: SHA256 hash ---");
+    let input: i64 = string_from("hello");
+    let hash: i64 = sha256(input);
+
+    if string_len(hash) != 64 {
+        println("FAIL: hash length incorrect");
+        return 1;
+    }
+    println("PASS: SHA256 produces correct length hash");
+
+    println("=== Crypto Unit Tests Complete! ===");
+    0
+}
+```
+
+### Spec Tests (`spec_*.sx`)
+
+Test language specification compliance:
+
+```simplex
+// spec_generics.sx - Tests generic type specification
+
+fn identity<T>(x: T) -> T {
+    x
+}
+
+fn pair<A, B>(a: A, b: B) -> (A, B) {
+    (a, b)
+}
+
+fn main() -> i64 {
+    println("=== Generics Spec Test ===");
+
+    // Test single generic
+    println("--- Test: Single generic parameter ---");
+    let a: i64 = identity::<i64>(42);
+    if a != 42 {
+        println("FAIL: identity<i64>");
+        return 1;
+    }
+    println("PASS: identity<i64>");
+
+    // Test multiple generics
+    println("--- Test: Multiple generic parameters ---");
+    let p = pair::<i64, f64>(1, 2.0);
+    // Verify pair works
+    println("PASS: pair<i64, f64>");
+
+    println("=== Generics Spec Test Complete! ===");
+    0
+}
+```
+
+### Integration Tests (`integ_*.sx`)
+
+Test multiple components working together:
+
+```simplex
+// integ_anima_hive.sx - Tests Anima + Hive integration
+
+fn main() -> i64 {
+    println("=== Anima-Hive Integration Test ===");
+
+    // Create Anima
+    let anima: i64 = anima_memory_new(10);
+    if anima == 0 {
+        println("FAIL: Anima creation");
+        return 1;
+    }
+    println("PASS: Anima created");
+
+    // Create HiveMnemonic
+    let mnemonic: i64 = hive_mnemonic_new(100, 500, 50);
+    if mnemonic == 0 {
+        println("FAIL: Mnemonic creation");
+        anima_memory_close(anima);
+        return 1;
+    }
+    println("PASS: HiveMnemonic created");
+
+    // Test interaction
+    anima_learn(anima, string_from("test knowledge"), 0.8, string_from("self"));
+    hive_mnemonic_learn(mnemonic, string_from("shared knowledge"), 0.6);
+    println("PASS: Knowledge sharing works");
+
+    // Cleanup
+    anima_memory_close(anima);
+    hive_mnemonic_close(mnemonic);
+
+    println("=== Integration Test Complete! ===");
+    0
+}
+```
+
+### End-to-End Tests (`e2e_*.sx`)
+
+Test complete workflows:
+
+```simplex
+// e2e_todo_list.sx - Complete todo application test
+
+fn main() -> i64 {
+    println("=== Todo List E2E Test ===");
+
+    // Step 1: Initialize
+    println("--- Step 1: Initialize ---");
+    let list: i64 = todo_list_new();
+    if list == 0 {
+        println("FAIL: initialization");
+        return 1;
+    }
+    println("PASS: initialization");
+
+    // Step 2: Add items
+    println("--- Step 2: Add items ---");
+    todo_add(list, string_from("Task 1"));
+    todo_add(list, string_from("Task 2"));
+    todo_add(list, string_from("Task 3"));
+
+    if todo_count(list) != 3 {
+        println("FAIL: item count");
+        todo_list_close(list);
+        return 1;
+    }
+    println("PASS: add items");
+
+    // Step 3: Complete items
+    println("--- Step 3: Complete items ---");
+    todo_complete(list, 0);
+    if todo_completed_count(list) != 1 {
+        println("FAIL: completed count");
+        todo_list_close(list);
+        return 1;
+    }
+    println("PASS: complete items");
+
+    // Step 4: Save and load
+    println("--- Step 4: Persistence ---");
+    todo_save(list, string_from("test.todo"));
+    let loaded: i64 = todo_load(string_from("test.todo"));
+    if todo_count(loaded) != 3 {
+        println("FAIL: persistence");
+        todo_list_close(list);
+        todo_list_close(loaded);
+        return 1;
+    }
+    println("PASS: persistence");
+
+    // Cleanup
+    todo_list_close(list);
+    todo_list_close(loaded);
+
+    println("=== E2E Test Complete! ===");
+    0
+}
+```
+
+## Testing Dual Numbers (v0.8.0)
+
+```simplex
+// unit_dual_numbers.sx - Tests dual number operations
+
+fn main() -> i64 {
+    println("=== Dual Numbers Test ===");
+
+    // Test 1: Basic arithmetic
+    println("--- Test 1: Basic arithmetic ---");
+    let x: i64 = dual_variable(3.0);    // x = 3, dx = 1
+    let c: i64 = dual_constant(2.0);    // c = 2, dc = 0
+    let y: i64 = dual_add(dual_mul(x, x), dual_mul(c, x));  // y = x^2 + 2x
+
+    let val: f64 = dual_val(y);  // At x=3: y = 9 + 6 = 15
+    let der: f64 = dual_der(y);  // dy/dx = 2x + 2 = 8
+
+    if val < 14.9 || val > 15.1 {
+        println("FAIL: value incorrect");
+        return 1;
+    }
+    println("PASS: value correct");
+
+    if der < 7.9 || der > 8.1 {
+        println("FAIL: derivative incorrect");
+        return 1;
+    }
+    println("PASS: derivative correct");
+
+    // Test 2: Transcendental functions
+    println("--- Test 2: Transcendental functions ---");
+    let z: i64 = dual_sin(x);
+    // sin(3) ≈ 0.1411, cos(3) ≈ -0.99 (derivative)
+
+    let sin_val: f64 = dual_val(z);
+    let sin_der: f64 = dual_der(z);
+
+    if sin_val < 0.1 || sin_val > 0.2 {
+        println("FAIL: sin value");
+        return 1;
+    }
+    println("PASS: sin value");
+
+    if sin_der > -0.9 || sin_der < -1.0 {
+        println("FAIL: sin derivative (cos)");
+        return 1;
+    }
+    println("PASS: sin derivative");
+
+    println("=== Dual Numbers Test Complete! ===");
+    0
+}
+```
+
 ## Best Practices
 
-### 1. One Concept Per Test
+### 1. Use Correct Prefix
+
+Choose the right prefix based on what you're testing:
+
+```simplex
+// GOOD: Appropriate prefixes
+unit_hashmap.sx       // Tests HashMap in isolation
+spec_generics.sx      // Tests language specification
+integ_networking.sx   // Tests component integration
+e2e_workflow.sx       // Tests complete workflow
+
+// BAD: Wrong prefixes
+test_hashmap.sx       // Old naming, unclear type
+hashmap_test.sx       // Wrong format
+```
+
+### 2. One Concept Per Test
 
 ```simplex
 // GOOD: Focused test
@@ -202,7 +449,7 @@ fn main() -> i64 {
 }
 ```
 
-### 2. Clear Test Names
+### 3. Clear Test Names
 
 ```simplex
 // GOOD: Descriptive
@@ -212,7 +459,7 @@ println("--- Test: HashMap returns null for missing key ---");
 println("--- Test 1 ---");
 ```
 
-### 3. Test Edge Cases
+### 4. Test Edge Cases
 
 ```simplex
 fn main() -> i64 {
@@ -237,7 +484,7 @@ fn main() -> i64 {
 }
 ```
 
-### 4. Provide Context on Failure
+### 5. Provide Context on Failure
 
 ```simplex
 if result != expected {
@@ -254,170 +501,22 @@ if result != expected {
 }
 ```
 
-### 5. Group Related Tests
-
-```simplex
-fn main() -> i64 {
-    println("=== HiveMnemonic Test ===");
-    println("");
-
-    // Section 1: Creation
-    println("### Section 1: Creation ###");
-    println("");
-    // Creation tests...
-
-    // Section 2: Learning
-    println("### Section 2: Learning ###");
-    println("");
-    // Learning tests...
-
-    // Section 3: Recall
-    println("### Section 3: Recall ###");
-    println("");
-    // Recall tests...
-
-    println("=== HiveMnemonic Test Complete! ===");
-    0
-}
-```
-
-## Testing AI Components
-
-### Testing Anima
-
-```simplex
-fn main() -> i64 {
-    println("=== Anima Test ===");
-
-    // Create Anima with capacity
-    let anima: i64 = anima_memory_new(10);
-    if anima == 0 {
-        println("FAIL: Could not create Anima");
-        return 1;
-    }
-    println("PASS: Anima created");
-
-    // Test episodic memory
-    let mem_id: i64 = anima_remember(anima, string_from("Test memory"), 0.8);
-    if mem_id == 0 {
-        println("FAIL: Could not add memory");
-        anima_memory_close(anima);
-        return 1;
-    }
-    println("PASS: Memory added");
-
-    // Verify count
-    let count: i64 = anima_episodic_count(anima);
-    if count != 1 {
-        println("FAIL: Episodic count mismatch");
-        anima_memory_close(anima);
-        return 1;
-    }
-    println("PASS: Episodic count correct");
-
-    // Cleanup
-    anima_memory_close(anima);
-    println("=== Anima Test Complete! ===");
-    0
-}
-```
-
-### Testing HiveMnemonic
-
-```simplex
-fn main() -> i64 {
-    println("=== HiveMnemonic Test ===");
-
-    // Create with 50% belief threshold
-    let mnemonic: i64 = hive_mnemonic_new(100, 500, 50);
-    if mnemonic == 0 {
-        println("FAIL: Could not create HiveMnemonic");
-        return 1;
-    }
-
-    // Test belief threshold
-    // Beliefs below 50% should be filtered
-    hive_mnemonic_believe(mnemonic, string_from("Weak belief"), 0.3);
-    hive_mnemonic_believe(mnemonic, string_from("Strong belief"), 0.7);
-
-    let belief_count: i64 = hive_mnemonic_belief_count(mnemonic);
-    if belief_count != 1 {
-        println("FAIL: Belief threshold not applied");
-        hive_mnemonic_close(mnemonic);
-        return 1;
-    }
-    println("PASS: 50% belief threshold works");
-
-    hive_mnemonic_close(mnemonic);
-    0
-}
-```
-
-### Testing Per-Hive SLM
-
-```simplex
-fn main() -> i64 {
-    println("=== Per-Hive SLM Test ===");
-
-    // Create shared infrastructure
-    let mnemonic: i64 = hive_mnemonic_new(100, 500, 50);
-    let hive_slm: i64 = hive_slm_new(
-        string_from("TestHive"),
-        string_from("simplex-cognitive-7b"),
-        mnemonic
-    );
-
-    // Create multiple specialists
-    let anima1: i64 = anima_memory_new(10);
-    let anima2: i64 = anima_memory_new(10);
-    let anima3: i64 = anima_memory_new(10);
-
-    let spec1: i64 = specialist_create(string_from("Spec1"), hive_slm, anima1);
-    let spec2: i64 = specialist_create(string_from("Spec2"), hive_slm, anima2);
-    let spec3: i64 = specialist_create(string_from("Spec3"), hive_slm, anima3);
-
-    // Verify all share same SLM
-    let slm1: i64 = specialist_get_hive_slm(spec1);
-    let slm2: i64 = specialist_get_hive_slm(spec2);
-    let slm3: i64 = specialist_get_hive_slm(spec3);
-
-    if slm1 != slm2 || slm2 != slm3 {
-        println("FAIL: Specialists have different SLMs");
-        // Cleanup...
-        return 1;
-    }
-    println("PASS: All specialists share same Hive SLM");
-
-    // Cleanup
-    specialist_close(spec1);
-    specialist_close(spec2);
-    specialist_close(spec3);
-    anima_memory_close(anima1);
-    anima_memory_close(anima2);
-    anima_memory_close(anima3);
-    hive_slm_close(hive_slm);
-    hive_mnemonic_close(mnemonic);
-
-    0
-}
-```
-
 ## Running Your Test
 
 ```bash
-# Compile and run
-sxc run tests/category/test_my_feature.sx
+# Run the test directly
+sxc run tests/category/unit_my_feature.sx
 
-# Or use sxpm
-sxpm test tests/category/test_my_feature.sx
+# Run via test runner (finds by category)
+./tests/run_tests.sh category
 
-# Run all tests to verify no regressions
-sxpm test
+# Run all unit tests
+./tests/run_tests.sh all unit
 ```
 
 ## Checklist Before Committing
 
-- [ ] Test file starts with `test_` prefix
+- [ ] Test file uses correct prefix (`unit_`, `spec_`, `integ_`, or `e2e_`)
 - [ ] Test is in correct category directory
 - [ ] All external functions are declared
 - [ ] Test returns 0 on success, non-zero on failure
@@ -425,4 +524,4 @@ sxpm test
 - [ ] Test output includes PASS/FAIL indicators
 - [ ] Edge cases are covered
 - [ ] Test runs successfully with `sxc run`
-- [ ] All other tests still pass with `sxpm test`
+- [ ] All other tests still pass with `./tests/run_tests.sh`

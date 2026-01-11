@@ -1,6 +1,6 @@
 # Simplex Testing Documentation
 
-**Version:** 0.7.0
+**Version:** 0.9.0
 **Status:** Active Development
 
 This directory contains comprehensive documentation for the Simplex testing framework, including test organization, coverage reports, testing methodologies, and best practices.
@@ -19,151 +19,204 @@ This directory contains comprehensive documentation for the Simplex testing fram
 
 Run all tests:
 ```bash
-sxpm test
+./tests/run_tests.sh
 ```
 
 Run tests in a specific category:
 ```bash
-sxpm test --category language
-sxpm test --category ai
-sxpm test --category integration
+./tests/run_tests.sh language
+./tests/run_tests.sh neural
+./tests/run_tests.sh learning
+```
+
+Filter by test type:
+```bash
+./tests/run_tests.sh all unit    # Only unit tests
+./tests/run_tests.sh all spec    # Only spec tests
+./tests/run_tests.sh all integ   # Only integration tests
+./tests/run_tests.sh all e2e     # Only end-to-end tests
 ```
 
 Run a single test:
 ```bash
-sxc run tests/language/basics/test_loops.sx
+sxc run tests/stdlib/unit_hashmap.sx
+```
+
+## Naming Convention (v0.9.0)
+
+All tests follow a consistent naming convention based on test type:
+
+| Prefix | Type | Description | Color |
+|--------|------|-------------|-------|
+| `unit_` | Unit | Tests individual functions/types in isolation | Blue |
+| `spec_` | Specification | Tests language specification compliance | Cyan |
+| `integ_` | Integration | Tests integration between components | Magenta |
+| `e2e_` | End-to-End | Tests complete workflows | Yellow |
+
+### Examples
+
+```
+unit_hashmap.sx       # Unit test for HashMap module
+spec_generics.sx      # Spec test for generic types
+integ_networking.sx   # Integration test for networking
+e2e_data_processor.sx # End-to-end data processing workflow
 ```
 
 ## Test Categories
 
-The Simplex test suite is organized into eight major categories:
+![Test Suite Structure](../diagrams/test-suite-structure.svg)
+
+The Simplex test suite is organized into 13 major categories (156 tests total):
 
 ```
 tests/
-├── language/          # Core language features (42 tests)
-│   ├── basics/        # Loops, closures, enums, pattern matching
-│   ├── async/         # Async/await, futures
-│   ├── control_flow/  # If-let, match expressions
-│   ├── functions/     # Function definitions, closures
-│   ├── modules/       # Module system, imports
-│   ├── types/         # Generics, traits, Option/Result
-│   ├── actors/        # Actor model basics
-│   └── neural/        # Neural gates, differentiable control flow (v0.6.0)
+├── run_tests.sh                 # Test runner script
+├── README.md
 │
-├── stdlib/            # Standard library (11 tests)
-│   └── collections, strings, HTTP, JSON, CLI
+├── language/                    # Core language features (40 tests)
+│   ├── actors/                  # Actor model basics
+│   ├── async/                   # Async/await, futures
+│   ├── basics/                  # Loops, closures, enums, pattern matching
+│   ├── closures/                # Closure capture and nesting
+│   ├── control/                 # If-let, match expressions
+│   ├── functions/               # Function definitions, generics
+│   ├── modules/                 # Module system, imports
+│   ├── traits/                  # Trait definitions, associated types
+│   └── types/                   # Type system features
 │
-├── runtime/           # Runtime system (6 tests)
-│   └── actors, async, I/O, networking
+├── types/                       # Type system tests (24 tests)
+│   ├── spec_generics.sx
+│   ├── spec_associated_types.sx
+│   ├── spec_option_result.sx
+│   └── ... (including _p36 phase variants)
 │
-├── ai/                # AI/Cognitive systems (38 tests)
-│   ├── anima/         # Agent animation layer
-│   ├── hive/          # Collective intelligence
-│   ├── memory/        # Memory persistence
-│   ├── inference/     # LLM inference
-│   ├── specialists/   # Specialist providers
-│   └── learning/      # Real-time learning (v0.7.0)
+├── neural/                      # Neural IR and gates (16 tests)
+│   ├── contracts/               # Contract logic tests
+│   ├── gates/                   # Neural gate tests
+│   ├── pruning/                 # Pruning tests
+│   └── spec_*.sx
 │
-├── learning/          # simplex-learning library (23 tests)
-│   ├── tensor/        # Tensor operations, autograd
-│   ├── optim/         # Optimizers, schedulers
-│   ├── safety/        # Constraints, fallbacks
-│   ├── distributed/   # Federated, distillation, beliefs
-│   └── runtime/       # Online learner, checkpoints
+├── stdlib/                      # Standard library (16 tests)
+│   ├── unit_hashmap.sx
+│   ├── unit_crypto.sx
+│   ├── unit_string.sx
+│   └── ...
 │
-├── toolchain/         # Compiler toolchain (15 tests)
-│   ├── parser/        # Parser validation
-│   ├── codegen/       # Code generation
-│   ├── neural_ir/     # Neural IR compilation (v0.6.0)
-│   ├── sxpm/          # Package manager
-│   └── verification/  # Build verification
+├── ai/                          # AI/Cognitive systems (17 tests)
+│   ├── anima/                   # Agent animation layer
+│   ├── hive/                    # Collective intelligence
+│   ├── memory/                  # Memory persistence
+│   ├── inference/               # LLM inference
+│   ├── specialists/             # Specialist providers
+│   ├── orchestration/           # Multi-agent coordination
+│   └── tools/                   # Tool calling
 │
-├── observability/     # Monitoring and tracing
+├── toolchain/                   # Compiler toolchain (14 tests)
+│   ├── parser/                  # Parser validation
+│   ├── codegen/                 # Code generation
+│   ├── sxpm/                    # Package manager
+│   └── verification/            # Build verification
 │
-└── integration/       # End-to-end scenarios (12 tests)
-    ├── workflows/     # Real-world workflows
-    └── learning/      # Learning integration tests (v0.7.0)
+├── runtime/                     # Runtime system (5 tests)
+│   ├── actors/                  # Actor runtime
+│   ├── async/                   # Async runtime
+│   ├── distribution/            # Distributed systems
+│   ├── io/                      # I/O operations
+│   └── networking/              # Network communication
+│
+├── integration/                 # End-to-end scenarios (7 tests)
+│   ├── e2e_data_processor.sx
+│   ├── e2e_multi_specialist.sx
+│   └── ...
+│
+├── basics/                      # Basic language tests (6 tests)
+│   ├── spec_closure.sx
+│   ├── spec_enum.sx
+│   └── ...
+│
+├── async/                       # Async/await tests (3 tests)
+│   ├── spec_async_basic.sx
+│   └── ...
+│
+├── learning/                    # Automatic differentiation (3 tests)
+│   ├── unit_dual_numbers.sx
+│   ├── unit_dual_simple.sx
+│   └── unit_debug_power.sx
+│
+├── actors/                      # Actor model tests (1 test)
+│   └── spec_actor_basic.sx
+│
+└── observability/               # Metrics and tracing (1 test)
+    └── integ_observability.sx
 ```
 
-## Test Statistics (v0.7.0)
+## Test Statistics (v0.9.0)
 
-| Category | Test Files | Status |
-|----------|------------|--------|
-| Language | 42 | Active |
-| Standard Library | 11 | Active |
-| Runtime | 6 | Active |
-| AI/Cognitive | 38 | Active |
-| Learning | 23 | Active |
-| Toolchain | 15 | Active |
-| Integration | 12 | Active |
-| **Total** | **147+** | - |
+| Category | Tests | Type Distribution |
+|----------|-------|-------------------|
+| Language | 40 | Mostly spec_ |
+| Types | 24 | All spec_ |
+| Neural | 16 | Mostly spec_ |
+| Standard Library | 16 | Mostly unit_ |
+| AI/Cognitive | 17 | unit_ and integ_ |
+| Toolchain | 14 | unit_ and integ_ |
+| Integration | 7 | All e2e_ |
+| Basics | 6 | All spec_ |
+| Runtime | 5 | All integ_ |
+| Async | 3 | All spec_ |
+| Learning | 3 | All unit_ |
+| Actors | 1 | spec_ |
+| Observability | 1 | integ_ |
+| **Total** | **156** | - |
 
-## v0.7.0 Test Additions
+### Type Distribution
 
-New tests added for v0.7.0 Real-Time Learning features:
+| Type | Count | Percentage |
+|------|-------|------------|
+| `spec_` | 90 | 58% |
+| `unit_` | 35 | 22% |
+| `integ_` | 24 | 15% |
+| `e2e_` | 7 | 5% |
 
-### Learning Library (`tests/learning/`)
-- **Tensor Operations**: `tests/learning/tensor/test_tensor_ops.sx`
-- **Autograd**: `tests/learning/tensor/test_autograd.sx`
-- **Batch MatMul**: `tests/learning/tensor/test_batch_matmul.sx`
-- **Streaming SGD**: `tests/learning/optim/test_streaming_sgd.sx`
-- **Streaming Adam**: `tests/learning/optim/test_streaming_adam.sx`
-- **AdamW**: `tests/learning/optim/test_adamw.sx`
-- **Gradient Clipping**: `tests/learning/optim/test_gradient_clipping.sx`
-- **Safety Bounds**: `tests/learning/safety/test_safety_bounds.sx`
-- **Safe Fallback**: `tests/learning/safety/test_safe_fallback.sx`
-- **Constraints**: `tests/learning/safety/test_constraints.sx`
-- **Federated Learning**: `tests/learning/distributed/test_federated.sx`
-- **Knowledge Distillation**: `tests/learning/distributed/test_distillation.sx`
-- **Belief Resolution**: `tests/learning/distributed/test_beliefs.sx`
-- **Hive Coordinator**: `tests/learning/distributed/test_hive_coordinator.sx`
-- **Online Learner**: `tests/learning/runtime/test_online_learner.sx`
-- **Checkpointing**: `tests/learning/runtime/test_checkpointing.sx`
+## v0.9.0 Changes
 
-### AI/Cognitive (`tests/ai/learning/`)
-- **Specialist Learning**: `tests/ai/learning/test_specialist_online_learning.sx`
-- **Hive Learning**: `tests/ai/learning/test_hive_federated_learning.sx`
-- **Adaptive Inference**: `tests/ai/learning/test_adaptive_inference.sx`
+### Test Suite Restructure
 
-### Integration (`tests/integration/learning/`)
-- **End-to-End Learning**: `tests/integration/learning/test_e2e_online_learning.sx`
-- **Multi-Hive Sync**: `tests/integration/learning/test_multi_hive_sync.sx`
-- **Learning with Safety**: `tests/integration/learning/test_learning_with_safety.sx`
+The v0.9.0 release includes a complete reorganization of the test suite:
 
-## v0.6.0 Test Additions
+1. **New naming convention**: All tests now use `unit_`, `spec_`, `integ_`, or `e2e_` prefixes
+2. **New test runner**: `./tests/run_tests.sh` replaces the old testing approach
+3. **Category filtering**: Run tests by category or test type
+4. **Colored output**: Visual indicators for test types and results
+5. **156 total tests**: Up from 147 in v0.7.0
 
-New tests added for v0.6.0 Neural IR features:
+### New Test Categories
 
-### Language/Neural (`tests/language/neural/`)
-- **Neural Gates**: `tests/language/neural/test_neural_gate.sx`
-- **Gumbel-Softmax**: `tests/language/neural/test_gumbel_softmax.sx`
-- **Differentiable Control**: `tests/language/neural/test_differentiable_control.sx`
-- **Contract Logic**: `tests/language/neural/test_contracts.sx`
-- **Hardware Targeting**: `tests/language/neural/test_hardware_targeting.sx`
+- **learning/**: Tests for dual numbers and automatic differentiation (v0.8.0, v0.9.0)
+  - `unit_dual_numbers.sx` - Dual number operations
+  - `unit_dual_simple.sx` - Simple AD tests
+  - `unit_debug_power.sx` - Power function derivatives
 
-### Toolchain/Neural IR (`tests/toolchain/neural_ir/`)
-- **Training Mode**: `tests/toolchain/neural_ir/test_training_mode.sx`
-- **Inference Mode**: `tests/toolchain/neural_ir/test_inference_mode.sx`
+### v0.8.0 Test Additions
 
-## v0.5.0 Test Additions
+Tests added for dual numbers and forward-mode automatic differentiation:
 
-New tests added for v0.5.0 features:
+- **Dual Number Operations**: Basic arithmetic with derivative propagation
+- **Transcendental Functions**: sin, cos, exp, ln with automatic derivatives
+- **Multi-dimensional Gradients**: Testing `multidual<N>` type
 
-- **SLM Provisioning**: `tests/toolchain/sxpm/test_model_commands.sx`
-- **HiveMnemonic**: `tests/ai/hive/test_hive_mnemonic.sx`
-- **Per-Hive SLM**: `tests/ai/hive/test_per_hive_slm.sx`
-- **Memory-Augmented Inference**: `tests/ai/inference/test_memory_augmented_inference.sx`
-- **Anima Integration**: `tests/ai/anima/test_anima_hive_integration.sx`
-- **HTTP Client**: `tests/stdlib/test_http_client.sx`
-- **Terminal/CLI**: `tests/stdlib/test_cli_terminal.sx`
-- **Multi-Specialist Reasoning**: `tests/integration/test_multi_specialist_reasoning.sx`
-- **Knowledge Persistence**: `tests/integration/test_knowledge_persistence.sx`
-- **Model Provisioning Workflow**: `tests/integration/test_model_provisioning_workflow.sx`
+### v0.7.0 Test Additions
+
+Tests for Real-Time Learning features:
+
+- **simplex-learning library**: Tensor operations, optimizers, safety constraints
+- **Federated learning**: FedAvg, distributed gradient sync
+- **Knowledge distillation**: Teacher-student learning
 
 ## See Also
 
 - [Simplex Specification](../spec/README.md)
 - [Getting Started Guide](../guides/getting-started.md)
+- [Release Notes v0.9.0](../RELEASE-0.9.0.md)
+- [Release Notes v0.8.0](../RELEASE-0.8.0.md)
 - [Release Notes v0.7.0](../RELEASE-0.7.0.md)
-- [Release Notes v0.6.0](../RELEASE-0.6.0.md)
-- [Release Notes v0.5.0](../RELEASE-0.5.0.md)

@@ -1,0 +1,264 @@
+// simplex-std::math - Mathematical Functions
+//
+// Basic mathematical operations and constants.
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+/// Pi (π)
+pub const PI: f64 = 3.14159265358979323846;
+
+/// Euler's number (e)
+pub const E: f64 = 2.71828182845904523536;
+
+/// Square root of 2
+pub const SQRT_2: f64 = 1.41421356237309504880;
+
+/// Natural log of 2
+pub const LN_2: f64 = 0.69314718055994530942;
+
+/// Natural log of 10
+pub const LN_10: f64 = 2.30258509299404568402;
+
+// =============================================================================
+// Basic Functions
+// =============================================================================
+
+/// Minimum of two values.
+pub fn min<T: Ord>(a: T, b: T) -> T {
+    if a < b { a } else { b }
+}
+
+/// Maximum of two values.
+pub fn max<T: Ord>(a: T, b: T) -> T {
+    if a > b { a } else { b }
+}
+
+/// Absolute value (integer).
+pub fn abs(x: i64) -> i64 {
+    if x < 0 { -x } else { x }
+}
+
+/// Absolute value (float).
+pub fn fabs(x: f64) -> f64 {
+    if x < 0.0 { -x } else { x }
+}
+
+/// Clamp value to range.
+pub fn clamp<T: Ord>(x: T, lo: T, hi: T) -> T {
+    if x < lo { lo }
+    else if x > hi { hi }
+    else { x }
+}
+
+/// Sign of a number (-1, 0, or 1).
+pub fn sign(x: i64) -> i64 {
+    if x < 0 { -1 }
+    else if x > 0 { 1 }
+    else { 0 }
+}
+
+/// Sign of a float (-1.0, 0.0, or 1.0).
+pub fn signum(x: f64) -> f64 {
+    if x < 0.0 { -1.0 }
+    else if x > 0.0 { 1.0 }
+    else { 0.0 }
+}
+
+// =============================================================================
+// Integer Math
+// =============================================================================
+
+/// Integer division (floor).
+pub fn div_floor(a: i64, b: i64) -> i64 {
+    let d = a / b;
+    let r = a % b;
+    if (r > 0 && b < 0) || (r < 0 && b > 0) {
+        d - 1
+    } else {
+        d
+    }
+}
+
+/// Integer division (ceiling).
+pub fn div_ceil(a: i64, b: i64) -> i64 {
+    let d = a / b;
+    let r = a % b;
+    if (r > 0 && b > 0) || (r < 0 && b < 0) {
+        d + 1
+    } else {
+        d
+    }
+}
+
+/// Greatest common divisor.
+pub fn gcd(a: i64, b: i64) -> i64 {
+    var x = abs(a);
+    var y = abs(b);
+    while y != 0 {
+        let t = y;
+        y = x % y;
+        x = t;
+    }
+    x
+}
+
+/// Least common multiple.
+pub fn lcm(a: i64, b: i64) -> i64 {
+    if a == 0 || b == 0 { 0 }
+    else { abs(a * b) / gcd(a, b) }
+}
+
+/// Power (integer exponent).
+pub fn pow(base: i64, exp: i64) -> i64 {
+    if exp < 0 { return 0; }
+    var result: i64 = 1;
+    var b = base;
+    var e = exp;
+    while e > 0 {
+        if e & 1 == 1 {
+            result *= b;
+        }
+        b *= b;
+        e >>= 1;
+    }
+    result
+}
+
+// =============================================================================
+// Float Math (FFI to libm)
+// =============================================================================
+
+/// Square root.
+pub fn sqrt(x: f64) -> f64 {
+    unsafe { math_sqrt(x) }
+}
+
+/// Cube root.
+pub fn cbrt(x: f64) -> f64 {
+    unsafe { math_cbrt(x) }
+}
+
+/// Power (float).
+pub fn powf(base: f64, exp: f64) -> f64 {
+    unsafe { math_pow(base, exp) }
+}
+
+/// Exponential (e^x).
+pub fn exp(x: f64) -> f64 {
+    unsafe { math_exp(x) }
+}
+
+/// Natural logarithm.
+pub fn ln(x: f64) -> f64 {
+    unsafe { math_log(x) }
+}
+
+/// Base-10 logarithm.
+pub fn log10(x: f64) -> f64 {
+    unsafe { math_log10(x) }
+}
+
+/// Base-2 logarithm.
+pub fn log2(x: f64) -> f64 {
+    unsafe { math_log2(x) }
+}
+
+/// Sine.
+pub fn sin(x: f64) -> f64 {
+    unsafe { math_sin(x) }
+}
+
+/// Cosine.
+pub fn cos(x: f64) -> f64 {
+    unsafe { math_cos(x) }
+}
+
+/// Tangent.
+pub fn tan(x: f64) -> f64 {
+    unsafe { math_tan(x) }
+}
+
+/// Arcsine.
+pub fn asin(x: f64) -> f64 {
+    unsafe { math_asin(x) }
+}
+
+/// Arccosine.
+pub fn acos(x: f64) -> f64 {
+    unsafe { math_acos(x) }
+}
+
+/// Arctangent.
+pub fn atan(x: f64) -> f64 {
+    unsafe { math_atan(x) }
+}
+
+/// Two-argument arctangent.
+pub fn atan2(y: f64, x: f64) -> f64 {
+    unsafe { math_atan2(y, x) }
+}
+
+/// Hyperbolic sine.
+pub fn sinh(x: f64) -> f64 {
+    unsafe { math_sinh(x) }
+}
+
+/// Hyperbolic cosine.
+pub fn cosh(x: f64) -> f64 {
+    unsafe { math_cosh(x) }
+}
+
+/// Hyperbolic tangent.
+pub fn tanh(x: f64) -> f64 {
+    unsafe { math_tanh(x) }
+}
+
+/// Floor.
+pub fn floor(x: f64) -> f64 {
+    unsafe { math_floor(x) }
+}
+
+/// Ceiling.
+pub fn ceil(x: f64) -> f64 {
+    unsafe { math_ceil(x) }
+}
+
+/// Round to nearest integer.
+pub fn round(x: f64) -> f64 {
+    unsafe { math_round(x) }
+}
+
+/// Truncate toward zero.
+pub fn trunc(x: f64) -> f64 {
+    unsafe { math_trunc(x) }
+}
+
+// =============================================================================
+// FFI Declarations
+// =============================================================================
+
+extern "C" {
+    fn math_sqrt(x: f64) -> f64;
+    fn math_cbrt(x: f64) -> f64;
+    fn math_pow(base: f64, exp: f64) -> f64;
+    fn math_exp(x: f64) -> f64;
+    fn math_log(x: f64) -> f64;
+    fn math_log10(x: f64) -> f64;
+    fn math_log2(x: f64) -> f64;
+    fn math_sin(x: f64) -> f64;
+    fn math_cos(x: f64) -> f64;
+    fn math_tan(x: f64) -> f64;
+    fn math_asin(x: f64) -> f64;
+    fn math_acos(x: f64) -> f64;
+    fn math_atan(x: f64) -> f64;
+    fn math_atan2(y: f64, x: f64) -> f64;
+    fn math_sinh(x: f64) -> f64;
+    fn math_cosh(x: f64) -> f64;
+    fn math_tanh(x: f64) -> f64;
+    fn math_floor(x: f64) -> f64;
+    fn math_ceil(x: f64) -> f64;
+    fn math_round(x: f64) -> f64;
+    fn math_trunc(x: f64) -> f64;
+}

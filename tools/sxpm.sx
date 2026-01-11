@@ -6,7 +6,7 @@
 // Licensed under MIT License - see LICENSE file
 // https://github.com/senuamedia/simplex-lang
 
-fn SXPM_VERSION() -> i64 { "0.5.0" }
+fn SXPM_VERSION() -> i64 { "0.9.0" }
 
 // ============================================================================
 // Help and Version
@@ -111,14 +111,102 @@ fn template_test_sx(name: i64) -> i64 {
 }
 
 // ============================================================================
+// Cross-Platform Support
+// ============================================================================
+
+/// Detect the operating system
+/// Returns: "windows", "linux", or "macos"
+fn get_os_name() -> i64 {
+    // Check for Windows via WINDIR environment variable
+    let windir: i64 = cli_getenv("WINDIR");
+    if windir != 0 {
+        if string_len(windir) > 0 {
+            return "windows";
+        }
+    }
+    // Check for macOS via OSTYPE or uname
+    let ostype: i64 = cli_getenv("OSTYPE");
+    if ostype != 0 {
+        if string_starts_with(ostype, "darwin") {
+            return "macos";
+        }
+    }
+    // Default to linux (covers most Unix-like systems)
+    "linux"
+}
+
+/// Get the path separator for the current platform
+/// Returns "/" for Unix or "\" for Windows
+fn get_path_separator() -> i64 {
+    let os: i64 = get_os_name();
+    if string_eq(os, "windows") {
+        return "\\";
+    }
+    "/"
+}
+
+/// Get the path separator character code for the current platform
+/// Returns 47 ('/') for Unix or 92 ('\') for Windows
+fn get_path_separator_char() -> i64 {
+    let os: i64 = get_os_name();
+    if string_eq(os, "windows") {
+        return 92;  // '\'
+    }
+    47  // '/'
+}
+
+/// Get the user's home directory
+fn get_home_dir() -> i64 {
+    let os: i64 = get_os_name();
+    if string_eq(os, "windows") {
+        let userprofile: i64 = cli_getenv("USERPROFILE");
+        if userprofile != 0 && string_len(userprofile) > 0 {
+            return userprofile;
+        }
+        // Fallback to HOMEDRIVE + HOMEPATH
+        let homedrive: i64 = cli_getenv("HOMEDRIVE");
+        let homepath: i64 = cli_getenv("HOMEPATH");
+        if homedrive != 0 && homepath != 0 {
+            return string_concat(homedrive, homepath);
+        }
+        return "C:\\Users\\Default";
+    }
+    // Unix: use HOME
+    let home: i64 = cli_getenv("HOME");
+    if home != 0 && string_len(home) > 0 {
+        return home;
+    }
+    "/tmp"
+}
+
+/// Get the command to delete a directory recursively
+fn get_rmdir_command(path: i64) -> i64 {
+    let os: i64 = get_os_name();
+    if string_eq(os, "windows") {
+        return string_concat("rmdir /s /q ", path);
+    }
+    string_concat("rm -rf ", path)
+}
+
+/// Get the command to delete a single file
+fn get_rm_command(path: i64) -> i64 {
+    let os: i64 = get_os_name();
+    if string_eq(os, "windows") {
+        return string_concat("del /q ", path);
+    }
+    string_concat("rm -f ", path)
+}
+
+// ============================================================================
 // File System Helpers
 // ============================================================================
 
 fn path_join(dir: i64, name: i64) -> i64 {
     let sb: i64 = sb_new();
     sb_append(sb, dir);
-    if string_char_at(dir, string_len(dir) - 1) != 47 {  // '/'
-        sb_append_char(sb, 47);
+    let sep_char: i64 = get_path_separator_char();
+    if string_char_at(dir, string_len(dir) - 1) != sep_char {
+        sb_append_char(sb, sep_char);
     }
     sb_append(sb, name);
     let result: i64 = sb_to_string(sb);
@@ -741,7 +829,7 @@ fn cmd_build(args: i64, argc: i64, arg_idx: i64) -> i64 {
     sb_append(sb, entry);
     sb_append(sb, " -o ");
     sb_append(sb, target_dir);
-    sb_append_char(sb, 47);  // '/'
+    sb_append_char(sb, get_path_separator_char());
     sb_append(sb, name);
 
     let cmd: i64 = sb_to_string(sb);
@@ -922,7 +1010,7 @@ fn find_example_files() -> i64 {
 fn cmd_clean(args: i64, argc: i64, arg_idx: i64) -> i64 {
     println("Cleaning build artifacts...");
 
-    let result: i64 = process_run("rm -rf target");
+    let result: i64 = process_run(get_rmdir_command("target"));
 
     if result == 0 {
         println("Removed target/");
@@ -959,7 +1047,7 @@ fn cmd_update(args: i64, argc: i64, arg_idx: i64) -> i64 {
 
     // Remove existing lock file to force re-resolution
     if check_file_exists("simplex.lock") {
-        process_run("rm simplex.lock");
+        process_run(get_rm_command("simplex.lock"));
         if verbose {
             println("Removed existing simplex.lock");
         }
@@ -1931,9 +2019,12 @@ fn path_basename(path: i64) -> i64 {
     let len: i64 = string_len(path);
     var last_slash: i64 = 0 - 1;
     var i: i64 = 0;
+    let sep_char: i64 = get_path_separator_char();
 
     while i < len {
-        if string_char_at(path, i) == 47 {  // '/'
+        let c: i64 = string_char_at(path, i);
+        // Check for both '/' and '\' on Windows for compatibility
+        if c == sep_char || c == 47 || c == 92 {
             last_slash = i;
         }
         i = i + 1;
@@ -2181,8 +2272,8 @@ fn cache_clear() {
 
 // Model directory paths
 fn models_global_dir() -> i64 {
-    let home: i64 = cli_getenv("HOME");
-    path_join(home, ".simplex/models")
+    let home: i64 = get_home_dir();
+    path_join(path_join(home, ".simplex"), "models")
 }
 
 fn models_local_dir() -> i64 {

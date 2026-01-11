@@ -5,7 +5,126 @@
 // Licensed under MIT License - see LICENSE file
 // https://github.com/senuamedia/simplex-lang
 
-fn VERSION() -> i64 { string_from("0.5.0") }
+fn VERSION() -> i64 { string_from("0.9.0") }
+
+// ========================================
+// Platform Detection and Cross-Platform Paths
+// ========================================
+
+// Detect current operating system
+// Returns: "windows", "linux", "macos", or "unknown"
+fn get_os_name() -> i64 {
+    // Check for Windows-specific environment variable
+    let windir: i64 = env_get(string_from("WINDIR"));
+    if windir != 0 {
+        if string_len(windir) > 0 {
+            return string_from("windows");
+        }
+    }
+
+    // Check for macOS
+    let ostype: i64 = env_get(string_from("OSTYPE"));
+    if ostype != 0 {
+        if string_contains(ostype, string_from("darwin")) {
+            return string_from("macos");
+        }
+    }
+
+    // Try uname-based detection (works on macOS/Linux)
+    // Check if /proc exists (Linux-specific)
+    if file_exists(string_from("/proc/version")) != 0 {
+        return string_from("linux");
+    }
+
+    // Check for macOS paths
+    if file_exists(string_from("/System/Library")) != 0 {
+        return string_from("macos");
+    }
+
+    // Default to linux for other Unix-like systems
+    string_from("linux")
+}
+
+// Get platform-appropriate temporary directory
+fn get_temp_dir() -> i64 {
+    let os: i64 = get_os_name();
+
+    if string_eq(os, string_from("windows")) {
+        // Windows: use TEMP or TMP environment variable
+        let temp: i64 = env_get(string_from("TEMP"));
+        if temp != 0 {
+            if string_len(temp) > 0 {
+                return temp;
+            }
+        }
+        let tmp: i64 = env_get(string_from("TMP"));
+        if tmp != 0 {
+            if string_len(tmp) > 0 {
+                return tmp;
+            }
+        }
+        // Fallback to C:\Temp
+        return string_from("C:\\Temp");
+    }
+
+    // Unix-like (Linux, macOS): use TMPDIR or /tmp
+    let tmpdir: i64 = env_get(string_from("TMPDIR"));
+    if tmpdir != 0 {
+        if string_len(tmpdir) > 0 {
+            return tmpdir;
+        }
+    }
+
+    string_from("/tmp")
+}
+
+// Get platform-appropriate path separator
+fn get_path_separator() -> i64 {
+    let os: i64 = get_os_name();
+    if string_eq(os, string_from("windows")) {
+        return string_from("\\");
+    }
+    string_from("/")
+}
+
+// Get platform-appropriate executable extension
+fn get_exe_extension() -> i64 {
+    let os: i64 = get_os_name();
+    if string_eq(os, string_from("windows")) {
+        return string_from(".exe");
+    }
+    string_from("")
+}
+
+// Build platform-appropriate temp file path
+fn get_temp_file(name: i64) -> i64 {
+    let temp_dir: i64 = get_temp_dir();
+    let sep: i64 = get_path_separator();
+    let ext: i64 = get_exe_extension();
+    string_concat(temp_dir, string_concat(sep, string_concat(name, ext)))
+}
+
+// Get default target triple for current platform
+fn get_default_target() -> i64 {
+    let os: i64 = get_os_name();
+
+    // Detect architecture (simplified - assumes x86_64 or aarch64)
+    let arch: i64 = string_from("x86_64");
+    // Could check /proc/cpuinfo on Linux, sysctl on macOS, etc.
+
+    if string_eq(os, string_from("windows")) {
+        return string_concat(arch, string_from("-pc-windows-msvc"));
+    }
+    if string_eq(os, string_from("macos")) {
+        return string_concat(arch, string_from("-apple-darwin"));
+    }
+    if string_eq(os, string_from("linux")) {
+        return string_concat(arch, string_from("-unknown-linux-gnu"));
+    }
+
+    // Unknown - return generic
+    string_concat(arch, string_from("-unknown-unknown"))
+}
 
 // ========================================
 // simplex.toml Project Configuration (Phase 33)
@@ -178,7 +297,9 @@ fn create_simplex_toml(name: i64) -> i64 {
     sb_append(sb, string_from("[build]\n"));
     sb_append(sb, string_from("# output = \"my_binary\"\n"));
     sb_append(sb, string_from("# optimize = true\n"));
-    sb_append(sb, string_from("# target = \"x86_64-apple-darwin\"\n"));
+    sb_append(sb, string_from("# target = \"x86_64-unknown-linux-gnu\"  # Linux\n"));
+    sb_append(sb, string_from("# target = \"x86_64-apple-darwin\"       # macOS\n"));
+    sb_append(sb, string_from("# target = \"x86_64-pc-windows-msvc\"    # Windows\n"));
     sb_append(sb, string_from("\n"));
     sb_append(sb, string_from("[dependencies]\n"));
     sb_append(sb, string_from("# example = \"1.0.0\"\n"));
@@ -836,16 +957,46 @@ fn cmd_build(opts: i64) -> i64 {
         }
     }
 
-    // Build clang command
+    // Build clang command (cross-platform)
+    let os: i64 = get_os_name();
     let cmd: i64 = string_from("clang ");
+
+    // Add optimization flag
     if optimize != 0 {
         cmd = string_concat(cmd, string_from("-O2 "));
     } else {
         cmd = string_concat(cmd, string_from("-O0 "));
     }
+
+    // Add source files
     cmd = string_concat(cmd, ll_file);
-    cmd = string_concat(cmd, string_from(" standalone_runtime.c -lssl -lcrypto -lsqlite3 -o "));
+    cmd = string_concat(cmd, string_from(" standalone_runtime.c "));
+
+    // Platform-specific library linking
+    if string_eq(os, string_from("windows")) {
+        // Windows: libraries are typically linked differently
+        // OpenSSL and SQLite need to be installed and in PATH
+        cmd = string_concat(cmd, string_from("-lssl -lcrypto -lsqlite3 "));
+    } else {
+        if string_eq(os, string_from("macos")) {
+            // macOS: use Homebrew paths if needed
+            cmd = string_concat(cmd, string_from("-lssl -lcrypto -lsqlite3 "));
+        } else {
+            // Linux: standard library linking
+            cmd = string_concat(cmd, string_from("-lssl -lcrypto -lsqlite3 -lm -lpthread "));
+        }
+    }
+
+    // Add output file
+    cmd = string_concat(cmd, string_from("-o "));
     cmd = string_concat(cmd, output);
+
+    // Add executable extension on Windows
+    if string_eq(os, string_from("windows")) {
+        if string_ends_with(output, string_from(".exe")) == 0 {
+            // Output doesn't have .exe, but clang will add it
+        }
+    }
 
     if verbose != 0 {
         println(string_concat(string_from("Running: "), cmd));
@@ -887,14 +1038,26 @@ fn cmd_run(opts: i64) -> i64 {
     let ll_file: i64 = get_output_name(input, string_from(".ll"));
     write_file(ll_file, llvm_ir);
 
-    // Create temporary output name
-    let output: i64 = string_from("/tmp/sxc_run_temp");
+    // Create temporary output name (cross-platform)
+    let output: i64 = get_temp_file(string_from("sxc_run_temp"));
 
-    // Build clang command
-    let cmd: i64 = string_from("clang -O0 ");
-    cmd = string_concat(cmd, ll_file);
-    cmd = string_concat(cmd, string_from(" standalone_runtime.c -lssl -lcrypto -lsqlite3 -o "));
-    cmd = string_concat(cmd, output);
+    // Build clang command (cross-platform)
+    let os: i64 = get_os_name();
+    let cmd: i64 = string_from("");
+
+    if string_eq(os, string_from("windows")) {
+        // Windows: use clang with MSVC-compatible flags
+        cmd = string_from("clang -O0 ");
+        cmd = string_concat(cmd, ll_file);
+        cmd = string_concat(cmd, string_from(" standalone_runtime.c -o "));
+        cmd = string_concat(cmd, output);
+    } else {
+        // Unix-like: use standard flags with libraries
+        cmd = string_from("clang -O0 ");
+        cmd = string_concat(cmd, ll_file);
+        cmd = string_concat(cmd, string_from(" standalone_runtime.c -lssl -lcrypto -lsqlite3 -o "));
+        cmd = string_concat(cmd, output);
+    }
 
     if verbose != 0 {
         println(string_concat(string_from("Compiling: "), cmd));

@@ -56,6 +56,7 @@ fn EXPR_YIELD() -> i64 { 19 }
 fn EXPR_SPAWN() -> i64 { 20 }
 fn EXPR_ARRAY() -> i64 { 21 }
 fn EXPR_FLOAT() -> i64 { 22 }
+fn EXPR_CLOSURE() -> i64 { 23 }
 
 // Binary operators - must match parser.sx
 fn OP_ADD() -> i64 { 0 }
@@ -79,11 +80,45 @@ fn OP_SHR() -> i64 { 17 }
 fn OP_NEG() -> i64 { 100 }
 fn OP_NOT() -> i64 { 101 }
 
+// =============================================================================
+// Efficient String Building Helpers
+// Use these instead of nested string_concat() for O(n) instead of O(n²)
+// =============================================================================
+
+// Join 3 strings efficiently
+fn str_join3(a: i64, b: i64, c: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, a);
+    sb_append(sb, b);
+    sb_append(sb, c);
+    sb_build(sb)
+}
+
+// Build mangled name: str_mangle("Type", "method") -> "Type_method"
+fn str_mangle(type_name: i64, method_name: i64) -> i64 {
+    str_join3(type_name, "_", method_name)
+}
+
+// Build path: str_path("Type", "Assoc") -> "Type::Assoc"
+fn str_path(a: i64, b: i64) -> i64 {
+    str_join3(a, "::", b)
+}
+
+// Build unique name: str_unique("var", 42) -> "var.42"
+fn str_unique(name: i64, id: i64) -> i64 {
+    str_join3(name, ".", int_to_string(id))
+}
+
+// Build label: str_label("arm", 3) -> "arm_3"
+fn str_label(base: i64, suffix: i64) -> i64 {
+    str_join3(base, "_", int_to_string(suffix))
+}
+
 // Codegen state
 fn codegen_new() -> i64 {
-    // Allocate codegen: output_sb(0), temp_counter(1), label_counter(2), enums(3), locals(4), strings(5), terminated(6), structs(7), var_types(8), loop_stack(9), loop_depth(10), pre_alloca_queue(11), module_name(12), generic_fns(13), instantiated(14), pending_instantiations(15), assoc_types(16), current_impl_type(17), const_params(18), type_params(19), generic_struct_templates(20), trait_impls(21), is_async_fn(22), async_state_counter(23), async_await_points(24), async_fn_name(25), default_methods(26), trait_defs(27), vtables(28), type_aliases(29)
+    // Allocate codegen: output_sb(0), temp_counter(1), label_counter(2), enums(3), locals(4), strings(5), terminated(6), structs(7), var_types(8), loop_stack(9), loop_depth(10), pre_alloca_queue(11), module_name(12), generic_fns(13), instantiated(14), pending_instantiations(15), assoc_types(16), current_impl_type(17), const_params(18), type_params(19), generic_struct_templates(20), trait_impls(21), is_async_fn(22), async_state_counter(23), async_await_points(24), async_fn_name(25), default_methods(26), trait_defs(27), vtables(28), type_aliases(29), closures(30), closure_counter(31)
     // Note: slot 0 is now a StringBuilder for O(n) instead of O(n²) string building
-    let cg: i64 = malloc(240);
+    let cg: i64 = malloc(256);
     store_ptr(cg, 0, sb_new_cap(65536));
     store_i64(cg, 1, 0);
     store_i64(cg, 2, 0);
@@ -114,6 +149,8 @@ fn codegen_new() -> i64 {
     store_ptr(cg, 27, vec_new()); // trait_defs: vec of (trait_name, method_sigs) for vtable layout
     store_ptr(cg, 28, vec_new()); // vtables: vec of (type_name, trait_name, vtable_global) pairs
     store_ptr(cg, 29, vec_new()); // type_aliases: vec of (alias_name, target_type) pairs
+    store_ptr(cg, 30, vec_new()); // closures: vec of (name, params, body, captures) for inline closures
+    store_i64(cg, 31, 0);         // closure_counter: for unique closure function names
     cg
 }
 
@@ -259,7 +296,7 @@ fn cg_set_current_impl_type(cg: i64, type_name: i64) -> i64 {
 // Register an associated type: maps "TypeName::AssocName" to concrete type
 fn cg_register_assoc_type(cg: i64, impl_type: i64, assoc_name: i64, concrete_type: i64) -> i64 {
     let assoc_types: i64 = cg_assoc_types(cg);
-    let key: i64 = string_concat(impl_type, string_concat(string_from("::"), assoc_name));
+    let key: i64 = str_path(impl_type, assoc_name);
     let pair: i64 = malloc(16);
     store_ptr(pair, 0, key);
     store_ptr(pair, 1, concrete_type);
@@ -270,7 +307,7 @@ fn cg_register_assoc_type(cg: i64, impl_type: i64, assoc_name: i64, concrete_typ
 // Look up an associated type
 fn cg_lookup_assoc_type(cg: i64, impl_type: i64, assoc_name: i64) -> i64 {
     let assoc_types: i64 = cg_assoc_types(cg);
-    let key: i64 = string_concat(impl_type, string_concat(string_from("::"), assoc_name));
+    let key: i64 = str_path(impl_type, assoc_name);
     let n: i64 = vec_len(assoc_types);
     let i: i64 = 0;
     while i < n {
@@ -537,7 +574,7 @@ fn cg_default_methods(cg: i64) -> i64 {
 
 fn cg_register_default_method(cg: i64, trait_name: i64, method_name: i64, fn_def: i64) -> i64 {
     let methods: i64 = cg_default_methods(cg);
-    let key: i64 = string_concat(trait_name, string_concat(string_from("::"), method_name));
+    let key: i64 = str_path(trait_name, method_name);
     let entry: i64 = malloc(16);
     store_ptr(entry, 0, key);
     store_ptr(entry, 1, fn_def);
@@ -547,7 +584,7 @@ fn cg_register_default_method(cg: i64, trait_name: i64, method_name: i64, fn_def
 
 fn cg_get_default_method(cg: i64, trait_name: i64, method_name: i64) -> i64 {
     let methods: i64 = cg_default_methods(cg);
-    let key: i64 = string_concat(trait_name, string_concat(string_from("::"), method_name));
+    let key: i64 = str_path(trait_name, method_name);
     let n: i64 = vec_len(methods);
     let i: i64 = 0;
     while i < n {
@@ -661,6 +698,45 @@ fn cg_resolve_type_alias(cg: i64, type_name: i64) -> i64 {
         i = i + 1;
     }
     type_name  // Not an alias, return as-is
+}
+
+// Slot 30: closures - stores inline closure definitions
+fn cg_closures(cg: i64) -> i64 {
+    load_ptr(cg, 30)
+}
+
+fn cg_next_closure_id(cg: i64) -> i64 {
+    let id: i64 = load_i64(cg, 31);
+    store_i64(cg, 31, id + 1);
+    id
+}
+
+// Register an inline closure: stores (var_name, params, body)
+// params is a vec of param AST nodes, body is the expression AST
+fn cg_register_closure(cg: i64, var_name: i64, params: i64, body: i64) -> i64 {
+    let closures: i64 = cg_closures(cg);
+    let entry: i64 = malloc(24);
+    store_ptr(entry, 0, var_name);
+    store_ptr(entry, 1, params);
+    store_ptr(entry, 2, body);
+    vec_push(closures, entry);
+    0
+}
+
+// Look up a closure by variable name, returns the entry or 0 if not found
+fn cg_lookup_closure(cg: i64, var_name: i64) -> i64 {
+    let closures: i64 = cg_closures(cg);
+    let n: i64 = vec_len(closures);
+    let i: i64 = n - 1;  // Search backwards for most recent
+    while i >= 0 {
+        let entry: i64 = vec_get(closures, i);
+        let name: i64 = load_ptr(entry, 0);
+        if string_eq(name, var_name) {
+            return entry;
+        }
+        i = i - 1;
+    }
+    0  // Not found
 }
 
 // Get method index in vtable for a trait method
@@ -798,54 +874,69 @@ fn type_error_mismatch(expected: i64, found: i64, context: i64) -> i64 {
 
 // Format an argument count mismatch error
 fn error_arg_count(fn_name: i64, expected: i64, found: i64) -> i64 {
-    let msg: i64 = string_from("Error: function '");
-    msg = string_concat(msg, fn_name);
-    msg = string_concat(msg, "' expects ");
-    msg = string_concat(msg, int_to_string(expected));
-    msg = string_concat(msg, " argument(s), found ");
-    msg = string_concat(msg, int_to_string(found));
-    println(msg);
+    let sb: i64 = sb_new();
+    sb_append(sb, "Error: function '");
+    sb_append(sb, fn_name);
+    sb_append(sb, "' expects ");
+    sb_append_i64(sb, expected);
+    sb_append(sb, " argument(s), found ");
+    sb_append_i64(sb, found);
+    println(sb_build(sb));
     0
 }
 
 // Format an undefined variable error
 fn error_undefined_var(name: i64) -> i64 {
-    println(string_concat("Error: undefined variable '", string_concat(name, "'")));
+    let sb: i64 = sb_new();
+    sb_append(sb, "Error: undefined variable '");
+    sb_append(sb, name);
+    sb_append(sb, "'");
+    println(sb_build(sb));
     0
 }
 
 // Format an undefined function error
 fn error_undefined_fn(name: i64) -> i64 {
-    println(string_concat("Error: undefined function '", string_concat(name, "'")));
+    let sb: i64 = sb_new();
+    sb_append(sb, "Error: undefined function '");
+    sb_append(sb, name);
+    sb_append(sb, "'");
+    println(sb_build(sb));
     0
 }
 
 // Format an undefined struct error
 fn error_undefined_struct(name: i64) -> i64 {
-    println(string_concat("Error: undefined struct '", string_concat(name, "'")));
+    let sb: i64 = sb_new();
+    sb_append(sb, "Error: undefined struct '");
+    sb_append(sb, name);
+    sb_append(sb, "'");
+    println(sb_build(sb));
     0
 }
 
 // Format an undefined field error
 fn error_undefined_field(struct_name: i64, field_name: i64) -> i64 {
-    let msg: i64 = string_from("Error: struct '");
-    msg = string_concat(msg, struct_name);
-    msg = string_concat(msg, "' has no field '");
-    msg = string_concat(msg, field_name);
-    msg = string_concat(msg, "'");
-    println(msg);
+    let sb: i64 = sb_new();
+    sb_append(sb, "Error: struct '");
+    sb_append(sb, struct_name);
+    sb_append(sb, "' has no field '");
+    sb_append(sb, field_name);
+    sb_append(sb, "'");
+    println(sb_build(sb));
     0
 }
 
 // Format a generic instantiation error
 fn error_generic_instantiation(fn_name: i64, expected: i64, found: i64) -> i64 {
-    let msg: i64 = string_from("Error: generic function '");
-    msg = string_concat(msg, fn_name);
-    msg = string_concat(msg, "' expects ");
-    msg = string_concat(msg, int_to_string(expected));
-    msg = string_concat(msg, " type argument(s), found ");
-    msg = string_concat(msg, int_to_string(found));
-    println(msg);
+    let sb: i64 = sb_new();
+    sb_append(sb, "Error: generic function '");
+    sb_append(sb, fn_name);
+    sb_append(sb, "' expects ");
+    sb_append_i64(sb, expected);
+    sb_append(sb, " type argument(s), found ");
+    sb_append_i64(sb, found);
+    println(sb_build(sb));
     0
 }
 
@@ -1488,6 +1579,14 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
         return temp;
     }
 
+    // Closure expression - return placeholder (closures should be handled in let statements)
+    if tag == EXPR_CLOSURE() {
+        // Closures assigned to variables are handled in let statement processing
+        // If we get here, it's a closure used directly (not supported for now)
+        let closure_id: i64 = cg_next_closure_id(cg);
+        return int_to_string(closure_id);
+    }
+
     // Identifier - load from local
     if tag == EXPR_IDENT() {
         let name: i64 = load_ptr(expr, 1);
@@ -1554,7 +1653,44 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
         // Get function name
         let callee_name: i64 = load_ptr(callee, 1);
 
-        // Generate args
+        // Check if this is a closure call (inline expansion)
+        let closure_entry: i64 = cg_lookup_closure(cg, callee_name);
+        if closure_entry != 0 {
+            // Inline the closure body with argument substitution
+            let closure_params: i64 = load_ptr(closure_entry, 1);
+            let closure_body: i64 = load_ptr(closure_entry, 2);
+
+            // Generate argument values and bind them to parameter names
+            let n: i64 = vec_len(args);
+            let i: i64 = 0;
+            while i < n {
+                let arg: i64 = vec_get(args, i);
+                let val: i64 = gen_expr(cg, arg);
+
+                // Get param name and bind it to the argument value
+                if i < vec_len(closure_params) {
+                    let param: i64 = vec_get(closure_params, i);
+                    let param_name: i64 = load_ptr(param, 0);  // param: (name, type)
+                    // Create an alloca and store the argument value
+                    let param_id: i64 = cg_next_temp(cg);
+                    let unique_name: i64 = str_unique(param_name, param_id);
+                    emit(cg, "  %local.");
+                    emit(cg, unique_name);
+                    emit_line(cg, " = alloca i64");
+                    emit(cg, "  store i64 ");
+                    emit(cg, val);
+                    emit(cg, ", ptr %local.");
+                    emit_line(cg, unique_name);
+                    add_local(cg, param_name, unique_name);
+                }
+                i = i + 1;
+            }
+
+            // Generate the closure body - captures work because we're in same function
+            return gen_expr(cg, closure_body);
+        }
+
+        // Generate args for regular function call
         let arg_values: i64 = vec_new();
         let n: i64 = vec_len(args);
         let i: i64 = 0;
@@ -2829,7 +2965,7 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
         // Static dispatch - build mangled function name: TypeName_methodName
         let callee_name: i64 = method_name;
         if type_name != 0 {
-            callee_name = string_concat(type_name, string_concat(string_from("_"), method_name));
+            callee_name = str_mangle(type_name, method_name);
         }
 
         // Emit call - object is first argument
@@ -3271,7 +3407,7 @@ fn gen_for(cg: i64, expr: i64) -> i64 {
     if unique_name == 0 {
         // Fallback: allocate inline (shouldn't happen with proper pre-pass)
         let local_id: i64 = cg_next_temp(cg);
-        unique_name = string_concat(var_name, string_concat(".", int_to_string(local_id)));
+        unique_name = str_unique(var_name, local_id);
         emit(cg, "  %local.");
         emit(cg, unique_name);
         emit_line(cg, " = alloca i64");
@@ -3384,43 +3520,119 @@ fn gen_match(cg: i64, expr: i64) -> i64 {
     while i < num_arms {
         let arm: i64 = vec_get(arms, i);
         let pattern: i64 = load_ptr(arm, 0);
-        let result: i64 = load_ptr(arm, 1);
+        let guard: i64 = load_ptr(arm, 1);
+        let result: i64 = load_ptr(arm, 2);
 
-        let arm_lbl: i64 = string_concat("arm", int_to_string(l));
-        arm_lbl = string_concat(arm_lbl, string_concat("_", int_to_string(i)));
+        let base_lbl: i64 = str_label("arm", l);
+        let arm_lbl: i64 = str_label(base_lbl, i);
+        let guard_lbl: i64 = string_concat(arm_lbl, "_guard");
         let arm_end_lbl: i64 = string_concat(arm_lbl, "_end");
-        let next_lbl: i64 = string_concat("arm", int_to_string(l));
-        next_lbl = string_concat(next_lbl, string_concat("_", int_to_string(i + 1)));
+        let next_lbl: i64 = str_label(base_lbl, i + 1);
 
         // Check if this is the last arm or wildcard
         let is_last: i64 = i == num_arms - 1;
         let is_wildcard: i64 = pattern == 0;
+        let has_guard: i64 = guard != 0;
+
+        // Check if pattern is a simple identifier (binding pattern)
+        // EXPR_IDENT = 3, and binding patterns bind the scrutinee to a variable
+        let is_binding: i64 = 0;
+        let binding_name: i64 = 0;
+        if pattern != 0 {
+            let pat_tag: i64 = load_i64(pattern, 0);
+            if pat_tag == EXPR_IDENT() {
+                // This is a binding pattern - binds scrutinee to variable
+                is_binding = 1;
+                binding_name = load_ptr(pattern, 1);
+            }
+        }
 
         if is_wildcard != 0 {
-            // Wildcard - unconditional jump to arm
-            emit(cg, "  br label %");
-            emit_line(cg, arm_lbl);
+            if has_guard != 0 {
+                // Wildcard with guard - check guard only
+                emit(cg, "  br label %");
+                emit_line(cg, guard_lbl);
+            } else {
+                // Wildcard without guard - unconditional jump to arm
+                emit(cg, "  br label %");
+                emit_line(cg, arm_lbl);
+            }
         } else {
-            // Generate pattern value
-            let pat_val: i64 = gen_expr(cg, pattern);
+            if is_binding != 0 {
+                // Binding pattern - always matches, go to guard or arm
+                if has_guard != 0 {
+                    emit(cg, "  br label %");
+                    emit_line(cg, guard_lbl);
+                } else {
+                    emit(cg, "  br label %");
+                    emit_line(cg, arm_lbl);
+                }
+            } else {
+                // Value pattern - compare scrutinee to pattern
+                let pat_val: i64 = gen_expr(cg, pattern);
 
-            // Compare scrutinee == pattern
-            let cmp_t: i64 = cg_next_temp(cg);
+                // Compare scrutinee == pattern
+                let cmp_t: i64 = cg_next_temp(cg);
+                emit(cg, "  %t");
+                emit(cg, int_to_string(cmp_t));
+                emit(cg, " = icmp eq i64 ");
+                emit(cg, scru_val);
+                emit(cg, ", ");
+                emit_line(cg, pat_val);
+
+                // Branch: if match goto guard_check or arm, else goto next/end
+                emit(cg, "  br i1 %t");
+                emit(cg, int_to_string(cmp_t));
+                emit(cg, ", label %");
+                if has_guard != 0 {
+                    emit(cg, guard_lbl);
+                } else {
+                    emit(cg, arm_lbl);
+                }
+                emit(cg, ", label %");
+                if is_last != 0 {
+                    emit_line(cg, end_lbl);
+                } else {
+                    emit_line(cg, next_lbl);
+                }
+            }
+        }
+
+        // Guard check block (if has guard)
+        if has_guard != 0 {
+            emit(cg, guard_lbl);
+            emit_line(cg, ":");
+            cg_set_terminated(cg, false);
+
+            // If binding pattern, create an alloca and store the scrutinee value
+            if is_binding != 0 {
+                let bind_id: i64 = cg_next_temp(cg);
+                let unique_name: i64 = str_unique(binding_name, bind_id);
+                emit(cg, "  %local.");
+                emit(cg, unique_name);
+                emit_line(cg, " = alloca i64");
+                emit(cg, "  store i64 ");
+                emit(cg, scru_val);
+                emit(cg, ", ptr %local.");
+                emit_line(cg, unique_name);
+                add_local(cg, binding_name, unique_name);
+            }
+
+            let guard_val: i64 = gen_expr(cg, guard);
+            // Guard should be i1, but our bools are i64, so compare != 0
+            let guard_cmp: i64 = cg_next_temp(cg);
             emit(cg, "  %t");
-            emit(cg, int_to_string(cmp_t));
-            emit(cg, " = icmp eq i64 ");
-            emit(cg, scru_val);
-            emit(cg, ", ");
-            emit_line(cg, pat_val);
-
-            // Branch: if match goto arm, else goto next/end
+            emit(cg, int_to_string(guard_cmp));
+            emit(cg, " = icmp ne i64 ");
+            emit(cg, guard_val);
+            emit_line(cg, ", 0");
+            // Branch: if guard true goto arm, else goto next/end
             emit(cg, "  br i1 %t");
-            emit(cg, int_to_string(cmp_t));
+            emit(cg, int_to_string(guard_cmp));
             emit(cg, ", label %");
             emit(cg, arm_lbl);
             emit(cg, ", label %");
             if is_last != 0 {
-                // Last arm without wildcard - shouldn't happen in well-formed match
                 emit_line(cg, end_lbl);
             } else {
                 emit_line(cg, next_lbl);
@@ -3431,6 +3643,23 @@ fn gen_match(cg: i64, expr: i64) -> i64 {
         emit(cg, arm_lbl);
         emit_line(cg, ":");
         cg_set_terminated(cg, false);
+
+        // If binding pattern and no guard, create alloca and add binding now
+        if is_binding != 0 {
+            if has_guard == 0 {
+                let bind_id: i64 = cg_next_temp(cg);
+                let unique_name: i64 = str_unique(binding_name, bind_id);
+                emit(cg, "  %local.");
+                emit(cg, unique_name);
+                emit_line(cg, " = alloca i64");
+                emit(cg, "  store i64 ");
+                emit(cg, scru_val);
+                emit(cg, ", ptr %local.");
+                emit_line(cg, unique_name);
+                add_local(cg, binding_name, unique_name);
+            }
+        }
+
         let arm_val: i64 = gen_expr(cg, result);
         emit(cg, "  br label %");
         emit_line(cg, arm_end_lbl);
@@ -3509,7 +3738,7 @@ fn gen_stmt(cg: i64, stmt: i64) -> i64 {
         if unique_name == 0 {
             // Fallback: allocate inline (shouldn't happen with proper pre-pass)
             let local_id: i64 = cg_next_temp(cg);
-            unique_name = string_concat(name, string_concat(".", int_to_string(local_id)));
+            unique_name = str_unique(name, local_id);
             emit(cg, "  %local.");
             emit(cg, unique_name);
             emit_line(cg, " = alloca i64");
@@ -3523,11 +3752,25 @@ fn gen_stmt(cg: i64, stmt: i64) -> i64 {
 
         // Initialize if there's an init expression
         if init_expr != 0 {
-            let val: i64 = gen_expr(cg, init_expr);
-            emit(cg, "  store i64 ");
-            emit(cg, val);
-            emit(cg, ", ptr %local.");
-            emit_line(cg, unique_name);
+            // Check if init is a closure - register it for inline expansion
+            let init_tag: i64 = load_i64(init_expr, 0);
+            if init_tag == EXPR_CLOSURE() {
+                let params: i64 = load_ptr(init_expr, 1);
+                let body: i64 = load_ptr(init_expr, 2);
+                cg_register_closure(cg, name, params, body);
+                // Store a placeholder value (closure ID)
+                let closure_id: i64 = cg_next_closure_id(cg);
+                emit(cg, "  store i64 ");
+                emit(cg, int_to_string(closure_id));
+                emit(cg, ", ptr %local.");
+                emit_line(cg, unique_name);
+            } else {
+                let val: i64 = gen_expr(cg, init_expr);
+                emit(cg, "  store i64 ");
+                emit(cg, val);
+                emit(cg, ", ptr %local.");
+                emit_line(cg, unique_name);
+            }
         }
         return 0;
     }
@@ -4068,7 +4311,7 @@ fn gen_impl(cg: i64, impl_def: i64) -> i64 {
         let method: i64 = vec_get(methods, i);
         // Get method name and mangle it: TypeName_methodName
         let method_name: i64 = load_ptr(method, 1);
-        let mangled_name: i64 = string_concat(type_name, string_concat(string_from("_"), method_name));
+        let mangled_name: i64 = str_mangle(type_name, method_name);
         // Store mangled name back into the method AST
         store_ptr(method, 1, mangled_name);
         // Generate the function
@@ -4143,7 +4386,7 @@ fn gen_impl_trait(cg: i64, impl_def: i64) -> i64 {
         let method: i64 = vec_get(methods, i);
         // Mangle method name: TypeName_methodName
         let method_name: i64 = load_ptr(method, 1);
-        let mangled_name: i64 = string_concat(type_name, string_concat(string_from("_"), method_name));
+        let mangled_name: i64 = str_mangle(type_name, method_name);
         store_ptr(method, 1, mangled_name);
         vec_push(mangled_methods, mangled_name);
         gen_fn(cg, method);
@@ -4197,7 +4440,7 @@ fn gen_vtable(cg: i64, type_name: i64, trait_name: i64, impl_methods: i64) -> i6
         let trait_method_name: i64 = load_ptr(trait_sig, 0);
 
         // Find corresponding impl method (TypeName_methodName)
-        let mangled: i64 = string_concat(type_name, string_concat(string_from("_"), trait_method_name));
+        let mangled: i64 = str_mangle(type_name, trait_method_name);
         emit(cg, "ptr @\"");
         emit(cg, mangled);
         emit(cg, "\"");

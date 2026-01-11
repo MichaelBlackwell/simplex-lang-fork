@@ -1,0 +1,207 @@
+// Specialist Trainer
+//
+// Trains individual specialist models with learned schedules.
+
+use simplex_std::dual;
+use simplex_std::sync::Arc;
+
+use super::super::schedules::LearnedSchedules;
+use super::super::{TrainingConfig, ModelSize, Tensor, Gradients};
+use super::meta::TrainingBatch;
+
+/// Trainer for a single specialist model
+pub struct SpecialistTrainer {
+    /// Specialist configuration
+    pub config: SpecialistConfig,
+    /// Current model weights (placeholder)
+    weights: Vec<Tensor>,
+    /// Training step counter
+    step: i64,
+    /// Training data loader handle
+    data_loader: Option<DataLoaderHandle>,
+}
+
+/// Configuration for a specialist
+#[derive(Clone)]
+pub struct SpecialistConfig {
+    /// Specialist domain name
+    pub domain: String,
+    /// Model size tier
+    pub size: ModelSize,
+    /// Base model path (for initialization)
+    pub base_model: String,
+    /// Training data paths
+    pub data_paths: Vec<String>,
+    /// Batch size
+    pub batch_size: usize,
+    /// Maximum sequence length
+    pub max_seq_len: usize,
+    /// Number of training epochs
+    pub epochs: i64,
+    /// Checkpoint directory
+    pub checkpoint_dir: String,
+}
+
+impl Default for SpecialistConfig {
+    fn default() -> Self {
+        SpecialistConfig {
+            domain: "general".to_string(),
+            size: ModelSize::B15,
+            base_model: "simplex-cognitive-1.5b".to_string(),
+            data_paths: vec![],
+            batch_size: 8,
+            max_seq_len: 2048,
+            epochs: 3,
+            checkpoint_dir: "./checkpoints".to_string(),
+        }
+    }
+}
+
+impl SpecialistConfig {
+    /// Create config for code specialist
+    pub fn code() -> Self {
+        SpecialistConfig {
+            domain: "code".to_string(),
+            size: ModelSize::B15,
+            base_model: "simplex-cognitive-1.5b".to_string(),
+            data_paths: vec![
+                "s3://simplex-data/code/github-clean".to_string(),
+                "s3://simplex-data/code/stack-overflow".to_string(),
+            ],
+            ..Default::default()
+        }
+    }
+
+    /// Create config for math specialist
+    pub fn math() -> Self {
+        SpecialistConfig {
+            domain: "math".to_string(),
+            size: ModelSize::B15,
+            base_model: "simplex-cognitive-1.5b".to_string(),
+            data_paths: vec![
+                "s3://simplex-data/math/gsm8k".to_string(),
+                "s3://simplex-data/math/math-qa".to_string(),
+            ],
+            ..Default::default()
+        }
+    }
+
+    /// Create config for reasoning specialist
+    pub fn reasoning() -> Self {
+        SpecialistConfig {
+            domain: "reasoning".to_string(),
+            size: ModelSize::B15,
+            base_model: "simplex-cognitive-1.5b".to_string(),
+            data_paths: vec![
+                "s3://simplex-data/reasoning/arc".to_string(),
+                "s3://simplex-data/reasoning/hellaswag".to_string(),
+            ],
+            ..Default::default()
+        }
+    }
+}
+
+// Placeholder for data loader handle
+struct DataLoaderHandle;
+
+impl SpecialistTrainer {
+    /// Create new specialist trainer
+    pub fn new(config: SpecialistConfig) -> Self {
+        SpecialistTrainer {
+            config,
+            weights: Vec::new(),
+            step: 0,
+            data_loader: None,
+        }
+    }
+
+    /// Initialize model weights from base model
+    pub async fn initialize(&mut self) -> Result<(), TrainerError> {
+        // Load base model weights
+        // In production, this would use Neuron SDK
+        self.weights = vec![Tensor::zeros(&[1024, 1024])]; // Placeholder
+        Ok(())
+    }
+
+    /// Get next training batch
+    pub async fn next_batch(&mut self) -> TrainingBatch {
+        self.step += 1;
+        TrainingBatch {
+            inputs: Tensor::zeros(&[self.config.batch_size, self.config.max_seq_len]),
+            labels: Tensor::zeros(&[self.config.batch_size, self.config.max_seq_len]),
+        }
+    }
+
+    /// Get validation batch
+    pub async fn validation_batch(&self) -> TrainingBatch {
+        TrainingBatch {
+            inputs: Tensor::zeros(&[self.config.batch_size, self.config.max_seq_len]),
+            labels: Tensor::zeros(&[self.config.batch_size, self.config.max_seq_len]),
+        }
+    }
+
+    /// Forward pass
+    pub async fn forward(&self, inputs: &Tensor) -> Tensor {
+        // In production, this would use Neuron SDK for optimized forward pass
+        Tensor::zeros(&inputs.shape)
+    }
+
+    /// Backward pass and weight update
+    pub async fn backward_and_update(&mut self, loss: &dual, lr: f64) {
+        // In production, this would compute gradients via Neuron SDK
+        // and apply optimizer updates
+    }
+
+    /// Save checkpoint
+    pub async fn save_checkpoint(&self, path: &str) -> Result<(), TrainerError> {
+        // Save model weights and optimizer state
+        Ok(())
+    }
+
+    /// Load checkpoint
+    pub async fn load_checkpoint(&mut self, path: &str) -> Result<(), TrainerError> {
+        // Load model weights and optimizer state
+        Ok(())
+    }
+
+    /// Get current training step
+    pub fn current_step(&self) -> i64 {
+        self.step
+    }
+
+    /// Apply pruning mask to weights
+    pub fn apply_pruning(&mut self, masks: &[Tensor]) {
+        for (weight, mask) in self.weights.iter_mut().zip(masks.iter()) {
+            // Element-wise multiply weights by mask
+        }
+    }
+
+    /// Apply quantization to weights
+    pub fn apply_quantization(&mut self, bits: u8) {
+        // Quantize weights to specified bit width
+    }
+
+    /// Export model for inference
+    pub async fn export(&self, path: &str) -> Result<(), TrainerError> {
+        // Export model in deployment format
+        Ok(())
+    }
+}
+
+/// Training metrics
+pub struct TrainingMetrics {
+    pub step: i64,
+    pub loss: f64,
+    pub learning_rate: f64,
+    pub grad_norm: f64,
+    pub throughput_tokens_per_sec: f64,
+}
+
+#[derive(Debug)]
+pub enum TrainerError {
+    ModelLoadFailed(String),
+    CheckpointFailed(String),
+    DataLoadFailed(String),
+    OutOfMemory,
+    NeuronError(String),
+}

@@ -1,6 +1,26 @@
 # Simplex Testing Methods
 
-**Version:** 0.5.0
+**Version:** 0.9.0
+
+## Test Naming Convention
+
+All tests follow a consistent naming convention based on test type:
+
+| Prefix | Type | Description | Use For |
+|--------|------|-------------|---------|
+| `unit_` | Unit | Tests individual functions/types in isolation | Module tests, function tests |
+| `spec_` | Specification | Tests language specification compliance | Language features, syntax |
+| `integ_` | Integration | Tests integration between components | Multi-component tests |
+| `e2e_` | End-to-End | Tests complete workflows | Full application scenarios |
+
+### Examples
+
+```
+unit_hashmap.sx       # Unit test for HashMap module
+spec_generics.sx      # Spec test for generic types
+integ_networking.sx   # Integration test for networking
+e2e_data_processor.sx # End-to-end data processing workflow
+```
 
 ## Test Structure
 
@@ -9,7 +29,7 @@
 Every Simplex test follows this structure:
 
 ```simplex
-// Test file: test_feature.sx
+// Test file: unit_feature.sx
 // Description of what this test validates
 
 // External declarations for runtime functions
@@ -57,7 +77,7 @@ fn test_retrieve() -> i64 {
 }
 
 fn main() -> i64 {
-    let failures: i64 = 0;
+    var failures: i64 = 0;
 
     println("=== Comprehensive Test ===");
 
@@ -220,13 +240,35 @@ fn hive_slm_new(name: i64, model: i64, mnemonic: i64) -> i64;
 fn hive_slm_close(slm: i64);
 ```
 
+### Dual Number Functions (v0.8.0)
+
+```simplex
+// Dual number construction
+fn dual_new(val: f64, der: f64) -> i64;
+fn dual_constant(val: f64) -> i64;
+fn dual_variable(val: f64) -> i64;
+
+// Dual number operations
+fn dual_add(a: i64, b: i64) -> i64;
+fn dual_mul(a: i64, b: i64) -> i64;
+fn dual_sin(x: i64) -> i64;
+fn dual_cos(x: i64) -> i64;
+fn dual_exp(x: i64) -> i64;
+fn dual_ln(x: i64) -> i64;
+
+// Access value and derivative
+fn dual_val(x: i64) -> f64;
+fn dual_der(x: i64) -> f64;
+```
+
 ## Test Categories
 
-### Unit Tests
+### Unit Tests (`unit_*.sx`)
 
 Test individual functions or components in isolation:
 
 ```simplex
+// unit_string_concat.sx
 fn test_string_concat() -> i64 {
     let a: i64 = string_from("Hello, ");
     let b: i64 = string_from("World!");
@@ -237,14 +279,56 @@ fn test_string_concat() -> i64 {
     }
     0
 }
+
+fn main() -> i64 {
+    if test_string_concat() != 0 {
+        println("FAIL: string concat");
+        return 1;
+    }
+    println("PASS: string concat");
+    0
+}
 ```
 
-### Integration Tests
+### Spec Tests (`spec_*.sx`)
+
+Test language specification compliance:
+
+```simplex
+// spec_generics.sx
+fn identity<T>(x: T) -> T {
+    x
+}
+
+fn main() -> i64 {
+    let a: i64 = identity::<i64>(42);
+    let b: f64 = identity::<f64>(3.14);
+
+    if a != 42 {
+        println("FAIL: generic i64");
+        return 1;
+    }
+    println("PASS: generic i64");
+
+    if b < 3.0 {
+        println("FAIL: generic f64");
+        return 1;
+    }
+    println("PASS: generic f64");
+
+    0
+}
+```
+
+### Integration Tests (`integ_*.sx`)
 
 Test multiple components working together:
 
 ```simplex
-fn test_specialist_with_anima() -> i64 {
+// integ_specialist_anima.sx
+fn main() -> i64 {
+    println("=== Specialist with Anima Integration ===");
+
     // Create Anima
     let anima: i64 = anima_memory_new(10);
     anima_learn(anima, string_from("I am a specialist"), 0.9, string_from("self"));
@@ -263,8 +347,10 @@ fn test_specialist_with_anima() -> i64 {
     let spec: i64 = specialist_create(string_from("TestSpec"), hive_slm, anima);
 
     if spec == 0 {
-        return 1;  // Failed to create
+        println("FAIL: specialist creation");
+        return 1;
     }
+    println("PASS: specialist creation");
 
     // Cleanup
     specialist_close(spec);
@@ -272,47 +358,42 @@ fn test_specialist_with_anima() -> i64 {
     hive_slm_close(hive_slm);
     hive_mnemonic_close(mnemonic);
 
+    println("=== Integration Test Complete! ===");
     0
 }
 ```
 
-### End-to-End Tests
+### End-to-End Tests (`e2e_*.sx`)
 
 Test complete workflows:
 
 ```simplex
+// e2e_data_processor.sx
 fn main() -> i64 {
-    println("=== Model Provisioning Workflow ===");
+    println("=== Data Processing Workflow ===");
 
-    // Step 1: Discover models
-    let count: i64 = builtin_models_count();
-    if count < 3 {
-        println("FAIL: Not enough builtin models");
+    // Step 1: Load data
+    let data: i64 = load_data("input.csv");
+    if data == 0 {
+        println("FAIL: load data");
         return 1;
     }
+    println("PASS: load data");
 
-    // Step 2: Configure SLM
-    let config: i64 = slm_config_new();
-    slm_config_set_model(config, string_from("simplex-cognitive-7b"));
-    slm_config_set_context_size(config, 4096);
+    // Step 2: Process data
+    let processed: i64 = transform(data);
+    if processed == 0 {
+        println("FAIL: transform");
+        return 1;
+    }
+    println("PASS: transform");
 
-    // Step 3: Create Hive
-    let mnemonic: i64 = hive_mnemonic_new(100, 500, 50);
-    let hive_slm: i64 = hive_slm_new(string_from("TestHive"), string_from("simplex-cognitive-7b"), mnemonic);
-
-    // Step 4: Create Specialist
-    let anima: i64 = anima_memory_new(10);
-    let spec: i64 = specialist_create(string_from("TestSpec"), hive_slm, anima);
-
-    // Step 5: Run inference
-    let result: i64 = specialist_infer(spec, string_from("Test prompt"));
-
-    // Cleanup
-    specialist_close(spec);
-    anima_memory_close(anima);
-    hive_slm_close(hive_slm);
-    hive_mnemonic_close(mnemonic);
-    slm_config_close(config);
+    // Step 3: Validate output
+    if validate(processed) != 1 {
+        println("FAIL: validation");
+        return 1;
+    }
+    println("PASS: validation");
 
     println("=== Workflow Complete! ===");
     0
@@ -358,15 +439,6 @@ println("PASS: Description of what passed");
 println("FAIL: Description of what failed");
 println("WARN: Warning message");
 println("INFO: Informational message");
-```
-
-### Visual Indicators
-
-```simplex
-println("  ✓ Success indicator");
-println("  ✗ Failure indicator");
-println("  ℹ Information indicator");
-println("  ⚠ Warning indicator");
 ```
 
 ## Testing Async Code
@@ -427,3 +499,44 @@ fn main() -> i64 {
     0
 }
 ```
+
+## Testing Dual Numbers (v0.8.0)
+
+```simplex
+fn main() -> i64 {
+    println("=== Dual Number Test ===");
+
+    // Test basic derivative
+    let x: i64 = dual_variable(3.0);
+    let y: i64 = dual_mul(x, x);  // y = x^2
+
+    let val: f64 = dual_val(y);
+    let der: f64 = dual_der(y);
+
+    // At x=3: y = 9, dy/dx = 6
+    if val < 8.9 || val > 9.1 {
+        println("FAIL: value incorrect");
+        return 1;
+    }
+    println("PASS: value correct");
+
+    if der < 5.9 || der > 6.1 {
+        println("FAIL: derivative incorrect");
+        return 1;
+    }
+    println("PASS: derivative correct");
+
+    println("=== Dual Number Test Complete! ===");
+    0
+}
+```
+
+## Best Practices
+
+1. **Use appropriate test type**: Choose `unit_`, `spec_`, `integ_`, or `e2e_` based on what you're testing
+2. **One concept per test**: Keep tests focused on a single behavior
+3. **Clear test names**: Use descriptive names that explain what's being tested
+4. **Test edge cases**: Include boundary conditions and error cases
+5. **Provide context on failure**: Print expected vs actual values
+6. **Always clean up resources**: Even on failure paths
+7. **Return 0 on success, non-zero on failure**: Required for test runner

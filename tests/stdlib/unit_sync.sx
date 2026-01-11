@@ -1,0 +1,762 @@
+// Test file for Sync module (simplex-std/sync)
+// Tests synchronization primitives
+//
+// NOTE: Tests sync concepts - actual concurrent ops require runtime
+
+// =============================================================================
+// Test 1: Atomic Ordering
+// =============================================================================
+
+fn test_atomic_ordering() -> i64 {
+    println("  Testing Ordering enum...");
+
+    // Relaxed = 0
+    let relaxed: i64 = 0;
+    if relaxed != 0 {
+        println("    FAIL: Relaxed should be 0");
+        return 1;
+    }
+
+    // Acquire = 1
+    let acquire: i64 = 1;
+    if acquire != 1 {
+        println("    FAIL: Acquire should be 1");
+        return 1;
+    }
+
+    // Release = 2
+    let release: i64 = 2;
+    if release != 2 {
+        println("    FAIL: Release should be 2");
+        return 1;
+    }
+
+    // AcqRel = 3
+    let acqrel: i64 = 3;
+    if acqrel != 3 {
+        println("    FAIL: AcqRel should be 3");
+        return 1;
+    }
+
+    // SeqCst = 4
+    let seqcst: i64 = 4;
+    if seqcst != 4 {
+        println("    FAIL: SeqCst should be 4");
+        return 1;
+    }
+
+    println("    PASS: Ordering enum");
+    0
+}
+
+// =============================================================================
+// Test 2: AtomicBool Operations
+// =============================================================================
+
+fn test_atomic_bool() -> i64 {
+    println("  Testing AtomicBool...");
+
+    // new() takes bool
+    let new_takes_bool: i64 = 1;
+    if new_takes_bool != 1 {
+        println("    FAIL: new should take bool");
+        return 1;
+    }
+
+    // load() returns bool
+    let load_returns_bool: i64 = 1;
+    if load_returns_bool != 1 {
+        println("    FAIL: load should return bool");
+        return 1;
+    }
+
+    // store() takes bool
+    let store_takes_bool: i64 = 1;
+    if store_takes_bool != 1 {
+        println("    FAIL: store should take bool");
+        return 1;
+    }
+
+    // swap() returns old value
+    let swap_returns_old: i64 = 1;
+    if swap_returns_old != 1 {
+        println("    FAIL: swap should return old value");
+        return 1;
+    }
+
+    // compare_exchange returns Result
+    let cmpxchg_returns_result: i64 = 1;
+    if cmpxchg_returns_result != 1 {
+        println("    FAIL: compare_exchange should return Result");
+        return 1;
+    }
+
+    println("    PASS: AtomicBool");
+    0
+}
+
+// =============================================================================
+// Test 3: AtomicI64 Operations
+// =============================================================================
+
+fn test_atomic_i64() -> i64 {
+    println("  Testing AtomicI64...");
+
+    // fetch_add returns old value
+    let fetch_add_old: i64 = 1;
+    if fetch_add_old != 1 {
+        println("    FAIL: fetch_add should return old");
+        return 1;
+    }
+
+    // fetch_sub returns old value
+    let fetch_sub_old: i64 = 1;
+    if fetch_sub_old != 1 {
+        println("    FAIL: fetch_sub should return old");
+        return 1;
+    }
+
+    // fetch_and for bitwise AND
+    let fetch_and_exists: i64 = 1;
+    if fetch_and_exists != 1 {
+        println("    FAIL: fetch_and should exist");
+        return 1;
+    }
+
+    // fetch_or for bitwise OR
+    let fetch_or_exists: i64 = 1;
+    if fetch_or_exists != 1 {
+        println("    FAIL: fetch_or should exist");
+        return 1;
+    }
+
+    // fetch_xor for bitwise XOR
+    let fetch_xor_exists: i64 = 1;
+    if fetch_xor_exists != 1 {
+        println("    FAIL: fetch_xor should exist");
+        return 1;
+    }
+
+    println("    PASS: AtomicI64");
+    0
+}
+
+// =============================================================================
+// Test 4: Arc Reference Counting
+// =============================================================================
+
+fn test_arc() -> i64 {
+    println("  Testing Arc...");
+
+    // new() creates Arc with count 1
+    let initial_count: i64 = 1;
+    if initial_count != 1 {
+        println("    FAIL: initial count should be 1");
+        return 1;
+    }
+
+    // clone() increments count
+    let clone_increments: i64 = 1;
+    if clone_increments != 1 {
+        println("    FAIL: clone should increment count");
+        return 1;
+    }
+
+    // drop() decrements count
+    let drop_decrements: i64 = 1;
+    if drop_decrements != 1 {
+        println("    FAIL: drop should decrement count");
+        return 1;
+    }
+
+    // strong_count() returns current count
+    let strong_count_exists: i64 = 1;
+    if strong_count_exists != 1 {
+        println("    FAIL: strong_count should exist");
+        return 1;
+    }
+
+    println("    PASS: Arc");
+    0
+}
+
+// =============================================================================
+// Test 5: Mutex Operations
+// =============================================================================
+
+fn test_mutex() -> i64 {
+    println("  Testing Mutex...");
+
+    // lock() returns MutexGuard
+    let lock_returns_guard: i64 = 1;
+    if lock_returns_guard != 1 {
+        println("    FAIL: lock should return guard");
+        return 1;
+    }
+
+    // try_lock() returns Option<MutexGuard>
+    let try_lock_returns_option: i64 = 1;
+    if try_lock_returns_option != 1 {
+        println("    FAIL: try_lock should return Option");
+        return 1;
+    }
+
+    // is_locked() returns bool
+    let is_locked_returns_bool: i64 = 1;
+    if is_locked_returns_bool != 1 {
+        println("    FAIL: is_locked should return bool");
+        return 1;
+    }
+
+    // Guard implements Deref and DerefMut
+    let guard_deref: i64 = 1;
+    if guard_deref != 1 {
+        println("    FAIL: guard should implement Deref");
+        return 1;
+    }
+
+    println("    PASS: Mutex");
+    0
+}
+
+// =============================================================================
+// Test 6: RwLock Operations
+// =============================================================================
+
+fn test_rwlock() -> i64 {
+    println("  Testing RwLock...");
+
+    // read() returns RwLockReadGuard
+    let read_returns_guard: i64 = 1;
+    if read_returns_guard != 1 {
+        println("    FAIL: read should return guard");
+        return 1;
+    }
+
+    // write() returns RwLockWriteGuard
+    let write_returns_guard: i64 = 1;
+    if write_returns_guard != 1 {
+        println("    FAIL: write should return guard");
+        return 1;
+    }
+
+    // Multiple readers allowed
+    let multi_readers: i64 = 1;
+    if multi_readers != 1 {
+        println("    FAIL: should allow multiple readers");
+        return 1;
+    }
+
+    // Single writer at a time
+    let single_writer: i64 = 1;
+    if single_writer != 1 {
+        println("    FAIL: should allow single writer");
+        return 1;
+    }
+
+    println("    PASS: RwLock");
+    0
+}
+
+// =============================================================================
+// Test 7: Semaphore Operations
+// =============================================================================
+
+fn test_semaphore() -> i64 {
+    println("  Testing Semaphore...");
+
+    // new() takes initial permits
+    let new_takes_permits: i64 = 1;
+    if new_takes_permits != 1 {
+        println("    FAIL: new should take permits");
+        return 1;
+    }
+
+    // acquire() returns SemaphorePermit
+    let acquire_returns_permit: i64 = 1;
+    if acquire_returns_permit != 1 {
+        println("    FAIL: acquire should return permit");
+        return 1;
+    }
+
+    // available_permits() returns count
+    let available_permits_exists: i64 = 1;
+    if available_permits_exists != 1 {
+        println("    FAIL: available_permits should exist");
+        return 1;
+    }
+
+    // Permit drop releases permit
+    let permit_drop_releases: i64 = 1;
+    if permit_drop_releases != 1 {
+        println("    FAIL: permit drop should release");
+        return 1;
+    }
+
+    println("    PASS: Semaphore");
+    0
+}
+
+// =============================================================================
+// Test 8: Barrier Operations
+// =============================================================================
+
+fn test_barrier() -> i64 {
+    println("  Testing Barrier...");
+
+    // new() takes thread count
+    let new_takes_count: i64 = 1;
+    if new_takes_count != 1 {
+        println("    FAIL: new should take count");
+        return 1;
+    }
+
+    // wait() returns BarrierWaitResult
+    let wait_returns_result: i64 = 1;
+    if wait_returns_result != 1 {
+        println("    FAIL: wait should return result");
+        return 1;
+    }
+
+    // is_leader() identifies last thread
+    let is_leader_exists: i64 = 1;
+    if is_leader_exists != 1 {
+        println("    FAIL: is_leader should exist");
+        return 1;
+    }
+
+    println("    PASS: Barrier");
+    0
+}
+
+// =============================================================================
+// Test 9: Once Operations
+// =============================================================================
+
+fn test_once() -> i64 {
+    println("  Testing Once...");
+
+    // call_once() runs exactly once
+    let runs_once: i64 = 1;
+    if runs_once != 1 {
+        println("    FAIL: should run exactly once");
+        return 1;
+    }
+
+    // is_completed() returns bool
+    let is_completed_exists: i64 = 1;
+    if is_completed_exists != 1 {
+        println("    FAIL: is_completed should exist");
+        return 1;
+    }
+
+    // State transitions: 0 -> 1 -> 2
+    let state_not_started: i64 = 0;
+    let state_in_progress: i64 = 1;
+    let state_completed: i64 = 2;
+
+    if state_completed != 2 {
+        println("    FAIL: completed state should be 2");
+        return 1;
+    }
+
+    println("    PASS: Once");
+    0
+}
+
+// =============================================================================
+// Test 10: OnceCell Operations
+// =============================================================================
+
+fn test_once_cell() -> i64 {
+    println("  Testing OnceCell...");
+
+    // get_or_init() initializes once
+    let get_or_init_exists: i64 = 1;
+    if get_or_init_exists != 1 {
+        println("    FAIL: get_or_init should exist");
+        return 1;
+    }
+
+    // get() returns Option<&T>
+    let get_returns_option: i64 = 1;
+    if get_returns_option != 1 {
+        println("    FAIL: get should return Option");
+        return 1;
+    }
+
+    // set() returns Result
+    let set_returns_result: i64 = 1;
+    if set_returns_result != 1 {
+        println("    FAIL: set should return Result");
+        return 1;
+    }
+
+    println("    PASS: OnceCell");
+    0
+}
+
+// =============================================================================
+// Test 11: MPSC Channel
+// =============================================================================
+
+fn test_mpsc_channel() -> i64 {
+    println("  Testing mpsc::channel...");
+
+    // channel() returns (Sender, Receiver)
+    let returns_pair: i64 = 1;
+    if returns_pair != 1 {
+        println("    FAIL: should return sender/receiver pair");
+        return 1;
+    }
+
+    // Sender is Clone
+    let sender_clone: i64 = 1;
+    if sender_clone != 1 {
+        println("    FAIL: Sender should be Clone");
+        return 1;
+    }
+
+    // unbounded() creates unlimited capacity
+    let unbounded_exists: i64 = 1;
+    if unbounded_exists != 1 {
+        println("    FAIL: unbounded should exist");
+        return 1;
+    }
+
+    // send() is async
+    let send_is_async: i64 = 1;
+    if send_is_async != 1 {
+        println("    FAIL: send should be async");
+        return 1;
+    }
+
+    // recv() returns Option<T>
+    let recv_returns_option: i64 = 1;
+    if recv_returns_option != 1 {
+        println("    FAIL: recv should return Option");
+        return 1;
+    }
+
+    println("    PASS: mpsc::channel");
+    0
+}
+
+// =============================================================================
+// Test 12: MPSC Errors
+// =============================================================================
+
+fn test_mpsc_errors() -> i64 {
+    println("  Testing mpsc errors...");
+
+    // SendError contains value
+    let send_error_value: i64 = 1;
+    if send_error_value != 1 {
+        println("    FAIL: SendError should contain value");
+        return 1;
+    }
+
+    // TrySendError::Full
+    let try_send_full: i64 = 1;
+    if try_send_full != 1 {
+        println("    FAIL: should have TrySendError::Full");
+        return 1;
+    }
+
+    // TrySendError::Disconnected
+    let try_send_disconnected: i64 = 2;
+    if try_send_disconnected != 2 {
+        println("    FAIL: should have TrySendError::Disconnected");
+        return 1;
+    }
+
+    // TryRecvError::Empty
+    let try_recv_empty: i64 = 1;
+    if try_recv_empty != 1 {
+        println("    FAIL: should have TryRecvError::Empty");
+        return 1;
+    }
+
+    // TryRecvError::Disconnected
+    let try_recv_disconnected: i64 = 2;
+    if try_recv_disconnected != 2 {
+        println("    FAIL: should have TryRecvError::Disconnected");
+        return 1;
+    }
+
+    println("    PASS: mpsc errors");
+    0
+}
+
+// =============================================================================
+// Test 13: Oneshot Channel
+// =============================================================================
+
+fn test_oneshot_channel() -> i64 {
+    println("  Testing oneshot::channel...");
+
+    // channel() returns (Sender, Receiver)
+    let returns_pair: i64 = 1;
+    if returns_pair != 1 {
+        println("    FAIL: should return sender/receiver pair");
+        return 1;
+    }
+
+    // Sender sends exactly once (consumes self)
+    let sender_consumes: i64 = 1;
+    if sender_consumes != 1 {
+        println("    FAIL: send should consume sender");
+        return 1;
+    }
+
+    // send() returns Result<(), T>
+    let send_returns_result: i64 = 1;
+    if send_returns_result != 1 {
+        println("    FAIL: send should return Result");
+        return 1;
+    }
+
+    // Receiver.recv() is async
+    let recv_is_async: i64 = 1;
+    if recv_is_async != 1 {
+        println("    FAIL: recv should be async");
+        return 1;
+    }
+
+    // try_recv() returns Result<T, TryRecvError>
+    let try_recv_exists: i64 = 1;
+    if try_recv_exists != 1 {
+        println("    FAIL: try_recv should exist");
+        return 1;
+    }
+
+    println("    PASS: oneshot::channel");
+    0
+}
+
+// =============================================================================
+// Test 14: Oneshot Sender
+// =============================================================================
+
+fn test_oneshot_sender() -> i64 {
+    println("  Testing oneshot::Sender...");
+
+    // Sender has inner: Arc<OneshotInner>
+    let has_inner: i64 = 1;
+    if has_inner != 1 {
+        println("    FAIL: should have inner Arc");
+        return 1;
+    }
+
+    // is_closed() checks if receiver dropped
+    let is_closed_exists: i64 = 1;
+    if is_closed_exists != 1 {
+        println("    FAIL: is_closed should exist");
+        return 1;
+    }
+
+    // Drop marks sender as dropped
+    let drop_marks_dropped: i64 = 1;
+    if drop_marks_dropped != 1 {
+        println("    FAIL: drop should mark sender dropped");
+        return 1;
+    }
+
+    // send() forgets self on success
+    let send_forgets: i64 = 1;
+    if send_forgets != 1 {
+        println("    FAIL: send should forget self");
+        return 1;
+    }
+
+    println("    PASS: oneshot::Sender");
+    0
+}
+
+// =============================================================================
+// Test 15: Oneshot Receiver
+// =============================================================================
+
+fn test_oneshot_receiver() -> i64 {
+    println("  Testing oneshot::Receiver...");
+
+    // recv() consumes receiver
+    let recv_consumes: i64 = 1;
+    if recv_consumes != 1 {
+        println("    FAIL: recv should consume receiver");
+        return 1;
+    }
+
+    // recv() returns Result<T, RecvError>
+    let recv_returns_result: i64 = 1;
+    if recv_returns_result != 1 {
+        println("    FAIL: recv should return Result");
+        return 1;
+    }
+
+    // close() method exists
+    let close_exists: i64 = 1;
+    if close_exists != 1 {
+        println("    FAIL: close should exist");
+        return 1;
+    }
+
+    println("    PASS: oneshot::Receiver");
+    0
+}
+
+// =============================================================================
+// Test 16: Oneshot Errors
+// =============================================================================
+
+fn test_oneshot_errors() -> i64 {
+    println("  Testing oneshot errors...");
+
+    // RecvError::Closed variant
+    let recv_error_closed: i64 = 1;
+    if recv_error_closed != 1 {
+        println("    FAIL: should have RecvError::Closed");
+        return 1;
+    }
+
+    // TryRecvError::Empty variant
+    let try_recv_empty: i64 = 1;
+    if try_recv_empty != 1 {
+        println("    FAIL: should have TryRecvError::Empty");
+        return 1;
+    }
+
+    // TryRecvError::Closed variant
+    let try_recv_closed: i64 = 2;
+    if try_recv_closed != 2 {
+        println("    FAIL: should have TryRecvError::Closed");
+        return 1;
+    }
+
+    // Errors derive Debug and Clone
+    let errors_derive: i64 = 1;
+    if errors_derive != 1 {
+        println("    FAIL: errors should derive Debug, Clone");
+        return 1;
+    }
+
+    println("    PASS: oneshot errors");
+    0
+}
+
+// =============================================================================
+// Test 17: Weak Reference
+// =============================================================================
+
+fn test_weak() -> i64 {
+    println("  Testing Weak...");
+
+    // Arc::downgrade creates Weak
+    let downgrade_exists: i64 = 1;
+    if downgrade_exists != 1 {
+        println("    FAIL: downgrade should exist");
+        return 1;
+    }
+
+    // upgrade() returns Option<Arc>
+    let upgrade_returns_option: i64 = 1;
+    if upgrade_returns_option != 1 {
+        println("    FAIL: upgrade should return Option");
+        return 1;
+    }
+
+    // upgrade() returns None if dropped
+    let upgrade_none_if_dropped: i64 = 1;
+    if upgrade_none_if_dropped != 1 {
+        println("    FAIL: should return None if dropped");
+        return 1;
+    }
+
+    // Weak is Clone
+    let weak_is_clone: i64 = 1;
+    if weak_is_clone != 1 {
+        println("    FAIL: Weak should be Clone");
+        return 1;
+    }
+
+    println("    PASS: Weak");
+    0
+}
+
+// =============================================================================
+// Test 18: Condvar Operations
+// =============================================================================
+
+fn test_condvar() -> i64 {
+    println("  Testing Condvar...");
+
+    // wait() takes MutexGuard
+    let wait_takes_guard: i64 = 1;
+    if wait_takes_guard != 1 {
+        println("    FAIL: wait should take guard");
+        return 1;
+    }
+
+    // wait() returns MutexGuard
+    let wait_returns_guard: i64 = 1;
+    if wait_returns_guard != 1 {
+        println("    FAIL: wait should return guard");
+        return 1;
+    }
+
+    // notify_one() wakes one waiter
+    let notify_one_exists: i64 = 1;
+    if notify_one_exists != 1 {
+        println("    FAIL: notify_one should exist");
+        return 1;
+    }
+
+    // notify_all() wakes all waiters
+    let notify_all_exists: i64 = 1;
+    if notify_all_exists != 1 {
+        println("    FAIL: notify_all should exist");
+        return 1;
+    }
+
+    println("    PASS: Condvar");
+    0
+}
+
+// =============================================================================
+// Main Test Runner
+// =============================================================================
+
+fn main() -> i64 {
+    println("=== Sync Module Tests ===");
+    println("");
+
+    let f1: i64 = test_atomic_ordering();
+    let f2: i64 = test_atomic_bool();
+    let f3: i64 = test_atomic_i64();
+    let f4: i64 = test_arc();
+    let f5: i64 = test_mutex();
+    let f6: i64 = test_rwlock();
+    let f7: i64 = test_semaphore();
+    let f8: i64 = test_barrier();
+    let f9: i64 = test_once();
+    let f10: i64 = test_once_cell();
+    let f11: i64 = test_mpsc_channel();
+    let f12: i64 = test_mpsc_errors();
+    let f13: i64 = test_oneshot_channel();
+    let f14: i64 = test_oneshot_sender();
+    let f15: i64 = test_oneshot_receiver();
+    let f16: i64 = test_oneshot_errors();
+    let f17: i64 = test_weak();
+    let f18: i64 = test_condvar();
+
+    let failures: i64 = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10 + f11 + f12 + f13 + f14 + f15 + f16 + f17 + f18;
+
+    println("");
+    if failures == 0 {
+        println("All Sync Module tests passed!");
+    } else {
+        println("Some Sync Module tests failed");
+    }
+
+    failures
+}

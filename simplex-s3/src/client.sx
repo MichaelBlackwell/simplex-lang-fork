@@ -1,0 +1,500 @@
+// S3 Client implementation
+
+use simplex_std::collections::HashMap;
+use simplex_http::client::{HttpClient, ClientConfig, ClientError};
+use simplex_http::json::{JsonValue, to_json, parse};
+use crate::object::{Object, ObjectMeta, PutObjectRequest, GetObjectResponse};
+use crate::presigned::{PresignedUrl, PresignedConfig};
+use crate::auth::{AwsCredentials, sign_request, sign_url};
+
+/// S3 Configuration
+pub struct S3Config {
+    pub region: String,
+    pub access_key_id: String,
+    pub secret_access_key: String,
+    pub endpoint: Option<String>,
+    pub path_style: bool,
+}
+
+impl S3Config {
+    pub fn new(region: &str, access_key_id: &str, secret_access_key: &str) -> Self {
+        S3Config {
+            region: region.to_string(),
+            access_key_id: access_key_id.to_string(),
+            secret_access_key: secret_access_key.to_string(),
+            endpoint: None,
+            path_style: false,
+        }
+    }
+
+    pub fn ap_southeast_2(access_key_id: &str, secret_access_key: &str) -> Self {
+        Self::new("ap-southeast-2", access_key_id, secret_access_key)
+    }
+
+    pub fn endpoint(mut self, endpoint: &str) -> Self {
+        self.endpoint = Some(endpoint.to_string());
+        self
+    }
+
+    pub fn path_style(mut self, path_style: bool) -> Self {
+        self.path_style = path_style;
+        self
+    }
+}
+
+/// S3 Client
+pub struct S3Client {
+    config: S3Config,
+    http: HttpClient,
+}
+
+impl S3Client {
+    pub fn new(config: S3Config) -> Self {
+        let http_config = ClientConfig::new().timeout(60000);
+        let http = HttpClient::new(http_config);
+
+        S3Client { config, http }
+    }
+
+    /// Get credentials
+    fn credentials(&self) -> AwsCredentials {
+        AwsCredentials {
+            access_key_id: self.config.access_key_id.clone(),
+            secret_access_key: self.config.secret_access_key.clone(),
+            region: self.config.region.clone(),
+            service: "s3".to_string(),
+        }
+    }
+
+    /// Get endpoint for bucket
+    fn bucket_endpoint(&self, bucket: &str) -> String {
+        if let Some(ref endpoint) = self.config.endpoint {
+            if self.config.path_style {
+                format!("{}/{}", endpoint, bucket)
+            } else {
+                format!("{}", endpoint.replace("://", &format!("://{}.s3.", bucket)))
+            }
+        } else {
+            if self.config.path_style {
+                format!("https://s3.{}.amazonaws.com/{}", self.config.region, bucket)
+            } else {
+                format!("https://{}.s3.{}.amazonaws.com", bucket, self.config.region)
+            }
+        }
+    }
+
+    /// Get object URL
+    fn object_url(&self, bucket: &str, key: &str) -> String {
+        format!("{}/{}", self.bucket_endpoint(bucket), key)
+    }
+
+    /// Put an object
+    pub async fn put_object(&self, request: &PutObjectRequest) -> Result<(), S3Error> {
+        let url = self.object_url(&request.bucket, &request.key);
+
+        let credentials = self.credentials();
+        let content_hash = sha256_hex(&request.body);
+
+        let mut headers = sign_request(
+            "PUT",
+            &url,
+            &content_hash,
+            &credentials,
+        )?;
+
+        headers.insert("Content-Type".to_string(),
+            request.content_type.clone().unwrap_or_else(|| "application/octet-stream".to_string()));
+
+        if let Some(ref acl) = request.acl {
+            headers.insert("x-amz-acl".to_string(), acl.clone());
+        }
+
+        for (key, value) in &request.metadata {
+            headers.insert(format!("x-amz-meta-{}", key), value.clone());
+        }
+
+        let response = self.http
+            .headers(headers)
+            .put_bytes(&url, &request.body)
+            .await
+            .map_err(|e| S3Error::HttpError(format!("{:?}", e)))?;
+
+        if response.is_success() {
+            Ok(())
+        } else {
+            let body = response.body_string().unwrap_or_default();
+            Err(S3Error::ApiError(response.status_code, body))
+        }
+    }
+
+    /// Get an object
+    pub async fn get_object(&self, bucket: &str, key: &str) -> Result<GetObjectResponse, S3Error> {
+        let url = self.object_url(bucket, key);
+
+        let credentials = self.credentials();
+        let headers = sign_request("GET", &url, "UNSIGNED-PAYLOAD", &credentials)?;
+
+        let response = self.http
+            .headers(headers)
+            .get(&url)
+            .await
+            .map_err(|e| S3Error::HttpError(format!("{:?}", e)))?;
+
+        if response.is_success() {
+            Ok(GetObjectResponse {
+                body: response.body.unwrap_or_default(),
+                content_type: response.header("content-type").map(|s| s.to_string()),
+                content_length: response.header("content-length")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0),
+                etag: response.header("etag").map(|s| s.to_string()),
+                last_modified: response.header("last-modified").map(|s| s.to_string()),
+                metadata: extract_metadata(&response.headers),
+            })
+        } else if response.status_code == 404 {
+            Err(S3Error::NotFound)
+        } else {
+            let body = response.body_string().unwrap_or_default();
+            Err(S3Error::ApiError(response.status_code, body))
+        }
+    }
+
+    /// Delete an object
+    pub async fn delete_object(&self, bucket: &str, key: &str) -> Result<(), S3Error> {
+        let url = self.object_url(bucket, key);
+
+        let credentials = self.credentials();
+        let headers = sign_request("DELETE", &url, "UNSIGNED-PAYLOAD", &credentials)?;
+
+        let response = self.http
+            .headers(headers)
+            .delete(&url)
+            .await
+            .map_err(|e| S3Error::HttpError(format!("{:?}", e)))?;
+
+        if response.is_success() || response.status_code == 204 {
+            Ok(())
+        } else {
+            let body = response.body_string().unwrap_or_default();
+            Err(S3Error::ApiError(response.status_code, body))
+        }
+    }
+
+    /// Check if object exists
+    pub async fn head_object(&self, bucket: &str, key: &str) -> Result<ObjectMeta, S3Error> {
+        let url = self.object_url(bucket, key);
+
+        let credentials = self.credentials();
+        let headers = sign_request("HEAD", &url, "UNSIGNED-PAYLOAD", &credentials)?;
+
+        let response = self.http
+            .headers(headers)
+            .head(&url)
+            .await
+            .map_err(|e| S3Error::HttpError(format!("{:?}", e)))?;
+
+        if response.is_success() {
+            Ok(ObjectMeta {
+                key: key.to_string(),
+                size: response.header("content-length")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0),
+                content_type: response.header("content-type").map(|s| s.to_string()),
+                etag: response.header("etag").map(|s| s.to_string()),
+                last_modified: response.header("last-modified").map(|s| s.to_string()),
+                metadata: extract_metadata(&response.headers),
+            })
+        } else if response.status_code == 404 {
+            Err(S3Error::NotFound)
+        } else {
+            Err(S3Error::ApiError(response.status_code, String::new()))
+        }
+    }
+
+    /// List objects in a bucket
+    pub async fn list_objects(
+        &self,
+        bucket: &str,
+        prefix: Option<&str>,
+        max_keys: Option<u32>,
+        continuation_token: Option<&str>,
+    ) -> Result<ListObjectsResponse, S3Error> {
+        let mut url = format!("{}?list-type=2", self.bucket_endpoint(bucket));
+
+        if let Some(p) = prefix {
+            url.push_str(&format!("&prefix={}", url_encode(p)));
+        }
+        if let Some(max) = max_keys {
+            url.push_str(&format!("&max-keys={}", max));
+        }
+        if let Some(token) = continuation_token {
+            url.push_str(&format!("&continuation-token={}", url_encode(token)));
+        }
+
+        let credentials = self.credentials();
+        let headers = sign_request("GET", &url, "UNSIGNED-PAYLOAD", &credentials)?;
+
+        let response = self.http
+            .headers(headers)
+            .get(&url)
+            .await
+            .map_err(|e| S3Error::HttpError(format!("{:?}", e)))?;
+
+        if response.is_success() {
+            let body = response.body_string().unwrap_or_default();
+            parse_list_objects_response(&body)
+        } else {
+            let body = response.body_string().unwrap_or_default();
+            Err(S3Error::ApiError(response.status_code, body))
+        }
+    }
+
+    /// Copy an object
+    pub async fn copy_object(
+        &self,
+        source_bucket: &str,
+        source_key: &str,
+        dest_bucket: &str,
+        dest_key: &str,
+    ) -> Result<(), S3Error> {
+        let url = self.object_url(dest_bucket, dest_key);
+        let copy_source = format!("/{}/{}", source_bucket, source_key);
+
+        let credentials = self.credentials();
+        let mut headers = sign_request("PUT", &url, "UNSIGNED-PAYLOAD", &credentials)?;
+        headers.insert("x-amz-copy-source".to_string(), copy_source);
+
+        let response = self.http
+            .headers(headers)
+            .put_bytes(&url, &[])
+            .await
+            .map_err(|e| S3Error::HttpError(format!("{:?}", e)))?;
+
+        if response.is_success() {
+            Ok(())
+        } else {
+            let body = response.body_string().unwrap_or_default();
+            Err(S3Error::ApiError(response.status_code, body))
+        }
+    }
+
+    /// Generate a presigned URL for GET
+    pub fn presign_get(
+        &self,
+        bucket: &str,
+        key: &str,
+        expires_in_secs: u64,
+    ) -> Result<PresignedUrl, S3Error> {
+        let url = self.object_url(bucket, key);
+        let credentials = self.credentials();
+
+        let signed = sign_url(
+            "GET",
+            &url,
+            expires_in_secs,
+            &credentials,
+        )?;
+
+        Ok(PresignedUrl {
+            url: signed,
+            expires_in: expires_in_secs,
+            method: "GET".to_string(),
+        })
+    }
+
+    /// Generate a presigned URL for PUT
+    pub fn presign_put(
+        &self,
+        bucket: &str,
+        key: &str,
+        content_type: Option<&str>,
+        expires_in_secs: u64,
+    ) -> Result<PresignedUrl, S3Error> {
+        let url = self.object_url(bucket, key);
+        let credentials = self.credentials();
+
+        let mut extra_headers = HashMap::new();
+        if let Some(ct) = content_type {
+            extra_headers.insert("Content-Type".to_string(), ct.to_string());
+        }
+
+        let signed = sign_url_with_headers(
+            "PUT",
+            &url,
+            expires_in_secs,
+            &credentials,
+            &extra_headers,
+        )?;
+
+        Ok(PresignedUrl {
+            url: signed,
+            expires_in: expires_in_secs,
+            method: "PUT".to_string(),
+        })
+    }
+
+    /// Create a bucket
+    pub async fn create_bucket(&self, bucket: &str) -> Result<(), S3Error> {
+        let url = self.bucket_endpoint(bucket);
+
+        let body = if self.config.region != "us-east-1" {
+            format!(r#"<CreateBucketConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+                <LocationConstraint>{}</LocationConstraint>
+            </CreateBucketConfiguration>"#, self.config.region)
+        } else {
+            String::new()
+        };
+
+        let credentials = self.credentials();
+        let content_hash = sha256_hex(body.as_bytes());
+        let headers = sign_request("PUT", &url, &content_hash, &credentials)?;
+
+        let response = self.http
+            .headers(headers)
+            .header("Content-Type", "application/xml")
+            .put_bytes(&url, body.as_bytes())
+            .await
+            .map_err(|e| S3Error::HttpError(format!("{:?}", e)))?;
+
+        if response.is_success() {
+            Ok(())
+        } else {
+            let body = response.body_string().unwrap_or_default();
+            Err(S3Error::ApiError(response.status_code, body))
+        }
+    }
+
+    /// Delete a bucket (must be empty)
+    pub async fn delete_bucket(&self, bucket: &str) -> Result<(), S3Error> {
+        let url = self.bucket_endpoint(bucket);
+
+        let credentials = self.credentials();
+        let headers = sign_request("DELETE", &url, "UNSIGNED-PAYLOAD", &credentials)?;
+
+        let response = self.http
+            .headers(headers)
+            .delete(&url)
+            .await
+            .map_err(|e| S3Error::HttpError(format!("{:?}", e)))?;
+
+        if response.is_success() || response.status_code == 204 {
+            Ok(())
+        } else {
+            let body = response.body_string().unwrap_or_default();
+            Err(S3Error::ApiError(response.status_code, body))
+        }
+    }
+}
+
+pub struct ListObjectsResponse {
+    pub objects: Vec<ObjectMeta>,
+    pub is_truncated: bool,
+    pub next_continuation_token: Option<String>,
+    pub key_count: u32,
+}
+
+fn extract_metadata(headers: &HashMap<String, String>) -> HashMap<String, String> {
+    headers.iter()
+        .filter(|(k, _)| k.starts_with("x-amz-meta-"))
+        .map(|(k, v)| (k[11..].to_string(), v.clone()))
+        .collect()
+}
+
+fn parse_list_objects_response(xml: &str) -> Result<ListObjectsResponse, S3Error> {
+    // Simple XML parsing for S3 ListObjectsV2 response
+    let mut objects = Vec::new();
+    let mut is_truncated = false;
+    let mut next_token = None;
+    let mut key_count = 0;
+
+    // Parse <Contents> elements
+    let mut pos = 0;
+    while let Some(start) = xml[pos..].find("<Contents>") {
+        let start = pos + start;
+        if let Some(end) = xml[start..].find("</Contents>") {
+            let end = start + end + 11;
+            let content = &xml[start..end];
+
+            let key = extract_xml_value(content, "Key").unwrap_or_default();
+            let size: u64 = extract_xml_value(content, "Size")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            let etag = extract_xml_value(content, "ETag");
+            let last_modified = extract_xml_value(content, "LastModified");
+
+            objects.push(ObjectMeta {
+                key,
+                size,
+                content_type: None,
+                etag,
+                last_modified,
+                metadata: HashMap::new(),
+            });
+
+            pos = end;
+        } else {
+            break;
+        }
+    }
+
+    is_truncated = extract_xml_value(xml, "IsTruncated")
+        .map(|s| s == "true")
+        .unwrap_or(false);
+
+    next_token = extract_xml_value(xml, "NextContinuationToken");
+
+    key_count = extract_xml_value(xml, "KeyCount")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(objects.len() as u32);
+
+    Ok(ListObjectsResponse {
+        objects,
+        is_truncated,
+        next_continuation_token: next_token,
+        key_count,
+    })
+}
+
+fn extract_xml_value(xml: &str, tag: &str) -> Option<String> {
+    let start_tag = format!("<{}>", tag);
+    let end_tag = format!("</{}>", tag);
+
+    if let Some(start) = xml.find(&start_tag) {
+        let value_start = start + start_tag.len();
+        if let Some(end) = xml[value_start..].find(&end_tag) {
+            return Some(xml[value_start..value_start + end].to_string());
+        }
+    }
+    None
+}
+
+fn url_encode(s: &str) -> String {
+    let mut result = String::new();
+    for c in s.chars() {
+        match c {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' | '~' => {
+                result.push(c);
+            }
+            _ => {
+                for byte in c.to_string().as_bytes() {
+                    result.push_str(&format!("%{:02X}", byte));
+                }
+            }
+        }
+    }
+    result
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    let hash = simplex_std::crypto::sha256(data);
+    hash.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+#[derive(Debug)]
+pub enum S3Error {
+    HttpError(String),
+    ApiError(u16, String),
+    NotFound,
+    SigningError(String),
+    ParseError(String),
+}

@@ -1,0 +1,288 @@
+// Meta-Trainer
+//
+// Outer loop that optimizes training schedules via meta-gradients.
+// Uses validation loss to compute gradients w.r.t. schedule parameters.
+
+use simplex_std::dual;
+use simplex_std::sync::Arc;
+
+use super::super::schedules::LearnedSchedules;
+use super::super::{TrainingConfig, Tensor, Gradients};
+use super::specialist::{SpecialistTrainer, SpecialistConfig};
+
+/// Meta-trainer for schedule optimization
+pub struct MetaTrainer {
+    /// Learned schedules (LR, distillation, pruning, quantization, curriculum)
+    pub schedules: LearnedSchedules,
+    /// Meta-training configuration
+    pub config: MetaConfig,
+    /// Training history for analysis
+    history: Vec<MetaStep>,
+}
+
+/// Meta-training configuration
+#[derive(Clone)]
+pub struct MetaConfig {
+    /// Learning rate for schedule parameter updates
+    pub meta_lr: f64,
+    /// Number of inner loop steps per meta-step
+    pub inner_steps: usize,
+    /// Validation set fraction
+    pub val_fraction: f64,
+    /// Number of specialists to train
+    pub num_specialists: usize,
+    /// Enable schedule learning
+    pub learn_schedules: bool,
+}
+
+impl Default for MetaConfig {
+    fn default() -> Self {
+        MetaConfig {
+            meta_lr: 0.001,
+            inner_steps: 100,
+            val_fraction: 0.1,
+            num_specialists: 8,
+            learn_schedules: true,
+        }
+    }
+}
+
+/// Record of a single meta-training step
+struct MetaStep {
+    step: i64,
+    train_loss: f64,
+    val_loss: f64,
+    schedule_update_norm: f64,
+}
+
+impl MetaTrainer {
+    /// Create new meta-trainer
+    pub fn new(config: MetaConfig) -> Self {
+        MetaTrainer {
+            schedules: LearnedSchedules::new(config.num_specialists),
+            config,
+            history: Vec::new(),
+        }
+    }
+
+    /// Create with custom schedules
+    pub fn with_schedules(schedules: LearnedSchedules, config: MetaConfig) -> Self {
+        MetaTrainer {
+            schedules,
+            config,
+            history: Vec::new(),
+        }
+    }
+
+    /// Builder pattern for fluent API
+    pub fn with_learnable_lr(mut self) -> Self {
+        // LR schedule is already learnable by default
+        self
+    }
+
+    pub fn with_learnable_distillation(mut self) -> Self {
+        // Distillation schedule is already learnable by default
+        self
+    }
+
+    pub fn with_learnable_pruning(mut self) -> Self {
+        // Pruning schedule is already learnable by default
+        self
+    }
+
+    pub fn with_learnable_quantization(mut self) -> Self {
+        // Quantization schedule is already learnable by default
+        self
+    }
+
+    pub fn with_learnable_curriculum(mut self) -> Self {
+        // Curriculum is already learnable by default
+        self
+    }
+
+    /// Run meta-training across all specialists
+    pub async fn meta_train(
+        &mut self,
+        specialists: &mut [SpecialistTrainer],
+        teacher_model: &dyn TeacherModel
+    ) -> MetaTrainResult {
+        let mut total_steps: i64 = 0;
+        let mut best_val_loss = f64::INFINITY;
+
+        // Get training order from curriculum
+        let training_order = self.schedules.curriculum.training_order(
+            dual::constant(total_steps as f64)
+        );
+
+        for &specialist_idx in &training_order {
+            if specialist_idx >= specialists.len() {
+                continue;
+            }
+
+            // Train this specialist with meta-gradient updates
+            let specialist = &mut specialists[specialist_idx];
+
+            for inner_step in 0..self.config.inner_steps {
+                let step = dual::variable(total_steps as f64);
+
+                // Forward pass with current schedules
+                let train_loss = self.inner_step(specialist, teacher_model, step).await;
+
+                // Compute validation loss for meta-gradient
+                let val_loss = self.validation_loss(specialist, teacher_model, step).await;
+
+                // Update schedules via meta-gradient
+                if self.config.learn_schedules {
+                    self.schedules.update_all(self.config.meta_lr);
+                }
+
+                // Track progress
+                self.history.push(MetaStep {
+                    step: total_steps,
+                    train_loss: train_loss.val,
+                    val_loss: val_loss.val,
+                    schedule_update_norm: self.schedule_update_norm(),
+                });
+
+                if val_loss.val < best_val_loss {
+                    best_val_loss = val_loss.val;
+                }
+
+                total_steps += 1;
+            }
+        }
+
+        MetaTrainResult {
+            total_steps,
+            final_val_loss: best_val_loss,
+            learned_schedules: self.schedules.clone(),
+        }
+    }
+
+    /// Single inner training step
+    async fn inner_step(
+        &self,
+        specialist: &mut SpecialistTrainer,
+        teacher: &dyn TeacherModel,
+        step: dual
+    ) -> dual {
+        // Get learning rate from schedule
+        let lr = self.schedules.lr.learning_rate(step, &[]);
+
+        // Get current training batch
+        let batch = specialist.next_batch().await;
+
+        // Forward pass through student
+        let student_logits = specialist.forward(&batch.inputs).await;
+
+        // Get teacher outputs for distillation
+        let teacher_logits = teacher.forward(&batch.inputs).await;
+
+        // Compute distillation loss
+        let loss = self.schedules.distillation.distill_loss(
+            &student_logits,
+            &teacher_logits,
+            &batch.labels,
+            step
+        );
+
+        // Backward pass and update
+        specialist.backward_and_update(&loss, lr.val).await;
+
+        loss
+    }
+
+    /// Compute validation loss for meta-gradient
+    async fn validation_loss(
+        &self,
+        specialist: &SpecialistTrainer,
+        teacher: &dyn TeacherModel,
+        step: dual
+    ) -> dual {
+        let val_batch = specialist.validation_batch().await;
+        let student_logits = specialist.forward(&val_batch.inputs).await;
+        let teacher_logits = teacher.forward(&val_batch.inputs).await;
+
+        self.schedules.distillation.distill_loss(
+            &student_logits,
+            &teacher_logits,
+            &val_batch.labels,
+            step
+        )
+    }
+
+    /// Compute norm of schedule updates (for monitoring)
+    fn schedule_update_norm(&self) -> f64 {
+        let lr_grad = self.schedules.lr.gradient();
+        let distill_grad = self.schedules.distillation.gradient();
+
+        // Simplified norm calculation
+        (lr_grad.d_initial_lr.powi(2) +
+         lr_grad.d_decay_rate.powi(2) +
+         distill_grad.d_initial_temp.powi(2) +
+         distill_grad.d_temp_decay.powi(2)).sqrt()
+    }
+
+    /// Get training history
+    pub fn history(&self) -> &[MetaStep] {
+        &self.history
+    }
+}
+
+/// Result of meta-training
+pub struct MetaTrainResult {
+    pub total_steps: i64,
+    pub final_val_loss: f64,
+    pub learned_schedules: LearnedSchedules,
+}
+
+/// Meta-loss combining multiple objectives
+pub struct MetaLoss {
+    /// Primary task loss weight
+    pub task_weight: f64,
+    /// Distillation loss weight
+    pub distill_weight: f64,
+    /// Pruning regularization weight
+    pub prune_weight: f64,
+    /// Quantization loss weight
+    pub quant_weight: f64,
+}
+
+impl Default for MetaLoss {
+    fn default() -> Self {
+        MetaLoss {
+            task_weight: 1.0,
+            distill_weight: 0.5,
+            prune_weight: 0.1,
+            quant_weight: 0.1,
+        }
+    }
+}
+
+impl MetaLoss {
+    /// Compute combined loss
+    pub fn compute(
+        &self,
+        task_loss: dual,
+        distill_loss: dual,
+        prune_loss: dual,
+        quant_loss: dual
+    ) -> dual {
+        dual::constant(self.task_weight) * task_loss +
+        dual::constant(self.distill_weight) * distill_loss +
+        dual::constant(self.prune_weight) * prune_loss +
+        dual::constant(self.quant_weight) * quant_loss
+    }
+}
+
+/// Teacher model trait for distillation
+pub trait TeacherModel: Send + Sync {
+    /// Forward pass through teacher
+    fn forward(&self, inputs: &Tensor) -> impl std::future::Future<Output = Tensor> + Send;
+}
+
+/// Training batch
+pub struct TrainingBatch {
+    pub inputs: Tensor,
+    pub labels: Tensor,
+}

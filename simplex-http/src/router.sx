@@ -1,0 +1,217 @@
+// HTTP Router with path parameters and method matching
+
+use simplex_std::collections::HashMap;
+use crate::request::{Request, Method};
+use crate::response::Response;
+
+/// Route handler trait
+pub trait Handler: Send + Sync {
+    async fn handle(&self, request: Request) -> Response;
+}
+
+/// Function handler wrapper
+impl<F, Fut> Handler for F
+where
+    F: Fn(Request) -> Fut + Send + Sync,
+    Fut: Future<Output = Response> + Send,
+{
+    async fn handle(&self, request: Request) -> Response {
+        self(request).await
+    }
+}
+
+/// Route definition
+pub struct Route {
+    pub method: Method,
+    pub pattern: String,
+    pub handler: Box<dyn Handler>,
+    segments: Vec<RouteSegment>,
+}
+
+#[derive(Clone)]
+enum RouteSegment {
+    Static(String),
+    Param(String),      // :id
+    Wildcard,           // *
+}
+
+impl Route {
+    pub fn new<H: Handler + 'static>(method: Method, pattern: &str, handler: H) -> Self {
+        let segments = Self::parse_pattern(pattern);
+        Route {
+            method,
+            pattern: pattern.to_string(),
+            handler: Box::new(handler),
+            segments,
+        }
+    }
+
+    fn parse_pattern(pattern: &str) -> Vec<RouteSegment> {
+        pattern
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                if s.starts_with(':') {
+                    RouteSegment::Param(s[1..].to_string())
+                } else if s == "*" {
+                    RouteSegment::Wildcard
+                } else {
+                    RouteSegment::Static(s.to_string())
+                }
+            })
+            .collect()
+    }
+
+    /// Check if path matches this route and extract parameters
+    pub fn matches(&self, method: &Method, path: &str) -> Option<HashMap<String, String>> {
+        if self.method != *method {
+            return None;
+        }
+
+        let path_segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+
+        // Check for wildcard at end
+        let has_wildcard = matches!(self.segments.last(), Some(RouteSegment::Wildcard));
+
+        if !has_wildcard && path_segments.len() != self.segments.len() {
+            return None;
+        }
+
+        if has_wildcard && path_segments.len() < self.segments.len() - 1 {
+            return None;
+        }
+
+        let mut params = HashMap::new();
+
+        for (i, segment) in self.segments.iter().enumerate() {
+            match segment {
+                RouteSegment::Static(s) => {
+                    if path_segments.get(i) != Some(&s.as_str()) {
+                        return None;
+                    }
+                }
+                RouteSegment::Param(name) => {
+                    if let Some(value) = path_segments.get(i) {
+                        params.insert(name.clone(), value.to_string());
+                    } else {
+                        return None;
+                    }
+                }
+                RouteSegment::Wildcard => {
+                    // Capture rest of path
+                    let rest: Vec<&str> = path_segments[i..].to_vec();
+                    params.insert("*".to_string(), rest.join("/"));
+                    break;
+                }
+            }
+        }
+
+        Some(params)
+    }
+}
+
+/// HTTP Router
+pub struct Router {
+    routes: Vec<Route>,
+    prefix: String,
+}
+
+impl Router {
+    pub fn new() -> Self {
+        Router {
+            routes: Vec::new(),
+            prefix: String::new(),
+        }
+    }
+
+    /// Create router with prefix
+    pub fn with_prefix(prefix: &str) -> Self {
+        Router {
+            routes: Vec::new(),
+            prefix: prefix.to_string(),
+        }
+    }
+
+    /// Add GET route
+    pub fn get<H: Handler + 'static>(mut self, path: &str, handler: H) -> Self {
+        let full_path = format!("{}{}", self.prefix, path);
+        self.routes.push(Route::new(Method::GET, &full_path, handler));
+        self
+    }
+
+    /// Add POST route
+    pub fn post<H: Handler + 'static>(mut self, path: &str, handler: H) -> Self {
+        let full_path = format!("{}{}", self.prefix, path);
+        self.routes.push(Route::new(Method::POST, &full_path, handler));
+        self
+    }
+
+    /// Add PUT route
+    pub fn put<H: Handler + 'static>(mut self, path: &str, handler: H) -> Self {
+        let full_path = format!("{}{}", self.prefix, path);
+        self.routes.push(Route::new(Method::PUT, &full_path, handler));
+        self
+    }
+
+    /// Add PATCH route
+    pub fn patch<H: Handler + 'static>(mut self, path: &str, handler: H) -> Self {
+        let full_path = format!("{}{}", self.prefix, path);
+        self.routes.push(Route::new(Method::PATCH, &full_path, handler));
+        self
+    }
+
+    /// Add DELETE route
+    pub fn delete<H: Handler + 'static>(mut self, path: &str, handler: H) -> Self {
+        let full_path = format!("{}{}", self.prefix, path);
+        self.routes.push(Route::new(Method::DELETE, &full_path, handler));
+        self
+    }
+
+    /// Add OPTIONS route
+    pub fn options<H: Handler + 'static>(mut self, path: &str, handler: H) -> Self {
+        let full_path = format!("{}{}", self.prefix, path);
+        self.routes.push(Route::new(Method::OPTIONS, &full_path, handler));
+        self
+    }
+
+    /// Merge another router
+    pub fn merge(mut self, other: Router) -> Self {
+        for route in other.routes {
+            self.routes.push(route);
+        }
+        self
+    }
+
+    /// Find matching route
+    pub fn route(&self, request: &Request) -> Option<(&dyn Handler, HashMap<String, String>)> {
+        let path = request.path.split('?').next().unwrap_or(&request.path);
+
+        for route in &self.routes {
+            if let Some(params) = route.matches(&request.method, path) {
+                return Some((route.handler.as_ref(), params));
+            }
+        }
+
+        None
+    }
+}
+
+/// Router builder for grouped routes
+pub struct RouterGroup {
+    prefix: String,
+    middleware: Vec<Box<dyn Middleware>>,
+}
+
+impl RouterGroup {
+    pub fn new(prefix: &str) -> Self {
+        RouterGroup {
+            prefix: prefix.to_string(),
+            middleware: Vec::new(),
+        }
+    }
+
+    pub fn middleware<M: Middleware + 'static>(mut self, mw: M) -> Self {
+        self.middleware.push(Box::new(mw));
+        self
+    }
+}

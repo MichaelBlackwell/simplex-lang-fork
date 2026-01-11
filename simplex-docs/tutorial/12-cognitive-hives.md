@@ -745,6 +745,130 @@ specialist SafeClassifier {
 
 ---
 
+## High-Performance Inference (v0.9.0)
+
+Starting with v0.9.0, Simplex provides native llama.cpp integration for optimized inference.
+
+### Using the Inference Pipeline
+
+```simplex
+use simplex_inference::{InferencePipeline, BatchConfig, ModelLoadConfig};
+
+// Configure the inference backend
+let config = ModelLoadConfig {
+    gpu_layers: 32,           // GPU offload
+    context_size: 4096,
+    flash_attention: true,
+    ..Default::default()
+};
+
+// Create optimized pipeline
+let pipeline = InferencePipeline::builder()
+    .with_model("simplex-cognitive-7b.gguf", config)
+    .with_batching(BatchConfig { max_size: 8, timeout_ms: 50 })
+    .with_prompt_cache(1000)      // Cache tokenized prompts
+    .with_response_cache(10000)   // Cache deterministic responses
+    .build();
+
+// Use in specialists
+specialist FastSummarizer {
+    pipeline: InferencePipeline,
+
+    receive Summarize(text: String) -> String {
+        // Uses batching, caching, and GPU acceleration automatically
+        self.pipeline.infer("Summarize: " + text).await?
+    }
+}
+```
+
+### Batch Processing
+
+Process multiple requests efficiently:
+
+```simplex
+fn batch_analyze(documents: Vec<String>) -> Vec<Analysis> {
+    let pipeline = InferencePipeline::builder()
+        .with_batching(BatchConfig { max_size: 16, timeout_ms: 100 })
+        .build();
+
+    // Requests are automatically batched for throughput
+    let futures = documents.map(|doc| pipeline.infer(doc));
+    await parallel(futures)
+}
+```
+
+---
+
+## Self-Learning Optimization (v0.9.0)
+
+Specialists can now learn optimal schedules for their operation through meta-gradients.
+
+### Self-Learning Annealing for Hyperparameters
+
+```simplex
+use simplex::optimize::anneal::{LearnableSchedule, MetaOptimizer, AnnealConfig};
+
+specialist AdaptiveRouter {
+    schedule: LearnableSchedule,
+
+    fn init() {
+        // Schedule learns cooling rate, reheat triggers, etc.
+        self.schedule = LearnableSchedule::new();
+    }
+
+    fn optimize_routing(&mut self, hive: &Hive) {
+        // Define objective: minimize routing latency
+        let objective = |config: &RouterConfig| -> dual {
+            let latency = measure_routing_latency(config, hive);
+            dual::constant(latency)  // Convert to dual for gradients
+        };
+
+        // Let the schedule learn itself
+        var optimizer = MetaOptimizer::new()
+            .learning_rate(0.001);
+
+        let best_config = optimizer.optimize(
+            RouterConfig::default(),
+            |c| c.mutate(),
+            &AnnealConfig::default()
+        );
+
+        self.apply_config(best_config);
+    }
+}
+```
+
+### Using Dual Numbers for Gradient Tracking
+
+```simplex
+use simplex_std::dual::dual;
+
+specialist DifferentiableClassifier {
+    fn classify_with_confidence(&self, text: String) -> (Classification, dual) {
+        // Forward pass with gradient tracking
+        let features = self.extract_features(text);
+
+        // All operations propagate derivatives
+        let x = dual::variable(features.score);
+        let confidence = x.sigmoid();  // d/dx = σ(x)(1-σ(x))
+
+        (self.to_classification(confidence.val), confidence)
+    }
+
+    fn train_step(&mut self, text: String, label: Classification) {
+        let (pred, confidence) = self.classify_with_confidence(text);
+
+        // Gradient flows through confidence
+        let loss = (confidence - dual::constant(1.0 if pred == label else 0.0)).pow(2.0);
+
+        // Update based on gradient
+        self.update_params(loss.der);
+    }
+}
+```
+
+---
+
 ## Summary
 
 | Concept | Purpose |
@@ -760,6 +884,9 @@ specialist SafeClassifier {
 | `OnlineLearner` | Real-time learning during inference (v0.7.0) |
 | `HiveLearningCoordinator` | Federated learning across hive (v0.7.0) |
 | `SafeLearner` | Learning with safety constraints (v0.7.0) |
+| `InferencePipeline` | High-performance batched inference (v0.9.0) |
+| `LearnableSchedule` | Self-learning optimization schedules (v0.9.0) |
+| `dual` | Automatic differentiation for training (v0.8.0) |
 
 ---
 

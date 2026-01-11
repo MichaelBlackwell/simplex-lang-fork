@@ -1,0 +1,519 @@
+// simplex-std::log - Structured Logging
+//
+// Provides leveled logging with structured context support.
+//
+// # Log Levels
+// - `TRACE` (0): Most verbose, for detailed debugging
+// - `DEBUG` (1): Debug information
+// - `INFO` (2): Informational messages (default)
+// - `WARN` (3): Warnings
+// - `ERROR` (4): Errors
+//
+// # Example
+//
+// ```simplex
+// use simplex_std::log::*;
+//
+// fn main() {
+//     // Set log level
+//     set_level(Level::Debug);
+//
+//     // Log at different levels
+//     trace("Entering function");
+//     debug("Variable x = 42");
+//     info("Server started on port 8080");
+//     warn("Connection timeout, retrying...");
+//     error("Failed to connect to database");
+//
+//     // Structured logging with context
+//     info_ctx("User logged in", &[("user_id", "12345"), ("ip", "192.168.1.1")]);
+// }
+// ```
+
+use super::fmt::{print, println, int_to_string};
+use super::time::Instant;
+
+// =============================================================================
+// Log Levels
+// =============================================================================
+
+/// Log level enumeration.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(i64)]
+pub enum Level {
+    /// Most verbose level, for detailed tracing.
+    Trace = 0,
+    /// Debug information.
+    Debug = 1,
+    /// Informational messages.
+    Info = 2,
+    /// Warning messages.
+    Warn = 3,
+    /// Error messages.
+    Error = 4,
+    /// No logging.
+    Off = 5,
+}
+
+impl Level {
+    /// Get the level name as a string.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Level::Trace => "TRACE",
+            Level::Debug => "DEBUG",
+            Level::Info => "INFO",
+            Level::Warn => "WARN",
+            Level::Error => "ERROR",
+            Level::Off => "OFF",
+        }
+    }
+
+    /// Get the level from an integer.
+    pub fn from_i64(n: i64) -> Level {
+        match n {
+            0 => Level::Trace,
+            1 => Level::Debug,
+            2 => Level::Info,
+            3 => Level::Warn,
+            4 => Level::Error,
+            _ => Level::Off,
+        }
+    }
+}
+
+// Level constants for convenience
+pub const TRACE: Level = Level::Trace;
+pub const DEBUG: Level = Level::Debug;
+pub const INFO: Level = Level::Info;
+pub const WARN: Level = Level::Warn;
+pub const ERROR: Level = Level::Error;
+pub const OFF: Level = Level::Off;
+
+// =============================================================================
+// Global Logger State
+// =============================================================================
+
+static mut CURRENT_LEVEL: Level = Level::Info;
+static mut SHOW_TIMESTAMP: bool = true;
+static mut SHOW_LEVEL: bool = true;
+
+/// Set the minimum log level.
+///
+/// Messages below this level will be suppressed.
+///
+/// # Example
+/// ```simplex
+/// set_level(Level::Debug);  // Show debug and above
+/// set_level(Level::Error);  // Show only errors
+/// ```
+pub fn set_level(level: Level) {
+    unsafe { CURRENT_LEVEL = level; }
+}
+
+/// Get the current log level.
+pub fn get_level() -> Level {
+    unsafe { CURRENT_LEVEL }
+}
+
+/// Check if a level is enabled.
+pub fn is_enabled(level: Level) -> bool {
+    unsafe { level >= CURRENT_LEVEL }
+}
+
+/// Enable or disable timestamps in log output.
+pub fn set_show_timestamp(show: bool) {
+    unsafe { SHOW_TIMESTAMP = show; }
+}
+
+/// Enable or disable level names in log output.
+pub fn set_show_level(show: bool) {
+    unsafe { SHOW_LEVEL = show; }
+}
+
+// =============================================================================
+// Core Logging Functions
+// =============================================================================
+
+/// Log a message at the specified level.
+pub fn log(level: Level, message: &str) {
+    if !is_enabled(level) {
+        return;
+    }
+
+    unsafe {
+        // Timestamp
+        if SHOW_TIMESTAMP {
+            print("[");
+            print(&timestamp());
+            print("] ");
+        }
+
+        // Level
+        if SHOW_LEVEL {
+            print("[");
+            print(level.name());
+            print("] ");
+        }
+    }
+
+    println(message);
+}
+
+/// Log at TRACE level.
+pub fn trace(message: &str) {
+    log(Level::Trace, message);
+}
+
+/// Log at DEBUG level.
+pub fn debug(message: &str) {
+    log(Level::Debug, message);
+}
+
+/// Log at INFO level.
+pub fn info(message: &str) {
+    log(Level::Info, message);
+}
+
+/// Log at WARN level.
+pub fn warn(message: &str) {
+    log(Level::Warn, message);
+}
+
+/// Log at ERROR level.
+pub fn error(message: &str) {
+    log(Level::Error, message);
+}
+
+// =============================================================================
+// Formatted Logging
+// =============================================================================
+
+/// Log with a format string (replaces {} with args).
+pub fn logf(level: Level, format: &str, args: &[&str]) {
+    if !is_enabled(level) {
+        return;
+    }
+
+    var result = String::new();
+    var arg_index = 0usize;
+    var chars = format.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '{' && chars.peek() == Some(&'}') {
+            chars.next(); // consume '}'
+            if arg_index < args.len() {
+                result.push_str(args[arg_index]);
+                arg_index += 1;
+            } else {
+                result.push_str("{}");
+            }
+        } else {
+            result.push(c);
+        }
+    }
+
+    log(level, &result);
+}
+
+/// Trace with format string.
+pub fn tracef(format: &str, args: &[&str]) {
+    logf(Level::Trace, format, args);
+}
+
+/// Debug with format string.
+pub fn debugf(format: &str, args: &[&str]) {
+    logf(Level::Debug, format, args);
+}
+
+/// Info with format string.
+pub fn infof(format: &str, args: &[&str]) {
+    logf(Level::Info, format, args);
+}
+
+/// Warn with format string.
+pub fn warnf(format: &str, args: &[&str]) {
+    logf(Level::Warn, format, args);
+}
+
+/// Error with format string.
+pub fn errorf(format: &str, args: &[&str]) {
+    logf(Level::Error, format, args);
+}
+
+// =============================================================================
+// Contextual Logging
+// =============================================================================
+
+/// Log with structured key-value context.
+///
+/// # Example
+/// ```simplex
+/// info_ctx("Request completed", &[
+///     ("method", "GET"),
+///     ("path", "/api/users"),
+///     ("status", "200"),
+///     ("duration_ms", "42"),
+/// ]);
+/// ```
+pub fn log_ctx(level: Level, message: &str, context: &[(&str, &str)]) {
+    if !is_enabled(level) {
+        return;
+    }
+
+    unsafe {
+        // Timestamp
+        if SHOW_TIMESTAMP {
+            print("[");
+            print(&timestamp());
+            print("] ");
+        }
+
+        // Level
+        if SHOW_LEVEL {
+            print("[");
+            print(level.name());
+            print("] ");
+        }
+    }
+
+    print(message);
+
+    // Context
+    if !context.is_empty() {
+        print(" {");
+        var first = true;
+        for (key, value) in context {
+            if !first {
+                print(", ");
+            }
+            print(*key);
+            print("=");
+            print(*value);
+            first = false;
+        }
+        print("}");
+    }
+
+    println("");
+}
+
+/// Trace with context.
+pub fn trace_ctx(message: &str, context: &[(&str, &str)]) {
+    log_ctx(Level::Trace, message, context);
+}
+
+/// Debug with context.
+pub fn debug_ctx(message: &str, context: &[(&str, &str)]) {
+    log_ctx(Level::Debug, message, context);
+}
+
+/// Info with context.
+pub fn info_ctx(message: &str, context: &[(&str, &str)]) {
+    log_ctx(Level::Info, message, context);
+}
+
+/// Warn with context.
+pub fn warn_ctx(message: &str, context: &[(&str, &str)]) {
+    log_ctx(Level::Warn, message, context);
+}
+
+/// Error with context.
+pub fn error_ctx(message: &str, context: &[(&str, &str)]) {
+    log_ctx(Level::Error, message, context);
+}
+
+// =============================================================================
+// Convenience Functions
+// =============================================================================
+
+/// Enable verbose logging (DEBUG level).
+pub fn enable_debug() {
+    set_level(Level::Debug);
+}
+
+/// Enable trace logging (most verbose).
+pub fn enable_trace() {
+    set_level(Level::Trace);
+}
+
+/// Show only errors.
+pub fn errors_only() {
+    set_level(Level::Error);
+}
+
+/// Disable all logging.
+pub fn disable() {
+    set_level(Level::Off);
+}
+
+// =============================================================================
+// Scoped Logger
+// =============================================================================
+
+/// A logger with a fixed prefix/context.
+pub struct Logger {
+    prefix: String,
+    level: Option<Level>,
+}
+
+impl Logger {
+    /// Create a new logger with a prefix.
+    ///
+    /// # Example
+    /// ```simplex
+    /// let log = Logger::new("http");
+    /// log.info("Server started");  // [INFO] [http] Server started
+    /// ```
+    pub fn new(prefix: &str) -> Logger {
+        Logger {
+            prefix: String::from(prefix),
+            level: None,
+        }
+    }
+
+    /// Create a logger with a specific level.
+    pub fn with_level(prefix: &str, level: Level) -> Logger {
+        Logger {
+            prefix: String::from(prefix),
+            level: Some(level),
+        }
+    }
+
+    /// Check if a level is enabled for this logger.
+    pub fn is_enabled(&self, level: Level) -> bool {
+        match self.level {
+            Some(l) => level >= l,
+            None => is_enabled(level),
+        }
+    }
+
+    /// Log a message.
+    pub fn log(&self, level: Level, message: &str) {
+        if !self.is_enabled(level) {
+            return;
+        }
+
+        unsafe {
+            if SHOW_TIMESTAMP {
+                print("[");
+                print(&timestamp());
+                print("] ");
+            }
+
+            if SHOW_LEVEL {
+                print("[");
+                print(level.name());
+                print("] ");
+            }
+        }
+
+        print("[");
+        print(&self.prefix);
+        print("] ");
+        println(message);
+    }
+
+    pub fn trace(&self, message: &str) { self.log(Level::Trace, message); }
+    pub fn debug(&self, message: &str) { self.log(Level::Debug, message); }
+    pub fn info(&self, message: &str) { self.log(Level::Info, message); }
+    pub fn warn(&self, message: &str) { self.log(Level::Warn, message); }
+    pub fn error(&self, message: &str) { self.log(Level::Error, message); }
+
+    /// Create a child logger with additional prefix.
+    pub fn child(&self, name: &str) -> Logger {
+        var prefix = self.prefix.clone();
+        prefix.push_str("::");
+        prefix.push_str(name);
+        Logger {
+            prefix,
+            level: self.level,
+        }
+    }
+}
+
+// =============================================================================
+// Timestamp Helper
+// =============================================================================
+
+fn timestamp() -> String {
+    // Simple timestamp - just elapsed milliseconds from start
+    static mut START: Option<Instant> = None;
+
+    unsafe {
+        if START.is_none() {
+            START = Some(Instant::now());
+        }
+
+        let elapsed = START.as_ref().unwrap().elapsed();
+        let ms = elapsed.as_millis() as i64;
+        int_to_string(ms)
+    }
+}
+
+// =============================================================================
+// Compatibility with simplex-log (slog_ prefix)
+// =============================================================================
+
+/// Set log level (slog compatibility).
+pub fn slog_set_level(level: i64) {
+    set_level(Level::from_i64(level));
+}
+
+/// Get log level (slog compatibility).
+pub fn slog_get_level() -> i64 {
+    get_level() as i64
+}
+
+/// Trace (slog compatibility).
+pub fn slog_trace(msg: &str) { trace(msg); }
+
+/// Debug (slog compatibility).
+pub fn slog_debug(msg: &str) { debug(msg); }
+
+/// Info (slog compatibility).
+pub fn slog_info(msg: &str) { info(msg); }
+
+/// Warn (slog compatibility).
+pub fn slog_warn(msg: &str) { warn(msg); }
+
+/// Error (slog compatibility).
+pub fn slog_error(msg: &str) { error(msg); }
+
+/// Info with single context (slog compatibility).
+pub fn slog_info_ctx(msg: &str, key: &str, value: &str) {
+    info_ctx(msg, &[(key, value)]);
+}
+
+/// Format log (slog compatibility).
+pub fn slog_fmt(level: i64, format: &str, arg: &str) {
+    logf(Level::from_i64(level), format, &[arg]);
+}
+
+/// Info with format (slog compatibility).
+pub fn slog_infof(format: &str, arg: &str) {
+    infof(format, &[arg]);
+}
+
+/// Error with format (slog compatibility).
+pub fn slog_errorf(format: &str, arg: &str) {
+    errorf(format, &[arg]);
+}
+
+/// Debug with format (slog compatibility).
+pub fn slog_debugf(format: &str, arg: &str) {
+    debugf(format, &[arg]);
+}
+
+/// Warn with format (slog compatibility).
+pub fn slog_warnf(format: &str, arg: &str) {
+    warnf(format, &[arg]);
+}
+
+/// Enable debug (slog compatibility).
+pub fn slog_enable_debug() { enable_debug(); }
+
+/// Enable trace (slog compatibility).
+pub fn slog_enable_trace() { enable_trace(); }
+
+/// Errors only (slog compatibility).
+pub fn slog_errors_only() { errors_only(); }

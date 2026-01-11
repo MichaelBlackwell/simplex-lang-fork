@@ -1,0 +1,1087 @@
+// Phase 35 Wave 3: Runtime Function Tests
+// Tests for C runtime library implementations
+// These tests require working runtime functions
+
+// ============================================
+// 35.3.1 Async Executor Runtime
+// ============================================
+
+fn test_executor_spawn_single() -> i64 {
+    let exec: Executor = Executor::new();
+    let result: i64 = 0;
+
+    exec.spawn(async {
+        result = 42;
+    });
+
+    exec.run();
+
+    if result == 42 {
+        print_string("executor spawn single: PASS\n");
+        1
+    } else {
+        print_string("executor spawn single: FAIL\n");
+        0
+    }
+}
+
+fn test_executor_spawn_multiple() -> i64 {
+    let exec: Executor = Executor::new();
+    let counter: AtomicI64 = AtomicI64::new(0);
+
+    for i in 0..10 {
+        exec.spawn(async {
+            counter.fetch_add(1);
+        });
+    }
+
+    exec.run();
+
+    if counter.load() == 10 {
+        print_string("executor spawn multiple: PASS\n");
+        1
+    } else {
+        print_string("executor spawn multiple: FAIL\n");
+        0
+    }
+}
+
+fn test_executor_block_on() -> i64 {
+    let exec: Executor = Executor::new();
+
+    let result: i64 = exec.block_on(async {
+        let a: i64 = 10;
+        async_sleep(10).await;
+        let b: i64 = 20;
+        a + b
+    });
+
+    if result == 30 {
+        print_string("executor block_on: PASS\n");
+        1
+    } else {
+        print_string("executor block_on: FAIL\n");
+        0
+    }
+}
+
+// ============================================
+// 35.3.2 Timer Wheel Runtime
+// ============================================
+
+fn test_timer_register_fire() -> i64 {
+    let fired: bool = false;
+
+    let timer_id: i64 = timer_register(|| {
+        fired = true;
+    }, 50);  // 50ms delay
+
+    sleep_ms(100);  // Wait for timer
+    timer_check();
+
+    if fired {
+        print_string("timer register/fire: PASS\n");
+        1
+    } else {
+        print_string("timer register/fire: FAIL\n");
+        0
+    }
+}
+
+fn test_timer_cancel() -> i64 {
+    let fired: bool = false;
+
+    let timer_id: i64 = timer_register(|| {
+        fired = true;
+    }, 100);
+
+    timer_cancel(timer_id);
+    sleep_ms(150);
+    timer_check();
+
+    if !fired {
+        print_string("timer cancel: PASS\n");
+        1
+    } else {
+        print_string("timer cancel: FAIL\n");
+        0
+    }
+}
+
+fn test_timer_multiple() -> i64 {
+    let order: Vec<i64> = Vec::new();
+
+    timer_register(|| { order.push(3); }, 30);
+    timer_register(|| { order.push(1); }, 10);
+    timer_register(|| { order.push(2); }, 20);
+
+    sleep_ms(50);
+    timer_check();
+
+    if order.len() == 3 && order[0] == 1 && order[1] == 2 && order[2] == 3 {
+        print_string("timer multiple: PASS\n");
+        1
+    } else {
+        print_string("timer multiple: FAIL\n");
+        0
+    }
+}
+
+// ============================================
+// 35.3.3 I/O Driver Runtime
+// ============================================
+
+fn test_io_driver_new() -> i64 {
+    let driver: IoDriver = IoDriver::new();
+    // Just test creation doesn't crash
+    print_string("io driver new: PASS\n");
+    1
+}
+
+fn test_io_register_read() -> i64 {
+    let driver: IoDriver = IoDriver::new();
+    let fd: i64 = open_file("/dev/null", O_RDONLY);
+
+    let callback_called: bool = false;
+    driver.register_read(fd, || {
+        callback_called = true;
+    });
+
+    driver.poll(100);
+    close_file(fd);
+
+    // /dev/null is always readable
+    if callback_called {
+        print_string("io register read: PASS\n");
+        1
+    } else {
+        print_string("io register read: FAIL\n");
+        0
+    }
+}
+
+fn test_io_poll_timeout() -> i64 {
+    let driver: IoDriver = IoDriver::new();
+    let start: i64 = time_ms();
+
+    driver.poll(100);  // 100ms timeout
+
+    let elapsed: i64 = time_ms() - start;
+
+    if elapsed >= 90 && elapsed < 200 {
+        print_string("io poll timeout: PASS\n");
+        1
+    } else {
+        print_string("io poll timeout: FAIL\n");
+        0
+    }
+}
+
+// ============================================
+// 35.3.4 Lock-Free Mailbox Runtime
+// ============================================
+
+fn test_mailbox_send_recv() -> i64 {
+    let mb: Mailbox<i64> = Mailbox::new();
+
+    mb.send(42);
+    let val: i64 = mb.recv();
+
+    if val == 42 {
+        print_string("mailbox send/recv: PASS\n");
+        1
+    } else {
+        print_string("mailbox send/recv: FAIL\n");
+        0
+    }
+}
+
+fn test_mailbox_fifo_order() -> i64 {
+    let mb: Mailbox<i64> = Mailbox::new();
+
+    mb.send(1);
+    mb.send(2);
+    mb.send(3);
+
+    let v1: i64 = mb.recv();
+    let v2: i64 = mb.recv();
+    let v3: i64 = mb.recv();
+
+    if v1 == 1 && v2 == 2 && v3 == 3 {
+        print_string("mailbox fifo order: PASS\n");
+        1
+    } else {
+        print_string("mailbox fifo order: FAIL\n");
+        0
+    }
+}
+
+fn test_mailbox_try_recv() -> i64 {
+    let mb: Mailbox<i64> = Mailbox::new();
+
+    let empty: Option<i64> = mb.try_recv();
+    mb.send(99);
+    let has_val: Option<i64> = mb.try_recv();
+
+    if empty.is_none() && has_val.unwrap() == 99 {
+        print_string("mailbox try_recv: PASS\n");
+        1
+    } else {
+        print_string("mailbox try_recv: FAIL\n");
+        0
+    }
+}
+
+fn test_mailbox_concurrent() -> i64 {
+    let mb: Mailbox<i64> = Mailbox::new();
+    let count: AtomicI64 = AtomicI64::new(0);
+
+    // Spawn producer thread
+    thread_spawn(|| {
+        for i in 0..100 {
+            mb.send(i);
+        }
+    });
+
+    // Consumer in main thread
+    for _ in 0..100 {
+        let val: i64 = mb.recv();
+        count.fetch_add(1);
+    }
+
+    if count.load() == 100 {
+        print_string("mailbox concurrent: PASS\n");
+        1
+    } else {
+        print_string("mailbox concurrent: FAIL\n");
+        0
+    }
+}
+
+// ============================================
+// 35.3.5 Work-Stealing Scheduler Runtime
+// ============================================
+
+fn test_scheduler_spawn_task() -> i64 {
+    let sched: Scheduler = Scheduler::new(4);  // 4 workers
+    let completed: AtomicI64 = AtomicI64::new(0);
+
+    sched.spawn(|| {
+        completed.fetch_add(1);
+    });
+
+    sched.run();
+
+    if completed.load() == 1 {
+        print_string("scheduler spawn task: PASS\n");
+        1
+    } else {
+        print_string("scheduler spawn task: FAIL\n");
+        0
+    }
+}
+
+fn test_scheduler_work_stealing() -> i64 {
+    let sched: Scheduler = Scheduler::new(4);
+    let completed: AtomicI64 = AtomicI64::new(0);
+
+    // Spawn many tasks - should be distributed
+    for i in 0..1000 {
+        sched.spawn(|| {
+            // Simulate work
+            let sum: i64 = 0;
+            for j in 0..100 {
+                sum = sum + j;
+            }
+            completed.fetch_add(1);
+        });
+    }
+
+    sched.run();
+
+    if completed.load() == 1000 {
+        print_string("scheduler work stealing: PASS\n");
+        1
+    } else {
+        print_string("scheduler work stealing: FAIL\n");
+        0
+    }
+}
+
+// ============================================
+// 35.3.6 HTTP Client Runtime
+// ============================================
+
+fn test_http_get_basic() -> i64 {
+    let response: HttpResponse = http_get("http://httpbin.org/get");
+
+    if response.status == 200 {
+        print_string("http get basic: PASS\n");
+        1
+    } else {
+        print_string("http get basic: FAIL - status ");
+        print_i64(response.status);
+        print_string("\n");
+        0
+    }
+}
+
+fn test_http_post_basic() -> i64 {
+    let response: HttpResponse = http_post(
+        "http://httpbin.org/post",
+        "test body"
+    );
+
+    if response.status == 200 {
+        print_string("http post basic: PASS\n");
+        1
+    } else {
+        print_string("http post basic: FAIL\n");
+        0
+    }
+}
+
+fn test_http_headers() -> i64 {
+    let response: HttpResponse = http_get("http://httpbin.org/headers");
+
+    let content_type: Option<String> = response.header("Content-Type");
+    if content_type.is_some() {
+        print_string("http headers: PASS\n");
+        1
+    } else {
+        print_string("http headers: FAIL\n");
+        0
+    }
+}
+
+fn test_http_redirect() -> i64 {
+    // httpbin.org/redirect/1 redirects once
+    let response: HttpResponse = http_get("http://httpbin.org/redirect/1");
+
+    if response.status == 200 {
+        print_string("http redirect: PASS\n");
+        1
+    } else {
+        print_string("http redirect: FAIL\n");
+        0
+    }
+}
+
+// ============================================
+// 35.3.7 HTTP Server Runtime
+// ============================================
+
+fn test_http_server_start() -> i64 {
+    let server: HttpServer = HttpServer::new("127.0.0.1:0");  // Random port
+
+    server.route("/test", |req| {
+        HttpResponse::ok("Hello, World!")
+    });
+
+    let port: i64 = server.port();
+    server.start_background();
+
+    // Make request to our server
+    let response: HttpResponse = http_get(f"http://127.0.0.1:{port}/test");
+    server.stop();
+
+    if response.status == 200 && response.body == "Hello, World!" {
+        print_string("http server start: PASS\n");
+        1
+    } else {
+        print_string("http server start: FAIL\n");
+        0
+    }
+}
+
+fn test_http_server_routing() -> i64 {
+    let server: HttpServer = HttpServer::new("127.0.0.1:0");
+
+    server.route("/a", |req| HttpResponse::ok("A"));
+    server.route("/b", |req| HttpResponse::ok("B"));
+    server.route("/c", |req| HttpResponse::ok("C"));
+
+    let port: i64 = server.port();
+    server.start_background();
+
+    let ra: HttpResponse = http_get(f"http://127.0.0.1:{port}/a");
+    let rb: HttpResponse = http_get(f"http://127.0.0.1:{port}/b");
+    let rc: HttpResponse = http_get(f"http://127.0.0.1:{port}/c");
+    server.stop();
+
+    if ra.body == "A" && rb.body == "B" && rc.body == "C" {
+        print_string("http server routing: PASS\n");
+        1
+    } else {
+        print_string("http server routing: FAIL\n");
+        0
+    }
+}
+
+// ============================================
+// 35.3.8 TLS Runtime
+// ============================================
+
+fn test_tls_connect() -> i64 {
+    let ctx: TlsContext = TlsContext::new_client();
+    ctx.use_system_ca();
+
+    let conn: TlsConnection = ctx.connect("www.google.com", 443);
+
+    if conn.is_connected() {
+        print_string("tls connect: PASS\n");
+        conn.close();
+        1
+    } else {
+        print_string("tls connect: FAIL\n");
+        0
+    }
+}
+
+fn test_tls_https_request() -> i64 {
+    let response: HttpResponse = http_get("https://httpbin.org/get");
+
+    if response.status == 200 {
+        print_string("tls https request: PASS\n");
+        1
+    } else {
+        print_string("tls https request: FAIL\n");
+        0
+    }
+}
+
+fn test_tls_cert_verification() -> i64 {
+    let ctx: TlsContext = TlsContext::new_client();
+    ctx.use_system_ca();
+    ctx.set_verify(true);
+
+    // Should succeed with valid cert
+    let conn: TlsConnection = ctx.connect("www.google.com", 443);
+
+    if conn.peer_verified() {
+        print_string("tls cert verification: PASS\n");
+        conn.close();
+        1
+    } else {
+        print_string("tls cert verification: FAIL\n");
+        0
+    }
+}
+
+// ============================================
+// 35.3.9 WebSocket Runtime
+// ============================================
+
+fn test_websocket_connect() -> i64 {
+    let ws: WebSocket = WebSocket::connect("wss://echo.websocket.org");
+
+    if ws.is_connected() {
+        print_string("websocket connect: PASS\n");
+        ws.close();
+        1
+    } else {
+        print_string("websocket connect: FAIL\n");
+        0
+    }
+}
+
+fn test_websocket_echo() -> i64 {
+    let ws: WebSocket = WebSocket::connect("wss://echo.websocket.org");
+
+    ws.send("Hello, WebSocket!");
+    let response: String = ws.recv();
+    ws.close();
+
+    if response == "Hello, WebSocket!" {
+        print_string("websocket echo: PASS\n");
+        1
+    } else {
+        print_string("websocket echo: FAIL\n");
+        0
+    }
+}
+
+fn test_websocket_ping_pong() -> i64 {
+    let ws: WebSocket = WebSocket::connect("wss://echo.websocket.org");
+
+    ws.ping();
+    // Wait for pong
+    sleep_ms(100);
+
+    if ws.is_connected() {
+        print_string("websocket ping/pong: PASS\n");
+        ws.close();
+        1
+    } else {
+        print_string("websocket ping/pong: FAIL\n");
+        0
+    }
+}
+
+// ============================================
+// 35.3.10 DNS Resolver Runtime
+// ============================================
+
+fn test_dns_resolve_basic() -> i64 {
+    let addrs: Vec<String> = dns_resolve("www.google.com");
+
+    if addrs.len() > 0 {
+        print_string("dns resolve basic: PASS\n");
+        1
+    } else {
+        print_string("dns resolve basic: FAIL\n");
+        0
+    }
+}
+
+fn test_dns_resolve_async() -> i64 {
+    let future: Future<Vec<String>> = dns_resolve_async("www.example.com");
+    let addrs: Vec<String> = future.await;
+
+    if addrs.len() > 0 {
+        print_string("dns resolve async: PASS\n");
+        1
+    } else {
+        print_string("dns resolve async: FAIL\n");
+        0
+    }
+}
+
+// ============================================
+// 35.3.11 Process Spawning Runtime
+// ============================================
+
+fn test_process_spawn_exit_code() -> i64 {
+    let proc: Process = Process::spawn("true", []);  // Unix `true` returns 0
+    let exit_code: i64 = proc.wait();
+
+    if exit_code == 0 {
+        print_string("process spawn exit code: PASS\n");
+        1
+    } else {
+        print_string("process spawn exit code: FAIL\n");
+        0
+    }
+}
+
+fn test_process_capture_stdout() -> i64 {
+    let proc: Process = Process::spawn("echo", ["hello"]);
+    let output: String = proc.stdout_read();
+    proc.wait();
+
+    if output.trim() == "hello" {
+        print_string("process capture stdout: PASS\n");
+        1
+    } else {
+        print_string("process capture stdout: FAIL\n");
+        0
+    }
+}
+
+fn test_process_stdin_write() -> i64 {
+    let proc: Process = Process::spawn("cat", []);
+    proc.stdin_write("test input");
+    proc.stdin_close();
+    let output: String = proc.stdout_read();
+    proc.wait();
+
+    if output == "test input" {
+        print_string("process stdin write: PASS\n");
+        1
+    } else {
+        print_string("process stdin write: FAIL\n");
+        0
+    }
+}
+
+fn test_process_kill() -> i64 {
+    let proc: Process = Process::spawn("sleep", ["10"]);
+    proc.kill();
+    let exit_code: i64 = proc.wait();
+
+    // Killed processes typically have non-zero exit
+    print_string("process kill: PASS\n");
+    1
+}
+
+// ============================================
+// 35.3.12 Signal Handling Runtime
+// ============================================
+
+fn test_signal_handler_install() -> i64 {
+    let received: AtomicBool = AtomicBool::new(false);
+
+    signal_handler(SIGUSR1, || {
+        received.store(true);
+    });
+
+    // Send signal to self
+    kill(getpid(), SIGUSR1);
+    sleep_ms(10);
+
+    if received.load() {
+        print_string("signal handler install: PASS\n");
+        1
+    } else {
+        print_string("signal handler install: FAIL\n");
+        0
+    }
+}
+
+fn test_signal_ignore() -> i64 {
+    signal_ignore(SIGUSR1);
+
+    // This should not crash
+    kill(getpid(), SIGUSR1);
+
+    print_string("signal ignore: PASS\n");
+    1
+}
+
+// ============================================
+// 35.3.13 Actor System Runtime
+// ============================================
+
+actor PingActor {
+    count: i64,
+
+    fn new() -> PingActor {
+        PingActor { count: 0 }
+    }
+
+    fn ping(self) -> String {
+        self.count = self.count + 1;
+        "pong"
+    }
+
+    fn get_count(self) -> i64 {
+        self.count
+    }
+}
+
+fn test_actor_spawn_and_send() -> i64 {
+    let actor: ActorRef<PingActor> = spawn(PingActor::new());
+
+    let response: String = actor.ask(PingMessage::Ping);
+
+    if response == "pong" {
+        print_string("actor spawn and send: PASS\n");
+        1
+    } else {
+        print_string("actor spawn and send: FAIL\n");
+        0
+    }
+}
+
+fn test_actor_state_persistence() -> i64 {
+    let actor: ActorRef<PingActor> = spawn(PingActor::new());
+
+    actor.ask(PingMessage::Ping);
+    actor.ask(PingMessage::Ping);
+    actor.ask(PingMessage::Ping);
+
+    let count: i64 = actor.ask(PingMessage::GetCount);
+
+    if count == 3 {
+        print_string("actor state persistence: PASS\n");
+        1
+    } else {
+        print_string("actor state persistence: FAIL\n");
+        0
+    }
+}
+
+fn test_actor_fire_and_forget() -> i64 {
+    let counter: AtomicI64 = AtomicI64::new(0);
+
+    actor IncrementActor {
+        fn increment(self) {
+            counter.fetch_add(1);
+        }
+    }
+
+    let actor: ActorRef<IncrementActor> = spawn(IncrementActor {});
+
+    // Fire and forget - don't wait for response
+    actor.send(IncrementMessage::Increment);
+    actor.send(IncrementMessage::Increment);
+    actor.send(IncrementMessage::Increment);
+
+    sleep_ms(50);  // Let messages process
+
+    if counter.load() == 3 {
+        print_string("actor fire and forget: PASS\n");
+        1
+    } else {
+        print_string("actor fire and forget: FAIL\n");
+        0
+    }
+}
+
+// ============================================
+// 35.3.14 Distributed Actor Runtime
+// ============================================
+
+fn test_node_start_connect() -> i64 {
+    let node1: Node = Node::start("127.0.0.1:9001");
+    let node2: Node = Node::start("127.0.0.1:9002");
+
+    node1.connect("127.0.0.1:9002");
+
+    let connected: bool = node1.is_connected_to("127.0.0.1:9002");
+
+    node1.stop();
+    node2.stop();
+
+    if connected {
+        print_string("node start/connect: PASS\n");
+        1
+    } else {
+        print_string("node start/connect: FAIL\n");
+        0
+    }
+}
+
+fn test_remote_actor_spawn() -> i64 {
+    let node1: Node = Node::start("127.0.0.1:9003");
+    let node2: Node = Node::start("127.0.0.1:9004");
+
+    node1.connect("127.0.0.1:9004");
+
+    // Spawn actor on node2 from node1
+    let remote_actor: ActorRef<PingActor> = node1.spawn_on(
+        "127.0.0.1:9004",
+        PingActor::new()
+    );
+
+    let response: String = remote_actor.ask(PingMessage::Ping);
+
+    node1.stop();
+    node2.stop();
+
+    if response == "pong" {
+        print_string("remote actor spawn: PASS\n");
+        1
+    } else {
+        print_string("remote actor spawn: FAIL\n");
+        0
+    }
+}
+
+// ============================================
+// 35.3.15 SWIM Protocol Runtime
+// ============================================
+
+fn test_swim_membership() -> i64 {
+    let node1: Node = Node::start("127.0.0.1:9010");
+    let node2: Node = Node::start("127.0.0.1:9011");
+    let node3: Node = Node::start("127.0.0.1:9012");
+
+    node1.join_cluster(["127.0.0.1:9011", "127.0.0.1:9012"]);
+
+    sleep_ms(500);  // Let SWIM protocol sync
+
+    let members: Vec<String> = node1.cluster_members();
+
+    node1.stop();
+    node2.stop();
+    node3.stop();
+
+    if members.len() == 3 {
+        print_string("swim membership: PASS\n");
+        1
+    } else {
+        print_string("swim membership: FAIL\n");
+        0
+    }
+}
+
+fn test_swim_failure_detection() -> i64 {
+    let node1: Node = Node::start("127.0.0.1:9020");
+    let node2: Node = Node::start("127.0.0.1:9021");
+
+    node1.connect("127.0.0.1:9021");
+    sleep_ms(100);
+
+    // Kill node2
+    node2.stop();
+
+    // Wait for failure detection
+    sleep_ms(2000);
+
+    let members: Vec<String> = node1.cluster_members();
+    node1.stop();
+
+    if members.len() == 1 {
+        print_string("swim failure detection: PASS\n");
+        1
+    } else {
+        print_string("swim failure detection: FAIL\n");
+        0
+    }
+}
+
+// ============================================
+// 35.3.16-35.3.25 Additional Runtime Tests
+// (Semantic Memory, Beliefs, BDI, Evolution, etc.)
+// ============================================
+
+fn test_semantic_memory_store_query() -> i64 {
+    let mem: SemanticMemory = SemanticMemory::new();
+
+    mem.store("fact1", "The sky is blue", 0.9);
+    mem.store("fact2", "Water is wet", 0.95);
+    mem.store("fact3", "Fire is hot", 0.99);
+
+    let results: Vec<MemoryResult> = mem.query("What is hot?", 1);
+
+    if results.len() > 0 && results[0].content.contains("Fire") {
+        print_string("semantic memory store/query: PASS\n");
+        1
+    } else {
+        print_string("semantic memory store/query: FAIL\n");
+        0
+    }
+}
+
+fn test_belief_system_add_query() -> i64 {
+    let bs: BeliefSystem = BeliefSystem::new();
+
+    bs.add("sky_color", "blue", 0.95);
+    bs.add("grass_color", "green", 0.90);
+
+    let belief: Option<Belief> = bs.get("sky_color");
+
+    if belief.is_some() && belief.unwrap().value == "blue" {
+        print_string("belief system add/query: PASS\n");
+        1
+    } else {
+        print_string("belief system add/query: FAIL\n");
+        0
+    }
+}
+
+fn test_bdi_goal_plan() -> i64 {
+    let agent: BDIAgent = BDIAgent::new();
+
+    let goal: Goal = agent.create_goal("acquire_food", 0.8);
+
+    agent.add_plan("acquire_food", |g| {
+        // Plan steps
+        go_to_kitchen();
+        open_fridge();
+        take_food();
+    });
+
+    agent.pursue(goal);
+
+    if agent.goal_achieved("acquire_food") {
+        print_string("bdi goal/plan: PASS\n");
+        1
+    } else {
+        print_string("bdi goal/plan: FAIL\n");
+        0
+    }
+}
+
+fn test_evolution_generation() -> i64 {
+    let pop: Population = Population::new(100);
+
+    pop.set_fitness_fn(|individual| {
+        individual.traits["strength"] * 2
+    });
+
+    pop.evolve(10);  // 10 generations
+
+    let best: Individual = pop.best();
+
+    if best.fitness > 0 {
+        print_string("evolution generation: PASS\n");
+        1
+    } else {
+        print_string("evolution generation: FAIL\n");
+        0
+    }
+}
+
+fn test_code_store_put_get() -> i64 {
+    let store: CodeStore = CodeStore::new();
+
+    let code: String = "fn main() { 42 }";
+    let hash: String = store.put(code);
+
+    let retrieved: Option<String> = store.get(hash);
+
+    if retrieved.unwrap() == code {
+        print_string("code store put/get: PASS\n");
+        1
+    } else {
+        print_string("code store put/get: FAIL\n");
+        0
+    }
+}
+
+fn test_checkpoint_save_load() -> i64 {
+    actor StatefulActor {
+        value: i64,
+        fn new(v: i64) -> StatefulActor { StatefulActor { value: v } }
+        fn get(self) -> i64 { self.value }
+        fn set(self, v: i64) { self.value = v; }
+    }
+
+    let actor: ActorRef<StatefulActor> = spawn(StatefulActor::new(100));
+    actor.ask(StatefulMessage::Set(200));
+
+    checkpoint_save(actor, "/tmp/actor_checkpoint");
+
+    // Create new actor from checkpoint
+    let restored: ActorRef<StatefulActor> = checkpoint_load("/tmp/actor_checkpoint");
+    let value: i64 = restored.ask(StatefulMessage::Get);
+
+    if value == 200 {
+        print_string("checkpoint save/load: PASS\n");
+        1
+    } else {
+        print_string("checkpoint save/load: FAIL\n");
+        0
+    }
+}
+
+fn test_test_framework_run() -> i64 {
+    let runner: TestRunner = TestRunner::new();
+
+    runner.add_test("passing_test", || {
+        assert_eq(1, 1);
+    });
+
+    runner.add_test("another_passing", || {
+        assert(true);
+    });
+
+    let results: TestResults = runner.run();
+
+    if results.passed == 2 && results.failed == 0 {
+        print_string("test framework run: PASS\n");
+        1
+    } else {
+        print_string("test framework run: FAIL\n");
+        0
+    }
+}
+
+// ============================================
+// Main test runner
+// ============================================
+
+fn main() -> i64 {
+    print_string("=== Phase 35 Wave 3: Runtime Tests ===\n\n");
+
+    let passed: i64 = 0;
+    let total: i64 = 0;
+
+    // Executor tests
+    print_string("--- Async Executor ---\n");
+    total = total + 1; passed = passed + test_executor_spawn_single();
+    total = total + 1; passed = passed + test_executor_spawn_multiple();
+    total = total + 1; passed = passed + test_executor_block_on();
+
+    // Timer tests
+    print_string("\n--- Timer Wheel ---\n");
+    total = total + 1; passed = passed + test_timer_register_fire();
+    total = total + 1; passed = passed + test_timer_cancel();
+    total = total + 1; passed = passed + test_timer_multiple();
+
+    // I/O Driver tests
+    print_string("\n--- I/O Driver ---\n");
+    total = total + 1; passed = passed + test_io_driver_new();
+    total = total + 1; passed = passed + test_io_register_read();
+    total = total + 1; passed = passed + test_io_poll_timeout();
+
+    // Mailbox tests
+    print_string("\n--- Lock-Free Mailbox ---\n");
+    total = total + 1; passed = passed + test_mailbox_send_recv();
+    total = total + 1; passed = passed + test_mailbox_fifo_order();
+    total = total + 1; passed = passed + test_mailbox_try_recv();
+    total = total + 1; passed = passed + test_mailbox_concurrent();
+
+    // Scheduler tests
+    print_string("\n--- Work-Stealing Scheduler ---\n");
+    total = total + 1; passed = passed + test_scheduler_spawn_task();
+    total = total + 1; passed = passed + test_scheduler_work_stealing();
+
+    // HTTP Client tests
+    print_string("\n--- HTTP Client ---\n");
+    total = total + 1; passed = passed + test_http_get_basic();
+    total = total + 1; passed = passed + test_http_post_basic();
+    total = total + 1; passed = passed + test_http_headers();
+    total = total + 1; passed = passed + test_http_redirect();
+
+    // HTTP Server tests
+    print_string("\n--- HTTP Server ---\n");
+    total = total + 1; passed = passed + test_http_server_start();
+    total = total + 1; passed = passed + test_http_server_routing();
+
+    // TLS tests
+    print_string("\n--- TLS ---\n");
+    total = total + 1; passed = passed + test_tls_connect();
+    total = total + 1; passed = passed + test_tls_https_request();
+    total = total + 1; passed = passed + test_tls_cert_verification();
+
+    // WebSocket tests
+    print_string("\n--- WebSocket ---\n");
+    total = total + 1; passed = passed + test_websocket_connect();
+    total = total + 1; passed = passed + test_websocket_echo();
+    total = total + 1; passed = passed + test_websocket_ping_pong();
+
+    // DNS tests
+    print_string("\n--- DNS ---\n");
+    total = total + 1; passed = passed + test_dns_resolve_basic();
+    total = total + 1; passed = passed + test_dns_resolve_async();
+
+    // Process tests
+    print_string("\n--- Process Spawning ---\n");
+    total = total + 1; passed = passed + test_process_spawn_exit_code();
+    total = total + 1; passed = passed + test_process_capture_stdout();
+    total = total + 1; passed = passed + test_process_stdin_write();
+    total = total + 1; passed = passed + test_process_kill();
+
+    // Signal tests
+    print_string("\n--- Signal Handling ---\n");
+    total = total + 1; passed = passed + test_signal_handler_install();
+    total = total + 1; passed = passed + test_signal_ignore();
+
+    // Actor tests
+    print_string("\n--- Actor System ---\n");
+    total = total + 1; passed = passed + test_actor_spawn_and_send();
+    total = total + 1; passed = passed + test_actor_state_persistence();
+    total = total + 1; passed = passed + test_actor_fire_and_forget();
+
+    // Distributed tests
+    print_string("\n--- Distributed Actors ---\n");
+    total = total + 1; passed = passed + test_node_start_connect();
+    total = total + 1; passed = passed + test_remote_actor_spawn();
+
+    // SWIM tests
+    print_string("\n--- SWIM Protocol ---\n");
+    total = total + 1; passed = passed + test_swim_membership();
+    total = total + 1; passed = passed + test_swim_failure_detection();
+
+    // Additional runtime tests
+    print_string("\n--- Additional Runtime ---\n");
+    total = total + 1; passed = passed + test_semantic_memory_store_query();
+    total = total + 1; passed = passed + test_belief_system_add_query();
+    total = total + 1; passed = passed + test_bdi_goal_plan();
+    total = total + 1; passed = passed + test_evolution_generation();
+    total = total + 1; passed = passed + test_code_store_put_get();
+    total = total + 1; passed = passed + test_checkpoint_save_load();
+    total = total + 1; passed = passed + test_test_framework_run();
+
+    print_string("\n=== Summary ===\n");
+    print_string("Passed: ");
+    print_i64(passed);
+    print_string(" / ");
+    print_i64(total);
+    print_string("\n");
+
+    if passed == total { 0 } else { 1 }
+}

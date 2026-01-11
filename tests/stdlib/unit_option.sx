@@ -1,0 +1,329 @@
+// Test file for Option<T> concepts
+// Self-contained version using i64 encoding
+//
+// Option encoding: high bit = is_some flag, lower bits = value
+// None: 0x8000000000000000 (special sentinel)
+// Some(v): v (where v != sentinel)
+
+// =============================================================================
+// Option Implementation (i64 encoded)
+// =============================================================================
+
+fn OPT_NONE_SENTINEL() -> i64 {
+    // Use a value unlikely to be a real value
+    // We'll use the minimum i64 value
+    0 - 9223372036854775807 - 1
+}
+
+fn opt_none() -> i64 {
+    OPT_NONE_SENTINEL()
+}
+
+fn opt_some(value: i64) -> i64 {
+    // If value happens to equal sentinel, we have a problem
+    // For testing purposes, we'll just use the value directly
+    value
+}
+
+fn opt_is_none(opt: i64) -> i64 {
+    if opt == OPT_NONE_SENTINEL() {
+        1
+    } else {
+        0
+    }
+}
+
+fn opt_is_some(opt: i64) -> i64 {
+    if opt != OPT_NONE_SENTINEL() {
+        1
+    } else {
+        0
+    }
+}
+
+fn opt_unwrap(opt: i64) -> i64 {
+    // Assumes option is Some
+    opt
+}
+
+fn opt_unwrap_or(opt: i64, default: i64) -> i64 {
+    if opt_is_none(opt) == 1 {
+        default
+    } else {
+        opt
+    }
+}
+
+// =============================================================================
+// Test 1: Option None
+// =============================================================================
+
+fn test_opt_none() -> i64 {
+    println("  Testing option none...");
+
+    let opt: i64 = opt_none();
+
+    if opt_is_none(opt) != 1 {
+        println("    FAIL: option_none should be None");
+        return 1;
+    }
+
+    if opt_is_some(opt) != 0 {
+        println("    FAIL: option_none should not be Some");
+        return 1;
+    }
+
+    println("    PASS: option none");
+    0
+}
+
+// =============================================================================
+// Test 2: Option Some
+// =============================================================================
+
+fn test_opt_some() -> i64 {
+    println("  Testing option some...");
+
+    let opt: i64 = opt_some(42);
+
+    if opt_is_some(opt) != 1 {
+        println("    FAIL: option_some should be Some");
+        return 1;
+    }
+
+    if opt_is_none(opt) != 0 {
+        println("    FAIL: option_some should not be None");
+        return 1;
+    }
+
+    let val: i64 = opt_unwrap(opt);
+    if val != 42 {
+        println("    FAIL: unwrapped value should be 42");
+        return 1;
+    }
+
+    println("    PASS: option some");
+    0
+}
+
+// =============================================================================
+// Test 3: Option Unwrap Or
+// =============================================================================
+
+fn test_opt_unwrap_or() -> i64 {
+    println("  Testing option unwrap_or...");
+
+    let some: i64 = opt_some(100);
+    let none: i64 = opt_none();
+
+    let val1: i64 = opt_unwrap_or(some, 0);
+    if val1 != 100 {
+        println("    FAIL: unwrap_or Some should return inner value");
+        return 1;
+    }
+
+    let val2: i64 = opt_unwrap_or(none, 999);
+    if val2 != 999 {
+        println("    FAIL: unwrap_or None should return default");
+        return 1;
+    }
+
+    println("    PASS: option unwrap_or");
+    0
+}
+
+// =============================================================================
+// Test 4: Option Chaining
+// =============================================================================
+
+fn test_option_chaining() -> i64 {
+    println("  Testing option chaining...");
+
+    let opt1: i64 = opt_some(10);
+    let none: i64 = opt_none();
+
+    // Check value access
+    if opt_is_some(opt1) == 1 {
+        let v: i64 = opt_unwrap(opt1);
+        if v != 10 {
+            println("    FAIL: opt1 value should be 10");
+            return 1;
+        }
+    } else {
+        println("    FAIL: opt1 should be Some");
+        return 1;
+    }
+
+    // Check None handling
+    let result: i64 = opt_unwrap_or(none, 0 - 1);
+    if result != 0 - 1 {
+        println("    FAIL: None unwrap_or should return default");
+        return 1;
+    }
+
+    println("    PASS: option chaining");
+    0
+}
+
+// =============================================================================
+// Test 5: Option with Zero
+// =============================================================================
+
+fn test_option_with_zero() -> i64 {
+    println("  Testing option with zero...");
+
+    // Zero is a valid value, not None
+    let opt: i64 = opt_some(0);
+
+    if opt_is_none(opt) == 1 {
+        println("    FAIL: Some(0) should not be None");
+        return 1;
+    }
+
+    let val: i64 = opt_unwrap(opt);
+    if val != 0 {
+        println("    FAIL: unwrap of Some(0) should be 0");
+        return 1;
+    }
+
+    println("    PASS: option with zero");
+    0
+}
+
+// =============================================================================
+// Test 6: Option with Negative
+// =============================================================================
+
+fn test_option_with_negative() -> i64 {
+    println("  Testing option with negative...");
+
+    let opt: i64 = opt_some(0 - 42);
+
+    if opt_is_none(opt) == 1 {
+        println("    FAIL: Some(-42) should not be None");
+        return 1;
+    }
+
+    let val: i64 = opt_unwrap(opt);
+    if val != 0 - 42 {
+        println("    FAIL: unwrap of Some(-42) should be -42");
+        return 1;
+    }
+
+    println("    PASS: option with negative");
+    0
+}
+
+// =============================================================================
+// Test 7: Option Map Pattern
+// =============================================================================
+
+fn double_value(x: i64) -> i64 {
+    x * 2
+}
+
+fn test_option_map_pattern() -> i64 {
+    println("  Testing option map pattern...");
+
+    let opt: i64 = opt_some(21);
+
+    // Simulate map: if Some, apply function
+    let mapped: i64 = if opt_is_some(opt) == 1 {
+        opt_some(double_value(opt_unwrap(opt)))
+    } else {
+        opt_none()
+    };
+
+    if opt_is_some(mapped) != 1 {
+        println("    FAIL: mapped should be Some");
+        return 1;
+    }
+
+    let val: i64 = opt_unwrap(mapped);
+    if val != 42 {
+        println("    FAIL: mapped value should be 42");
+        return 1;
+    }
+
+    // Map over None should give None
+    let none: i64 = opt_none();
+    let mapped_none: i64 = if opt_is_some(none) == 1 {
+        opt_some(double_value(opt_unwrap(none)))
+    } else {
+        opt_none()
+    };
+
+    if opt_is_none(mapped_none) != 1 {
+        println("    FAIL: mapped None should be None");
+        return 1;
+    }
+
+    println("    PASS: option map pattern");
+    0
+}
+
+// =============================================================================
+// Test 8: Option And Then Pattern
+// =============================================================================
+
+fn safe_divide(a: i64, b: i64) -> i64 {
+    if b == 0 {
+        opt_none()
+    } else {
+        opt_some(a / b)
+    }
+}
+
+fn test_option_and_then() -> i64 {
+    println("  Testing option and_then pattern...");
+
+    // and_then chains optional operations
+    let result1: i64 = safe_divide(100, 5);
+    if opt_is_some(result1) != 1 {
+        println("    FAIL: 100/5 should succeed");
+        return 1;
+    }
+    if opt_unwrap(result1) != 20 {
+        println("    FAIL: 100/5 should be 20");
+        return 1;
+    }
+
+    // Division by zero returns None
+    let result2: i64 = safe_divide(100, 0);
+    if opt_is_none(result2) != 1 {
+        println("    FAIL: division by zero should be None");
+        return 1;
+    }
+
+    println("    PASS: option and_then pattern");
+    0
+}
+
+// =============================================================================
+// Main Test Runner
+// =============================================================================
+
+fn main() -> i64 {
+    println("=== Option Tests ===");
+    println("");
+
+    let f1: i64 = test_opt_none();
+    let f2: i64 = test_opt_some();
+    let f3: i64 = test_opt_unwrap_or();
+    let f4: i64 = test_option_chaining();
+    let f5: i64 = test_option_with_zero();
+    let f6: i64 = test_option_with_negative();
+    let f7: i64 = test_option_map_pattern();
+    let f8: i64 = test_option_and_then();
+
+    let failures: i64 = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8;
+
+    println("");
+    if failures == 0 {
+        println("All Option tests passed!");
+    } else {
+        println("Some Option tests failed");
+    }
+
+    failures
+}

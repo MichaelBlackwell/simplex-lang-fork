@@ -1,0 +1,109 @@
+// Integration test: Word frequency counter
+// Uses: String operations, HashMap, Vec, iterators
+
+fn count_words(text: i64) -> i64 {
+    let word_counts: i64 = hashmap_new();
+    let words: i64 = string_split_whitespace(text);
+
+    var i: i64 = 0;
+    while i < vec_len(words) {
+        let word: i64 = string_to_lowercase(vec_get(words, i));
+
+        // Skip empty strings
+        if string_len(word) > 0 {
+            let existing: i64 = hashmap_get(word_counts, word);
+            if option_is_some(existing) {
+                let count: i64 = option_unwrap(existing);
+                hashmap_insert(word_counts, word, count + 1);
+            } else {
+                hashmap_insert(word_counts, word, 1);
+            }
+        }
+        i = i + 1;
+    }
+
+    word_counts
+}
+
+fn test_word_counter() -> i64 {
+    let text: i64 = "The quick brown fox jumps over the lazy dog The fox is quick";
+    let counts: i64 = count_words(text);
+
+    // Check "the" appears 2 times (case insensitive)
+    let the_count: i64 = hashmap_get(counts, "the");
+    if option_is_none(the_count) {
+        println("FAIL: 'the' should exist");
+        return 1;
+    }
+    if option_unwrap(the_count) != 2 {
+        println("FAIL: 'the' should appear 2 times");
+        return 1;
+    }
+
+    // Check "quick" appears 2 times
+    let quick_count: i64 = hashmap_get(counts, "quick");
+    if option_unwrap(quick_count) != 2 {
+        println("FAIL: 'quick' should appear 2 times");
+        return 1;
+    }
+
+    // Check "fox" appears 2 times
+    let fox_count: i64 = hashmap_get(counts, "fox");
+    if option_unwrap(fox_count) != 2 {
+        println("FAIL: 'fox' should appear 2 times");
+        return 1;
+    }
+
+    // Check "lazy" appears 1 time
+    let lazy_count: i64 = hashmap_get(counts, "lazy");
+    if option_unwrap(lazy_count) != 1 {
+        println("FAIL: 'lazy' should appear 1 time");
+        return 1;
+    }
+
+    println("PASS: test_word_counter");
+    0
+}
+
+fn test_empty_text() -> i64 {
+    let counts: i64 = count_words("");
+    if hashmap_is_empty(counts) == false {
+        println("FAIL: empty text should produce empty counts");
+        return 1;
+    }
+
+    println("PASS: test_empty_text");
+    0
+}
+
+fn test_single_word() -> i64 {
+    let counts: i64 = count_words("hello");
+    let hello_count: i64 = hashmap_get(counts, "hello");
+    if option_unwrap(hello_count) != 1 {
+        println("FAIL: single word count should be 1");
+        return 1;
+    }
+
+    println("PASS: test_single_word");
+    0
+}
+
+fn main() -> i64 {
+    println("=== Word Counter Integration Test ===");
+    println("");
+
+    var failures: i64 = 0;
+    failures = failures + test_word_counter();
+    failures = failures + test_empty_text();
+    failures = failures + test_single_word();
+
+    println("");
+    if failures == 0 {
+        println("All word counter tests passed!");
+    } else {
+        print("Word counter tests failed: ");
+        println(int_to_string(failures));
+    }
+
+    failures
+}

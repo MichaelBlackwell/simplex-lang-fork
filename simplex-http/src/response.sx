@@ -1,0 +1,269 @@
+// HTTP Response types
+
+use simplex_std::collections::HashMap;
+use crate::json::{to_json, JsonValue};
+
+/// HTTP Status Codes
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusCode {
+    // 2xx Success
+    Ok,
+    Created,
+    Accepted,
+    NoContent,
+
+    // 3xx Redirection
+    MovedPermanently,
+    Found,
+    SeeOther,
+    NotModified,
+    TemporaryRedirect,
+    PermanentRedirect,
+
+    // 4xx Client Errors
+    BadRequest,
+    Unauthorized,
+    Forbidden,
+    NotFound,
+    MethodNotAllowed,
+    Conflict,
+    Gone,
+    UnprocessableEntity,
+    TooManyRequests,
+
+    // 5xx Server Errors
+    InternalServerError,
+    NotImplemented,
+    BadGateway,
+    ServiceUnavailable,
+    GatewayTimeout,
+}
+
+impl StatusCode {
+    pub fn code(&self) -> u16 {
+        match self {
+            StatusCode::Ok => 200,
+            StatusCode::Created => 201,
+            StatusCode::Accepted => 202,
+            StatusCode::NoContent => 204,
+            StatusCode::MovedPermanently => 301,
+            StatusCode::Found => 302,
+            StatusCode::SeeOther => 303,
+            StatusCode::NotModified => 304,
+            StatusCode::TemporaryRedirect => 307,
+            StatusCode::PermanentRedirect => 308,
+            StatusCode::BadRequest => 400,
+            StatusCode::Unauthorized => 401,
+            StatusCode::Forbidden => 403,
+            StatusCode::NotFound => 404,
+            StatusCode::MethodNotAllowed => 405,
+            StatusCode::Conflict => 409,
+            StatusCode::Gone => 410,
+            StatusCode::UnprocessableEntity => 422,
+            StatusCode::TooManyRequests => 429,
+            StatusCode::InternalServerError => 500,
+            StatusCode::NotImplemented => 501,
+            StatusCode::BadGateway => 502,
+            StatusCode::ServiceUnavailable => 503,
+            StatusCode::GatewayTimeout => 504,
+        }
+    }
+
+    pub fn reason(&self) -> &str {
+        match self {
+            StatusCode::Ok => "OK",
+            StatusCode::Created => "Created",
+            StatusCode::Accepted => "Accepted",
+            StatusCode::NoContent => "No Content",
+            StatusCode::MovedPermanently => "Moved Permanently",
+            StatusCode::Found => "Found",
+            StatusCode::SeeOther => "See Other",
+            StatusCode::NotModified => "Not Modified",
+            StatusCode::TemporaryRedirect => "Temporary Redirect",
+            StatusCode::PermanentRedirect => "Permanent Redirect",
+            StatusCode::BadRequest => "Bad Request",
+            StatusCode::Unauthorized => "Unauthorized",
+            StatusCode::Forbidden => "Forbidden",
+            StatusCode::NotFound => "Not Found",
+            StatusCode::MethodNotAllowed => "Method Not Allowed",
+            StatusCode::Conflict => "Conflict",
+            StatusCode::Gone => "Gone",
+            StatusCode::UnprocessableEntity => "Unprocessable Entity",
+            StatusCode::TooManyRequests => "Too Many Requests",
+            StatusCode::InternalServerError => "Internal Server Error",
+            StatusCode::NotImplemented => "Not Implemented",
+            StatusCode::BadGateway => "Bad Gateway",
+            StatusCode::ServiceUnavailable => "Service Unavailable",
+            StatusCode::GatewayTimeout => "Gateway Timeout",
+        }
+    }
+
+    pub fn is_success(&self) -> bool {
+        self.code() >= 200 && self.code() < 300
+    }
+
+    pub fn is_error(&self) -> bool {
+        self.code() >= 400
+    }
+}
+
+/// HTTP Response
+pub struct Response {
+    pub status: StatusCode,
+    pub headers: HashMap<String, String>,
+    pub body: Option<Vec<u8>>,
+    pub keep_alive: bool,
+}
+
+impl Response {
+    pub fn new(status: StatusCode) -> Self {
+        let mut headers = HashMap::new();
+        headers.insert("Server".to_string(), "Codex/0.1.0 (Simplex)".to_string());
+        headers.insert("Date".to_string(), current_http_date());
+
+        Response {
+            status,
+            headers,
+            body: None,
+            keep_alive: true,
+        }
+    }
+
+    /// Create OK response
+    pub fn ok() -> Self {
+        Response::new(StatusCode::Ok)
+    }
+
+    /// Create response with JSON body
+    pub fn json<T: Serialize>(data: &T) -> Self {
+        let json_str = to_json(data);
+        let mut response = Response::new(StatusCode::Ok);
+        response.headers.insert("Content-Type".to_string(), "application/json".to_string());
+        response.body = Some(json_str.into_bytes());
+        response
+    }
+
+    /// Create error response
+    pub fn error(status: StatusCode, message: String) -> Self {
+        let error_body = JsonValue::object([
+            ("error", JsonValue::string(&message)),
+            ("status", JsonValue::number(status.code() as f64)),
+        ]);
+        let mut response = Response::new(status);
+        response.headers.insert("Content-Type".to_string(), "application/json".to_string());
+        response.body = Some(to_json(&error_body).into_bytes());
+        response
+    }
+
+    /// Create redirect response
+    pub fn redirect(location: &str) -> Self {
+        let mut response = Response::new(StatusCode::Found);
+        response.headers.insert("Location".to_string(), location.to_string());
+        response
+    }
+
+    /// Create created response with location
+    pub fn created(location: &str) -> Self {
+        let mut response = Response::new(StatusCode::Created);
+        response.headers.insert("Location".to_string(), location.to_string());
+        response
+    }
+
+    /// Create no content response
+    pub fn no_content() -> Self {
+        Response::new(StatusCode::NoContent)
+    }
+
+    /// Set header
+    pub fn header(mut self, key: &str, value: &str) -> Self {
+        self.headers.insert(key.to_string(), value.to_string());
+        self
+    }
+
+    /// Set body
+    pub fn body(mut self, body: Vec<u8>) -> Self {
+        self.body = Some(body);
+        self
+    }
+
+    /// Set body from string
+    pub fn body_string(mut self, body: &str) -> Self {
+        self.body = Some(body.as_bytes().to_vec());
+        self
+    }
+
+    /// Set content type
+    pub fn content_type(self, content_type: &str) -> Self {
+        self.header("Content-Type", content_type)
+    }
+
+    /// Set CORS headers
+    pub fn cors(self, origin: &str) -> Self {
+        self.header("Access-Control-Allow-Origin", origin)
+            .header("Access-Control-Allow-Credentials", "true")
+    }
+
+    /// Set cache control
+    pub fn cache(self, max_age: u64) -> Self {
+        self.header("Cache-Control", &format!("max-age={}", max_age))
+    }
+
+    /// No cache
+    pub fn no_cache(self) -> Self {
+        self.header("Cache-Control", "no-store, no-cache, must-revalidate")
+    }
+
+    /// Set cookie
+    pub fn set_cookie(self, name: &str, value: &str, options: CookieOptions) -> Self {
+        let mut cookie = format!("{}={}", name, value);
+
+        if let Some(max_age) = options.max_age {
+            cookie.push_str(&format!("; Max-Age={}", max_age));
+        }
+        if let Some(ref path) = options.path {
+            cookie.push_str(&format!("; Path={}", path));
+        }
+        if let Some(ref domain) = options.domain {
+            cookie.push_str(&format!("; Domain={}", domain));
+        }
+        if options.secure {
+            cookie.push_str("; Secure");
+        }
+        if options.http_only {
+            cookie.push_str("; HttpOnly");
+        }
+        if let Some(ref same_site) = options.same_site {
+            cookie.push_str(&format!("; SameSite={}", same_site));
+        }
+
+        self.header("Set-Cookie", &cookie)
+    }
+}
+
+pub struct CookieOptions {
+    pub max_age: Option<u64>,
+    pub path: Option<String>,
+    pub domain: Option<String>,
+    pub secure: bool,
+    pub http_only: bool,
+    pub same_site: Option<String>,
+}
+
+impl Default for CookieOptions {
+    fn default() -> Self {
+        CookieOptions {
+            max_age: None,
+            path: Some("/".to_string()),
+            domain: None,
+            secure: true,
+            http_only: true,
+            same_site: Some("Lax".to_string()),
+        }
+    }
+}
+
+fn current_http_date() -> String {
+    // Format: "Mon, 02 Jan 2006 15:04:05 GMT"
+    let now = simplex_std::time::now_utc();
+    now.format("%a, %d %b %Y %H:%M:%S GMT")
+}

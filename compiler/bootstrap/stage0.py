@@ -11,6 +11,36 @@ https://github.com/senuamedia/simplex-lang
 
 import sys
 import struct
+import platform
+
+def get_target_triple():
+    """Get the LLVM target triple for the current platform."""
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+
+    # Normalize architecture
+    if machine in ('x86_64', 'amd64'):
+        arch = 'x86_64'
+    elif machine in ('arm64', 'aarch64'):
+        arch = 'aarch64'
+    elif machine in ('i386', 'i686'):
+        arch = 'i386'
+    else:
+        arch = 'x86_64'  # Default
+
+    # Build target triple based on OS
+    if system == 'darwin':
+        # macOS
+        version = platform.mac_ver()[0]
+        if version:
+            major = version.split('.')[0]
+            return f'{arch}-apple-macosx{major}.0.0'
+        return f'{arch}-apple-macosx14.0.0'
+    elif system == 'windows':
+        return f'{arch}-pc-windows-msvc'
+    else:
+        # Linux and other Unix-like systems
+        return f'{arch}-unknown-linux-gnu'
 
 # Token types
 class TokenKind:
@@ -2416,7 +2446,7 @@ class CodeGen:
     def generate(self, items):
         # Header
         self.emit('; ModuleID = "simplex_program"')
-        self.emit('target triple = "x86_64-apple-macosx15.0.0"')
+        self.emit(f'target triple = "{get_target_triple()}"')
         self.emit('')
 
         # External declarations
@@ -5585,6 +5615,7 @@ class CodeGen:
                 'sb_append': 'intrinsic_sb_append',
                 'sb_append_char': 'intrinsic_sb_append_char',
                 'sb_append_i64': 'intrinsic_sb_append_i64',
+                'sb_build': 'intrinsic_sb_to_string',
                 'sb_to_string': 'intrinsic_sb_to_string',
                 'sb_clear': 'intrinsic_sb_clear',
                 'sb_free': 'intrinsic_sb_free',

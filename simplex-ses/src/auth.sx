@@ -1,0 +1,150 @@
+// AWS Signature V4 signing
+// For authenticating SES API requests
+
+use simplex_std::collections::HashMap;
+use simplex_std::crypto::{hmac_sha256, sha256};
+use crate::client::SesError;
+
+/// AWS Credentials
+pub struct AwsCredentials {
+    pub access_key_id: String,
+    pub secret_access_key: String,
+    pub region: String,
+    pub service: String,
+}
+
+/// Sign a request using AWS Signature Version 4
+pub fn sign_request(
+    method: &str,
+    url: &str,
+    body: &str,
+    credentials: &AwsCredentials,
+) -> Result<HashMap<String, String>, SesError> {
+    let now = simplex_std::time::now_utc();
+    let date_stamp = now.format("%Y%m%d");
+    let amz_date = now.format("%Y%m%dT%H%M%SZ");
+
+    // Parse URL
+    let (host, path) = parse_url(url)?;
+
+    // Create canonical request
+    let payload_hash = hex_encode(&sha256(body.as_bytes()));
+
+    let canonical_headers = format!(
+        "host:{}\nx-amz-date:{}\n",
+        host, amz_date
+    );
+
+    let signed_headers = "host;x-amz-date";
+
+    let canonical_request = format!(
+        "{}\n{}\n\n{}\n{}\n{}",
+        method,
+        path,
+        canonical_headers,
+        signed_headers,
+        payload_hash
+    );
+
+    // Create string to sign
+    let algorithm = "AWS4-HMAC-SHA256";
+    let credential_scope = format!(
+        "{}/{}/{}/aws4_request",
+        date_stamp, credentials.region, credentials.service
+    );
+
+    let string_to_sign = format!(
+        "{}\n{}\n{}\n{}",
+        algorithm,
+        amz_date,
+        credential_scope,
+        hex_encode(&sha256(canonical_request.as_bytes()))
+    );
+
+    // Calculate signature
+    let signing_key = get_signature_key(
+        &credentials.secret_access_key,
+        &date_stamp,
+        &credentials.region,
+        &credentials.service,
+    );
+
+    let signature = hex_encode(&hmac_sha256(&signing_key, string_to_sign.as_bytes()));
+
+    // Build authorization header
+    let authorization = format!(
+        "{} Credential={}/{}, SignedHeaders={}, Signature={}",
+        algorithm,
+        credentials.access_key_id,
+        credential_scope,
+        signed_headers,
+        signature
+    );
+
+    let mut headers = HashMap::new();
+    headers.insert("Authorization".to_string(), authorization);
+    headers.insert("X-Amz-Date".to_string(), amz_date);
+    headers.insert("X-Amz-Content-Sha256".to_string(), payload_hash);
+    headers.insert("Host".to_string(), host);
+
+    Ok(headers)
+}
+
+fn get_signature_key(
+    secret_key: &str,
+    date_stamp: &str,
+    region: &str,
+    service: &str,
+) -> Vec<u8> {
+    let k_date = hmac_sha256(
+        format!("AWS4{}", secret_key).as_bytes(),
+        date_stamp.as_bytes(),
+    );
+    let k_region = hmac_sha256(&k_date, region.as_bytes());
+    let k_service = hmac_sha256(&k_region, service.as_bytes());
+    let k_signing = hmac_sha256(&k_service, b"aws4_request");
+    k_signing
+}
+
+fn parse_url(url: &str) -> Result<(String, String), SesError> {
+    let without_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .ok_or(SesError::SigningError("Invalid URL".to_string()))?;
+
+    let (host, path) = match without_scheme.find('/') {
+        Some(idx) => (&without_scheme[..idx], &without_scheme[idx..]),
+        None => (without_scheme, "/"),
+    };
+
+    Ok((host.to_string(), path.to_string()))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sign_request() {
+        let credentials = AwsCredentials {
+            access_key_id: "AKIAIOSFODNN7EXAMPLE".to_string(),
+            secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string(),
+            region: "ap-southeast-2".to_string(),
+            service: "ses".to_string(),
+        };
+
+        let headers = sign_request(
+            "POST",
+            "https://email.ap-southeast-2.amazonaws.com/v2/email/outbound-emails",
+            "{}",
+            &credentials,
+        ).unwrap();
+
+        assert!(headers.contains_key("Authorization"));
+        assert!(headers.contains_key("X-Amz-Date"));
+    }
+}

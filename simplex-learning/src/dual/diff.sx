@@ -1,0 +1,295 @@
+// Differentiation Utilities
+//
+// This module provides high-level functions for computing derivatives
+// using dual numbers. These functions abstract away the dual number
+// mechanics, providing a clean API for differentiation.
+//
+// Usage:
+//   fn f(x: Dual) -> Dual { x * x + x.sin() }
+//   let df = derivative(f, 3.0);  // f'(3) computed exactly
+
+use super::dual::Dual;
+
+/// Compute the derivative of a single-variable function at a point.
+///
+/// Given a function f: Dual -> Dual and a point x, computes f'(x).
+///
+/// # Example
+/// ```
+/// fn square(x: Dual) -> Dual { x * x }
+/// let df = derivative(square, 3.0);  // df = 6.0 (derivative of x² is 2x)
+/// ```
+///
+/// # How it works
+/// 1. Create a dual number x + ε (value = x, derivative = 1)
+/// 2. Evaluate f(x + ε), which propagates derivatives via chain rule
+/// 3. Extract the ε coefficient, which equals f'(x)
+#[inline]
+pub fn derivative<F>(f: F, x: f64) -> f64
+where
+    F: Fn(Dual) -> Dual,
+{
+    let dx = Dual::variable(x);  // x + 1ε
+    let result = f(dx);          // f(x) + f'(x)ε
+    result.der                   // Extract f'(x)
+}
+
+/// Compute both the value and derivative of a function at a point.
+///
+/// Returns (f(x), f'(x)) in a single computation.
+///
+/// # Example
+/// ```
+/// fn cube(x: Dual) -> Dual { x * x * x }
+/// let (val, der) = derivative_at(cube, 2.0);
+/// // val = 8.0 (2³), der = 12.0 (3·2² = derivative of x³)
+/// ```
+#[inline]
+pub fn derivative_at<F>(f: F, x: f64) -> (f64, f64)
+where
+    F: Fn(Dual) -> Dual,
+{
+    let dx = Dual::variable(x);
+    let result = f(dx);
+    (result.val, result.der)
+}
+
+/// Compute the n-th derivative of a function at a point.
+///
+/// Uses nested dual numbers to compute higher-order derivatives.
+/// Note: This is a recursive approximation; for exact higher-order
+/// derivatives, use Dual2 or hyper-dual numbers.
+///
+/// # Example
+/// ```
+/// fn poly(x: Dual) -> Dual { x.powi(4) }  // x⁴
+/// let d2 = nth_derivative(poly, 2.0, 2);  // 12·x² at x=2 = 48
+/// ```
+#[inline]
+pub fn nth_derivative<F>(f: F, x: f64, n: usize) -> f64
+where
+    F: Fn(Dual) -> Dual + Copy,
+{
+    if n == 0 {
+        f(Dual::constant(x)).val
+    } else if n == 1 {
+        derivative(f, x)
+    } else {
+        // Compute n-th derivative by differentiating (n-1)-th derivative
+        // This uses numerical differentiation for higher orders
+        // A proper implementation would use hyper-dual numbers
+        let h = 1e-8;
+        let d_plus = nth_derivative(f, x + h, n - 1);
+        let d_minus = nth_derivative(f, x - h, n - 1);
+        (d_plus - d_minus) / (2.0 * h)
+    }
+}
+
+/// Compute the derivative of a function using the function value and derivative.
+///
+/// This is useful when you already have a Dual result and want to extract
+/// just the derivative component.
+#[inline]
+pub fn extract_derivative(result: Dual) -> f64 {
+    result.der
+}
+
+/// Compute the directional derivative of a scalar function.
+///
+/// Given f: R^n -> R and a direction v, computes ∇f(x)·v.
+/// Uses dual numbers with seeded direction.
+///
+/// # Arguments
+/// * `f` - Function that takes a slice of Duals and returns a Dual
+/// * `x` - Point at which to compute the directional derivative
+/// * `v` - Direction vector (should be unit length for standard directional derivative)
+///
+/// # Returns
+/// The directional derivative ∇f(x)·v
+pub fn directional_derivative<F>(f: F, x: &[f64], v: &[f64]) -> f64
+where
+    F: Fn(&[Dual]) -> Dual,
+{
+    assert_eq!(x.len(), v.len(), "x and v must have the same length");
+
+    // Create dual numbers with direction v as the derivative seed
+    let duals: Vec<Dual> = x.iter()
+        .zip(v.iter())
+        .map(|(&xi, &vi)| Dual::new(xi, vi))
+        .collect();
+
+    let result = f(&duals);
+    result.der
+}
+
+/// Check if a function is differentiable at a point.
+///
+/// Returns true if both f(x) and f'(x) are finite (not NaN or infinity).
+pub fn is_differentiable<F>(f: F, x: f64) -> bool
+where
+    F: Fn(Dual) -> Dual,
+{
+    let result = f(Dual::variable(x));
+    result.is_finite()
+}
+
+/// Compute the numerical derivative for comparison/validation.
+///
+/// Uses central difference: (f(x+h) - f(x-h)) / 2h
+/// This is useful for testing that dual number derivatives are correct.
+pub fn numerical_derivative<F>(f: F, x: f64, h: f64) -> f64
+where
+    F: Fn(f64) -> f64,
+{
+    (f(x + h) - f(x - h)) / (2.0 * h)
+}
+
+/// Compare dual derivative with numerical derivative.
+///
+/// Returns the absolute difference between the dual number derivative
+/// and a numerical approximation. Useful for testing.
+pub fn derivative_error<F, G>(f_dual: F, f_scalar: G, x: f64) -> f64
+where
+    F: Fn(Dual) -> Dual,
+    G: Fn(f64) -> f64,
+{
+    let dual_der = derivative(f_dual, x);
+    let num_der = numerical_derivative(f_scalar, x, 1e-8);
+    (dual_der - num_der).abs()
+}
+
+// ==================== Convenience Functions ====================
+
+/// Compute derivative of polynomial at a point.
+///
+/// Evaluates p(x) = a_n*x^n + a_{n-1}*x^{n-1} + ... + a_1*x + a_0
+/// and its derivative p'(x) at the given point.
+///
+/// # Arguments
+/// * `coeffs` - Polynomial coefficients [a_0, a_1, ..., a_n] (constant term first)
+/// * `x` - Point at which to evaluate
+///
+/// # Returns
+/// (p(x), p'(x))
+pub fn polynomial_derivative(coeffs: &[f64], x: f64) -> (f64, f64) {
+    let dx = Dual::variable(x);
+    let mut result = Dual::ZERO;
+    let mut x_power = Dual::ONE;
+
+    for &coeff in coeffs {
+        result = result + x_power * coeff;
+        x_power = x_power * dx;
+    }
+
+    (result.val, result.der)
+}
+
+/// Compute derivative of rational function p(x)/q(x) at a point.
+///
+/// # Arguments
+/// * `p_coeffs` - Numerator polynomial coefficients
+/// * `q_coeffs` - Denominator polynomial coefficients
+/// * `x` - Point at which to evaluate
+///
+/// # Returns
+/// (r(x), r'(x)) where r = p/q
+pub fn rational_derivative(p_coeffs: &[f64], q_coeffs: &[f64], x: f64) -> (f64, f64) {
+    let dx = Dual::variable(x);
+
+    // Evaluate p(x)
+    let mut p = Dual::ZERO;
+    let mut x_power = Dual::ONE;
+    for &coeff in p_coeffs {
+        p = p + x_power * coeff;
+        x_power = x_power * dx;
+    }
+
+    // Evaluate q(x)
+    let mut q = Dual::ZERO;
+    x_power = Dual::ONE;
+    for &coeff in q_coeffs {
+        q = q + x_power * coeff;
+        x_power = x_power * dx;
+    }
+
+    let result = p / q;
+    (result.val, result.der)
+}
+
+// ==================== Optimization Helpers ====================
+
+/// Find a local minimum of a function using gradient descent.
+///
+/// Simple implementation for demonstration; production code should
+/// use more sophisticated optimizers.
+///
+/// # Arguments
+/// * `f` - Function to minimize
+/// * `x0` - Starting point
+/// * `lr` - Learning rate
+/// * `max_iters` - Maximum iterations
+/// * `tol` - Gradient tolerance for convergence
+///
+/// # Returns
+/// (x*, f(x*)) - The minimum point and value
+pub fn minimize<F>(f: F, x0: f64, lr: f64, max_iters: usize, tol: f64) -> (f64, f64)
+where
+    F: Fn(Dual) -> Dual,
+{
+    let mut x = x0;
+
+    for _ in 0..max_iters {
+        let (val, grad) = derivative_at(&f, x);
+
+        if grad.abs() < tol {
+            return (x, val);
+        }
+
+        x = x - lr * grad;
+    }
+
+    let final_val = f(Dual::constant(x)).val;
+    (x, final_val)
+}
+
+/// Find a root of a function using Newton-Raphson method.
+///
+/// Uses dual numbers to compute both f(x) and f'(x) in one pass.
+///
+/// # Arguments
+/// * `f` - Function to find root of
+/// * `x0` - Starting point
+/// * `max_iters` - Maximum iterations
+/// * `tol` - Tolerance for convergence
+///
+/// # Returns
+/// Some(x) where f(x) ≈ 0, or None if not converged
+pub fn newton_raphson<F>(f: F, x0: f64, max_iters: usize, tol: f64) -> Option<f64>
+where
+    F: Fn(Dual) -> Dual,
+{
+    let mut x = x0;
+
+    for _ in 0..max_iters {
+        let (val, grad) = derivative_at(&f, x);
+
+        if val.abs() < tol {
+            return Some(x);
+        }
+
+        if grad.abs() < 1e-15 {
+            // Derivative too small, might be at a critical point
+            return None;
+        }
+
+        x = x - val / grad;
+    }
+
+    // Check final value
+    let final_val = f(Dual::constant(x)).val;
+    if final_val.abs() < tol {
+        Some(x)
+    } else {
+        None
+    }
+}

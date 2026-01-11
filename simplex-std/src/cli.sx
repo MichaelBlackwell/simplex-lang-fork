@@ -1,0 +1,467 @@
+// simplex-std::cli - Command Line Interface Utilities
+//
+// Provides argument parsing, environment variables, and process control.
+//
+// # Argument Access
+// - `arg_count`: Get number of arguments
+// - `get_arg`: Get argument by index
+// - `args`: Get all arguments as vector
+// - `positional_args`: Get positional arguments only
+//
+// # Flag and Option Parsing
+// - `has_flag`: Check if a flag exists
+// - `get_option`: Get option value
+//
+// # Environment Variables
+// - `getenv`: Get environment variable
+// - `setenv`: Set environment variable
+//
+// # Process Control
+// - `cwd`: Get current working directory
+// - `exit`: Exit the program
+//
+// # Example
+//
+// ```simplex
+// use simplex_std::cli::*;
+//
+// fn main() -> i64 {
+//     if has_flag("--help") {
+//         println("Usage: myapp [options] <files...>");
+//         exit(0);
+//     }
+//
+//     let name = get_option_or("--name", "World");
+//     println(&format!("Hello, {}!", name));
+//
+//     0
+// }
+// ```
+
+// =============================================================================
+// Argument Access
+// =============================================================================
+
+/// Get the number of command-line arguments (including program name).
+pub fn arg_count() -> i64 {
+    unsafe { ffi_cli_arg_count() }
+}
+
+/// Get a command-line argument by index.
+///
+/// Index 0 is the program name.
+pub fn get_arg(index: i64) -> String {
+    unsafe { ffi_cli_get_arg(index) }
+}
+
+/// Get the program name (first argument).
+pub fn program_name() -> String {
+    get_arg(0)
+}
+
+/// Get all command-line arguments as a vector.
+pub fn args() -> Vec<String> {
+    var result = Vec::new();
+    let count = arg_count();
+    for i in 0..count {
+        result.push(get_arg(i));
+    }
+    result
+}
+
+/// Get positional arguments (excludes flags and their values).
+///
+/// Flags start with `-` or `--`.
+pub fn positional_args() -> Vec<String> {
+    var result = Vec::new();
+    let count = arg_count();
+    var skip_next = false;
+
+    for i in 1..count {  // Skip program name
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+
+        let arg = get_arg(i);
+        if arg.starts_with("--") {
+            // Check if it's --key=value or --key value
+            if !arg.contains("=") {
+                skip_next = true;  // Next arg is the value
+            }
+        } else if arg.starts_with("-") {
+            skip_next = true;  // Short flags assume next is value
+        } else {
+            result.push(arg);
+        }
+    }
+
+    result
+}
+
+// =============================================================================
+// Flag and Option Parsing
+// =============================================================================
+
+/// Check if a flag exists in the arguments.
+///
+/// Supports both `--flag` and `-f` formats.
+///
+/// # Example
+/// ```simplex
+/// if has_flag("--verbose") || has_flag("-v") {
+///     enable_verbose();
+/// }
+/// ```
+pub fn has_flag(flag: &str) -> bool {
+    let count = arg_count();
+    for i in 1..count {
+        let arg = get_arg(i);
+        if arg == flag {
+            return true;
+        }
+        // Check for --flag=value format
+        if arg.starts_with(flag) && arg.len() > flag.len() {
+            let next_char = arg.as_bytes()[flag.len()];
+            if next_char == b'=' {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Get an option value from the arguments.
+///
+/// Supports both `--name=value` and `--name value` formats.
+/// Returns None if the option is not found.
+///
+/// # Example
+/// ```simplex
+/// if let Some(file) = get_option("--output") {
+///     write_to_file(&file);
+/// }
+/// ```
+pub fn get_option(name: &str) -> Option<String> {
+    let count = arg_count();
+    for i in 1..count {
+        let arg = get_arg(i);
+
+        // Check --name=value format
+        if arg.starts_with(name) && arg.len() > name.len() {
+            let rest = &arg[name.len()..];
+            if rest.starts_with("=") {
+                return Some(String::from(&rest[1..]));
+            }
+        }
+
+        // Check --name value format
+        if arg == name && i + 1 < count {
+            let next = get_arg(i + 1);
+            if !next.starts_with("-") {
+                return Some(next);
+            }
+        }
+    }
+    None
+}
+
+/// Get an option value with a default fallback.
+///
+/// # Example
+/// ```simplex
+/// let port = get_option_or("--port", "8080");
+/// ```
+pub fn get_option_or(name: &str, default: &str) -> String {
+    match get_option(name) {
+        Some(value) => value,
+        None => String::from(default),
+    }
+}
+
+/// Get an option value as an integer.
+pub fn get_option_i64(name: &str) -> Option<i64> {
+    get_option(name).and_then(|s| s.parse::<i64>().ok())
+}
+
+/// Get an option value as an integer with default.
+pub fn get_option_i64_or(name: &str, default: i64) -> i64 {
+    get_option_i64(name).unwrap_or(default)
+}
+
+// =============================================================================
+// Environment Variables
+// =============================================================================
+
+/// Get an environment variable value.
+///
+/// Returns None if the variable is not set.
+///
+/// # Example
+/// ```simplex
+/// if let Some(home) = getenv("HOME") {
+///     println(&format!("Home directory: {}", home));
+/// }
+/// ```
+pub fn getenv(name: &str) -> Option<String> {
+    let value = unsafe { ffi_cli_getenv(name) };
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+/// Get an environment variable with a default value.
+///
+/// # Example
+/// ```simplex
+/// let editor = getenv_or("EDITOR", "vim");
+/// ```
+pub fn getenv_or(name: &str, default: &str) -> String {
+    getenv(name).unwrap_or_else(|| String::from(default))
+}
+
+/// Check if an environment variable is set.
+pub fn has_env(name: &str) -> bool {
+    getenv(name).is_some()
+}
+
+/// Set an environment variable.
+///
+/// Returns true on success, false on failure.
+///
+/// # Example
+/// ```simplex
+/// setenv("MY_VAR", "value");
+/// ```
+pub fn setenv(name: &str, value: &str) -> bool {
+    unsafe { ffi_cli_setenv(name, value) == 0 }
+}
+
+/// Unset an environment variable.
+pub fn unsetenv(name: &str) -> bool {
+    unsafe { ffi_cli_unsetenv(name) == 0 }
+}
+
+// =============================================================================
+// Process Control
+// =============================================================================
+
+/// Get the current working directory.
+pub fn cwd() -> String {
+    unsafe { ffi_cli_cwd() }
+}
+
+/// Change the current working directory.
+///
+/// Returns true on success.
+pub fn chdir(path: &str) -> bool {
+    unsafe { ffi_cli_chdir(path) == 0 }
+}
+
+/// Exit the program with the specified exit code.
+///
+/// This function does not return.
+///
+/// # Example
+/// ```simplex
+/// if error_occurred {
+///     eprintln("Error!");
+///     exit(1);
+/// }
+/// ```
+pub fn exit(code: i64) -> ! {
+    unsafe { ffi_cli_exit(code) }
+}
+
+/// Get the process ID.
+pub fn pid() -> i64 {
+    unsafe { ffi_cli_pid() }
+}
+
+// =============================================================================
+// Argument Parser (Builder Pattern)
+// =============================================================================
+
+/// A command-line argument parser.
+pub struct ArgParser {
+    program: String,
+    description: String,
+    flags: Vec<FlagDef>,
+    options: Vec<OptionDef>,
+    positional: Vec<PositionalDef>,
+}
+
+struct FlagDef {
+    short: Option<char>,
+    long: String,
+    help: String,
+}
+
+struct OptionDef {
+    short: Option<char>,
+    long: String,
+    help: String,
+    default: Option<String>,
+    required: bool,
+}
+
+struct PositionalDef {
+    name: String,
+    help: String,
+    required: bool,
+}
+
+impl ArgParser {
+    /// Create a new argument parser.
+    pub fn new(program: &str, description: &str) -> ArgParser {
+        ArgParser {
+            program: String::from(program),
+            description: String::from(description),
+            flags: Vec::new(),
+            options: Vec::new(),
+            positional: Vec::new(),
+        }
+    }
+
+    /// Add a flag definition.
+    pub fn flag(mut self, short: Option<char>, long: &str, help: &str) -> Self {
+        self.flags.push(FlagDef {
+            short,
+            long: String::from(long),
+            help: String::from(help),
+        });
+        self
+    }
+
+    /// Add an option definition.
+    pub fn option(mut self, short: Option<char>, long: &str, help: &str) -> Self {
+        self.options.push(OptionDef {
+            short,
+            long: String::from(long),
+            help: String::from(help),
+            default: None,
+            required: false,
+        });
+        self
+    }
+
+    /// Add a required option.
+    pub fn required(mut self, short: Option<char>, long: &str, help: &str) -> Self {
+        self.options.push(OptionDef {
+            short,
+            long: String::from(long),
+            help: String::from(help),
+            default: None,
+            required: true,
+        });
+        self
+    }
+
+    /// Add a positional argument.
+    pub fn positional(mut self, name: &str, help: &str, required: bool) -> Self {
+        self.positional.push(PositionalDef {
+            name: String::from(name),
+            help: String::from(help),
+            required,
+        });
+        self
+    }
+
+    /// Print help message and exit.
+    pub fn print_help(&self) {
+        use super::fmt::{println, print};
+
+        println(&self.program);
+        println(&self.description);
+        println("");
+        println("USAGE:");
+        print("    ");
+        print(&self.program);
+
+        if !self.options.is_empty() {
+            print(" [OPTIONS]");
+        }
+
+        for pos in &self.positional {
+            if pos.required {
+                print(" <");
+            } else {
+                print(" [");
+            }
+            print(&pos.name);
+            if pos.required {
+                print(">");
+            } else {
+                print("]");
+            }
+        }
+        println("");
+
+        if !self.flags.is_empty() {
+            println("");
+            println("FLAGS:");
+            for flag in &self.flags {
+                print("    ");
+                if let Some(s) = flag.short {
+                    print("-");
+                    print(&String::from(s));
+                    print(", ");
+                } else {
+                    print("    ");
+                }
+                print("--");
+                print(&flag.long);
+                print("    ");
+                println(&flag.help);
+            }
+        }
+
+        if !self.options.is_empty() {
+            println("");
+            println("OPTIONS:");
+            for opt in &self.options {
+                print("    ");
+                if let Some(s) = opt.short {
+                    print("-");
+                    print(&String::from(s));
+                    print(", ");
+                } else {
+                    print("    ");
+                }
+                print("--");
+                print(&opt.long);
+                print(" <value>    ");
+                println(&opt.help);
+            }
+        }
+
+        if !self.positional.is_empty() {
+            println("");
+            println("ARGS:");
+            for pos in &self.positional {
+                print("    <");
+                print(&pos.name);
+                print(">    ");
+                println(&pos.help);
+            }
+        }
+    }
+}
+
+// =============================================================================
+// FFI Declarations
+// =============================================================================
+
+extern "C" {
+    fn ffi_cli_arg_count() -> i64;
+    fn ffi_cli_get_arg(index: i64) -> String;
+    fn ffi_cli_getenv(name: &str) -> String;
+    fn ffi_cli_setenv(name: &str, value: &str) -> i64;
+    fn ffi_cli_unsetenv(name: &str) -> i64;
+    fn ffi_cli_cwd() -> String;
+    fn ffi_cli_chdir(path: &str) -> i64;
+    fn ffi_cli_exit(code: i64) -> !;
+    fn ffi_cli_pid() -> i64;
+}

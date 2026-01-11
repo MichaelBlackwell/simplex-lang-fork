@@ -1,0 +1,68 @@
+// Learnable Training Schedules
+//
+// All schedules use dual numbers for automatic differentiation,
+// enabling meta-gradient optimization of schedule parameters.
+
+pub use lr::{LearnableLRSchedule, LRGradient};
+pub use distill::{LearnableDistillation, DistillGradient};
+pub use prune::{LearnablePruning, PruneGradient};
+pub use quant::{LearnableQuantization, QuantGradient};
+pub use curriculum::{LearnableCurriculum, CurriculumGradient};
+
+mod lr;
+mod distill;
+mod prune;
+mod quant;
+mod curriculum;
+
+use super::dual;
+
+/// Combined learned schedules for unified training
+pub struct LearnedSchedules {
+    pub lr: LearnableLRSchedule,
+    pub distillation: LearnableDistillation,
+    pub pruning: LearnablePruning,
+    pub quantization: LearnableQuantization,
+    pub curriculum: LearnableCurriculum,
+}
+
+impl LearnedSchedules {
+    /// Create new schedules with default parameters
+    pub fn new(num_specialists: usize) -> Self {
+        LearnedSchedules {
+            lr: LearnableLRSchedule::new(),
+            distillation: LearnableDistillation::new(),
+            pruning: LearnablePruning::new(),
+            quantization: LearnableQuantization::new(),
+            curriculum: LearnableCurriculum::new(num_specialists),
+        }
+    }
+
+    /// Load pre-learned schedules from file
+    pub fn load(path: &str) -> Result<Self, ScheduleError> {
+        // TODO: Implement serialization
+        Err(ScheduleError::NotFound(path.to_string()))
+    }
+
+    /// Save learned schedules to file
+    pub fn save(&self, path: &str) -> Result<(), ScheduleError> {
+        // TODO: Implement serialization
+        Ok(())
+    }
+
+    /// Update all schedules from meta-gradients
+    pub fn update_all(&mut self, meta_lr: f64) {
+        self.lr.update(self.lr.gradient(), meta_lr);
+        self.distillation.update(self.distillation.gradient(), meta_lr);
+        self.pruning.update(self.pruning.gradient(), meta_lr);
+        self.quantization.update(self.quantization.gradient(), meta_lr);
+        self.curriculum.update(self.curriculum.gradient(), meta_lr);
+    }
+}
+
+#[derive(Debug)]
+pub enum ScheduleError {
+    NotFound(String),
+    ParseError(String),
+    IoError(String),
+}

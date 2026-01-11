@@ -1,0 +1,196 @@
+// Learnable Quantization Schedule
+//
+// Progressive quantization with learned bit-width schedule.
+// All parameters are dual numbers for meta-gradient optimization.
+
+use simplex_std::dual;
+use super::super::Tensor;
+
+/// Learnable quantization with adaptive bit-width schedule
+pub struct LearnableQuantization {
+    // Bit-width schedule (learned)
+    pub initial_bits: dual,       // Starting bit width (e.g., 16 for FP16)
+    pub target_bits: dual,        // Final target bits (e.g., 4 for Q4)
+    pub quant_ramp_steps: dual,   // Steps to reach target bits
+
+    // Layer-wise bit allocation (learned)
+    pub layer_bits_delta: Vec<dual>,  // Per-layer adjustment from global
+
+    // Quantization-aware training params
+    pub ste_gradient_scale: dual,     // Straight-through estimator scale
+    pub clip_range: dual,             // Activation clipping range
+
+    // Sensitivity-based allocation
+    pub sensitivity_weight: dual,     // How much layer sensitivity matters
+}
+
+impl LearnableQuantization {
+    /// Create quantization schedule with default values
+    pub fn new() -> Self {
+        LearnableQuantization {
+            initial_bits: dual::constant(16.0),
+            target_bits: dual::variable(4.0),
+            quant_ramp_steps: dual::variable(2000.0),
+            layer_bits_delta: vec![dual::variable(0.0); 32],
+            ste_gradient_scale: dual::variable(1.0),
+            clip_range: dual::variable(6.0),
+            sensitivity_weight: dual::variable(0.5),
+        }
+    }
+
+    /// Create for specific number of layers
+    pub fn with_layers(num_layers: usize) -> Self {
+        let mut schedule = Self::new();
+        schedule.layer_bits_delta = (0..num_layers)
+            .map(|i| {
+                // Default: more bits for attention layers
+                let position = i as f64 / num_layers as f64;
+                let delta = if i % 2 == 0 {
+                    0.5 // Attention layers get slightly more bits
+                } else {
+                    0.0
+                };
+                dual::variable(delta)
+            })
+            .collect();
+        schedule
+    }
+
+    /// Compute current effective bit-width
+    pub fn bits(&self, step: dual) -> dual {
+        let progress = (step / self.quant_ramp_steps).min(dual::constant(1.0));
+        self.initial_bits + (self.target_bits - self.initial_bits) * progress
+    }
+
+    /// Compute layer-specific bit-width
+    pub fn layer_bits(&self, step: dual, layer_idx: usize) -> dual {
+        let base = self.bits(step);
+        if layer_idx < self.layer_bits_delta.len() {
+            (base + self.layer_bits_delta[layer_idx]).max(dual::constant(2.0))
+        } else {
+            base
+        }
+    }
+
+    /// Quantize tensor with current bit-width (differentiable)
+    pub fn quantize(&self, tensor: &Tensor, bits: dual) -> Tensor {
+        // Fake quantization for QAT
+        // q(x) = round(clip(x, -r, r) / s) * s
+        // where s = 2r / (2^bits - 1)
+        Tensor::zeros(&tensor.shape) // Placeholder
+    }
+
+    /// Compute quantization loss term
+    pub fn quant_loss(&self, original: &Tensor, quantized: &Tensor) -> dual {
+        // MSE between original and quantized
+        dual::constant(0.0) // Placeholder
+    }
+
+    /// Measure layer sensitivity to quantization
+    pub fn layer_sensitivity(
+        &self,
+        layer_weights: &Tensor,
+        layer_gradients: &Tensor
+    ) -> dual {
+        // Sensitivity = E[|grad * weight|]
+        // Higher sensitivity = needs more bits
+        dual::constant(0.0) // Placeholder
+    }
+
+    /// Compute optimal bit allocation based on sensitivity
+    pub fn allocate_bits(&self, sensitivities: &[dual], total_bits: dual) -> Vec<dual> {
+        // Allocate more bits to more sensitive layers
+        let num_layers = sensitivities.len();
+        sensitivities.iter()
+            .map(|s| {
+                let normalized = *s * self.sensitivity_weight;
+                (total_bits / dual::constant(num_layers as f64)) + normalized
+            })
+            .collect()
+    }
+
+    /// Extract gradient for meta-update
+    pub fn gradient(&self) -> QuantGradient {
+        QuantGradient {
+            d_target_bits: self.target_bits.der,
+            d_quant_ramp_steps: self.quant_ramp_steps.der,
+            d_ste_gradient_scale: self.ste_gradient_scale.der,
+            d_clip_range: self.clip_range.der,
+            d_sensitivity_weight: self.sensitivity_weight.der,
+            d_layer_bits_delta: self.layer_bits_delta.iter().map(|d| d.der).collect(),
+        }
+    }
+
+    /// Apply meta-gradient update
+    pub fn update(&mut self, grad: QuantGradient, learning_rate: f64) {
+        self.target_bits = dual::variable(
+            (self.target_bits.val - learning_rate * grad.d_target_bits).clamp(2.0, 16.0)
+        );
+        self.quant_ramp_steps = dual::variable(
+            (self.quant_ramp_steps.val - learning_rate * grad.d_quant_ramp_steps).max(100.0)
+        );
+        self.ste_gradient_scale = dual::variable(
+            (self.ste_gradient_scale.val - learning_rate * grad.d_ste_gradient_scale).clamp(0.1, 2.0)
+        );
+        self.clip_range = dual::variable(
+            (self.clip_range.val - learning_rate * grad.d_clip_range).clamp(1.0, 10.0)
+        );
+        self.sensitivity_weight = dual::variable(
+            (self.sensitivity_weight.val - learning_rate * grad.d_sensitivity_weight).clamp(0.0, 1.0)
+        );
+
+        for (i, d_delta) in grad.d_layer_bits_delta.iter().enumerate() {
+            if i < self.layer_bits_delta.len() {
+                self.layer_bits_delta[i] = dual::variable(
+                    (self.layer_bits_delta[i].val - learning_rate * d_delta).clamp(-2.0, 2.0)
+                );
+            }
+        }
+    }
+}
+
+/// Gradient of quantization parameters
+#[derive(Clone, Default)]
+pub struct QuantGradient {
+    pub d_target_bits: f64,
+    pub d_quant_ramp_steps: f64,
+    pub d_ste_gradient_scale: f64,
+    pub d_clip_range: f64,
+    pub d_sensitivity_weight: f64,
+    pub d_layer_bits_delta: Vec<f64>,
+}
+
+/// Quantization formats supported
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuantFormat {
+    /// 4-bit quantization (GGUF Q4_0)
+    Q4_0,
+    /// 4-bit with K-means (GGUF Q4_K)
+    Q4_K,
+    /// 5-bit quantization
+    Q5_0,
+    /// 8-bit quantization
+    Q8_0,
+    /// 16-bit float
+    F16,
+    /// 32-bit float
+    F32,
+}
+
+impl QuantFormat {
+    /// Bits per weight
+    pub fn bits(&self) -> u8 {
+        match self {
+            QuantFormat::Q4_0 | QuantFormat::Q4_K => 4,
+            QuantFormat::Q5_0 => 5,
+            QuantFormat::Q8_0 => 8,
+            QuantFormat::F16 => 16,
+            QuantFormat::F32 => 32,
+        }
+    }
+
+    /// Memory ratio compared to F32
+    pub fn memory_ratio(&self) -> f32 {
+        self.bits() as f32 / 32.0
+    }
+}

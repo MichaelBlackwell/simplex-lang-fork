@@ -1,0 +1,159 @@
+// S3 Bucket operations
+
+use crate::client::{S3Client, S3Error, ListObjectsResponse};
+use crate::object::{ObjectMeta, PutObjectRequest, GetObjectResponse};
+use crate::presigned::PresignedUrl;
+
+/// Bucket wrapper for convenience operations
+pub struct Bucket {
+    client: S3Client,
+    name: String,
+}
+
+impl Bucket {
+    pub fn new(client: S3Client, name: &str) -> Self {
+        Bucket {
+            client,
+            name: name.to_string(),
+        }
+    }
+
+    /// Get bucket name
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Put an object
+    pub async fn put(&self, key: &str, body: Vec<u8>) -> Result<(), S3Error> {
+        let request = PutObjectRequest::new(&self.name, key, body);
+        self.client.put_object(&request).await
+    }
+
+    /// Put with content type
+    pub async fn put_with_type(&self, key: &str, body: Vec<u8>, content_type: &str) -> Result<(), S3Error> {
+        let request = PutObjectRequest::new(&self.name, key, body)
+            .content_type(content_type);
+        self.client.put_object(&request).await
+    }
+
+    /// Put text
+    pub async fn put_text(&self, key: &str, text: &str) -> Result<(), S3Error> {
+        let request = PutObjectRequest::new(&self.name, key, text.as_bytes().to_vec())
+            .content_type("text/plain; charset=utf-8");
+        self.client.put_object(&request).await
+    }
+
+    /// Put JSON
+    pub async fn put_json<T: Serialize>(&self, key: &str, value: &T) -> Result<(), S3Error> {
+        let json = to_json(value);
+        let request = PutObjectRequest::new(&self.name, key, json.into_bytes())
+            .content_type("application/json");
+        self.client.put_object(&request).await
+    }
+
+    /// Get an object
+    pub async fn get(&self, key: &str) -> Result<GetObjectResponse, S3Error> {
+        self.client.get_object(&self.name, key).await
+    }
+
+    /// Get object as string
+    pub async fn get_text(&self, key: &str) -> Result<String, S3Error> {
+        let response = self.get(key).await?;
+        Ok(response.text())
+    }
+
+    /// Get object as JSON
+    pub async fn get_json<T: Deserialize>(&self, key: &str) -> Result<T, S3Error> {
+        let response = self.get(key).await?;
+        response.json()
+            .map_err(|e| S3Error::ParseError(format!("{:?}", e)))
+    }
+
+    /// Delete an object
+    pub async fn delete(&self, key: &str) -> Result<(), S3Error> {
+        self.client.delete_object(&self.name, key).await
+    }
+
+    /// Check if object exists
+    pub async fn exists(&self, key: &str) -> Result<bool, S3Error> {
+        match self.client.head_object(&self.name, key).await {
+            Ok(_) => Ok(true),
+            Err(S3Error::NotFound) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Get object metadata
+    pub async fn head(&self, key: &str) -> Result<ObjectMeta, S3Error> {
+        self.client.head_object(&self.name, key).await
+    }
+
+    /// List objects
+    pub async fn list(&self, prefix: Option<&str>) -> Result<Vec<ObjectMeta>, S3Error> {
+        let mut all_objects = Vec::new();
+        let mut continuation_token = None;
+
+        loop {
+            let response = self.client.list_objects(
+                &self.name,
+                prefix,
+                Some(1000),
+                continuation_token.as_deref(),
+            ).await?;
+
+            all_objects.extend(response.objects);
+
+            if response.is_truncated {
+                continuation_token = response.next_continuation_token;
+            } else {
+                break;
+            }
+        }
+
+        Ok(all_objects)
+    }
+
+    /// List with limit
+    pub async fn list_limit(&self, prefix: Option<&str>, max_keys: u32) -> Result<ListObjectsResponse, S3Error> {
+        self.client.list_objects(&self.name, prefix, Some(max_keys), None).await
+    }
+
+    /// Copy object within bucket
+    pub async fn copy(&self, source_key: &str, dest_key: &str) -> Result<(), S3Error> {
+        self.client.copy_object(&self.name, source_key, &self.name, dest_key).await
+    }
+
+    /// Copy object to another bucket
+    pub async fn copy_to(&self, source_key: &str, dest_bucket: &str, dest_key: &str) -> Result<(), S3Error> {
+        self.client.copy_object(&self.name, source_key, dest_bucket, dest_key).await
+    }
+
+    /// Generate presigned GET URL
+    pub fn presign_get(&self, key: &str, expires_in_secs: u64) -> Result<PresignedUrl, S3Error> {
+        self.client.presign_get(&self.name, key, expires_in_secs)
+    }
+
+    /// Generate presigned PUT URL
+    pub fn presign_put(&self, key: &str, content_type: Option<&str>, expires_in_secs: u64) -> Result<PresignedUrl, S3Error> {
+        self.client.presign_put(&self.name, key, content_type, expires_in_secs)
+    }
+
+    /// Delete all objects with prefix
+    pub async fn delete_prefix(&self, prefix: &str) -> Result<u32, S3Error> {
+        let objects = self.list(Some(prefix)).await?;
+        let mut deleted = 0;
+
+        for obj in objects {
+            self.delete(&obj.key).await?;
+            deleted += 1;
+        }
+
+        Ok(deleted)
+    }
+
+    /// Get total size of objects with prefix
+    pub async fn size(&self, prefix: Option<&str>) -> Result<u64, S3Error> {
+        let objects = self.list(prefix).await?;
+        Ok(objects.iter().map(|o| o.size).sum())
+    }
+}

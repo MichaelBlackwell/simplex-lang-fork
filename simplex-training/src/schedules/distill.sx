@@ -1,0 +1,160 @@
+// Learnable Knowledge Distillation Schedule
+//
+// Temperature and mixing ratio schedule for knowledge distillation.
+// All parameters are dual numbers for meta-gradient optimization.
+
+use simplex_std::dual;
+use super::super::Tensor;
+
+/// Learnable distillation with adaptive temperature
+pub struct LearnableDistillation {
+    // Temperature schedule (learned)
+    pub initial_temp: dual,      // Starting temperature
+    pub temp_decay: dual,        // How to reduce temp over training
+    pub min_temp: dual,          // Floor temperature
+
+    // Soft/hard target mixing (learned)
+    pub alpha_start: dual,       // Initial soft target weight
+    pub alpha_decay: dual,       // How to shift to hard targets
+
+    // Layer-wise temperature (different layers need different temps)
+    pub layer_temp_scale: Vec<dual>,
+}
+
+impl LearnableDistillation {
+    /// Create distillation schedule with default values
+    pub fn new() -> Self {
+        LearnableDistillation {
+            initial_temp: dual::variable(4.0),
+            temp_decay: dual::variable(0.001),
+            min_temp: dual::constant(1.0),
+            alpha_start: dual::variable(0.7),
+            alpha_decay: dual::variable(0.0001),
+            layer_temp_scale: vec![dual::variable(1.0); 32], // Default 32 layers
+        }
+    }
+
+    /// Create for specific number of layers
+    pub fn with_layers(num_layers: usize) -> Self {
+        LearnableDistillation {
+            initial_temp: dual::variable(4.0),
+            temp_decay: dual::variable(0.001),
+            min_temp: dual::constant(1.0),
+            alpha_start: dual::variable(0.7),
+            alpha_decay: dual::variable(0.0001),
+            layer_temp_scale: (0..num_layers).map(|_| dual::variable(1.0)).collect(),
+        }
+    }
+
+    /// Compute distillation loss with learned temperature
+    pub fn distill_loss(
+        &self,
+        student_logits: &Tensor,
+        teacher_logits: &Tensor,
+        hard_labels: &Tensor,
+        step: dual
+    ) -> dual {
+        // Temperature schedule
+        let temp = self.temperature(step);
+
+        // Soft targets from teacher
+        let soft_targets = self.softmax_with_temp(teacher_logits, temp.val);
+        let student_soft = self.log_softmax_with_temp(student_logits, temp);
+
+        // KL divergence (differentiable through temperature)
+        let kl_loss = self.kl_divergence(&student_soft, &soft_targets) * temp * temp;
+
+        // Hard target loss
+        let hard_loss = self.cross_entropy(student_logits, hard_labels);
+
+        // Mixing coefficient (learned schedule)
+        let alpha = self.alpha(step);
+
+        // Combined loss
+        alpha * kl_loss + (dual::constant(1.0) - alpha) * hard_loss
+    }
+
+    /// Get current temperature
+    pub fn temperature(&self, step: dual) -> dual {
+        let temp = self.initial_temp * (-self.temp_decay * step).exp();
+        temp.max(self.min_temp)
+    }
+
+    /// Get current mixing coefficient
+    pub fn alpha(&self, step: dual) -> dual {
+        self.alpha_start * (-self.alpha_decay * step).exp()
+    }
+
+    /// Get layer-specific temperature
+    pub fn layer_temperature(&self, step: dual, layer_idx: usize) -> dual {
+        let base_temp = self.temperature(step);
+        if layer_idx < self.layer_temp_scale.len() {
+            base_temp * self.layer_temp_scale[layer_idx]
+        } else {
+            base_temp
+        }
+    }
+
+    /// Extract gradient for meta-update
+    pub fn gradient(&self) -> DistillGradient {
+        DistillGradient {
+            d_initial_temp: self.initial_temp.der,
+            d_temp_decay: self.temp_decay.der,
+            d_alpha_start: self.alpha_start.der,
+            d_alpha_decay: self.alpha_decay.der,
+            d_layer_temp_scale: self.layer_temp_scale.iter().map(|d| d.der).collect(),
+        }
+    }
+
+    /// Apply meta-gradient update
+    pub fn update(&mut self, grad: DistillGradient, learning_rate: f64) {
+        self.initial_temp = dual::variable(
+            (self.initial_temp.val - learning_rate * grad.d_initial_temp).clamp(1.0, 20.0)
+        );
+        self.temp_decay = dual::variable(
+            (self.temp_decay.val - learning_rate * grad.d_temp_decay).max(0.0)
+        );
+        self.alpha_start = dual::variable(
+            (self.alpha_start.val - learning_rate * grad.d_alpha_start).clamp(0.0, 1.0)
+        );
+        self.alpha_decay = dual::variable(
+            (self.alpha_decay.val - learning_rate * grad.d_alpha_decay).max(0.0)
+        );
+
+        for (i, d_scale) in grad.d_layer_temp_scale.iter().enumerate() {
+            if i < self.layer_temp_scale.len() {
+                self.layer_temp_scale[i] = dual::variable(
+                    (self.layer_temp_scale[i].val - learning_rate * d_scale).clamp(0.1, 10.0)
+                );
+            }
+        }
+    }
+
+    // Internal helper functions
+    fn softmax_with_temp(&self, logits: &Tensor, temp: f64) -> Tensor {
+        // Placeholder - would use actual tensor ops
+        Tensor::zeros(&logits.shape)
+    }
+
+    fn log_softmax_with_temp(&self, logits: &Tensor, temp: dual) -> Tensor {
+        Tensor::zeros(&logits.shape)
+    }
+
+    fn kl_divergence(&self, p: &Tensor, q: &Tensor) -> dual {
+        dual::constant(0.0) // Placeholder
+    }
+
+    fn cross_entropy(&self, logits: &Tensor, labels: &Tensor) -> dual {
+        dual::constant(0.0) // Placeholder
+    }
+}
+
+/// Gradient of distillation parameters
+#[derive(Clone, Default)]
+pub struct DistillGradient {
+    pub d_initial_temp: f64,
+    pub d_temp_decay: f64,
+    pub d_alpha_start: f64,
+    pub d_alpha_decay: f64,
+    pub d_layer_temp_scale: Vec<f64>,
+}

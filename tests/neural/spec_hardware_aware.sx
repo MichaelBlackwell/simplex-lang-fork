@@ -1,0 +1,189 @@
+// Phase 3: Hardware-Aware Compilation Tests
+// Tests device registry, graph partitioning, and cross-device data marshalling
+
+fn main() -> i64 {
+    println("=== Hardware-Aware Compilation Test ===");
+
+    // Device target constants (0=CPU, 1=GPU, 2=NPU, 3=AUTO)
+    let target_0: i64 = 0;
+    let target_1: i64 = 1;
+    let target_2: i64 = 2;
+    let target_3: i64 = 3;
+
+    // Operation type constants
+    let optype_0: i64 = 0;
+    let optype_1: i64 = 1;
+    let optype_2: i64 = 2;
+    let optype_3: i64 = 3;
+    let optype_4: i64 = 4;
+    let optype_5: i64 = 5;
+
+    // Test 1: Device Registry Initialization
+    println("Test 1: Device registry init");
+    device_registry_init();
+    let count: i64 = device_count();
+    if count >= 1 {
+        println("  PASS: Device registry initialized");
+    } else {
+        println("  FAIL: No devices registered");
+        return 1;
+    }
+
+    // Test 2: Default device is CPU
+    println("Test 2: Default device");
+    let default_dev: i64 = device_get_default();
+    if default_dev == target_0 {
+        println("  PASS: Default device is CPU");
+    } else {
+        println("  FAIL: Default device is not CPU");
+        return 1;
+    }
+
+    // Test 3: Get CPU device
+    println("Test 3: Get device by ID");
+    let cpu_dev: i64 = device_get(0);
+    if cpu_dev != 0 {
+        println("  PASS: Got CPU device");
+    } else {
+        println("  FAIL: Could not get CPU device");
+        return 1;
+    }
+
+    // Test 4: Check device type
+    println("Test 4: Device type");
+    let dev_type: i64 = device_type(cpu_dev);
+    if dev_type == target_0 {
+        println("  PASS: Device type is CPU");
+    } else {
+        println("  FAIL: Wrong device type");
+        return 1;
+    }
+
+    // Test 5: Check device availability
+    println("Test 5: Device availability");
+    let avail: i64 = device_available(cpu_dev);
+    if avail == 1 {
+        println("  PASS: CPU is available");
+    } else {
+        println("  FAIL: CPU not available");
+        return 1;
+    }
+
+    // Test 6: Register a simulated GPU device
+    println("Test 6: Register new device");
+    let gpu_name: i64 = string_from("gpu0");
+    let gpu_id: i64 = device_register(target_1, gpu_name, 1024, 8589934592, 500.0, 10000000000000.0);
+    if gpu_id >= 0 {
+        println("  PASS: Registered GPU device");
+    } else {
+        println("  FAIL: Could not register GPU");
+        return 1;
+    }
+
+    // Test 7: Graph creation
+    println("Test 7: Graph creation");
+    let graph: i64 = graph_new();
+    if graph != 0 {
+        println("  PASS: Created compute graph");
+    } else {
+        println("  FAIL: Could not create graph");
+        return 1;
+    }
+
+    // Test 8: Add nodes to graph with different operation types
+    println("Test 8: Add graph nodes");
+    let node0: i64 = graph_add_node(graph, 1, optype_0, 10.0);
+    let node1: i64 = graph_add_node(graph, 2, optype_1, 1000.0);
+    let node2: i64 = graph_add_node(graph, 3, optype_4, 5.0);
+    if node0 == 0 && node1 == 1 && node2 == 2 {
+        println("  PASS: Added 3 nodes to graph");
+    } else {
+        println("  FAIL: Wrong node IDs");
+        return 1;
+    }
+
+    // Test 9: Add dependency edges
+    println("Test 9: Add edges");
+    graph_add_edge(graph, 1, 0);
+    graph_add_edge(graph, 2, 1);
+    println("  PASS: Added dependency edges");
+
+    // Test 10: Graph partitioning
+    println("Test 10: Graph partitioning");
+    graph_partition(graph);
+    let part_count: i64 = graph_partition_count(graph);
+    if part_count >= 1 {
+        println("  PASS: Graph partitioned into multiple partitions");
+    } else {
+        println("  FAIL: No partitions created");
+        return 1;
+    }
+
+    // Test 11: Check partition devices
+    println("Test 11: Partition devices");
+    let part0_device: i64 = graph_partition_device(graph, 0);
+    // CPU partition should be 0 (target_0)
+    if part0_device == target_0 || part0_device == target_1 {
+        println("  PASS: Partition has valid device type");
+    } else {
+        println("  FAIL: Invalid partition device");
+        return 1;
+    }
+
+    // Test 12: Gate device binding
+    println("Test 12: Gate device binding");
+    let gate_id: i64 = 100;
+    let bind_result: i64 = gate_bind_device(gate_id, target_1);
+    if bind_result == 1 {
+        println("  PASS: Bound gate to GPU");
+    } else {
+        println("  FAIL: Could not bind gate");
+        return 1;
+    }
+
+    // Test 13: Check explicit binding
+    println("Test 13: Explicit binding check");
+    let has_explicit: i64 = gate_has_explicit_binding(gate_id);
+    if has_explicit == 1 {
+        println("  PASS: Gate has explicit binding");
+    } else {
+        println("  FAIL: No explicit binding found");
+        return 1;
+    }
+
+    // Test 14: Get gate device
+    println("Test 14: Get gate device");
+    let gate_dev: i64 = gate_get_device(gate_id);
+    if gate_dev == target_1 {
+        println("  PASS: Gate bound to GPU");
+    } else {
+        println("  FAIL: Wrong gate device");
+        return 1;
+    }
+
+    // Test 15: Neural gate execution on CPU
+    println("Test 15: Gate execute on CPU");
+    let gate_name: i64 = string_from("test_gate");
+    let gate: i64 = neural_gate_new(1, 0.5, 0, gate_name);
+    let result: f64 = neural_gate_execute_on_device(gate, 0.8, target_0);
+    if result > 0.0 {
+        println("  PASS: Gate executed on CPU");
+    } else {
+        println("  FAIL: Gate execution failed");
+        return 1;
+    }
+
+    // Test 16: Transfer queue
+    println("Test 16: Transfer queue");
+    transfer_queue_init();
+    println("  PASS: Transfer queue initialized");
+
+    // Test 17: Free graph
+    println("Test 17: Graph cleanup");
+    graph_free(graph);
+    println("  PASS: Graph freed");
+
+    println("");
+    println("=== ALL 17 TESTS PASSED ===");
+    0
+}

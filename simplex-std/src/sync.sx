@@ -1,0 +1,1174 @@
+// simplex-std::sync - Synchronization Primitives
+//
+// Thread-safe synchronization types for concurrent programming.
+//
+// # Types
+//
+// - `Arc<T>`: Atomically reference-counted pointer
+// - `Mutex<T>`: Mutual exclusion lock
+// - `RwLock<T>`: Reader-writer lock
+// - `Semaphore`: Counting semaphore
+// - `Barrier`: Thread barrier
+// - `Condvar`: Condition variable
+// - `Once`: One-time initialization
+// - `OnceCell`: Lazy one-time initialization cell
+//
+// # Atomics
+//
+// - `AtomicBool`: Atomic boolean
+// - `AtomicI64`: Atomic 64-bit integer
+// - `AtomicPtr<T>`: Atomic pointer
+//
+// # Example
+//
+// ```simplex
+// use simplex_std::sync::{Arc, Mutex};
+//
+// let counter = Arc::new(Mutex::new(0));
+// let counter_clone = counter.clone();
+//
+// spawn(async move {
+//     let mut guard = counter_clone.lock().await;
+//     *guard += 1;
+// });
+// ```
+
+use super::core::{PhantomData, Box, UnsafeCell, spin_loop, forget, drop_in_place, ops};
+
+// =============================================================================
+// Atomic Types
+// =============================================================================
+
+/// Memory ordering for atomic operations.
+#[repr(i64)]
+pub enum Ordering {
+    /// No ordering constraints.
+    Relaxed = 0,
+    /// Acquire ordering - prevents reordering with subsequent reads.
+    Acquire = 1,
+    /// Release ordering - prevents reordering with prior writes.
+    Release = 2,
+    /// Acquire-Release ordering - both acquire and release semantics.
+    AcqRel = 3,
+    /// Sequentially consistent - strongest ordering.
+    SeqCst = 4,
+}
+
+/// Atomic boolean for lock-free boolean operations.
+#[repr(C)]
+pub struct AtomicBool {
+    value: i64,  // Use i64 for alignment, only uses lowest bit
+}
+
+impl AtomicBool {
+    /// Create a new atomic boolean.
+    pub const fn new(value: bool) -> AtomicBool {
+        AtomicBool { value: if value { 1 } else { 0 } }
+    }
+
+    /// Load the value atomically.
+    pub fn load(&self, order: Ordering) -> bool {
+        unsafe { atomic_load_i64(&self.value as *const i64, order as i64) != 0 }
+    }
+
+    /// Store a value atomically.
+    pub fn store(&self, value: bool, order: Ordering) {
+        unsafe { atomic_store_i64(&self.value as *const i64 as *mut i64,
+                                  if value { 1 } else { 0 }, order as i64) }
+    }
+
+    /// Swap the value atomically, returning the old value.
+    pub fn swap(&self, value: bool, order: Ordering) -> bool {
+        unsafe { atomic_swap_i64(&self.value as *const i64 as *mut i64,
+                                 if value { 1 } else { 0 }, order as i64) != 0 }
+    }
+
+    /// Compare and swap atomically.
+    /// Returns Ok(old) if successful, Err(current) if failed.
+    pub fn compare_exchange(&self, current: bool, new: bool,
+                            success: Ordering, failure: Ordering) -> Result<bool, bool> {
+        let cur = if current { 1 } else { 0 };
+        let nw = if new { 1 } else { 0 };
+        let result = unsafe {
+            atomic_cmpxchg_i64(&self.value as *const i64 as *mut i64,
+                              cur, nw, success as i64, failure as i64)
+        };
+        if result == cur {
+            Ok(current)
+        } else {
+            Err(result != 0)
+        }
+    }
+
+    /// Weak compare and swap (may fail spuriously).
+    pub fn compare_exchange_weak(&self, current: bool, new: bool,
+                                  success: Ordering, failure: Ordering) -> Result<bool, bool> {
+        // For simplicity, just use the strong version
+        self.compare_exchange(current, new, success, failure)
+    }
+}
+
+/// Atomic 64-bit integer for lock-free integer operations.
+#[repr(C)]
+pub struct AtomicI64 {
+    value: i64,
+}
+
+impl AtomicI64 {
+    /// Create a new atomic integer.
+    pub const fn new(value: i64) -> AtomicI64 {
+        AtomicI64 { value }
+    }
+
+    /// Load the value atomically.
+    pub fn load(&self, order: Ordering) -> i64 {
+        unsafe { atomic_load_i64(&self.value, order as i64) }
+    }
+
+    /// Store a value atomically.
+    pub fn store(&self, value: i64, order: Ordering) {
+        unsafe { atomic_store_i64(&self.value as *const i64 as *mut i64, value, order as i64) }
+    }
+
+    /// Swap the value atomically, returning the old value.
+    pub fn swap(&self, value: i64, order: Ordering) -> i64 {
+        unsafe { atomic_swap_i64(&self.value as *const i64 as *mut i64, value, order as i64) }
+    }
+
+    /// Add to the value atomically, returning the old value.
+    pub fn fetch_add(&self, value: i64, order: Ordering) -> i64 {
+        unsafe { atomic_fetch_add_i64(&self.value as *const i64 as *mut i64, value, order as i64) }
+    }
+
+    /// Subtract from the value atomically, returning the old value.
+    pub fn fetch_sub(&self, value: i64, order: Ordering) -> i64 {
+        unsafe { atomic_fetch_sub_i64(&self.value as *const i64 as *mut i64, value, order as i64) }
+    }
+
+    /// Bitwise AND atomically, returning the old value.
+    pub fn fetch_and(&self, value: i64, order: Ordering) -> i64 {
+        unsafe { atomic_fetch_and_i64(&self.value as *const i64 as *mut i64, value, order as i64) }
+    }
+
+    /// Bitwise OR atomically, returning the old value.
+    pub fn fetch_or(&self, value: i64, order: Ordering) -> i64 {
+        unsafe { atomic_fetch_or_i64(&self.value as *const i64 as *mut i64, value, order as i64) }
+    }
+
+    /// Bitwise XOR atomically, returning the old value.
+    pub fn fetch_xor(&self, value: i64, order: Ordering) -> i64 {
+        unsafe { atomic_fetch_xor_i64(&self.value as *const i64 as *mut i64, value, order as i64) }
+    }
+
+    /// Compare and swap atomically.
+    pub fn compare_exchange(&self, current: i64, new: i64,
+                            success: Ordering, failure: Ordering) -> Result<i64, i64> {
+        let result = unsafe {
+            atomic_cmpxchg_i64(&self.value as *const i64 as *mut i64,
+                              current, new, success as i64, failure as i64)
+        };
+        if result == current {
+            Ok(current)
+        } else {
+            Err(result)
+        }
+    }
+
+    /// Weak compare and swap.
+    pub fn compare_exchange_weak(&self, current: i64, new: i64,
+                                  success: Ordering, failure: Ordering) -> Result<i64, i64> {
+        self.compare_exchange(current, new, success, failure)
+    }
+
+    /// Fetch and update with a function.
+    pub fn fetch_update<F>(&self, set_order: Ordering, fetch_order: Ordering,
+                           mut f: F) -> Result<i64, i64>
+    where
+        F: FnMut(i64) -> Option<i64>,
+    {
+        let mut current = self.load(fetch_order);
+        loop {
+            match f(current) {
+                Some(new) => {
+                    match self.compare_exchange_weak(current, new, set_order, fetch_order) {
+                        Ok(_) => return Ok(current),
+                        Err(c) => current = c,
+                    }
+                }
+                None => return Err(current),
+            }
+        }
+    }
+}
+
+/// Atomic unsigned 64-bit integer.
+pub type AtomicU64 = AtomicI64;
+
+/// Atomic pointer for lock-free pointer operations.
+#[repr(C)]
+pub struct AtomicPtr<T> {
+    ptr: i64,
+    _marker: PhantomData<*mut T>,
+}
+
+impl<T> AtomicPtr<T> {
+    /// Create a new atomic pointer.
+    pub const fn new(ptr: *mut T) -> AtomicPtr<T> {
+        AtomicPtr { ptr: ptr as i64, _marker: PhantomData }
+    }
+
+    /// Create a null atomic pointer.
+    pub const fn null() -> AtomicPtr<T> {
+        AtomicPtr { ptr: 0, _marker: PhantomData }
+    }
+
+    /// Load the pointer atomically.
+    pub fn load(&self, order: Ordering) -> *mut T {
+        unsafe { atomic_load_i64(&self.ptr, order as i64) as *mut T }
+    }
+
+    /// Store a pointer atomically.
+    pub fn store(&self, ptr: *mut T, order: Ordering) {
+        unsafe { atomic_store_i64(&self.ptr as *const i64 as *mut i64, ptr as i64, order as i64) }
+    }
+
+    /// Swap the pointer atomically.
+    pub fn swap(&self, ptr: *mut T, order: Ordering) -> *mut T {
+        unsafe { atomic_swap_i64(&self.ptr as *const i64 as *mut i64, ptr as i64, order as i64) as *mut T }
+    }
+
+    /// Compare and swap atomically.
+    pub fn compare_exchange(&self, current: *mut T, new: *mut T,
+                            success: Ordering, failure: Ordering) -> Result<*mut T, *mut T> {
+        let result = unsafe {
+            atomic_cmpxchg_i64(&self.ptr as *const i64 as *mut i64,
+                              current as i64, new as i64, success as i64, failure as i64)
+        };
+        if result == current as i64 {
+            Ok(current)
+        } else {
+            Err(result as *mut T)
+        }
+    }
+}
+
+// =============================================================================
+// Arc - Atomically Reference Counted
+// =============================================================================
+
+/// Thread-safe reference-counted pointer.
+///
+/// `Arc<T>` provides shared ownership of a value of type `T`, allocated on the heap.
+/// Cloning an Arc produces a new pointer to the same allocation, incrementing
+/// the reference count atomically. When the last Arc is dropped, the value is deallocated.
+#[repr(C)]
+pub struct Arc<T> {
+    ptr: *mut ArcInner<T>,
+}
+
+#[repr(C)]
+struct ArcInner<T> {
+    strong: AtomicI64,  // Strong reference count
+    weak: AtomicI64,    // Weak reference count (for Weak<T>)
+    value: T,
+}
+
+impl<T> Arc<T> {
+    /// Create a new Arc containing the given value.
+    pub fn new(value: T) -> Arc<T> {
+        let inner = ArcInner {
+            strong: AtomicI64::new(1),
+            weak: AtomicI64::new(1),  // One weak ref for the Arc itself
+            value,
+        };
+        Arc {
+            ptr: Box::into_raw(Box::new(inner)),
+        }
+    }
+
+    /// Get a reference to the contained value.
+    pub fn get(&self) -> &T {
+        unsafe { &(*self.ptr).value }
+    }
+
+    /// Get a mutable reference if this is the only Arc.
+    ///
+    /// Returns None if there are other Arcs or Weaks pointing to this allocation.
+    pub fn get_mut(&mut self) -> Option<&mut T> {
+        unsafe {
+            // Check if we're the only owner
+            if (*self.ptr).strong.load(Ordering::Acquire) == 1 &&
+               (*self.ptr).weak.load(Ordering::Acquire) == 1 {
+                Some(&mut (*self.ptr).value)
+            } else {
+                None
+            }
+        }
+    }
+
+    /// Get the current strong reference count.
+    pub fn strong_count(&self) -> i64 {
+        unsafe { (*self.ptr).strong.load(Ordering::Acquire) }
+    }
+
+    /// Get the current weak reference count.
+    pub fn weak_count(&self) -> i64 {
+        unsafe { (*self.ptr).weak.load(Ordering::Acquire) - 1 }
+    }
+
+    /// Check if two Arcs point to the same allocation.
+    pub fn ptr_eq(this: &Arc<T>, other: &Arc<T>) -> bool {
+        this.ptr == other.ptr
+    }
+
+    /// Try to unwrap the Arc, returning the inner value if this is the only reference.
+    pub fn try_unwrap(self) -> Result<T, Arc<T>> {
+        unsafe {
+            if (*self.ptr).strong
+                .compare_exchange(1, 0, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+            {
+                // We're the only owner, extract the value
+                let inner = Box::from_raw(self.ptr);
+                forget(self); // Don't run Arc's drop
+                Ok(inner.value)
+            } else {
+                Err(self)
+            }
+        }
+    }
+
+    /// Create a Weak pointer from this Arc.
+    pub fn downgrade(this: &Arc<T>) -> Weak<T> {
+        unsafe {
+            // Increment weak count
+            (*this.ptr).weak.fetch_add(1, Ordering::Relaxed);
+            Weak { ptr: this.ptr }
+        }
+    }
+}
+
+impl<T> Clone for Arc<T> {
+    fn clone(&self) -> Arc<T> {
+        unsafe {
+            // Atomically increment the strong count
+            (*self.ptr).strong.fetch_add(1, Ordering::Relaxed);
+        }
+        Arc { ptr: self.ptr }
+    }
+}
+
+impl<T> Drop for Arc<T> {
+    fn drop(&mut self) {
+        unsafe {
+            // Atomically decrement the strong count
+            if (*self.ptr).strong.fetch_sub(1, Ordering::Release) == 1 {
+                // We were the last strong reference
+                // Fence to ensure all prior writes are visible
+                atomic_fence(Ordering::Acquire as i64);
+
+                // Drop the value
+                drop_in_place(&mut (*self.ptr).value);
+
+                // Decrement weak count (the implicit weak from Arc)
+                if (*self.ptr).weak.fetch_sub(1, Ordering::Release) == 1 {
+                    atomic_fence(Ordering::Acquire as i64);
+                    // No more weak references, deallocate
+                    drop(Box::from_raw(self.ptr));
+                }
+            }
+        }
+    }
+}
+
+unsafe impl<T: Send + Sync> Send for Arc<T> {}
+unsafe impl<T: Send + Sync> Sync for Arc<T> {}
+
+/// Weak reference to an Arc.
+///
+/// Does not keep the value alive, but prevents deallocation of the control block.
+pub struct Weak<T> {
+    ptr: *mut ArcInner<T>,
+}
+
+impl<T> Weak<T> {
+    /// Try to upgrade to a strong Arc reference.
+    ///
+    /// Returns None if the value has been dropped.
+    pub fn upgrade(&self) -> Option<Arc<T>> {
+        unsafe {
+            loop {
+                let strong = (*self.ptr).strong.load(Ordering::Relaxed);
+                if strong == 0 {
+                    return None;
+                }
+                if (*self.ptr).strong
+                    .compare_exchange_weak(strong, strong + 1, Ordering::Acquire, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    return Some(Arc { ptr: self.ptr });
+                }
+            }
+        }
+    }
+
+    /// Get the strong reference count.
+    pub fn strong_count(&self) -> i64 {
+        unsafe { (*self.ptr).strong.load(Ordering::Relaxed) }
+    }
+}
+
+impl<T> Clone for Weak<T> {
+    fn clone(&self) -> Weak<T> {
+        unsafe {
+            (*self.ptr).weak.fetch_add(1, Ordering::Relaxed);
+        }
+        Weak { ptr: self.ptr }
+    }
+}
+
+impl<T> Drop for Weak<T> {
+    fn drop(&mut self) {
+        unsafe {
+            if (*self.ptr).weak.fetch_sub(1, Ordering::Release) == 1 {
+                atomic_fence(Ordering::Acquire as i64);
+                drop(Box::from_raw(self.ptr));
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Mutex - Mutual Exclusion Lock
+// =============================================================================
+
+/// A mutual exclusion primitive for protecting shared data.
+///
+/// The data can only be accessed through the guard returned from `lock()`,
+/// which ensures exclusive access while the guard is held.
+#[repr(C)]
+pub struct Mutex<T> {
+    locked: AtomicBool,
+    value: UnsafeCell<T>,
+}
+
+impl<T> Mutex<T> {
+    /// Create a new mutex containing the given value.
+    pub fn new(value: T) -> Mutex<T> {
+        Mutex {
+            locked: AtomicBool::new(false),
+            value: UnsafeCell::new(value),
+        }
+    }
+
+    /// Acquire the lock, blocking until available.
+    pub fn lock(&self) -> MutexGuard<T> {
+        // Spin with exponential backoff
+        let mut backoff = 1u64;
+        while self.locked.compare_exchange(false, true,
+                                           Ordering::Acquire, Ordering::Relaxed).is_err() {
+            // Spin wait with backoff
+            for _ in 0..backoff {
+                spin_loop();
+            }
+            backoff = (backoff * 2).min(1024);
+        }
+        MutexGuard { mutex: self }
+    }
+
+    /// Try to acquire the lock without blocking.
+    pub fn try_lock(&self) -> Option<MutexGuard<T>> {
+        if self.locked.compare_exchange(false, true,
+                                        Ordering::Acquire, Ordering::Relaxed).is_ok() {
+            Some(MutexGuard { mutex: self })
+        } else {
+            None
+        }
+    }
+
+    /// Check if the mutex is locked.
+    pub fn is_locked(&self) -> bool {
+        self.locked.load(Ordering::Relaxed)
+    }
+
+    /// Get the inner value, consuming the mutex.
+    pub fn into_inner(self) -> T {
+        self.value.into_inner()
+    }
+
+    /// Get a mutable reference to the inner value (requires exclusive access).
+    pub fn get_mut(&mut self) -> &mut T {
+        self.value.get_mut()
+    }
+}
+
+/// Guard that provides access to mutex-protected data.
+pub struct MutexGuard<'a, T> {
+    mutex: &'a Mutex<T>,
+}
+
+impl<'a, T> MutexGuard<'a, T> {
+    /// Get a reference to the protected data.
+    pub fn get(&self) -> &T {
+        unsafe { &*self.mutex.value.get() }
+    }
+
+    /// Get a mutable reference to the protected data.
+    pub fn get_mut(&mut self) -> &mut T {
+        unsafe { &mut *self.mutex.value.get() }
+    }
+}
+
+impl<'a, T> ops::Deref for MutexGuard<'a, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        self.get()
+    }
+}
+
+impl<'a, T> ops::DerefMut for MutexGuard<'a, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.get_mut()
+    }
+}
+
+impl<'a, T> Drop for MutexGuard<'a, T> {
+    fn drop(&mut self) {
+        self.mutex.locked.store(false, Ordering::Release);
+    }
+}
+
+unsafe impl<T: Send> Send for Mutex<T> {}
+unsafe impl<T: Send> Sync for Mutex<T> {}
+
+// =============================================================================
+// RwLock - Reader-Writer Lock
+// =============================================================================
+
+/// A reader-writer lock allowing multiple readers or one writer.
+///
+/// Multiple readers can access the data simultaneously, but writers
+/// require exclusive access.
+///
+/// State encoding:
+/// - Positive: number of active readers
+/// - -1: writer active
+/// - 0: unlocked
+#[repr(C)]
+pub struct RwLock<T> {
+    state: AtomicI64,
+    value: UnsafeCell<T>,
+}
+
+impl<T> RwLock<T> {
+    /// Create a new RwLock containing the given value.
+    pub fn new(value: T) -> RwLock<T> {
+        RwLock {
+            state: AtomicI64::new(0),
+            value: UnsafeCell::new(value),
+        }
+    }
+
+    /// Acquire a read lock.
+    pub fn read(&self) -> RwLockReadGuard<T> {
+        let mut backoff = 1u64;
+        loop {
+            let state = self.state.load(Ordering::Relaxed);
+            // Can read if no writer (state >= 0)
+            if state >= 0 {
+                if self.state.compare_exchange(state, state + 1,
+                                               Ordering::Acquire, Ordering::Relaxed).is_ok() {
+                    return RwLockReadGuard { lock: self };
+                }
+            }
+            // Spin with backoff
+            for _ in 0..backoff {
+                spin_loop();
+            }
+            backoff = (backoff * 2).min(1024);
+        }
+    }
+
+    /// Acquire a write lock.
+    pub fn write(&self) -> RwLockWriteGuard<T> {
+        let mut backoff = 1u64;
+        loop {
+            // Can write only if completely unlocked (state == 0)
+            if self.state.compare_exchange(0, -1,
+                                           Ordering::Acquire, Ordering::Relaxed).is_ok() {
+                return RwLockWriteGuard { lock: self };
+            }
+            // Spin with backoff
+            for _ in 0..backoff {
+                spin_loop();
+            }
+            backoff = (backoff * 2).min(1024);
+        }
+    }
+
+    /// Try to acquire a read lock without blocking.
+    pub fn try_read(&self) -> Option<RwLockReadGuard<T>> {
+        let state = self.state.load(Ordering::Relaxed);
+        if state >= 0 {
+            if self.state.compare_exchange(state, state + 1,
+                                           Ordering::Acquire, Ordering::Relaxed).is_ok() {
+                return Some(RwLockReadGuard { lock: self });
+            }
+        }
+        None
+    }
+
+    /// Try to acquire a write lock without blocking.
+    pub fn try_write(&self) -> Option<RwLockWriteGuard<T>> {
+        if self.state.compare_exchange(0, -1,
+                                       Ordering::Acquire, Ordering::Relaxed).is_ok() {
+            Some(RwLockWriteGuard { lock: self })
+        } else {
+            None
+        }
+    }
+
+    /// Get the inner value, consuming the lock.
+    pub fn into_inner(self) -> T {
+        self.value.into_inner()
+    }
+}
+
+/// Guard for read access to RwLock data.
+pub struct RwLockReadGuard<'a, T> {
+    lock: &'a RwLock<T>,
+}
+
+impl<'a, T> RwLockReadGuard<'a, T> {
+    pub fn get(&self) -> &T {
+        unsafe { &*self.lock.value.get() }
+    }
+}
+
+impl<'a, T> ops::Deref for RwLockReadGuard<'a, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        self.get()
+    }
+}
+
+impl<'a, T> Drop for RwLockReadGuard<'a, T> {
+    fn drop(&mut self) {
+        self.lock.state.fetch_sub(1, Ordering::Release);
+    }
+}
+
+/// Guard for write access to RwLock data.
+pub struct RwLockWriteGuard<'a, T> {
+    lock: &'a RwLock<T>,
+}
+
+impl<'a, T> RwLockWriteGuard<'a, T> {
+    pub fn get(&self) -> &T {
+        unsafe { &*self.lock.value.get() }
+    }
+
+    pub fn get_mut(&mut self) -> &mut T {
+        unsafe { &mut *self.lock.value.get() }
+    }
+}
+
+impl<'a, T> ops::Deref for RwLockWriteGuard<'a, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        self.get()
+    }
+}
+
+impl<'a, T> ops::DerefMut for RwLockWriteGuard<'a, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.get_mut()
+    }
+}
+
+impl<'a, T> Drop for RwLockWriteGuard<'a, T> {
+    fn drop(&mut self) {
+        self.lock.state.store(0, Ordering::Release);
+    }
+}
+
+unsafe impl<T: Send> Send for RwLock<T> {}
+unsafe impl<T: Send + Sync> Sync for RwLock<T> {}
+
+// =============================================================================
+// Semaphore - Counting Semaphore
+// =============================================================================
+
+/// A counting semaphore for limiting concurrent access.
+#[repr(C)]
+pub struct Semaphore {
+    permits: AtomicI64,
+    max_permits: i64,
+}
+
+impl Semaphore {
+    /// Create a new semaphore with the given number of permits.
+    pub fn new(permits: i64) -> Semaphore {
+        Semaphore {
+            permits: AtomicI64::new(permits),
+            max_permits: permits,
+        }
+    }
+
+    /// Acquire a permit, blocking until one is available.
+    pub fn acquire(&self) -> SemaphorePermit {
+        let mut backoff = 1u64;
+        loop {
+            let current = self.permits.load(Ordering::Relaxed);
+            if current > 0 {
+                if self.permits.compare_exchange(current, current - 1,
+                                                 Ordering::Acquire, Ordering::Relaxed).is_ok() {
+                    return SemaphorePermit { semaphore: self };
+                }
+            }
+            for _ in 0..backoff {
+                spin_loop();
+            }
+            backoff = (backoff * 2).min(1024);
+        }
+    }
+
+    /// Try to acquire a permit without blocking.
+    pub fn try_acquire(&self) -> Option<SemaphorePermit> {
+        let current = self.permits.load(Ordering::Relaxed);
+        if current > 0 {
+            if self.permits.compare_exchange(current, current - 1,
+                                             Ordering::Acquire, Ordering::Relaxed).is_ok() {
+                return Some(SemaphorePermit { semaphore: self });
+            }
+        }
+        None
+    }
+
+    /// Get the number of available permits.
+    pub fn available_permits(&self) -> i64 {
+        self.permits.load(Ordering::Relaxed)
+    }
+
+    /// Add permits to the semaphore.
+    pub fn add_permits(&self, n: i64) {
+        self.permits.fetch_add(n, Ordering::Release);
+    }
+}
+
+/// Permit acquired from a semaphore.
+pub struct SemaphorePermit<'a> {
+    semaphore: &'a Semaphore,
+}
+
+impl<'a> SemaphorePermit<'a> {
+    /// Forget this permit, not returning it to the semaphore.
+    pub fn forget(self) {
+        forget(self);
+    }
+}
+
+impl<'a> Drop for SemaphorePermit<'a> {
+    fn drop(&mut self) {
+        self.semaphore.permits.fetch_add(1, Ordering::Release);
+    }
+}
+
+// =============================================================================
+// Barrier - Thread Barrier
+// =============================================================================
+
+/// A barrier that blocks threads until all have arrived.
+#[repr(C)]
+pub struct Barrier {
+    count: i64,
+    waiting: AtomicI64,
+    generation: AtomicI64,
+}
+
+impl Barrier {
+    /// Create a new barrier for the given number of threads.
+    pub fn new(count: i64) -> Barrier {
+        Barrier {
+            count,
+            waiting: AtomicI64::new(0),
+            generation: AtomicI64::new(0),
+        }
+    }
+
+    /// Wait at the barrier until all threads arrive.
+    ///
+    /// Returns a BarrierWaitResult indicating if this thread was the leader.
+    pub fn wait(&self) -> BarrierWaitResult {
+        let my_gen = self.generation.load(Ordering::Relaxed);
+        let waiting = self.waiting.fetch_add(1, Ordering::AcqRel) + 1;
+
+        if waiting == self.count {
+            // We're the last one - release all
+            self.waiting.store(0, Ordering::Relaxed);
+            self.generation.fetch_add(1, Ordering::Release);
+            BarrierWaitResult { is_leader: true }
+        } else {
+            // Wait for generation to change
+            while self.generation.load(Ordering::Acquire) == my_gen {
+                spin_loop();
+            }
+            BarrierWaitResult { is_leader: false }
+        }
+    }
+}
+
+/// Result of waiting on a barrier.
+pub struct BarrierWaitResult {
+    is_leader: bool,
+}
+
+impl BarrierWaitResult {
+    /// Returns true if this thread was the last to arrive (the "leader").
+    pub fn is_leader(&self) -> bool {
+        self.is_leader
+    }
+}
+
+// =============================================================================
+// Once - One-Time Initialization
+// =============================================================================
+
+/// A synchronization primitive for running one-time initialization.
+///
+/// State: 0 = not started, 1 = in progress, 2 = completed
+pub struct Once {
+    state: AtomicI64,
+}
+
+impl Once {
+    /// Create a new Once.
+    pub const fn new() -> Once {
+        Once { state: AtomicI64::new(0) }
+    }
+
+    /// Run the initialization function exactly once.
+    pub fn call_once<F: FnOnce()>(&self, f: F) {
+        if self.state.load(Ordering::Acquire) == 2 {
+            return; // Already completed
+        }
+
+        // Try to be the initializer
+        if self.state.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+            // We're the initializer
+            f();
+            self.state.store(2, Ordering::Release);
+        } else {
+            // Wait for completion
+            while self.state.load(Ordering::Acquire) != 2 {
+                spin_loop();
+            }
+        }
+    }
+
+    /// Check if initialization has completed.
+    pub fn is_completed(&self) -> bool {
+        self.state.load(Ordering::Acquire) == 2
+    }
+}
+
+// =============================================================================
+// OnceCell - Lazy One-Time Initialization Cell
+// =============================================================================
+
+/// A cell that can be written to exactly once.
+pub struct OnceCell<T> {
+    once: Once,
+    value: UnsafeCell<Option<T>>,
+}
+
+impl<T> OnceCell<T> {
+    /// Create a new empty OnceCell.
+    pub const fn new() -> OnceCell<T> {
+        OnceCell {
+            once: Once::new(),
+            value: UnsafeCell::new(None),
+        }
+    }
+
+    /// Get the value, or initialize it with the given function.
+    pub fn get_or_init<F: FnOnce() -> T>(&self, f: F) -> &T {
+        self.once.call_once(|| {
+            unsafe { *self.value.get() = Some(f()); }
+        });
+        unsafe { (*self.value.get()).as_ref().unwrap() }
+    }
+
+    /// Get the value if initialized.
+    pub fn get(&self) -> Option<&T> {
+        if self.once.is_completed() {
+            unsafe { (*self.value.get()).as_ref() }
+        } else {
+            None
+        }
+    }
+
+    /// Set the value, returning an error if already set.
+    pub fn set(&self, value: T) -> Result<(), T> {
+        if self.once.state.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+            unsafe { *self.value.get() = Some(value); }
+            self.once.state.store(2, Ordering::Release);
+            Ok(())
+        } else {
+            Err(value)
+        }
+    }
+
+    /// Take the value, leaving the cell empty (only if not shared).
+    pub fn take(&mut self) -> Option<T> {
+        unsafe { (*self.value.get()).take() }
+    }
+}
+
+unsafe impl<T: Send + Sync> Sync for OnceCell<T> {}
+unsafe impl<T: Send> Send for OnceCell<T> {}
+
+// =============================================================================
+// Condvar - Condition Variable
+// =============================================================================
+
+/// A condition variable for waiting on a condition.
+pub struct Condvar {
+    waiters: AtomicI64,
+    signal: AtomicI64,
+}
+
+impl Condvar {
+    /// Create a new condition variable.
+    pub const fn new() -> Condvar {
+        Condvar {
+            waiters: AtomicI64::new(0),
+            signal: AtomicI64::new(0),
+        }
+    }
+
+    /// Wait on the condition variable.
+    ///
+    /// The mutex guard is released while waiting and re-acquired before returning.
+    pub fn wait<'a, T>(&self, guard: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
+        let mutex = guard.mutex;
+        let my_signal = self.signal.load(Ordering::Relaxed);
+
+        self.waiters.fetch_add(1, Ordering::Relaxed);
+
+        // Release the lock
+        drop(guard);
+
+        // Wait for signal
+        while self.signal.load(Ordering::Acquire) == my_signal {
+            spin_loop();
+        }
+
+        self.waiters.fetch_sub(1, Ordering::Relaxed);
+
+        // Re-acquire the lock
+        mutex.lock()
+    }
+
+    /// Wake one waiting thread.
+    pub fn notify_one(&self) {
+        if self.waiters.load(Ordering::Relaxed) > 0 {
+            self.signal.fetch_add(1, Ordering::Release);
+        }
+    }
+
+    /// Wake all waiting threads.
+    pub fn notify_all(&self) {
+        self.signal.fetch_add(1, Ordering::Release);
+    }
+}
+
+// UnsafeCell is imported from core module
+
+// =============================================================================
+// MPSC Channels - Multi-producer, single-consumer channels
+// =============================================================================
+
+pub mod mpsc {
+    use super::*;
+
+    /// Create a bounded channel with the given capacity.
+    ///
+    /// Returns (Sender, Receiver) pair.
+    pub fn channel<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
+        let inner = Arc::new(ChannelInner {
+            buffer: Mutex::new(VecDeque::with_capacity(capacity)),
+            capacity,
+            sender_count: AtomicI64::new(1),
+            is_closed: AtomicBool::new(false),
+        });
+        (
+            Sender { inner: inner.clone() },
+            Receiver { inner },
+        )
+    }
+
+    /// Create an unbounded channel.
+    pub fn unbounded<T>() -> (Sender<T>, Receiver<T>) {
+        channel(usize::MAX)
+    }
+
+    struct ChannelInner<T> {
+        buffer: Mutex<VecDeque<T>>,
+        capacity: usize,
+        sender_count: AtomicI64,
+        is_closed: AtomicBool,
+    }
+
+    /// Sending half of a channel.
+    pub struct Sender<T> {
+        inner: Arc<ChannelInner<T>>,
+    }
+
+    impl<T> Sender<T> {
+        /// Send a value on the channel.
+        pub async fn send(&self, value: T) -> Result<(), SendError<T>> {
+            if self.inner.is_closed.load(Ordering::Relaxed) {
+                return Err(SendError(value));
+            }
+
+            // Wait for space in buffer
+            loop {
+                {
+                    let mut buffer = self.inner.buffer.lock().await;
+                    if buffer.len() < self.inner.capacity {
+                        buffer.push_back(value);
+                        return Ok(());
+                    }
+                }
+                // Yield and retry
+                crate::task::yield_now().await;
+            }
+        }
+
+        /// Try to send without blocking.
+        pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
+            if self.inner.is_closed.load(Ordering::Relaxed) {
+                return Err(TrySendError::Disconnected(value));
+            }
+
+            let mut buffer = self.inner.buffer.lock_blocking();
+            if buffer.len() < self.inner.capacity {
+                buffer.push_back(value);
+                Ok(())
+            } else {
+                Err(TrySendError::Full(value))
+            }
+        }
+
+        /// Check if channel is closed.
+        pub fn is_closed(&self) -> bool {
+            self.inner.is_closed.load(Ordering::Relaxed)
+        }
+    }
+
+    impl<T> Clone for Sender<T> {
+        fn clone(&self) -> Self {
+            self.inner.sender_count.fetch_add(1, Ordering::Relaxed);
+            Sender { inner: self.inner.clone() }
+        }
+    }
+
+    impl<T> Drop for Sender<T> {
+        fn drop(&mut self) {
+            if self.inner.sender_count.fetch_sub(1, Ordering::Release) == 1 {
+                self.inner.is_closed.store(true, Ordering::Release);
+            }
+        }
+    }
+
+    /// Receiving half of a channel.
+    pub struct Receiver<T> {
+        inner: Arc<ChannelInner<T>>,
+    }
+
+    impl<T> Receiver<T> {
+        /// Receive a value from the channel.
+        pub async fn recv(&self) -> Option<T> {
+            loop {
+                {
+                    let mut buffer = self.inner.buffer.lock().await;
+                    if let Some(value) = buffer.pop_front() {
+                        return Some(value);
+                    }
+                    if self.inner.is_closed.load(Ordering::Relaxed) &&
+                       self.inner.sender_count.load(Ordering::Relaxed) == 0 {
+                        return None;
+                    }
+                }
+                crate::task::yield_now().await;
+            }
+        }
+
+        /// Try to receive without blocking.
+        pub fn try_recv(&self) -> Result<T, TryRecvError> {
+            let mut buffer = self.inner.buffer.lock_blocking();
+            if let Some(value) = buffer.pop_front() {
+                Ok(value)
+            } else if self.inner.is_closed.load(Ordering::Relaxed) {
+                Err(TryRecvError::Disconnected)
+            } else {
+                Err(TryRecvError::Empty)
+            }
+        }
+
+        /// Close the receiving end.
+        pub fn close(&self) {
+            self.inner.is_closed.store(true, Ordering::Release);
+        }
+    }
+
+    impl<T> Drop for Receiver<T> {
+        fn drop(&mut self) {
+            self.inner.is_closed.store(true, Ordering::Release);
+        }
+    }
+
+    /// Error when sending on a closed channel.
+    pub struct SendError<T>(pub T);
+
+    /// Error when try_send fails.
+    pub enum TrySendError<T> {
+        /// Channel is full.
+        Full(T),
+        /// Channel is disconnected.
+        Disconnected(T),
+    }
+
+    /// Error when try_recv fails.
+    pub enum TryRecvError {
+        /// Channel is empty.
+        Empty,
+        /// Channel is disconnected.
+        Disconnected,
+    }
+
+    // Use collections VecDeque
+    use crate::collections::VecDeque;
+}
+
+// =============================================================================
+// FFI Declarations
+// =============================================================================
+
+extern "C" {
+    // Atomic operations
+    fn atomic_load_i64(ptr: *const i64, order: i64) -> i64;
+    fn atomic_store_i64(ptr: *mut i64, value: i64, order: i64);
+    fn atomic_swap_i64(ptr: *mut i64, value: i64, order: i64) -> i64;
+    fn atomic_cmpxchg_i64(ptr: *mut i64, expected: i64, desired: i64,
+                          success_order: i64, failure_order: i64) -> i64;
+    fn atomic_fetch_add_i64(ptr: *mut i64, value: i64, order: i64) -> i64;
+    fn atomic_fetch_sub_i64(ptr: *mut i64, value: i64, order: i64) -> i64;
+    fn atomic_fetch_and_i64(ptr: *mut i64, value: i64, order: i64) -> i64;
+    fn atomic_fetch_or_i64(ptr: *mut i64, value: i64, order: i64) -> i64;
+    fn atomic_fetch_xor_i64(ptr: *mut i64, value: i64, order: i64) -> i64;
+    fn atomic_fence(order: i64);
+}
+
+// PhantomData, Box, UnsafeCell, and memory functions imported from core module

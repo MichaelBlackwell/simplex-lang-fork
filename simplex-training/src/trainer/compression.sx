@@ -1,0 +1,264 @@
+// Compression Pipeline
+//
+// Multi-stage compression: distillation → pruning → quantization → export.
+
+use simplex_std::dual;
+use simplex_std::sync::Arc;
+
+use super::super::schedules::{LearnablePruning, LearnableQuantization, LearnableDistillation};
+use super::super::{ModelSize, Tensor};
+use super::specialist::SpecialistTrainer;
+
+/// Multi-stage compression pipeline
+pub struct CompressionPipeline {
+    /// Pipeline stages
+    stages: Vec<CompressionStage>,
+    /// Target model size
+    target_size: ModelSize,
+    /// Target quantization bits
+    target_bits: u8,
+    /// Target sparsity
+    target_sparsity: f64,
+}
+
+/// Individual compression stage
+#[derive(Clone)]
+pub enum CompressionStage {
+    /// Knowledge distillation from larger model
+    Distillation {
+        teacher_model: String,
+        distillation: LearnableDistillation,
+        num_steps: i64,
+    },
+    /// Structured or unstructured pruning
+    Pruning {
+        pruning: LearnablePruning,
+        num_steps: i64,
+    },
+    /// Quantization-aware training
+    Quantization {
+        quantization: LearnableQuantization,
+        num_steps: i64,
+    },
+    /// Fine-tuning after compression
+    FineTune {
+        num_steps: i64,
+        learning_rate: f64,
+    },
+}
+
+impl CompressionPipeline {
+    /// Create pipeline for seed model compression
+    pub fn for_seed_models() -> Self {
+        CompressionPipeline {
+            stages: vec![
+                // First: distill from 70B teacher
+                CompressionStage::Distillation {
+                    teacher_model: "qwen2.5-72b".to_string(),
+                    distillation: LearnableDistillation::new(),
+                    num_steps: 10000,
+                },
+                // Second: prune to 50% sparsity
+                CompressionStage::Pruning {
+                    pruning: LearnablePruning::new(),
+                    num_steps: 5000,
+                },
+                // Third: quantize to 4-bit
+                CompressionStage::Quantization {
+                    quantization: LearnableQuantization::new(),
+                    num_steps: 2000,
+                },
+                // Fourth: fine-tune to recover quality
+                CompressionStage::FineTune {
+                    num_steps: 1000,
+                    learning_rate: 1e-5,
+                },
+            ],
+            target_size: ModelSize::B15,
+            target_bits: 4,
+            target_sparsity: 0.5,
+        }
+    }
+
+    /// Create pipeline for tiny models (0.5B)
+    pub fn for_tiny_models() -> Self {
+        CompressionPipeline {
+            stages: vec![
+                CompressionStage::Distillation {
+                    teacher_model: "simplex-cognitive-8b".to_string(),
+                    distillation: LearnableDistillation::new(),
+                    num_steps: 20000,
+                },
+                CompressionStage::Pruning {
+                    pruning: LearnablePruning::new(),
+                    num_steps: 10000,
+                },
+                CompressionStage::Quantization {
+                    quantization: LearnableQuantization::new(),
+                    num_steps: 5000,
+                },
+            ],
+            target_size: ModelSize::B05,
+            target_bits: 4,
+            target_sparsity: 0.6,
+        }
+    }
+
+    /// Create pipeline for aggressive compression
+    pub fn aggressive() -> Self {
+        CompressionPipeline {
+            stages: vec![
+                CompressionStage::Distillation {
+                    teacher_model: "qwen2.5-72b".to_string(),
+                    distillation: LearnableDistillation::new(),
+                    num_steps: 5000,
+                },
+                CompressionStage::Pruning {
+                    pruning: LearnablePruning::new(),
+                    num_steps: 3000,
+                },
+                CompressionStage::Quantization {
+                    quantization: LearnableQuantization::new(),
+                    num_steps: 1000,
+                },
+            ],
+            target_size: ModelSize::B05,
+            target_bits: 4,
+            target_sparsity: 0.7,
+        }
+    }
+
+    /// Add custom stage to pipeline
+    pub fn add_stage(mut self, stage: CompressionStage) -> Self {
+        self.stages.push(stage);
+        self
+    }
+
+    /// Compress a trained specialist
+    pub async fn compress(&self, specialist: &SpecialistTrainer) -> CompressedModel {
+        var current_model = specialist.clone();
+        var stage_results = Vec::new();
+
+        for (i, stage) in self.stages.iter().enumerate() {
+            let result = self.run_stage(&mut current_model, stage, i).await;
+            stage_results.push(result);
+        }
+
+        CompressedModel {
+            domain: specialist.config.domain.clone(),
+            size: self.target_size,
+            bits: self.target_bits,
+            sparsity: self.target_sparsity,
+            stage_results,
+            weights: vec![], // Would contain actual compressed weights
+        }
+    }
+
+    /// Run a single compression stage
+    async fn run_stage(
+        &self,
+        model: &mut SpecialistTrainer,
+        stage: &CompressionStage,
+        stage_idx: usize
+    ) -> StageResult {
+        match stage {
+            CompressionStage::Distillation { teacher_model, distillation, num_steps } => {
+                // Run knowledge distillation
+                StageResult {
+                    stage_name: "distillation".to_string(),
+                    steps: *num_steps,
+                    final_loss: 0.0, // Placeholder
+                    compression_ratio: 1.0,
+                }
+            }
+            CompressionStage::Pruning { pruning, num_steps } => {
+                // Run iterative pruning with learned schedule
+                StageResult {
+                    stage_name: "pruning".to_string(),
+                    steps: *num_steps,
+                    final_loss: 0.0,
+                    compression_ratio: 1.0 / (1.0 - self.target_sparsity),
+                }
+            }
+            CompressionStage::Quantization { quantization, num_steps } => {
+                // Run quantization-aware training
+                StageResult {
+                    stage_name: "quantization".to_string(),
+                    steps: *num_steps,
+                    final_loss: 0.0,
+                    compression_ratio: 32.0 / self.target_bits as f64,
+                }
+            }
+            CompressionStage::FineTune { num_steps, learning_rate } => {
+                // Fine-tune to recover quality
+                StageResult {
+                    stage_name: "fine_tune".to_string(),
+                    steps: *num_steps,
+                    final_loss: 0.0,
+                    compression_ratio: 1.0,
+                }
+            }
+        }
+    }
+}
+
+/// Result of compression
+pub struct CompressedModel {
+    /// Specialist domain
+    pub domain: String,
+    /// Final model size
+    pub size: ModelSize,
+    /// Quantization bits
+    pub bits: u8,
+    /// Sparsity ratio
+    pub sparsity: f64,
+    /// Results from each stage
+    pub stage_results: Vec<StageResult>,
+    /// Compressed weights
+    weights: Vec<Tensor>,
+}
+
+impl CompressedModel {
+    /// Export to GGUF format
+    pub async fn export_gguf(&self, path: &str) -> Result<(), CompressionError> {
+        // Export in GGUF format for llama.cpp inference
+        Ok(())
+    }
+
+    /// Export to SafeTensors format
+    pub async fn export_safetensors(&self, path: &str) -> Result<(), CompressionError> {
+        // Export in SafeTensors format
+        Ok(())
+    }
+
+    /// Get total compression ratio
+    pub fn total_compression_ratio(&self) -> f64 {
+        self.stage_results.iter()
+            .map(|r| r.compression_ratio)
+            .product()
+    }
+
+    /// Get estimated memory usage in GB
+    pub fn memory_gb(&self) -> f64 {
+        let base_params = self.size.params() as f64;
+        let bits_factor = self.bits as f64 / 32.0;
+        let sparsity_factor = 1.0 - self.sparsity;
+        (base_params * bits_factor * sparsity_factor) / 1e9
+    }
+}
+
+/// Result of a compression stage
+#[derive(Clone)]
+pub struct StageResult {
+    pub stage_name: String,
+    pub steps: i64,
+    pub final_loss: f64,
+    pub compression_ratio: f64,
+}
+
+#[derive(Debug)]
+pub enum CompressionError {
+    ExportFailed(String),
+    InvalidFormat(String),
+    IoError(String),
+}

@@ -1,0 +1,273 @@
+// Server-Sent Events (SSE) implementation
+// Critical for streaming AI responses
+
+use simplex_std::io::AsyncWrite;
+use simplex_std::sync::mpsc::{channel, Sender, Receiver};
+use crate::response::{Response, StatusCode};
+
+/// SSE Event
+#[derive(Debug, Clone)]
+pub struct SseEvent {
+    pub id: Option<String>,
+    pub event: Option<String>,
+    pub data: String,
+    pub retry: Option<u32>,
+}
+
+impl SseEvent {
+    pub fn new(data: &str) -> Self {
+        SseEvent {
+            id: None,
+            event: None,
+            data: data.to_string(),
+            retry: None,
+        }
+    }
+
+    pub fn with_event(event: &str, data: &str) -> Self {
+        SseEvent {
+            id: None,
+            event: Some(event.to_string()),
+            data: data.to_string(),
+            retry: None,
+        }
+    }
+
+    pub fn id(mut self, id: &str) -> Self {
+        self.id = Some(id.to_string());
+        self
+    }
+
+    pub fn retry(mut self, ms: u32) -> Self {
+        self.retry = Some(ms);
+        self
+    }
+
+    /// Format as SSE wire format
+    pub fn to_string(&self) -> String {
+        let mut result = String::new();
+
+        if let Some(ref id) = self.id {
+            result.push_str(&format!("id: {}\n", id));
+        }
+
+        if let Some(ref event) = self.event {
+            result.push_str(&format!("event: {}\n", event));
+        }
+
+        if let Some(retry) = self.retry {
+            result.push_str(&format!("retry: {}\n", retry));
+        }
+
+        // Handle multi-line data
+        for line in self.data.lines() {
+            result.push_str(&format!("data: {}\n", line));
+        }
+
+        result.push('\n');  // Empty line terminates event
+        result
+    }
+}
+
+/// SSE Stream for sending events
+pub struct SseStream {
+    sender: Sender<SseEvent>,
+    receiver: Receiver<SseEvent>,
+    closed: bool,
+}
+
+impl SseStream {
+    pub fn new() -> Self {
+        let (sender, receiver) = channel(1000);  // Buffer up to 1000 events
+        SseStream {
+            sender,
+            receiver,
+            closed: false,
+        }
+    }
+
+    /// Get sender for producing events
+    pub fn sender(&self) -> SseSender {
+        SseSender {
+            sender: self.sender.clone(),
+        }
+    }
+
+    /// Send an event
+    pub async fn send(&self, event: SseEvent) -> Result<(), SseError> {
+        if self.closed {
+            return Err(SseError::StreamClosed);
+        }
+        self.sender.send(event).await
+            .map_err(|_| SseError::SendFailed)
+    }
+
+    /// Send data event
+    pub async fn send_data(&self, data: &str) -> Result<(), SseError> {
+        self.send(SseEvent::new(data)).await
+    }
+
+    /// Send named event with data
+    pub async fn send_event(&self, event: &str, data: &str) -> Result<(), SseError> {
+        self.send(SseEvent::with_event(event, data)).await
+    }
+
+    /// Send JSON data
+    pub async fn send_json<T: Serialize>(&self, data: &T) -> Result<(), SseError> {
+        let json = to_json(data);
+        self.send_data(&json).await
+    }
+
+    /// Close the stream
+    pub fn close(&mut self) {
+        self.closed = true;
+    }
+
+    /// Create SSE response and writer
+    pub fn response() -> (SseResponse, SseWriter) {
+        let stream = SseStream::new();
+        let sender = stream.sender();
+
+        let response = SseResponse {
+            stream,
+        };
+
+        let writer = SseWriter {
+            sender,
+        };
+
+        (response, writer)
+    }
+}
+
+/// SSE Sender handle (cloneable)
+#[derive(Clone)]
+pub struct SseSender {
+    sender: Sender<SseEvent>,
+}
+
+impl SseSender {
+    pub async fn send(&self, event: SseEvent) -> Result<(), SseError> {
+        self.sender.send(event).await
+            .map_err(|_| SseError::SendFailed)
+    }
+
+    pub async fn send_data(&self, data: &str) -> Result<(), SseError> {
+        self.send(SseEvent::new(data)).await
+    }
+
+    pub async fn send_event(&self, event: &str, data: &str) -> Result<(), SseError> {
+        self.send(SseEvent::with_event(event, data)).await
+    }
+
+    pub async fn send_json<T: Serialize>(&self, data: &T) -> Result<(), SseError> {
+        let json = to_json(data);
+        self.send_data(&json).await
+    }
+
+    /// Send done event (signals stream end)
+    pub async fn send_done(&self) -> Result<(), SseError> {
+        self.send(SseEvent::with_event("done", "[DONE]")).await
+    }
+
+    /// Send error event
+    pub async fn send_error(&self, error: &str) -> Result<(), SseError> {
+        self.send(SseEvent::with_event("error", error)).await
+    }
+}
+
+/// SSE Response wrapper
+pub struct SseResponse {
+    stream: SseStream,
+}
+
+impl SseResponse {
+    /// Get the HTTP response for SSE
+    pub fn into_response(self) -> Response {
+        let mut response = Response::new(StatusCode::Ok);
+        response.headers.insert("Content-Type".to_string(), "text/event-stream".to_string());
+        response.headers.insert("Cache-Control".to_string(), "no-cache".to_string());
+        response.headers.insert("Connection".to_string(), "keep-alive".to_string());
+        response.headers.insert("X-Accel-Buffering".to_string(), "no".to_string());  // Nginx
+        response.keep_alive = true;
+        response
+    }
+}
+
+/// SSE Writer for handler use
+pub struct SseWriter {
+    sender: SseSender,
+}
+
+impl SseWriter {
+    pub async fn send(&self, event: SseEvent) -> Result<(), SseError> {
+        self.sender.send(event).await
+    }
+
+    pub async fn send_data(&self, data: &str) -> Result<(), SseError> {
+        self.sender.send_data(data).await
+    }
+
+    pub async fn send_event(&self, event: &str, data: &str) -> Result<(), SseError> {
+        self.sender.send_event(event, data).await
+    }
+
+    pub async fn send_json<T: Serialize>(&self, data: &T) -> Result<(), SseError> {
+        self.sender.send_json(data).await
+    }
+
+    pub async fn send_done(&self) -> Result<(), SseError> {
+        self.sender.send_done().await
+    }
+
+    pub async fn send_error(&self, error: &str) -> Result<(), SseError> {
+        self.sender.send_error(error).await
+    }
+}
+
+/// Write SSE events to a stream
+pub async fn write_sse_stream<W: AsyncWrite>(
+    writer: &mut W,
+    receiver: &mut Receiver<SseEvent>,
+) -> Result<(), SseError> {
+    loop {
+        match receiver.recv().await {
+            Some(event) => {
+                let data = event.to_string();
+                writer.write_all(data.as_bytes()).await
+                    .map_err(|_| SseError::WriteFailed)?;
+                writer.flush().await
+                    .map_err(|_| SseError::WriteFailed)?;
+            }
+            None => break,  // Channel closed
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+pub enum SseError {
+    StreamClosed,
+    SendFailed,
+    WriteFailed,
+}
+
+// Convenience macros for streaming responses
+
+/// Create a streaming JSON response
+pub async fn stream_json<T, F, Fut>(handler: F) -> Response
+where
+    T: Serialize,
+    F: FnOnce(SseSender) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let (response, writer) = SseStream::response();
+    let sender = writer.sender.clone();
+
+    // Spawn handler task
+    spawn(async move {
+        handler(sender).await;
+    });
+
+    response.into_response()
+}

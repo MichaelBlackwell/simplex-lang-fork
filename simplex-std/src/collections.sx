@@ -1,0 +1,1438 @@
+// simplex-std::collections - Collection Types
+//
+// Common collection types for storing and manipulating data.
+//
+// # Types
+//
+// - `Vec<T>`: Dynamic array (growable)
+// - `HashMap<K, V>`: Hash map (key-value store)
+// - `HashSet<T>`: Hash set (unique values)
+// - `VecDeque<T>`: Double-ended queue
+// - `BinaryHeap<T>`: Priority queue (max-heap)
+// - `BTreeMap<K, V>`: Sorted map
+// - `BTreeSet<T>`: Sorted set
+//
+// Note: Core implementations are provided by the C runtime.
+// This module provides the Simplex API and additional utilities.
+
+use super::core::{PhantomData, slice, ptr};
+
+// =============================================================================
+// Vec - Dynamic Array
+// =============================================================================
+
+/// A growable array type.
+///
+/// Vec provides O(1) indexing, O(1) amortized push, and O(n) insert/remove.
+///
+/// # Example
+/// ```simplex
+/// let v = Vec::new();
+/// v.push(1);
+/// v.push(2);
+/// assert_eq!(v.len(), 2);
+/// ```
+#[repr(C)]
+pub struct Vec<T> {
+    handle: i64,  // C runtime handle
+    _marker: PhantomData<T>,
+}
+
+impl<T> Vec<T> {
+    /// Create a new empty vector.
+    pub fn new() -> Vec<T> {
+        Vec {
+            handle: vec_new(),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Create a vector with the given capacity.
+    pub fn with_capacity(capacity: usize) -> Vec<T> {
+        Vec {
+            handle: vec_with_capacity(capacity as i64),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Get the number of elements.
+    pub fn len(&self) -> usize {
+        vec_len(self.handle) as usize
+    }
+
+    /// Check if empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Get the capacity.
+    pub fn capacity(&self) -> usize {
+        vec_capacity(self.handle) as usize
+    }
+
+    /// Reserve capacity for at least `additional` more elements.
+    pub fn reserve(&mut self, additional: usize) {
+        vec_reserve(self.handle, additional as i64);
+    }
+
+    /// Shrink capacity to fit current length.
+    pub fn shrink_to_fit(&mut self) {
+        vec_shrink_to_fit(self.handle);
+    }
+
+    /// Push an element to the end.
+    pub fn push(&mut self, value: T) {
+        vec_push(self.handle, &value as *const T as i64);
+    }
+
+    /// Pop an element from the end.
+    pub fn pop(&mut self) -> Option<T> {
+        if self.is_empty() {
+            None
+        } else {
+            Some(unsafe { *(vec_pop(self.handle) as *const T) })
+        }
+    }
+
+    /// Insert an element at the given index.
+    pub fn insert(&mut self, index: usize, value: T) {
+        if index > self.len() {
+            panic("Vec::insert: index out of bounds");
+        }
+        vec_insert(self.handle, index as i64, &value as *const T as i64);
+    }
+
+    /// Remove and return the element at the given index.
+    pub fn remove(&mut self, index: usize) -> T {
+        if index >= self.len() {
+            panic("Vec::remove: index out of bounds");
+        }
+        unsafe { *(vec_remove(self.handle, index as i64) as *const T) }
+    }
+
+    /// Swap-remove the element at the given index (O(1) but doesn't preserve order).
+    pub fn swap_remove(&mut self, index: usize) -> T {
+        if index >= self.len() {
+            panic("Vec::swap_remove: index out of bounds");
+        }
+        unsafe { *(vec_swap_remove(self.handle, index as i64) as *const T) }
+    }
+
+    /// Get an element by index.
+    pub fn get(&self, index: usize) -> Option<&T> {
+        if index < self.len() {
+            Some(unsafe { &*(vec_get(self.handle, index as i64) as *const T) })
+        } else {
+            None
+        }
+    }
+
+    /// Get a mutable element by index.
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
+        if index < self.len() {
+            Some(unsafe { &mut *(vec_get(self.handle, index as i64) as *mut T) })
+        } else {
+            None
+        }
+    }
+
+    /// Get the first element.
+    pub fn first(&self) -> Option<&T> {
+        self.get(0)
+    }
+
+    /// Get the last element.
+    pub fn last(&self) -> Option<&T> {
+        if self.is_empty() {
+            None
+        } else {
+            self.get(self.len() - 1)
+        }
+    }
+
+    /// Clear all elements.
+    pub fn clear(&mut self) {
+        vec_clear(self.handle);
+    }
+
+    /// Truncate to the given length.
+    pub fn truncate(&mut self, len: usize) {
+        vec_truncate(self.handle, len as i64);
+    }
+
+    /// Iterate over elements.
+    pub fn iter(&self) -> VecIter<T> {
+        VecIter {
+            vec: self,
+            index: 0,
+        }
+    }
+
+    /// Iterate mutably over elements.
+    pub fn iter_mut(&mut self) -> VecIterMut<T> {
+        VecIterMut {
+            vec: self,
+            index: 0,
+        }
+    }
+
+    /// Map a function over elements.
+    pub fn map<U, F: Fn(&T) -> U>(&self, f: F) -> Vec<U> {
+        let mut result = Vec::with_capacity(self.len());
+        for item in self.iter() {
+            result.push(f(item));
+        }
+        result
+    }
+
+    /// Filter elements by predicate.
+    pub fn filter<F: Fn(&T) -> bool>(&self, pred: F) -> Vec<T>
+    where T: Clone
+    {
+        let mut result = Vec::new();
+        for item in self.iter() {
+            if pred(item) {
+                result.push(item.clone());
+            }
+        }
+        result
+    }
+
+    /// Fold elements with accumulator.
+    pub fn fold<U, F: Fn(U, &T) -> U>(&self, init: U, f: F) -> U {
+        let mut acc = init;
+        for item in self.iter() {
+            acc = f(acc, item);
+        }
+        acc
+    }
+
+    /// Find the first element matching a predicate.
+    pub fn find<F: Fn(&T) -> bool>(&self, pred: F) -> Option<&T> {
+        for item in self.iter() {
+            if pred(item) {
+                return Some(item);
+            }
+        }
+        None
+    }
+
+    /// Find the index of the first element matching a predicate.
+    pub fn position<F: Fn(&T) -> bool>(&self, pred: F) -> Option<usize> {
+        for (i, item) in self.iter().enumerate() {
+            if pred(item) {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// Check if any element matches a predicate.
+    pub fn any<F: Fn(&T) -> bool>(&self, pred: F) -> bool {
+        self.find(pred).is_some()
+    }
+
+    /// Check if all elements match a predicate.
+    pub fn all<F: Fn(&T) -> bool>(&self, pred: F) -> bool {
+        for item in self.iter() {
+            if !pred(item) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Count elements matching a predicate.
+    pub fn count<F: Fn(&T) -> bool>(&self, pred: F) -> usize {
+        let mut count = 0;
+        for item in self.iter() {
+            if pred(item) {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// Reverse the vector in place.
+    pub fn reverse(&mut self) {
+        vec_reverse(self.handle);
+    }
+
+    /// Sort the vector (requires Ord).
+    pub fn sort(&mut self) where T: Ord {
+        // Use quicksort or similar
+        self.sort_by(|a, b| a.cmp(b));
+    }
+
+    /// Sort by a comparison function.
+    pub fn sort_by<F: FnMut(&T, &T) -> Ordering>(&mut self, mut compare: F) {
+        // Inline quicksort implementation
+        let len = self.len();
+        if len <= 1 {
+            return;
+        }
+        quicksort_slice(self, 0, len - 1, &mut compare);
+    }
+
+    /// Check if the vector contains an element.
+    pub fn contains(&self, value: &T) -> bool where T: Eq {
+        for item in self.iter() {
+            if item.eq(value) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Append another vector to this one.
+    pub fn append(&mut self, other: &mut Vec<T>) {
+        self.reserve(other.len());
+        while let Some(item) = other.pop() {
+            self.push(item);
+        }
+    }
+
+    /// Extend from an iterator.
+    pub fn extend<I: Iterator<Item = T>>(&mut self, iter: I) {
+        for item in iter {
+            self.push(item);
+        }
+    }
+
+    /// Create a vector from a slice.
+    pub fn from_slice(slice: &[T]) -> Vec<T> where T: Clone {
+        let mut v = Vec::with_capacity(slice.len());
+        for item in slice.iter() {
+            v.push(item.clone());
+        }
+        v
+    }
+
+    /// Convert to a slice.
+    pub fn as_slice(&self) -> &[T] {
+        unsafe { slice::from_raw_parts(vec_as_ptr(self.handle) as *const T, self.len()) }
+    }
+
+    /// Convert to a mutable slice.
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        unsafe { slice::from_raw_parts_mut(vec_as_ptr(self.handle) as *mut T, self.len()) }
+    }
+
+    /// Split the vector at the given index.
+    pub fn split_off(&mut self, at: usize) -> Vec<T> {
+        if at > self.len() {
+            panic("Vec::split_off: index out of bounds");
+        }
+        let mut other = Vec::with_capacity(self.len() - at);
+        while self.len() > at {
+            other.push(self.pop().unwrap());
+        }
+        other.reverse();
+        other
+    }
+
+    /// Retain only elements matching a predicate.
+    pub fn retain<F: FnMut(&T) -> bool>(&mut self, mut pred: F) {
+        let mut i = 0;
+        while i < self.len() {
+            if pred(self.get(i).unwrap()) {
+                i += 1;
+            } else {
+                self.remove(i);
+            }
+        }
+    }
+
+    /// Deduplicate consecutive elements (requires Eq).
+    pub fn dedup(&mut self) where T: Eq {
+        self.dedup_by(|a, b| a.eq(b));
+    }
+
+    /// Deduplicate consecutive elements by a comparison function.
+    pub fn dedup_by<F: FnMut(&T, &T) -> bool>(&mut self, mut same: F) {
+        if self.len() <= 1 {
+            return;
+        }
+        let mut write = 1;
+        for read in 1..self.len() {
+            if !same(self.get(write - 1).unwrap(), self.get(read).unwrap()) {
+                if write != read {
+                    // Swap elements
+                    unsafe {
+                        let ptr_write = vec_get(self.handle, write as i64) as *mut T;
+                        let ptr_read = vec_get(self.handle, read as i64) as *mut T;
+                        ptr::swap(ptr_write, ptr_read);
+                    }
+                }
+                write += 1;
+            }
+        }
+        self.truncate(write);
+    }
+}
+
+impl<T: Clone> Clone for Vec<T> {
+    fn clone(&self) -> Vec<T> {
+        let mut v = Vec::with_capacity(self.len());
+        for item in self.iter() {
+            v.push(item.clone());
+        }
+        v
+    }
+}
+
+impl<T: Default> Vec<T> {
+    /// Resize the vector to the given length, using default values.
+    pub fn resize_default(&mut self, new_len: usize) {
+        self.resize_with(new_len, T::default);
+    }
+}
+
+impl<T: Clone> Vec<T> {
+    /// Resize the vector to the given length, using the given value.
+    pub fn resize(&mut self, new_len: usize, value: T) {
+        if new_len > self.len() {
+            self.reserve(new_len - self.len());
+            while self.len() < new_len {
+                self.push(value.clone());
+            }
+        } else {
+            self.truncate(new_len);
+        }
+    }
+}
+
+impl<T> Vec<T> {
+    /// Resize the vector to the given length, using a function to generate values.
+    pub fn resize_with<F: FnMut() -> T>(&mut self, new_len: usize, mut f: F) {
+        if new_len > self.len() {
+            self.reserve(new_len - self.len());
+            while self.len() < new_len {
+                self.push(f());
+            }
+        } else {
+            self.truncate(new_len);
+        }
+    }
+}
+
+impl<T> Drop for Vec<T> {
+    fn drop(&mut self) {
+        vec_drop(self.handle);
+    }
+}
+
+impl<T> Default for Vec<T> {
+    fn default() -> Self {
+        Vec::new()
+    }
+}
+
+/// Iterator over Vec elements.
+pub struct VecIter<'a, T> {
+    vec: &'a Vec<T>,
+    index: usize,
+}
+
+impl<'a, T> Iterator for VecIter<'a, T> {
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index < self.vec.len() {
+            let item = self.vec.get(self.index);
+            self.index += 1;
+            item
+        } else {
+            None
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.vec.len() - self.index;
+        (remaining, Some(remaining))
+    }
+}
+
+impl<'a, T> VecIter<'a, T> {
+    /// Enumerate the iterator.
+    pub fn enumerate(self) -> Enumerate<Self> {
+        Enumerate { iter: self, index: 0 }
+    }
+}
+
+/// Mutable iterator over Vec elements.
+pub struct VecIterMut<'a, T> {
+    vec: &'a mut Vec<T>,
+    index: usize,
+}
+
+impl<'a, T> Iterator for VecIterMut<'a, T> {
+    type Item = &'a mut T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index < self.vec.len() {
+            let item = unsafe { &mut *(vec_get(self.vec.handle, self.index as i64) as *mut T) };
+            self.index += 1;
+            Some(item)
+        } else {
+            None
+        }
+    }
+}
+
+/// Enumerate adapter for iterators.
+pub struct Enumerate<I> {
+    iter: I,
+    index: usize,
+}
+
+impl<I: Iterator> Iterator for Enumerate<I> {
+    type Item = (usize, I::Item);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.next().map(|item| {
+            let i = self.index;
+            self.index += 1;
+            (i, item)
+        })
+    }
+}
+
+// Quicksort helper
+fn quicksort_slice<T, F: FnMut(&T, &T) -> Ordering>(v: &mut Vec<T>, low: usize, high: usize, compare: &mut F) {
+    if low < high {
+        let p = partition(v, low, high, compare);
+        if p > 0 {
+            quicksort_slice(v, low, p - 1, compare);
+        }
+        quicksort_slice(v, p + 1, high, compare);
+    }
+}
+
+fn partition<T, F: FnMut(&T, &T) -> Ordering>(v: &mut Vec<T>, low: usize, high: usize, compare: &mut F) -> usize {
+    let pivot_idx = high;
+    let mut i = low;
+    for j in low..high {
+        if compare(v.get(j).unwrap(), v.get(pivot_idx).unwrap()) == Ordering::Less {
+            // Swap v[i] and v[j]
+            unsafe {
+                let ptr_i = vec_get(v.handle, i as i64) as *mut T;
+                let ptr_j = vec_get(v.handle, j as i64) as *mut T;
+                ptr::swap(ptr_i, ptr_j);
+            }
+            i += 1;
+        }
+    }
+    // Swap v[i] and v[high]
+    unsafe {
+        let ptr_i = vec_get(v.handle, i as i64) as *mut T;
+        let ptr_high = vec_get(v.handle, high as i64) as *mut T;
+        ptr::swap(ptr_i, ptr_high);
+    }
+    i
+}
+
+// =============================================================================
+// HashMap - Hash Map
+// =============================================================================
+
+/// A hash map with key-value pairs.
+///
+/// Provides O(1) average-case lookup, insertion, and removal.
+#[repr(C)]
+pub struct HashMap<K, V> {
+    handle: i64,
+    _marker: PhantomData<(K, V)>,
+}
+
+impl<K: Hash + Eq, V> HashMap<K, V> {
+    /// Create a new empty hash map.
+    pub fn new() -> HashMap<K, V> {
+        HashMap {
+            handle: hashmap_new(),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Create a hash map with the given capacity.
+    pub fn with_capacity(capacity: usize) -> HashMap<K, V> {
+        HashMap {
+            handle: hashmap_with_capacity(capacity as i64),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Insert a key-value pair.
+    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        let old = hashmap_insert(self.handle, &key as *const K as i64, &value as *const V as i64);
+        if old == 0 {
+            None
+        } else {
+            Some(unsafe { *(old as *const V) })
+        }
+    }
+
+    /// Get a value by key.
+    pub fn get(&self, key: &K) -> Option<&V> {
+        let ptr = hashmap_get(self.handle, key as *const K as i64);
+        if ptr == 0 {
+            None
+        } else {
+            Some(unsafe { &*(ptr as *const V) })
+        }
+    }
+
+    /// Get a mutable value by key.
+    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        let ptr = hashmap_get(self.handle, key as *const K as i64);
+        if ptr == 0 {
+            None
+        } else {
+            Some(unsafe { &mut *(ptr as *mut V) })
+        }
+    }
+
+    /// Remove a key-value pair.
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        let old = hashmap_remove(self.handle, key as *const K as i64);
+        if old == 0 {
+            None
+        } else {
+            Some(unsafe { *(old as *const V) })
+        }
+    }
+
+    /// Check if key exists.
+    pub fn contains_key(&self, key: &K) -> bool {
+        self.get(key).is_some()
+    }
+
+    /// Get the number of entries.
+    pub fn len(&self) -> usize {
+        hashmap_len(self.handle) as usize
+    }
+
+    /// Check if empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Get the capacity.
+    pub fn capacity(&self) -> usize {
+        hashmap_capacity(self.handle) as usize
+    }
+
+    /// Clear all entries.
+    pub fn clear(&mut self) {
+        hashmap_clear(self.handle);
+    }
+
+    /// Get or insert a value with a default.
+    pub fn entry(&mut self, key: K) -> Entry<K, V> {
+        if self.contains_key(&key) {
+            Entry::Occupied(OccupiedEntry { map: self, key })
+        } else {
+            Entry::Vacant(VacantEntry { map: self, key })
+        }
+    }
+
+    /// Iterate over key-value pairs.
+    pub fn iter(&self) -> HashMapIter<K, V> {
+        HashMapIter {
+            handle: self.handle,
+            index: 0,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Iterate over keys.
+    pub fn keys(&self) -> HashMapKeys<K, V> {
+        HashMapKeys {
+            iter: self.iter(),
+        }
+    }
+
+    /// Iterate over values.
+    pub fn values(&self) -> HashMapValues<K, V> {
+        HashMapValues {
+            iter: self.iter(),
+        }
+    }
+
+    /// Iterate mutably over values.
+    pub fn values_mut(&mut self) -> HashMapValuesMut<K, V> {
+        HashMapValuesMut {
+            handle: self.handle,
+            index: 0,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Retain only entries matching a predicate.
+    pub fn retain<F: FnMut(&K, &mut V) -> bool>(&mut self, mut pred: F) {
+        hashmap_retain(self.handle, |k, v| {
+            pred(unsafe { &*(k as *const K) }, unsafe { &mut *(v as *mut V) })
+        });
+    }
+
+    /// Get or insert with a function.
+    pub fn get_or_insert_with<F: FnOnce() -> V>(&mut self, key: K, f: F) -> &mut V {
+        if !self.contains_key(&key) {
+            self.insert(key.clone(), f());
+        }
+        self.get_mut(&key).unwrap()
+    }
+}
+
+impl<K, V> Drop for HashMap<K, V> {
+    fn drop(&mut self) {
+        hashmap_drop(self.handle);
+    }
+}
+
+impl<K, V> Default for HashMap<K, V> {
+    fn default() -> Self {
+        HashMap::new()
+    }
+}
+
+/// Entry API for HashMap.
+pub enum Entry<'a, K, V> {
+    Occupied(OccupiedEntry<'a, K, V>),
+    Vacant(VacantEntry<'a, K, V>),
+}
+
+impl<'a, K: Hash + Eq, V> Entry<'a, K, V> {
+    /// Get or insert a default value.
+    pub fn or_insert(self, default: V) -> &'a mut V {
+        match self {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => entry.insert(default),
+        }
+    }
+
+    /// Get or insert with a function.
+    pub fn or_insert_with<F: FnOnce() -> V>(self, f: F) -> &'a mut V {
+        match self {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => entry.insert(f()),
+        }
+    }
+
+    /// Get or insert a default value (requires Default).
+    pub fn or_default(self) -> &'a mut V where V: Default {
+        self.or_insert_with(V::default)
+    }
+}
+
+/// Occupied entry in a HashMap.
+pub struct OccupiedEntry<'a, K, V> {
+    map: &'a mut HashMap<K, V>,
+    key: K,
+}
+
+impl<'a, K: Hash + Eq, V> OccupiedEntry<'a, K, V> {
+    /// Get a reference to the value.
+    pub fn get(&self) -> &V {
+        self.map.get(&self.key).unwrap()
+    }
+
+    /// Get a mutable reference to the value.
+    pub fn get_mut(&mut self) -> &mut V {
+        self.map.get_mut(&self.key).unwrap()
+    }
+
+    /// Convert to a mutable reference.
+    pub fn into_mut(self) -> &'a mut V {
+        self.map.get_mut(&self.key).unwrap()
+    }
+
+    /// Insert a new value, returning the old.
+    pub fn insert(&mut self, value: V) -> V {
+        self.map.insert(self.key.clone(), value).unwrap()
+    }
+
+    /// Remove the entry.
+    pub fn remove(self) -> V {
+        self.map.remove(&self.key).unwrap()
+    }
+}
+
+/// Vacant entry in a HashMap.
+pub struct VacantEntry<'a, K, V> {
+    map: &'a mut HashMap<K, V>,
+    key: K,
+}
+
+impl<'a, K: Hash + Eq, V> VacantEntry<'a, K, V> {
+    /// Insert a value into the vacant entry.
+    pub fn insert(self, value: V) -> &'a mut V {
+        self.map.insert(self.key.clone(), value);
+        self.map.get_mut(&self.key).unwrap()
+    }
+}
+
+/// Iterator over HashMap entries.
+pub struct HashMapIter<'a, K, V> {
+    handle: i64,
+    index: i64,
+    _marker: PhantomData<(&'a K, &'a V)>,
+}
+
+impl<'a, K, V> Iterator for HashMapIter<'a, K, V> {
+    type Item = (&'a K, &'a V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let entry = hashmap_iter_next(self.handle, &mut self.index);
+        if entry.0 == 0 {
+            None
+        } else {
+            Some(unsafe { (&*(entry.0 as *const K), &*(entry.1 as *const V)) })
+        }
+    }
+}
+
+/// Iterator over HashMap keys.
+pub struct HashMapKeys<'a, K, V> {
+    iter: HashMapIter<'a, K, V>,
+}
+
+impl<'a, K, V> Iterator for HashMapKeys<'a, K, V> {
+    type Item = &'a K;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.next().map(|(k, _)| k)
+    }
+}
+
+/// Iterator over HashMap values.
+pub struct HashMapValues<'a, K, V> {
+    iter: HashMapIter<'a, K, V>,
+}
+
+impl<'a, K, V> Iterator for HashMapValues<'a, K, V> {
+    type Item = &'a V;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.next().map(|(_, v)| v)
+    }
+}
+
+/// Mutable iterator over HashMap values.
+pub struct HashMapValuesMut<'a, K, V> {
+    handle: i64,
+    index: i64,
+    _marker: PhantomData<(&'a K, &'a mut V)>,
+}
+
+impl<'a, K, V> Iterator for HashMapValuesMut<'a, K, V> {
+    type Item = &'a mut V;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let entry = hashmap_iter_next(self.handle, &mut self.index);
+        if entry.0 == 0 {
+            None
+        } else {
+            Some(unsafe { &mut *(entry.1 as *mut V) })
+        }
+    }
+}
+
+// =============================================================================
+// HashSet - Hash Set
+// =============================================================================
+
+/// A hash set of unique values.
+///
+/// Provides O(1) average-case lookup, insertion, and removal.
+#[repr(C)]
+pub struct HashSet<T> {
+    handle: i64,
+    _marker: PhantomData<T>,
+}
+
+impl<T: Hash + Eq> HashSet<T> {
+    /// Create a new empty hash set.
+    pub fn new() -> HashSet<T> {
+        HashSet {
+            handle: hashset_new(),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Create a hash set with the given capacity.
+    pub fn with_capacity(capacity: usize) -> HashSet<T> {
+        HashSet {
+            handle: hashset_with_capacity(capacity as i64),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Insert a value. Returns true if the value was not already present.
+    pub fn insert(&mut self, value: T) -> bool {
+        hashset_insert(self.handle, &value as *const T as i64) != 0
+    }
+
+    /// Check if value exists.
+    pub fn contains(&self, value: &T) -> bool {
+        hashset_contains(self.handle, value as *const T as i64) != 0
+    }
+
+    /// Remove a value. Returns true if the value was present.
+    pub fn remove(&mut self, value: &T) -> bool {
+        hashset_remove(self.handle, value as *const T as i64) != 0
+    }
+
+    /// Take a value from the set.
+    pub fn take(&mut self, value: &T) -> Option<T> {
+        let ptr = hashset_take(self.handle, value as *const T as i64);
+        if ptr == 0 {
+            None
+        } else {
+            Some(unsafe { *(ptr as *const T) })
+        }
+    }
+
+    /// Get the number of elements.
+    pub fn len(&self) -> usize {
+        hashset_len(self.handle) as usize
+    }
+
+    /// Check if empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Clear all elements.
+    pub fn clear(&mut self) {
+        hashset_clear(self.handle);
+    }
+
+    /// Iterate over elements.
+    pub fn iter(&self) -> HashSetIter<T> {
+        HashSetIter {
+            handle: self.handle,
+            index: 0,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Retain only elements matching a predicate.
+    pub fn retain<F: FnMut(&T) -> bool>(&mut self, mut pred: F) {
+        hashset_retain(self.handle, |v| pred(unsafe { &*(v as *const T) }));
+    }
+
+    /// Compute the union with another set.
+    pub fn union<'a>(&'a self, other: &'a HashSet<T>) -> HashSet<T> where T: Clone {
+        let mut result = self.clone();
+        for item in other.iter() {
+            result.insert(item.clone());
+        }
+        result
+    }
+
+    /// Compute the intersection with another set.
+    pub fn intersection<'a>(&'a self, other: &'a HashSet<T>) -> HashSet<T> where T: Clone {
+        let mut result = HashSet::new();
+        for item in self.iter() {
+            if other.contains(item) {
+                result.insert(item.clone());
+            }
+        }
+        result
+    }
+
+    /// Compute the difference with another set.
+    pub fn difference<'a>(&'a self, other: &'a HashSet<T>) -> HashSet<T> where T: Clone {
+        let mut result = HashSet::new();
+        for item in self.iter() {
+            if !other.contains(item) {
+                result.insert(item.clone());
+            }
+        }
+        result
+    }
+
+    /// Compute the symmetric difference with another set.
+    pub fn symmetric_difference<'a>(&'a self, other: &'a HashSet<T>) -> HashSet<T> where T: Clone {
+        let mut result = HashSet::new();
+        for item in self.iter() {
+            if !other.contains(item) {
+                result.insert(item.clone());
+            }
+        }
+        for item in other.iter() {
+            if !self.contains(item) {
+                result.insert(item.clone());
+            }
+        }
+        result
+    }
+
+    /// Check if this set is a subset of another.
+    pub fn is_subset(&self, other: &HashSet<T>) -> bool {
+        for item in self.iter() {
+            if !other.contains(item) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Check if this set is a superset of another.
+    pub fn is_superset(&self, other: &HashSet<T>) -> bool {
+        other.is_subset(self)
+    }
+
+    /// Check if this set is disjoint from another.
+    pub fn is_disjoint(&self, other: &HashSet<T>) -> bool {
+        for item in self.iter() {
+            if other.contains(item) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+impl<T: Hash + Eq + Clone> Clone for HashSet<T> {
+    fn clone(&self) -> HashSet<T> {
+        let mut result = HashSet::with_capacity(self.len());
+        for item in self.iter() {
+            result.insert(item.clone());
+        }
+        result
+    }
+}
+
+impl<T> Drop for HashSet<T> {
+    fn drop(&mut self) {
+        hashset_drop(self.handle);
+    }
+}
+
+impl<T> Default for HashSet<T> {
+    fn default() -> Self {
+        HashSet::new()
+    }
+}
+
+/// Iterator over HashSet elements.
+pub struct HashSetIter<'a, T> {
+    handle: i64,
+    index: i64,
+    _marker: PhantomData<&'a T>,
+}
+
+impl<'a, T> Iterator for HashSetIter<'a, T> {
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let ptr = hashset_iter_next(self.handle, &mut self.index);
+        if ptr == 0 {
+            None
+        } else {
+            Some(unsafe { &*(ptr as *const T) })
+        }
+    }
+}
+
+// =============================================================================
+// VecDeque - Double-Ended Queue
+// =============================================================================
+
+/// A double-ended queue implemented with a ring buffer.
+///
+/// Provides O(1) push/pop at both ends.
+#[repr(C)]
+pub struct VecDeque<T> {
+    handle: i64,
+    _marker: PhantomData<T>,
+}
+
+impl<T> VecDeque<T> {
+    /// Create a new empty deque.
+    pub fn new() -> VecDeque<T> {
+        VecDeque {
+            handle: vecdeque_new(),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Create a deque with the given capacity.
+    pub fn with_capacity(capacity: usize) -> VecDeque<T> {
+        VecDeque {
+            handle: vecdeque_with_capacity(capacity as i64),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Push to the back.
+    pub fn push_back(&mut self, value: T) {
+        vecdeque_push_back(self.handle, &value as *const T as i64);
+    }
+
+    /// Push to the front.
+    pub fn push_front(&mut self, value: T) {
+        vecdeque_push_front(self.handle, &value as *const T as i64);
+    }
+
+    /// Pop from the back.
+    pub fn pop_back(&mut self) -> Option<T> {
+        if self.is_empty() {
+            None
+        } else {
+            Some(unsafe { *(vecdeque_pop_back(self.handle) as *const T) })
+        }
+    }
+
+    /// Pop from the front.
+    pub fn pop_front(&mut self) -> Option<T> {
+        if self.is_empty() {
+            None
+        } else {
+            Some(unsafe { *(vecdeque_pop_front(self.handle) as *const T) })
+        }
+    }
+
+    /// Get front element.
+    pub fn front(&self) -> Option<&T> {
+        if self.is_empty() {
+            None
+        } else {
+            Some(unsafe { &*(vecdeque_front(self.handle) as *const T) })
+        }
+    }
+
+    /// Get back element.
+    pub fn back(&self) -> Option<&T> {
+        if self.is_empty() {
+            None
+        } else {
+            Some(unsafe { &*(vecdeque_back(self.handle) as *const T) })
+        }
+    }
+
+    /// Get front element mutably.
+    pub fn front_mut(&mut self) -> Option<&mut T> {
+        if self.is_empty() {
+            None
+        } else {
+            Some(unsafe { &mut *(vecdeque_front(self.handle) as *mut T) })
+        }
+    }
+
+    /// Get back element mutably.
+    pub fn back_mut(&mut self) -> Option<&mut T> {
+        if self.is_empty() {
+            None
+        } else {
+            Some(unsafe { &mut *(vecdeque_back(self.handle) as *mut T) })
+        }
+    }
+
+    /// Get element by index.
+    pub fn get(&self, index: usize) -> Option<&T> {
+        if index < self.len() {
+            Some(unsafe { &*(vecdeque_get(self.handle, index as i64) as *const T) })
+        } else {
+            None
+        }
+    }
+
+    /// Get length.
+    pub fn len(&self) -> usize {
+        vecdeque_len(self.handle) as usize
+    }
+
+    /// Check if empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Get capacity.
+    pub fn capacity(&self) -> usize {
+        vecdeque_capacity(self.handle) as usize
+    }
+
+    /// Clear all elements.
+    pub fn clear(&mut self) {
+        vecdeque_clear(self.handle);
+    }
+
+    /// Rotate the deque left by n positions.
+    pub fn rotate_left(&mut self, n: usize) {
+        for _ in 0..n {
+            if let Some(front) = self.pop_front() {
+                self.push_back(front);
+            }
+        }
+    }
+
+    /// Rotate the deque right by n positions.
+    pub fn rotate_right(&mut self, n: usize) {
+        for _ in 0..n {
+            if let Some(back) = self.pop_back() {
+                self.push_front(back);
+            }
+        }
+    }
+
+    /// Iterate over elements.
+    pub fn iter(&self) -> VecDequeIter<T> {
+        VecDequeIter {
+            deque: self,
+            index: 0,
+        }
+    }
+
+    /// Make contiguous (useful for converting to slices).
+    pub fn make_contiguous(&mut self) -> &mut [T] {
+        vecdeque_make_contiguous(self.handle);
+        unsafe { slice::from_raw_parts_mut(vecdeque_as_ptr(self.handle) as *mut T, self.len()) }
+    }
+}
+
+impl<T: Clone> Clone for VecDeque<T> {
+    fn clone(&self) -> VecDeque<T> {
+        let mut result = VecDeque::with_capacity(self.len());
+        for item in self.iter() {
+            result.push_back(item.clone());
+        }
+        result
+    }
+}
+
+impl<T> Drop for VecDeque<T> {
+    fn drop(&mut self) {
+        vecdeque_drop(self.handle);
+    }
+}
+
+impl<T> Default for VecDeque<T> {
+    fn default() -> Self {
+        VecDeque::new()
+    }
+}
+
+/// Iterator over VecDeque elements.
+pub struct VecDequeIter<'a, T> {
+    deque: &'a VecDeque<T>,
+    index: usize,
+}
+
+impl<'a, T> Iterator for VecDequeIter<'a, T> {
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index < self.deque.len() {
+            let item = self.deque.get(self.index);
+            self.index += 1;
+            item
+        } else {
+            None
+        }
+    }
+}
+
+// =============================================================================
+// BinaryHeap - Priority Queue (Max-Heap)
+// =============================================================================
+
+/// A priority queue implemented as a binary max-heap.
+///
+/// Elements with greater value have higher priority.
+#[repr(C)]
+pub struct BinaryHeap<T> {
+    data: Vec<T>,
+}
+
+impl<T: Ord> BinaryHeap<T> {
+    /// Create a new empty heap.
+    pub fn new() -> BinaryHeap<T> {
+        BinaryHeap { data: Vec::new() }
+    }
+
+    /// Create a heap with the given capacity.
+    pub fn with_capacity(capacity: usize) -> BinaryHeap<T> {
+        BinaryHeap { data: Vec::with_capacity(capacity) }
+    }
+
+    /// Push an element onto the heap.
+    pub fn push(&mut self, value: T) {
+        self.data.push(value);
+        self.sift_up(self.data.len() - 1);
+    }
+
+    /// Pop the largest element from the heap.
+    pub fn pop(&mut self) -> Option<T> {
+        if self.data.is_empty() {
+            return None;
+        }
+        let len = self.data.len();
+        // Swap first and last
+        unsafe {
+            let ptr_0 = vec_get(self.data.handle, 0) as *mut T;
+            let ptr_last = vec_get(self.data.handle, (len - 1) as i64) as *mut T;
+            ptr::swap(ptr_0, ptr_last);
+        }
+        let result = self.data.pop();
+        if !self.data.is_empty() {
+            self.sift_down(0);
+        }
+        result
+    }
+
+    /// Peek at the largest element.
+    pub fn peek(&self) -> Option<&T> {
+        self.data.first()
+    }
+
+    /// Get the length.
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Check if empty.
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    /// Clear the heap.
+    pub fn clear(&mut self) {
+        self.data.clear();
+    }
+
+    fn sift_up(&mut self, mut pos: usize) {
+        while pos > 0 {
+            let parent = (pos - 1) / 2;
+            if self.data.get(pos).unwrap().cmp(self.data.get(parent).unwrap()) != Ordering::Greater {
+                break;
+            }
+            unsafe {
+                let ptr_pos = vec_get(self.data.handle, pos as i64) as *mut T;
+                let ptr_parent = vec_get(self.data.handle, parent as i64) as *mut T;
+                ptr::swap(ptr_pos, ptr_parent);
+            }
+            pos = parent;
+        }
+    }
+
+    fn sift_down(&mut self, mut pos: usize) {
+        let len = self.data.len();
+        loop {
+            let left = 2 * pos + 1;
+            let right = 2 * pos + 2;
+            let mut largest = pos;
+
+            if left < len && self.data.get(left).unwrap().cmp(self.data.get(largest).unwrap()) == Ordering::Greater {
+                largest = left;
+            }
+            if right < len && self.data.get(right).unwrap().cmp(self.data.get(largest).unwrap()) == Ordering::Greater {
+                largest = right;
+            }
+            if largest == pos {
+                break;
+            }
+            unsafe {
+                let ptr_pos = vec_get(self.data.handle, pos as i64) as *mut T;
+                let ptr_largest = vec_get(self.data.handle, largest as i64) as *mut T;
+                ptr::swap(ptr_pos, ptr_largest);
+            }
+            pos = largest;
+        }
+    }
+
+    /// Convert to a sorted vector.
+    pub fn into_sorted_vec(mut self) -> Vec<T> {
+        let mut result = Vec::with_capacity(self.len());
+        while let Some(item) = self.pop() {
+            result.push(item);
+        }
+        result.reverse();
+        result
+    }
+}
+
+impl<T: Ord> Default for BinaryHeap<T> {
+    fn default() -> Self {
+        BinaryHeap::new()
+    }
+}
+
+// =============================================================================
+// C Runtime FFI Declarations
+// =============================================================================
+
+extern "C" {
+    // Vec
+    fn vec_new() -> i64;
+    fn vec_with_capacity(cap: i64) -> i64;
+    fn vec_len(v: i64) -> i64;
+    fn vec_capacity(v: i64) -> i64;
+    fn vec_reserve(v: i64, additional: i64);
+    fn vec_shrink_to_fit(v: i64);
+    fn vec_push(v: i64, item: i64);
+    fn vec_pop(v: i64) -> i64;
+    fn vec_insert(v: i64, index: i64, item: i64);
+    fn vec_remove(v: i64, index: i64) -> i64;
+    fn vec_swap_remove(v: i64, index: i64) -> i64;
+    fn vec_get(v: i64, index: i64) -> i64;
+    fn vec_clear(v: i64);
+    fn vec_truncate(v: i64, len: i64);
+    fn vec_reverse(v: i64);
+    fn vec_as_ptr(v: i64) -> i64;
+    fn vec_drop(v: i64);
+
+    // HashMap
+    fn hashmap_new() -> i64;
+    fn hashmap_with_capacity(cap: i64) -> i64;
+    fn hashmap_insert(m: i64, key: i64, value: i64) -> i64;
+    fn hashmap_get(m: i64, key: i64) -> i64;
+    fn hashmap_remove(m: i64, key: i64) -> i64;
+    fn hashmap_len(m: i64) -> i64;
+    fn hashmap_capacity(m: i64) -> i64;
+    fn hashmap_clear(m: i64);
+    fn hashmap_iter_next(m: i64, index: *mut i64) -> (i64, i64);
+    fn hashmap_retain(m: i64, pred: fn(i64, i64) -> bool);
+    fn hashmap_drop(m: i64);
+
+    // HashSet
+    fn hashset_new() -> i64;
+    fn hashset_with_capacity(cap: i64) -> i64;
+    fn hashset_insert(s: i64, value: i64) -> i64;
+    fn hashset_contains(s: i64, value: i64) -> i64;
+    fn hashset_remove(s: i64, value: i64) -> i64;
+    fn hashset_take(s: i64, value: i64) -> i64;
+    fn hashset_len(s: i64) -> i64;
+    fn hashset_clear(s: i64);
+    fn hashset_iter_next(s: i64, index: *mut i64) -> i64;
+    fn hashset_retain(s: i64, pred: fn(i64) -> bool);
+    fn hashset_drop(s: i64);
+
+    // VecDeque
+    fn vecdeque_new() -> i64;
+    fn vecdeque_with_capacity(cap: i64) -> i64;
+    fn vecdeque_push_back(d: i64, value: i64);
+    fn vecdeque_push_front(d: i64, value: i64);
+    fn vecdeque_pop_back(d: i64) -> i64;
+    fn vecdeque_pop_front(d: i64) -> i64;
+    fn vecdeque_front(d: i64) -> i64;
+    fn vecdeque_back(d: i64) -> i64;
+    fn vecdeque_get(d: i64, index: i64) -> i64;
+    fn vecdeque_len(d: i64) -> i64;
+    fn vecdeque_capacity(d: i64) -> i64;
+    fn vecdeque_clear(d: i64);
+    fn vecdeque_make_contiguous(d: i64);
+    fn vecdeque_as_ptr(d: i64) -> i64;
+    fn vecdeque_drop(d: i64);
+}
+
+// PhantomData, slice, and ptr imported from core module
+
+// Traits from mod.sx
+use super::{Hash, Eq, Ord, Ordering, Clone, Default};
+
+fn panic(msg: &str) -> ! {
+    super::assert::panic(msg);
+}

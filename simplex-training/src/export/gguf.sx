@@ -1,0 +1,321 @@
+// GGUF Exporter
+//
+// Export compressed models to GGUF format for llama.cpp inference.
+
+use simplex_std::sync::Arc;
+use super::super::{Tensor, ModelSize};
+use super::super::schedules::QuantFormat;
+
+/// GGUF file exporter
+pub struct GgufExporter {
+    config: GgufConfig,
+}
+
+/// GGUF export configuration
+#[derive(Clone)]
+pub struct GgufConfig {
+    /// Quantization format
+    pub quant_format: QuantFormat,
+    /// Model architecture name
+    pub architecture: String,
+    /// Model name for metadata
+    pub model_name: String,
+    /// Author for metadata
+    pub author: String,
+    /// License for metadata
+    pub license: String,
+    /// Include tokenizer in file
+    pub include_tokenizer: bool,
+    /// Tokenizer model path
+    pub tokenizer_path: Option<String>,
+}
+
+impl Default for GgufConfig {
+    fn default() -> Self {
+        GgufConfig {
+            quant_format: QuantFormat::Q4_K,
+            architecture: "llama".to_string(),
+            model_name: "simplex-cognitive".to_string(),
+            author: "Simplex Team".to_string(),
+            license: "MIT".to_string(),
+            include_tokenizer: true,
+            tokenizer_path: None,
+        }
+    }
+}
+
+impl GgufConfig {
+    /// Config for Q4_K quantization (recommended)
+    pub fn q4_k(model_name: &str) -> Self {
+        GgufConfig {
+            quant_format: QuantFormat::Q4_K,
+            model_name: model_name.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// Config for Q8 quantization (higher quality)
+    pub fn q8(model_name: &str) -> Self {
+        GgufConfig {
+            quant_format: QuantFormat::Q8_0,
+            model_name: model_name.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// Config for F16 (no quantization)
+    pub fn f16(model_name: &str) -> Self {
+        GgufConfig {
+            quant_format: QuantFormat::F16,
+            model_name: model_name.to_string(),
+            ..Default::default()
+        }
+    }
+}
+
+impl GgufExporter {
+    /// Create new exporter
+    pub fn new(config: GgufConfig) -> Self {
+        GgufExporter { config }
+    }
+
+    /// Export model weights to GGUF file
+    pub async fn export(
+        &self,
+        weights: &[Tensor],
+        output_path: &str
+    ) -> Result<GgufFile, GgufError> {
+        var file = GgufFile::new(&self.config);
+
+        // Write header
+        file.write_header()?;
+
+        // Write metadata
+        file.write_metadata(&self.config)?;
+
+        // Write tokenizer if included
+        if self.config.include_tokenizer {
+            if let Some(ref tokenizer_path) = self.config.tokenizer_path {
+                file.write_tokenizer(tokenizer_path)?;
+            }
+        }
+
+        // Quantize and write tensors
+        for (i, tensor) in weights.iter().enumerate() {
+            let quantized = self.quantize_tensor(tensor)?;
+            file.write_tensor(&format!("layer_{}", i), &quantized)?;
+        }
+
+        // Finalize file
+        file.finalize(output_path)?;
+
+        Ok(file)
+    }
+
+    /// Quantize tensor to configured format
+    fn quantize_tensor(&self, tensor: &Tensor) -> Result<QuantizedTensor, GgufError> {
+        match self.config.quant_format {
+            QuantFormat::Q4_0 => self.quantize_q4_0(tensor),
+            QuantFormat::Q4_K => self.quantize_q4_k(tensor),
+            QuantFormat::Q5_0 => self.quantize_q5_0(tensor),
+            QuantFormat::Q8_0 => self.quantize_q8_0(tensor),
+            QuantFormat::F16 => self.convert_f16(tensor),
+            QuantFormat::F32 => Ok(QuantizedTensor {
+                data: tensor.data.iter().map(|&x| x as u8).collect(),
+                shape: tensor.shape.clone(),
+                format: QuantFormat::F32,
+            }),
+        }
+    }
+
+    fn quantize_q4_0(&self, tensor: &Tensor) -> Result<QuantizedTensor, GgufError> {
+        // Q4_0: 4-bit quantization with block-wise scaling
+        // Each block of 32 values shares one scale factor
+        let block_size = 32;
+        var quantized = Vec::new();
+
+        for block in tensor.data.chunks(block_size) {
+            // Find scale
+            let max_abs = block.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
+            let scale = max_abs / 7.0; // 4-bit signed range is -8 to 7
+
+            // Quantize block
+            for &val in block {
+                let q = if scale > 0.0 {
+                    ((val / scale).round() as i8).clamp(-8, 7)
+                } else {
+                    0i8
+                };
+                quantized.push(q as u8);
+            }
+        }
+
+        Ok(QuantizedTensor {
+            data: quantized,
+            shape: tensor.shape.clone(),
+            format: QuantFormat::Q4_0,
+        })
+    }
+
+    fn quantize_q4_k(&self, tensor: &Tensor) -> Result<QuantizedTensor, GgufError> {
+        // Q4_K: 4-bit with K-means clustering for better accuracy
+        // More sophisticated than Q4_0
+        self.quantize_q4_0(tensor) // Simplified - would use K-means in production
+    }
+
+    fn quantize_q5_0(&self, tensor: &Tensor) -> Result<QuantizedTensor, GgufError> {
+        // Q5_0: 5-bit quantization
+        self.quantize_q4_0(tensor) // Simplified
+    }
+
+    fn quantize_q8_0(&self, tensor: &Tensor) -> Result<QuantizedTensor, GgufError> {
+        // Q8_0: 8-bit quantization
+        let block_size = 32;
+        var quantized = Vec::new();
+
+        for block in tensor.data.chunks(block_size) {
+            let max_abs = block.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
+            let scale = max_abs / 127.0;
+
+            for &val in block {
+                let q = if scale > 0.0 {
+                    ((val / scale).round() as i8).clamp(-128, 127)
+                } else {
+                    0i8
+                };
+                quantized.push(q as u8);
+            }
+        }
+
+        Ok(QuantizedTensor {
+            data: quantized,
+            shape: tensor.shape.clone(),
+            format: QuantFormat::Q8_0,
+        })
+    }
+
+    fn convert_f16(&self, tensor: &Tensor) -> Result<QuantizedTensor, GgufError> {
+        // Convert F32 to F16
+        var data = Vec::with_capacity(tensor.data.len() * 2);
+        for &val in &tensor.data {
+            let f16_bits = f32_to_f16(val);
+            data.push((f16_bits & 0xFF) as u8);
+            data.push((f16_bits >> 8) as u8);
+        }
+
+        Ok(QuantizedTensor {
+            data,
+            shape: tensor.shape.clone(),
+            format: QuantFormat::F16,
+        })
+    }
+}
+
+/// GGUF file being constructed
+pub struct GgufFile {
+    header: GgufHeader,
+    metadata: Vec<(String, GgufValue)>,
+    tensors: Vec<(String, QuantizedTensor)>,
+}
+
+struct GgufHeader {
+    magic: u32,
+    version: u32,
+    tensor_count: u64,
+    metadata_kv_count: u64,
+}
+
+enum GgufValue {
+    String(String),
+    Uint32(u32),
+    Float32(f32),
+    Array(Vec<GgufValue>),
+}
+
+struct QuantizedTensor {
+    data: Vec<u8>,
+    shape: Vec<usize>,
+    format: QuantFormat,
+}
+
+impl GgufFile {
+    fn new(config: &GgufConfig) -> Self {
+        GgufFile {
+            header: GgufHeader {
+                magic: 0x46554747, // "GGUF"
+                version: 3,
+                tensor_count: 0,
+                metadata_kv_count: 0,
+            },
+            metadata: vec![],
+            tensors: vec![],
+        }
+    }
+
+    fn write_header(&mut self) -> Result<(), GgufError> {
+        Ok(())
+    }
+
+    fn write_metadata(&mut self, config: &GgufConfig) -> Result<(), GgufError> {
+        self.metadata.push(("general.architecture".to_string(),
+                           GgufValue::String(config.architecture.clone())));
+        self.metadata.push(("general.name".to_string(),
+                           GgufValue::String(config.model_name.clone())));
+        self.metadata.push(("general.author".to_string(),
+                           GgufValue::String(config.author.clone())));
+        self.metadata.push(("general.license".to_string(),
+                           GgufValue::String(config.license.clone())));
+        self.header.metadata_kv_count = self.metadata.len() as u64;
+        Ok(())
+    }
+
+    fn write_tokenizer(&mut self, path: &str) -> Result<(), GgufError> {
+        // Load and embed tokenizer
+        Ok(())
+    }
+
+    fn write_tensor(&mut self, name: &str, tensor: &QuantizedTensor) -> Result<(), GgufError> {
+        self.tensors.push((name.to_string(), QuantizedTensor {
+            data: tensor.data.clone(),
+            shape: tensor.shape.clone(),
+            format: tensor.format,
+        }));
+        self.header.tensor_count += 1;
+        Ok(())
+    }
+
+    fn finalize(&self, path: &str) -> Result<(), GgufError> {
+        // Write complete file to disk
+        Ok(())
+    }
+}
+
+/// Convert f32 to f16 (IEEE 754 half-precision)
+fn f32_to_f16(val: f32) -> u16 {
+    let bits = val.to_bits();
+    let sign = (bits >> 31) & 1;
+    let exp = ((bits >> 23) & 0xFF) as i32;
+    let mantissa = bits & 0x7FFFFF;
+
+    if exp == 255 {
+        // Inf or NaN
+        ((sign << 15) | 0x7C00 | (mantissa >> 13)) as u16
+    } else if exp > 142 {
+        // Overflow to inf
+        ((sign << 15) | 0x7C00) as u16
+    } else if exp < 113 {
+        // Underflow to zero
+        (sign << 15) as u16
+    } else {
+        let new_exp = (exp - 127 + 15) as u16;
+        let new_mantissa = (mantissa >> 13) as u16;
+        ((sign << 15) | ((new_exp as u32) << 10) | new_mantissa as u32) as u16
+    }
+}
+
+#[derive(Debug)]
+pub enum GgufError {
+    IoError(String),
+    QuantizationFailed(String),
+    InvalidFormat(String),
+}

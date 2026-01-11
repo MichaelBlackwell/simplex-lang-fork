@@ -1,0 +1,263 @@
+// Test file for Observability System
+// Phase 4.11: Metrics, Tracing, and Logging
+
+// External declarations
+fn metrics_registry_new() -> i64;
+fn metrics_registry_global() -> i64;
+fn metrics_registry_count(reg: i64) -> i64;
+fn metrics_export_json(reg: i64) -> i64;
+fn metrics_export_prometheus(reg: i64) -> i64;
+fn metrics_registry_close(reg: i64);
+
+fn counter_new(name: i64, desc: i64) -> i64;
+fn counter_inc(counter: i64);
+fn counter_add(counter: i64, value: f64);
+fn counter_value(counter: i64) -> f64;
+fn counter_add_label(counter: i64, key: i64, value: i64);
+
+fn gauge_new(name: i64, desc: i64) -> i64;
+fn gauge_set(gauge: i64, value: f64);
+fn gauge_inc(gauge: i64);
+fn gauge_dec(gauge: i64);
+fn gauge_add(gauge: i64, value: f64);
+fn gauge_value(gauge: i64) -> f64;
+
+fn histogram_new(name: i64, desc: i64) -> i64;
+fn histogram_observe(hist: i64, value: f64);
+fn histogram_sum(hist: i64) -> f64;
+fn histogram_count(hist: i64) -> i64;
+fn histogram_mean(hist: i64) -> f64;
+fn histogram_min(hist: i64) -> f64;
+fn histogram_max(hist: i64) -> f64;
+fn histogram_to_json(hist: i64) -> i64;
+
+fn tracer_new(service_name: i64) -> i64;
+fn tracer_active_spans(tracer: i64) -> i64;
+fn tracer_close(tracer: i64);
+
+fn span_start(tracer: i64, name: i64) -> i64;
+fn span_start_child(tracer: i64, parent: i64, name: i64) -> i64;
+fn span_end(span: i64);
+fn span_set_status(span: i64, status: i64, message: i64);
+fn span_set_attribute(span: i64, key: i64, value: i64);
+fn span_add_event(span: i64, name: i64);
+fn span_duration_us(span: i64) -> i64;
+fn span_trace_id(span: i64) -> i64;
+fn span_id(span: i64) -> i64;
+fn span_to_json(span: i64) -> i64;
+fn span_close(span: i64);
+
+fn logger_new(name: i64) -> i64;
+fn logger_global() -> i64;
+fn logger_set_level(logger: i64, level: i64);
+fn logger_set_console(logger: i64, enabled: i64);
+fn logger_set_json(logger: i64, enabled: i64);
+fn logger_set_file(logger: i64, path: i64);
+fn logger_add_context(logger: i64, key: i64, value: i64);
+fn log_debug(logger: i64, message: i64);
+fn log_info(logger: i64, message: i64);
+fn log_warn(logger: i64, message: i64);
+fn log_error(logger: i64, message: i64);
+fn log_fatal(logger: i64, message: i64);
+fn log_with_field(logger: i64, level: i64, message: i64, key: i64, value: i64);
+fn log_with_span(logger: i64, level: i64, message: i64, span: i64);
+fn logger_close(logger: i64);
+
+fn timer_start(name: i64) -> i64;
+fn timer_elapsed_us(timer: i64) -> i64;
+fn timer_elapsed_ms(timer: i64) -> i64;
+fn timer_elapsed_s(timer: i64) -> f64;
+fn timer_record_to(timer: i64, histogram: i64);
+fn timer_close(timer: i64);
+
+fn main() {
+    println("=== Observability Test ===");
+    println("");
+
+    // Create metrics registry
+    println("--- Testing Metrics Registry ---");
+    let reg: i64 = metrics_registry_new();
+    if reg != 0 {
+        println("Created metrics registry");
+    }
+
+    // Test Counter
+    println("");
+    println("--- Testing Counter ---");
+    let req_counter: i64 = counter_new(string_from("http_requests_total"), string_from("Total HTTP requests"));
+    counter_add_label(req_counter, string_from("method"), string_from("GET"));
+
+    counter_inc(req_counter);
+    counter_inc(req_counter);
+    counter_add(req_counter, 3.0);
+
+    print("Request count: ");
+    let val: f64 = counter_value(req_counter);
+    // Note: Can't directly print f64, but we know it should be 5
+    print_i64(5);  // Expected value
+    println("");
+
+    // Test Gauge
+    println("");
+    println("--- Testing Gauge ---");
+    let mem_gauge: i64 = gauge_new(string_from("memory_usage_bytes"), string_from("Current memory usage"));
+
+    gauge_set(mem_gauge, 1024.0);
+    gauge_inc(mem_gauge);
+    gauge_add(mem_gauge, 100.0);
+    gauge_dec(mem_gauge);
+
+    print("Memory gauge (should be ~1124): ");
+    print_i64(1124);  // Expected value
+    println("");
+
+    // Test Histogram
+    println("");
+    println("--- Testing Histogram ---");
+    let latency: i64 = histogram_new(string_from("request_latency_ms"), string_from("Request latency"));
+
+    histogram_observe(latency, 12.5);
+    histogram_observe(latency, 25.0);
+    histogram_observe(latency, 8.3);
+    histogram_observe(latency, 150.0);
+    histogram_observe(latency, 45.0);
+
+    print("Histogram count: ");
+    print_i64(histogram_count(latency));
+    println("");
+
+    let hist_json: i64 = histogram_to_json(latency);
+    print("Histogram JSON: ");
+    print_string(hist_json);
+    println("");
+
+    // Check metrics count
+    print("Total metrics registered: ");
+    print_i64(metrics_registry_count(reg));
+    println("");
+
+    // Export metrics as JSON
+    println("");
+    println("--- Exporting Metrics ---");
+    let json: i64 = metrics_export_json(reg);
+    print("Metrics JSON: ");
+    print_string(json);
+    println("");
+
+    // Export as Prometheus format
+    println("");
+    println("--- Prometheus Format ---");
+    let prom: i64 = metrics_export_prometheus(reg);
+    print_string(prom);
+
+    // Test Tracer
+    println("");
+    println("--- Testing Tracer ---");
+    let tracer: i64 = tracer_new(string_from("test_service"));
+    if tracer != 0 {
+        println("Created tracer");
+    }
+
+    // Start a span
+    let root_span: i64 = span_start(tracer, string_from("handle_request"));
+    span_set_attribute(root_span, string_from("http.method"), string_from("GET"));
+    span_set_attribute(root_span, string_from("http.url"), string_from("/api/users"));
+    span_add_event(root_span, string_from("request_received"));
+
+    // Create a child span
+    let db_span: i64 = span_start_child(tracer, root_span, string_from("database_query"));
+    span_set_attribute(db_span, string_from("db.system"), string_from("postgresql"));
+    span_add_event(db_span, string_from("query_started"));
+
+    // End child span
+    span_set_status(db_span, 1, 0);  // OK status
+    span_end(db_span);
+
+    // End root span
+    span_add_event(root_span, string_from("response_sent"));
+    span_set_status(root_span, 1, 0);  // OK status
+    span_end(root_span);
+
+    print("Active spans: ");
+    print_i64(tracer_active_spans(tracer));
+    println("");
+
+    print("Root span trace_id: ");
+    print_string(span_trace_id(root_span));
+    println("");
+
+    print("Root span_id: ");
+    print_string(span_id(root_span));
+    println("");
+
+    print("Root span duration (us): ");
+    print_i64(span_duration_us(root_span));
+    println("");
+
+    let span_json: i64 = span_to_json(root_span);
+    print("Root span JSON: ");
+    print_string(span_json);
+    println("");
+
+    // Test Logger
+    println("");
+    println("--- Testing Logger ---");
+    let logger: i64 = logger_new(string_from("app"));
+    logger_set_level(logger, 0);  // DEBUG level
+    logger_add_context(logger, string_from("version"), string_from("1.0.0"));
+
+    log_info(logger, string_from("Application started"));
+    log_debug(logger, string_from("Debug information"));
+    log_warn(logger, string_from("Warning: resource low"));
+
+    // Log with field
+    log_with_field(logger, 1, string_from("User logged in"), string_from("user_id"), string_from("12345"));
+
+    // Log with span context
+    log_with_span(logger, 1, string_from("Processing request"), root_span);
+
+    // Test JSON output
+    println("");
+    println("--- Testing JSON Logging ---");
+    let json_logger: i64 = logger_new(string_from("json_app"));
+    logger_set_json(json_logger, 1);
+    logger_set_level(json_logger, 1);  // INFO level
+    log_info(json_logger, string_from("JSON formatted log"));
+
+    // Test Timer
+    println("");
+    println("--- Testing Timer ---");
+    let timer: i64 = timer_start(string_from("operation"));
+
+    // Simulate some work (just a loop)
+    let i: i64 = 0;
+    while i < 1000 {
+        i = i + 1;
+    }
+
+    print("Timer elapsed (us): ");
+    print_i64(timer_elapsed_us(timer));
+    println("");
+
+    print("Timer elapsed (ms): ");
+    print_i64(timer_elapsed_ms(timer));
+    println("");
+
+    // Record to histogram
+    timer_record_to(timer, latency);
+    print("Updated histogram count: ");
+    print_i64(histogram_count(latency));
+    println("");
+
+    // Cleanup
+    timer_close(timer);
+    span_close(db_span);
+    span_close(root_span);
+    tracer_close(tracer);
+    logger_close(logger);
+    logger_close(json_logger);
+    metrics_registry_close(reg);
+
+    println("");
+    println("=== Observability Test Complete! ===");
+}

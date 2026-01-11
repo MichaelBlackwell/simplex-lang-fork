@@ -1,0 +1,156 @@
+// simplex-std::time - Time Utilities
+//
+// Time-related types and functions for measuring durations and timestamps.
+
+// =============================================================================
+// Duration
+// =============================================================================
+
+/// A duration of time.
+#[derive(Clone, Copy)]
+pub struct Duration {
+    /// Total nanoseconds
+    nanos: i64,
+}
+
+impl Duration {
+    /// Create a duration from seconds.
+    pub fn from_secs(secs: i64) -> Duration {
+        Duration { nanos: secs * 1_000_000_000 }
+    }
+
+    /// Create a duration from milliseconds.
+    pub fn from_millis(millis: i64) -> Duration {
+        Duration { nanos: millis * 1_000_000 }
+    }
+
+    /// Create a duration from microseconds.
+    pub fn from_micros(micros: i64) -> Duration {
+        Duration { nanos: micros * 1_000 }
+    }
+
+    /// Create a duration from nanoseconds.
+    pub fn from_nanos(nanos: i64) -> Duration {
+        Duration { nanos }
+    }
+
+    /// Get as seconds (truncated).
+    pub fn as_secs(&self) -> i64 {
+        self.nanos / 1_000_000_000
+    }
+
+    /// Get as milliseconds (truncated).
+    pub fn as_millis(&self) -> i64 {
+        self.nanos / 1_000_000
+    }
+
+    /// Get as microseconds (truncated).
+    pub fn as_micros(&self) -> i64 {
+        self.nanos / 1_000
+    }
+
+    /// Get as nanoseconds.
+    pub fn as_nanos(&self) -> i64 {
+        self.nanos
+    }
+
+    /// Get as seconds with fractional part.
+    pub fn as_secs_f64(&self) -> f64 {
+        self.nanos as f64 / 1_000_000_000.0
+    }
+
+    /// Zero duration.
+    pub fn zero() -> Duration {
+        Duration { nanos: 0 }
+    }
+
+    /// Check if zero.
+    pub fn is_zero(&self) -> bool {
+        self.nanos == 0
+    }
+}
+
+impl std::ops::Add for Duration {
+    type Output = Duration;
+    fn add(self, other: Duration) -> Duration {
+        Duration { nanos: self.nanos + other.nanos }
+    }
+}
+
+impl std::ops::Sub for Duration {
+    type Output = Duration;
+    fn sub(self, other: Duration) -> Duration {
+        Duration { nanos: self.nanos - other.nanos }
+    }
+}
+
+// =============================================================================
+// Instant
+// =============================================================================
+
+/// A point in time (monotonic clock).
+#[derive(Clone, Copy)]
+pub struct Instant {
+    nanos: i64,
+}
+
+impl Instant {
+    /// Get the current instant.
+    pub fn now() -> Instant {
+        Instant { nanos: now_nanos() }
+    }
+
+    /// Get duration since this instant.
+    pub fn elapsed(&self) -> Duration {
+        let now = Instant::now();
+        Duration { nanos: now.nanos - self.nanos }
+    }
+
+    /// Get duration from this instant to another.
+    pub fn duration_since(&self, earlier: Instant) -> Duration {
+        Duration { nanos: self.nanos - earlier.nanos }
+    }
+}
+
+// =============================================================================
+// Timestamps
+// =============================================================================
+
+/// Get current Unix timestamp in milliseconds.
+pub fn now_unix_ms() -> i64 {
+    unsafe { time_unix_ms() }
+}
+
+/// Get current Unix timestamp in seconds.
+pub fn now_unix_secs() -> i64 {
+    now_unix_ms() / 1000
+}
+
+/// Get current monotonic time in nanoseconds.
+pub fn now_nanos() -> i64 {
+    unsafe { time_nanos() }
+}
+
+// =============================================================================
+// Sleep
+// =============================================================================
+
+/// Sleep for the given duration (blocking).
+pub fn sleep(duration: Duration) {
+    unsafe { time_sleep_nanos(duration.nanos) }
+}
+
+/// Sleep for the given number of milliseconds.
+pub fn sleep_ms(millis: i64) {
+    sleep(Duration::from_millis(millis))
+}
+
+// =============================================================================
+// FFI Declarations
+// =============================================================================
+
+extern "C" {
+    fn time_unix_ms() -> i64;
+    fn time_nanos() -> i64;
+    fn time_sleep_nanos(nanos: i64);
+}
