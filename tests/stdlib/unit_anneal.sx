@@ -1,0 +1,364 @@
+// Test file for Self-Learning Annealing (TASK-006)
+// Tests: temperature schedules, acceptance probability concepts
+//
+// NOTE: Uses i64 arithmetic to avoid f64 codegen issues in bootstrap compiler.
+// All values are scaled by 1000 to represent decimals.
+
+// =============================================================================
+// Helper Functions (scaled integer arithmetic)
+// =============================================================================
+
+fn abs_i64(x: i64) -> i64 {
+    if x >= 0 {
+        x
+    } else {
+        0 - x
+    }
+}
+
+fn approx_eq(a: i64, b: i64, tol: i64) -> i64 {
+    if abs_i64(a - b) <= tol {
+        1
+    } else {
+        0
+    }
+}
+
+// =============================================================================
+// Simplified Schedule Tests (using scaled integers)
+// =============================================================================
+
+// Simple linear interpolation: start + (end - start) * progress / 100
+fn linear_interp(start: i64, end: i64, progress: i64) -> i64 {
+    start + (end - start) * progress / 100
+}
+
+// Check if value is decreasing
+fn is_decreasing(v1: i64, v2: i64, v3: i64) -> i64 {
+    if v1 > v2 && v2 > v3 {
+        1
+    } else {
+        0
+    }
+}
+
+// =============================================================================
+// Test 1: Linear Cooling
+// =============================================================================
+
+fn test_linear_cooling() -> i64 {
+    println("  Testing linear cooling...");
+
+    // Start at 1000 (1.0), end at 100 (0.1)
+    let t_start: i64 = 1000;
+    let t_end: i64 = 100;
+
+    // At 0% progress
+    let t0: i64 = linear_interp(t_start, t_end, 0);
+    if approx_eq(t0, 1000, 1) == 0 {
+        println("    FAIL: T(0) should equal T_start");
+        return 1;
+    }
+
+    // At 100% progress
+    let t100: i64 = linear_interp(t_start, t_end, 100);
+    if approx_eq(t100, 100, 1) == 0 {
+        println("    FAIL: T(100) should equal T_end");
+        return 1;
+    }
+
+    // At 50% progress, should be midpoint
+    let t50: i64 = linear_interp(t_start, t_end, 50);
+    if t50 >= t0 {
+        println("    FAIL: midpoint should be less than start");
+        return 1;
+    }
+    if t50 <= t100 {
+        println("    FAIL: midpoint should be more than end");
+        return 1;
+    }
+
+    println("    PASS: linear cooling");
+    0
+}
+
+// =============================================================================
+// Test 2: Monotonic Decrease
+// =============================================================================
+
+fn test_monotonic() -> i64 {
+    println("  Testing monotonic decrease...");
+
+    let t_start: i64 = 1000;
+    let t_end: i64 = 100;
+
+    let t1: i64 = linear_interp(t_start, t_end, 0);
+    let t2: i64 = linear_interp(t_start, t_end, 33);
+    let t3: i64 = linear_interp(t_start, t_end, 66);
+    let t4: i64 = linear_interp(t_start, t_end, 100);
+
+    // Check monotonic decrease
+    if t2 > t1 {
+        println("    FAIL: t2 > t1 (not monotonic)");
+        return 1;
+    }
+    if t3 > t2 {
+        println("    FAIL: t3 > t2 (not monotonic)");
+        return 1;
+    }
+    if t4 > t3 {
+        println("    FAIL: t4 > t3 (not monotonic)");
+        return 1;
+    }
+
+    println("    PASS: monotonic decrease");
+    0
+}
+
+// =============================================================================
+// Test 3: Temperature Bounds
+// =============================================================================
+
+fn test_bounds() -> i64 {
+    println("  Testing temperature bounds...");
+
+    let t_start: i64 = 1000;
+    let t_end: i64 = 100;
+
+    // Test multiple points
+    let progress: i64 = 0;
+    while progress <= 100 {
+        let t: i64 = linear_interp(t_start, t_end, progress);
+
+        // Should never exceed start
+        if t > t_start {
+            println("    FAIL: temperature exceeded start");
+            return 1;
+        }
+
+        // Should never go below end
+        if t < t_end {
+            println("    FAIL: temperature below minimum");
+            return 1;
+        }
+
+        progress = progress + 10;
+    }
+
+    println("    PASS: temperature bounds");
+    0
+}
+
+// =============================================================================
+// Test 4: Acceptance Probability Concept (improving moves)
+// =============================================================================
+
+fn test_acceptance_improving() -> i64 {
+    println("  Testing acceptance (improving moves)...");
+
+    // For improving moves (negative delta), acceptance should be high
+    // delta_e = -100 (improvement), temp = 100
+    // In real annealing: p = exp(-delta_e/T) = exp(1) > 1 -> clamped to 1
+    // Simplified: if delta_e < 0, always accept
+
+    let delta_improving: i64 = -100;
+    let accepts_improving: i64 = if delta_improving < 0 { 1 } else { 0 };
+
+    if accepts_improving != 1 {
+        println("    FAIL: improving moves should be accepted");
+        return 1;
+    }
+
+    println("    PASS: acceptance (improving)");
+    0
+}
+
+// =============================================================================
+// Test 5: Acceptance Probability Concept (worsening moves)
+// =============================================================================
+
+fn test_acceptance_worsening() -> i64 {
+    println("  Testing acceptance (worsening moves)...");
+
+    // For worsening moves (positive delta), acceptance depends on temperature
+    // At high temp: more likely to accept
+    // At low temp: less likely to accept
+
+    // Simplified model: accept if delta < temp
+    let delta: i64 = 50;
+    let high_temp: i64 = 100;
+    let low_temp: i64 = 10;
+
+    let accept_high: i64 = if delta < high_temp { 1 } else { 0 };
+    let accept_low: i64 = if delta < low_temp { 1 } else { 0 };
+
+    // High temp should accept this bad move
+    if accept_high != 1 {
+        println("    FAIL: high temp should accept small bad moves");
+        return 1;
+    }
+
+    // Low temp should reject this bad move
+    if accept_low != 0 {
+        println("    FAIL: low temp should reject bad moves");
+        return 1;
+    }
+
+    println("    PASS: acceptance (worsening)");
+    0
+}
+
+// =============================================================================
+// Test 6: Cooling Rate Effect
+// =============================================================================
+
+fn test_cooling_rate() -> i64 {
+    println("  Testing cooling rate effect...");
+
+    // Fast cooling: 1000 to 100
+    // Slow cooling: 1000 to 500
+
+    let fast_end: i64 = 100;
+    let slow_end: i64 = 500;
+
+    let fast_at_50: i64 = linear_interp(1000, fast_end, 50);
+    let slow_at_50: i64 = linear_interp(1000, slow_end, 50);
+
+    // Slow cooling should have higher temperature at same progress
+    if slow_at_50 <= fast_at_50 {
+        println("    FAIL: slow cooling should keep higher temp");
+        return 1;
+    }
+
+    println("    PASS: cooling rate effect");
+    0
+}
+
+// =============================================================================
+// Test 7: Edge Case - Zero Progress
+// =============================================================================
+
+fn test_zero_progress() -> i64 {
+    println("  Testing zero progress...");
+
+    let result: i64 = linear_interp(1000, 100, 0);
+    if result != 1000 {
+        println("    FAIL: zero progress should give start temp");
+        return 1;
+    }
+
+    println("    PASS: zero progress");
+    0
+}
+
+// =============================================================================
+// Test 8: Edge Case - Full Progress
+// =============================================================================
+
+fn test_full_progress() -> i64 {
+    println("  Testing full progress...");
+
+    let result: i64 = linear_interp(1000, 100, 100);
+    if result != 100 {
+        println("    FAIL: full progress should give end temp");
+        return 1;
+    }
+
+    println("    PASS: full progress");
+    0
+}
+
+// =============================================================================
+// Test 9: Multiple Cooling Curves
+// =============================================================================
+
+fn test_multiple_curves() -> i64 {
+    println("  Testing multiple cooling curves...");
+
+    // Aggressive: 1000 -> 50
+    // Moderate: 1000 -> 200
+    // Gentle: 1000 -> 500
+
+    let aggressive_mid: i64 = linear_interp(1000, 50, 50);
+    let moderate_mid: i64 = linear_interp(1000, 200, 50);
+    let gentle_mid: i64 = linear_interp(1000, 500, 50);
+
+    // Ordering should be: aggressive < moderate < gentle
+    if aggressive_mid >= moderate_mid {
+        println("    FAIL: aggressive should be coldest");
+        return 1;
+    }
+    if moderate_mid >= gentle_mid {
+        println("    FAIL: gentle should be warmest");
+        return 1;
+    }
+
+    println("    PASS: multiple cooling curves");
+    0
+}
+
+// =============================================================================
+// Test 10: Simulated Annealing Behavior
+// =============================================================================
+
+fn test_annealing_behavior() -> i64 {
+    println("  Testing simulated annealing behavior...");
+
+    // Simulate acceptance over cooling schedule
+    let t_start: i64 = 1000;
+    let t_end: i64 = 10;
+    let delta: i64 = 200;  // A bad move (larger)
+
+    // Early in schedule (high temp = ~900): should accept delta < 900
+    let early_temp: i64 = linear_interp(t_start, t_end, 10);
+    let accept_early: i64 = if delta < early_temp { 1 } else { 0 };
+
+    // Very late in schedule (temp = ~100 at 90%): should reject delta >= 100
+    let late_temp: i64 = linear_interp(t_start, t_end, 99);
+    let accept_late: i64 = if delta < late_temp { 1 } else { 0 };
+
+    // Early should accept (200 < 901)
+    if accept_early != 1 {
+        println("    FAIL: should accept early (high temp)");
+        return 1;
+    }
+    // Late should reject (200 >= ~20)
+    if accept_late != 0 {
+        println("    FAIL: should reject late (low temp)");
+        return 1;
+    }
+
+    println("    PASS: simulated annealing behavior");
+    0
+}
+
+// =============================================================================
+// Main Test Runner
+// =============================================================================
+
+fn main() -> i64 {
+    println("=== Self-Learning Annealing Tests (TASK-006) ===");
+    println("");
+
+    let f1: i64 = test_linear_cooling();
+    let f2: i64 = test_monotonic();
+    let f3: i64 = test_bounds();
+    let f4: i64 = test_acceptance_improving();
+    let f5: i64 = test_acceptance_worsening();
+    let f6: i64 = test_cooling_rate();
+    let f7: i64 = test_zero_progress();
+    let f8: i64 = test_full_progress();
+    let f9: i64 = test_multiple_curves();
+    let f10: i64 = test_annealing_behavior();
+
+    let failures: i64 = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10;
+
+    println("");
+    if failures == 0 {
+        println("All Self-Learning Annealing tests passed!");
+    } else {
+        println("Some Self-Learning Annealing tests failed");
+    }
+
+    failures
+}

@@ -1,0 +1,516 @@
+// Smart Router - Intelligent Model Selection
+//
+// Routes queries to appropriately-sized models based on complexity analysis.
+// This is an OPTIONAL optimization that can significantly reduce inference costs
+// and latency by using smaller models for simpler queries.
+//
+// # Model Tiers
+//
+// - Tiny (0.5B): Greetings, simple factual queries, classification
+// - Light (1-2B): Conversational, short answers, simple code
+// - Full (7-8B): Complex reasoning, long-form generation, complex code
+//
+// # Complexity Analysis
+//
+// The router analyzes queries using:
+// - Token count and estimated response length
+// - Keyword patterns (code, math, reasoning, etc.)
+// - Question type classification
+// - Historical accuracy per tier (optional learning)
+
+use simplex_std::sync::{Arc, RwLock};
+use simplex_std::collections::{HashMap, HashSet};
+
+// =============================================================================
+// Model Tiers
+// =============================================================================
+
+/// Model tier for routing
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ModelTier {
+    /// Tiny model (0.5B) - greetings, simple queries
+    Tiny,
+    /// Light model (1-2B) - conversational, short answers
+    Light,
+    /// Full model (7-8B) - complex reasoning, code generation
+    Full,
+    /// Cached response - no model needed
+    Cached,
+}
+
+impl ModelTier {
+    /// Typical latency in milliseconds for this tier
+    pub fn typical_latency_ms(&self) -> u32 {
+        match self {
+            ModelTier::Tiny => 50,
+            ModelTier::Light => 150,
+            ModelTier::Full => 500,
+            ModelTier::Cached => 1,
+        }
+    }
+
+    /// Relative cost factor (1.0 = base)
+    pub fn cost_factor(&self) -> f32 {
+        match self {
+            ModelTier::Tiny => 0.1,
+            ModelTier::Light => 0.3,
+            ModelTier::Full => 1.0,
+            ModelTier::Cached => 0.0,
+        }
+    }
+
+    /// Model name for this tier
+    pub fn model_name(&self) -> &'static str {
+        match self {
+            ModelTier::Tiny => "simplex-cognitive-0.5b",
+            ModelTier::Light => "simplex-cognitive-1.5b",
+            ModelTier::Full => "simplex-cognitive-8b",
+            ModelTier::Cached => "cached",
+        }
+    }
+}
+
+// =============================================================================
+// Query Complexity
+// =============================================================================
+
+/// Analyzed query complexity
+#[derive(Clone, Copy, Debug)]
+pub enum QueryComplexity {
+    /// Simple greeting or acknowledgment
+    Greeting,
+    /// Simple factual query or classification
+    Simple,
+    /// Moderate complexity - conversation, short answers
+    Moderate,
+    /// Complex - reasoning, code, long-form
+    Complex,
+}
+
+impl QueryComplexity {
+    /// Numeric score (0.0 - 1.0)
+    pub fn score(&self) -> f32 {
+        match self {
+            QueryComplexity::Greeting => 0.0,
+            QueryComplexity::Simple => 0.2,
+            QueryComplexity::Moderate => 0.5,
+            QueryComplexity::Complex => 1.0,
+        }
+    }
+
+    /// Suggested model tier for this complexity
+    pub fn suggested_tier(&self) -> ModelTier {
+        match self {
+            QueryComplexity::Greeting => ModelTier::Tiny,
+            QueryComplexity::Simple => ModelTier::Tiny,
+            QueryComplexity::Moderate => ModelTier::Light,
+            QueryComplexity::Complex => ModelTier::Full,
+        }
+    }
+}
+
+// =============================================================================
+// Router Configuration
+// =============================================================================
+
+/// Configuration for the smart router
+#[derive(Clone)]
+pub struct RouterConfig {
+    /// Enable complexity analysis (vs always using full model)
+    pub enabled: bool,
+    /// Complexity threshold for tiny model (0.0 - 1.0)
+    pub tiny_threshold: f32,
+    /// Complexity threshold for light model (0.0 - 1.0)
+    pub light_threshold: f32,
+    /// Enable learning from feedback
+    pub learn_from_feedback: bool,
+    /// Minimum confidence for routing decision
+    pub min_confidence: f32,
+    /// Fallback tier when confidence is low
+    pub fallback_tier: ModelTier,
+}
+
+impl Default for RouterConfig {
+    fn default() -> Self {
+        RouterConfig {
+            enabled: true,
+            tiny_threshold: 0.2,
+            light_threshold: 0.5,
+            learn_from_feedback: true,
+            min_confidence: 0.7,
+            fallback_tier: ModelTier::Light,
+        }
+    }
+}
+
+impl RouterConfig {
+    /// Config that always uses the full model (no routing)
+    pub fn no_routing() -> Self {
+        RouterConfig {
+            enabled: false,
+            ..Default::default()
+        }
+    }
+
+    /// Config optimized for cost savings
+    pub fn cost_optimized() -> Self {
+        RouterConfig {
+            enabled: true,
+            tiny_threshold: 0.3,
+            light_threshold: 0.6,
+            learn_from_feedback: true,
+            min_confidence: 0.6,
+            fallback_tier: ModelTier::Light,
+        }
+    }
+
+    /// Config optimized for quality
+    pub fn quality_optimized() -> Self {
+        RouterConfig {
+            enabled: true,
+            tiny_threshold: 0.1,
+            light_threshold: 0.4,
+            learn_from_feedback: true,
+            min_confidence: 0.8,
+            fallback_tier: ModelTier::Full,
+        }
+    }
+}
+
+// =============================================================================
+// Smart Router
+// =============================================================================
+
+/// Smart router for model selection based on query complexity
+///
+/// # Example
+///
+/// ```simplex
+/// let router = Router::new(RouterConfig::default());
+///
+/// // Analyze query and get routing decision
+/// let decision = router.route(&query).await;
+///
+/// // Use appropriate model
+/// match decision.tier {
+///     ModelTier::Tiny => tiny_model.infer(&query).await,
+///     ModelTier::Light => light_model.infer(&query).await,
+///     ModelTier::Full => full_model.infer(&query).await,
+///     ModelTier::Cached => unreachable!(), // Handled by cache layer
+/// }
+///
+/// // Optionally provide feedback for learning
+/// router.feedback(&query, decision.tier, was_successful).await;
+/// ```
+pub struct Router {
+    config: RouterConfig,
+    /// Pattern matchers for fast classification
+    patterns: PatternMatcher,
+    /// Historical accuracy per tier (for learning)
+    tier_stats: Arc<RwLock<HashMap<ModelTier, TierStats>>>,
+    /// Metrics
+    metrics: Arc<RwLock<RouterMetrics>>,
+}
+
+impl Router {
+    /// Create a new router with the given configuration
+    pub fn new(config: RouterConfig) -> Self {
+        Router {
+            config,
+            patterns: PatternMatcher::new(),
+            tier_stats: Arc::new(RwLock::new(HashMap::new())),
+            metrics: Arc::new(RwLock::new(RouterMetrics::default())),
+        }
+    }
+
+    /// Route a query to the appropriate model tier
+    pub async fn route(&self, query: &str) -> RoutingDecision {
+        if !self.config.enabled {
+            return RoutingDecision {
+                tier: ModelTier::Full,
+                complexity: QueryComplexity::Complex,
+                confidence: 1.0,
+                reason: "Routing disabled".to_string(),
+            };
+        }
+
+        // Analyze complexity
+        let (complexity, confidence) = self.analyze_complexity(query).await;
+
+        // Select tier based on complexity and thresholds
+        let tier = if confidence < self.config.min_confidence {
+            self.config.fallback_tier
+        } else {
+            let score = complexity.score();
+            if score <= self.config.tiny_threshold {
+                ModelTier::Tiny
+            } else if score <= self.config.light_threshold {
+                ModelTier::Light
+            } else {
+                ModelTier::Full
+            }
+        };
+
+        // Update metrics
+        {
+            let mut metrics = self.metrics.write().await;
+            metrics.total_routed += 1;
+            match tier {
+                ModelTier::Tiny => metrics.tiny_count += 1,
+                ModelTier::Light => metrics.light_count += 1,
+                ModelTier::Full => metrics.full_count += 1,
+                _ => {}
+            }
+        }
+
+        RoutingDecision {
+            tier,
+            complexity,
+            confidence,
+            reason: self.explain_decision(query, complexity, tier),
+        }
+    }
+
+    /// Analyze query complexity
+    pub async fn analyze_complexity(&self, query: &str) -> (QueryComplexity, f32) {
+        let query_lower = query.to_lowercase();
+
+        // Fast pattern matching first
+        if self.patterns.is_greeting(&query_lower) {
+            return (QueryComplexity::Greeting, 0.95);
+        }
+
+        // Estimate complexity from various signals
+        let mut score = 0.0f32;
+        let mut confidence = 0.8f32;
+
+        // Token count factor (longer = more complex)
+        let word_count = query.split_whitespace().count();
+        if word_count < 5 {
+            score += 0.0;
+        } else if word_count < 20 {
+            score += 0.2;
+        } else if word_count < 50 {
+            score += 0.4;
+        } else {
+            score += 0.6;
+        }
+
+        // Code detection (code = complex)
+        if self.patterns.has_code(&query_lower) || query.contains("```") {
+            score += 0.4;
+            confidence += 0.1;
+        }
+
+        // Reasoning keywords
+        if self.patterns.has_reasoning_keywords(&query_lower) {
+            score += 0.3;
+        }
+
+        // Question complexity
+        if self.patterns.is_simple_question(&query_lower) {
+            score -= 0.2;
+        } else if self.patterns.is_complex_question(&query_lower) {
+            score += 0.3;
+        }
+
+        // Clamp score
+        score = score.clamp(0.0, 1.0);
+        confidence = confidence.clamp(0.0, 1.0);
+
+        // Map score to complexity
+        let complexity = if score < 0.15 {
+            QueryComplexity::Simple
+        } else if score < 0.4 {
+            QueryComplexity::Moderate
+        } else {
+            QueryComplexity::Complex
+        };
+
+        (complexity, confidence)
+    }
+
+    /// Provide feedback for learning
+    pub async fn feedback(&self, query: &str, tier: ModelTier, was_successful: bool) {
+        if !self.config.learn_from_feedback {
+            return;
+        }
+
+        let mut stats = self.tier_stats.write().await;
+        let entry = stats.entry(tier).or_insert(TierStats::default());
+
+        entry.total += 1;
+        if was_successful {
+            entry.successful += 1;
+        }
+    }
+
+    /// Get router metrics
+    pub async fn metrics(&self) -> RouterMetrics {
+        self.metrics.read().await.clone()
+    }
+
+    /// Get tier accuracy statistics
+    pub async fn tier_accuracy(&self, tier: ModelTier) -> f64 {
+        let stats = self.tier_stats.read().await;
+
+        if let Some(entry) = stats.get(&tier) {
+            if entry.total == 0 {
+                1.0
+            } else {
+                entry.successful as f64 / entry.total as f64
+            }
+        } else {
+            1.0
+        }
+    }
+
+    // Internal: Generate explanation for routing decision
+    fn explain_decision(&self, query: &str, complexity: QueryComplexity, tier: ModelTier) -> String {
+        let query_len = query.len();
+        let has_code = query.contains("```");
+
+        match (complexity, tier) {
+            (QueryComplexity::Greeting, ModelTier::Tiny) =>
+                "Greeting detected - using tiny model".to_string(),
+            (QueryComplexity::Simple, ModelTier::Tiny) =>
+                format!("Simple query ({} chars) - using tiny model", query_len),
+            (QueryComplexity::Moderate, ModelTier::Light) =>
+                format!("Moderate complexity ({} chars) - using light model", query_len),
+            (QueryComplexity::Complex, ModelTier::Full) if has_code =>
+                "Code detected - using full model".to_string(),
+            (QueryComplexity::Complex, ModelTier::Full) =>
+                format!("Complex query ({} chars) - using full model", query_len),
+            _ =>
+                format!("Routed to {:?} (complexity: {:?})", tier, complexity),
+        }
+    }
+}
+
+// =============================================================================
+// Pattern Matcher
+// =============================================================================
+
+struct PatternMatcher {
+    greetings: HashSet<&'static str>,
+    reasoning_keywords: HashSet<&'static str>,
+    simple_question_starters: HashSet<&'static str>,
+    complex_question_starters: HashSet<&'static str>,
+    code_keywords: HashSet<&'static str>,
+}
+
+impl PatternMatcher {
+    fn new() -> Self {
+        PatternMatcher {
+            greetings: [
+                "hello", "hi", "hey", "good morning", "good afternoon",
+                "good evening", "howdy", "greetings", "yo", "sup",
+            ].iter().copied().collect(),
+
+            reasoning_keywords: [
+                "explain", "why", "how does", "analyze", "compare",
+                "evaluate", "reason", "think about", "consider",
+                "pros and cons", "trade-off", "implications",
+            ].iter().copied().collect(),
+
+            simple_question_starters: [
+                "what is", "who is", "when is", "where is",
+                "how much", "how many", "is it", "are there",
+            ].iter().copied().collect(),
+
+            complex_question_starters: [
+                "how can i", "how do i", "how would you",
+                "what would happen", "why does", "explain how",
+                "what are the steps", "design", "implement",
+            ].iter().copied().collect(),
+
+            code_keywords: [
+                "function", "class", "def ", "fn ", "async",
+                "return", "import", "const ", "let ", "var ",
+                "if (", "for (", "while (", "=>", "->",
+            ].iter().copied().collect(),
+        }
+    }
+
+    fn is_greeting(&self, text: &str) -> bool {
+        self.greetings.iter().any(|g| text.starts_with(g))
+    }
+
+    fn has_code(&self, text: &str) -> bool {
+        self.code_keywords.iter().any(|k| text.contains(k))
+    }
+
+    fn has_reasoning_keywords(&self, text: &str) -> bool {
+        self.reasoning_keywords.iter().any(|k| text.contains(k))
+    }
+
+    fn is_simple_question(&self, text: &str) -> bool {
+        self.simple_question_starters.iter().any(|q| text.starts_with(q))
+    }
+
+    fn is_complex_question(&self, text: &str) -> bool {
+        self.complex_question_starters.iter().any(|q| text.starts_with(q))
+    }
+}
+
+// =============================================================================
+// Types
+// =============================================================================
+
+/// Routing decision result
+pub struct RoutingDecision {
+    /// Selected model tier
+    pub tier: ModelTier,
+    /// Analyzed complexity
+    pub complexity: QueryComplexity,
+    /// Confidence in the decision (0.0 - 1.0)
+    pub confidence: f32,
+    /// Human-readable explanation
+    pub reason: String,
+}
+
+#[derive(Default)]
+struct TierStats {
+    total: u64,
+    successful: u64,
+}
+
+/// Router metrics
+#[derive(Clone, Default)]
+pub struct RouterMetrics {
+    pub total_routed: u64,
+    pub tiny_count: u64,
+    pub light_count: u64,
+    pub full_count: u64,
+}
+
+impl RouterMetrics {
+    /// Percentage routed to tiny model
+    pub fn tiny_percent(&self) -> f64 {
+        if self.total_routed == 0 {
+            0.0
+        } else {
+            self.tiny_count as f64 / self.total_routed as f64 * 100.0
+        }
+    }
+
+    /// Percentage routed to light model
+    pub fn light_percent(&self) -> f64 {
+        if self.total_routed == 0 {
+            0.0
+        } else {
+            self.light_count as f64 / self.total_routed as f64 * 100.0
+        }
+    }
+
+    /// Estimated cost savings (assuming full model = 1.0)
+    pub fn estimated_cost_savings(&self) -> f64 {
+        if self.total_routed == 0 {
+            0.0
+        } else {
+            let tiny_savings = self.tiny_count as f64 * (1.0 - ModelTier::Tiny.cost_factor() as f64);
+            let light_savings = self.light_count as f64 * (1.0 - ModelTier::Light.cost_factor() as f64);
+            (tiny_savings + light_savings) / self.total_routed as f64 * 100.0
+        }
+    }
+}

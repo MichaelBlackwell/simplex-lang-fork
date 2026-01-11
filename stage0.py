@@ -11,6 +11,36 @@ https://github.com/senuamedia/simplex
 
 import sys
 import struct
+import platform
+
+def get_target_triple():
+    """Get the LLVM target triple for the current platform."""
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+
+    # Normalize architecture
+    if machine in ('x86_64', 'amd64'):
+        arch = 'x86_64'
+    elif machine in ('arm64', 'aarch64'):
+        arch = 'aarch64'
+    elif machine in ('i386', 'i686'):
+        arch = 'i386'
+    else:
+        arch = 'x86_64'  # Default
+
+    # Build target triple based on OS
+    if system == 'darwin':
+        # macOS
+        version = platform.mac_ver()[0]
+        if version:
+            major = version.split('.')[0]
+            return f'{arch}-apple-macosx{major}.0.0'
+        return f'{arch}-apple-macosx14.0.0'
+    elif system == 'windows':
+        return f'{arch}-pc-windows-msvc'
+    else:
+        # Linux and other Unix-like systems
+        return f'{arch}-unknown-linux-gnu'
 
 # Token types
 class TokenKind:
@@ -97,6 +127,7 @@ class TokenKind:
     KW_CONST = 'KW_CONST'
     KW_WHERE = 'KW_WHERE'
     KW_MUT = 'KW_MUT'
+    KW_AS = 'KW_AS'  # Type cast operator
     QUESTION = 'QUESTION'
     FAT_ARROW = 'FAT_ARROW'
     UNDERSCORE = 'UNDERSCORE'
@@ -156,6 +187,7 @@ KEYWORDS = {
     'const': TokenKind.KW_CONST,
     'where': TokenKind.KW_WHERE,
     'mut': TokenKind.KW_MUT,
+    'as': TokenKind.KW_AS,
     '_': TokenKind.UNDERSCORE,
     # Neural IR keywords
     'neural_gate': TokenKind.KW_NEURAL_GATE,
@@ -998,10 +1030,15 @@ class Parser:
         self.expect(TokenKind.LBRACE)
         fields = []
         while not self.check(TokenKind.RBRACE):
+            # Skip pub keyword if present (pub fields)
+            is_pub_field = False
+            if self.check(TokenKind.KW_PUB):
+                self.advance()
+                is_pub_field = True
             field_name = self.expect(TokenKind.IDENT).text
             self.expect(TokenKind.COLON)
             field_type = self.parse_type()
-            fields.append((field_name, field_type))
+            fields.append((field_name, field_type, is_pub_field))
             if self.check(TokenKind.COMMA):
                 self.advance()
         self.expect(TokenKind.RBRACE)
@@ -1047,9 +1084,20 @@ class Parser:
             type AssocType;
             fn method(self) -> RetType;
         }
+        Or with supertrait bounds:
+        trait Copy: Clone {}
+        trait Ord: Eq + PartialOrd {}
         """
         self.expect(TokenKind.KW_TRAIT)
         name = self.expect(TokenKind.IDENT).text
+        # Parse optional supertrait bounds: trait Foo: Bar + Baz
+        supertraits = []
+        if self.check(TokenKind.COLON):
+            self.advance()
+            supertraits.append(self.expect(TokenKind.IDENT).text)
+            while self.check(TokenKind.PLUS):
+                self.advance()
+                supertraits.append(self.expect(TokenKind.IDENT).text)
         self.expect(TokenKind.LBRACE)
         methods = []
         assoc_types = []
@@ -1066,7 +1114,7 @@ class Parser:
             elif self.check(TokenKind.KW_FN) or self.check(TokenKind.KW_ASYNC):
                 methods.append(self.parse_trait_method())
         self.expect(TokenKind.RBRACE)
-        return {'type': 'TraitDef', 'name': name, 'methods': methods, 'assoc_types': assoc_types}
+        return {'type': 'TraitDef', 'name': name, 'methods': methods, 'assoc_types': assoc_types, 'supertraits': supertraits}
 
     def parse_trait_method(self):
         """Parse trait method signature (no body) or default method (with body)"""
@@ -1539,10 +1587,11 @@ class Parser:
             return {'type': 'ModDef', 'name': name, 'items': None}
 
     def parse_use_def(self):
-        """Parse use path::item; or use path::*; declaration"""
+        """Parse use path::item; or use path::*; or use path::{A, B, C}; declaration"""
         self.expect(TokenKind.KW_USE)
         path = [self.expect(TokenKind.IDENT).text]
         is_glob = False
+        items = None  # For grouped imports like use foo::{A, B, C}
         while self.check(TokenKind.DOUBLE_COLON):
             self.advance()
             # Check for glob import: use foo::*
@@ -1550,9 +1599,21 @@ class Parser:
                 self.advance()
                 is_glob = True
                 break
+            # Check for grouped import: use foo::{A, B, C}
+            if self.check(TokenKind.LBRACE):
+                self.advance()
+                items = []
+                while not self.check(TokenKind.RBRACE):
+                    items.append(self.expect(TokenKind.IDENT).text)
+                    if self.check(TokenKind.COMMA):
+                        self.advance()
+                    else:
+                        break
+                self.expect(TokenKind.RBRACE)
+                break
             path.append(self.expect(TokenKind.IDENT).text)
         self.expect(TokenKind.SEMI)
-        return {'type': 'UseDef', 'path': path, 'glob': is_glob}
+        return {'type': 'UseDef', 'path': path, 'glob': is_glob, 'items': items}
 
     def parse_block(self):
         self.expect(TokenKind.LBRACE)
@@ -1745,6 +1806,11 @@ class Parser:
                 # expr? - propagate error (for Result types)
                 self.advance()
                 expr = {'type': 'TryExpr', 'expr': expr}
+            elif self.check(TokenKind.KW_AS):
+                # expr as Type - type cast expression
+                self.advance()
+                target_type = self.parse_type()
+                expr = {'type': 'CastExpr', 'expr': expr, 'target_type': target_type}
             else:
                 break
         return expr
@@ -2476,6 +2542,8 @@ class CodeGen:
         self.const_params = {}  # const_param_name -> literal_value (for current instantiation)
         # Track function names for function pointer references
         self.functions = set()
+        # Track function parameter types for proper f64 calling convention
+        self.function_param_types = {}  # fn_name -> [(param_name, param_type), ...]
         # Track neural gates (use double types instead of i64)
         self.neural_gates = set()
         # Neural gate contracts for static analysis (Phase 2)
@@ -2515,6 +2583,28 @@ class CodeGen:
     def visibility_error(self, from_module, target_module, item_name):
         """Generate visibility error message."""
         return f"Error: '{item_name}' in module '{target_module}' is private and cannot be accessed from '{from_module}'"
+
+    def _find_project_root(self):
+        """Find the project root by looking for simplex-std directory or Modulus.toml.
+        Walks up from current directory until found or hits filesystem root."""
+        import os
+        current = os.path.abspath('.')
+        # Walk up the directory tree looking for project markers
+        for _ in range(20):  # Limit search depth
+            # Check for simplex-std directory (our standard library)
+            if os.path.isdir(os.path.join(current, 'simplex-std')):
+                return current
+            # Check for Modulus.toml (project manifest)
+            if os.path.isfile(os.path.join(current, 'Modulus.toml')):
+                # Also verify simplex-std exists at this level
+                if os.path.isdir(os.path.join(current, 'simplex-std')):
+                    return current
+            # Move up one directory
+            parent = os.path.dirname(current)
+            if parent == current:
+                break  # Hit filesystem root
+            current = parent
+        return None  # Not found
 
     # ========== Phase 2: Static Contract Analysis ==========
 
@@ -2930,8 +3020,13 @@ class CodeGen:
         if not hasattr(self, 'loaded_modules'):
             self.loaded_modules = set()
 
-        # Handle nested module paths (foo::bar::baz)
-        if '::' in mod_name:
+        # Early check for already loaded (including full path)
+        if mod_name in self.loaded_modules:
+            return  # Already loaded
+
+        # Handle nested module paths (foo::bar::baz), but not if base_path is provided
+        # (base_path means we're already resolving a specific nested module)
+        if '::' in mod_name and not base_path:
             parts = mod_name.split('::')
             # Load each level, building up the full path
             current_mod = parts[0]
@@ -2944,22 +3039,44 @@ class CodeGen:
             return
 
         full_mod_name = mod_name
-        if mod_name in self.loaded_modules:
-            return  # Already loaded
         self.loaded_modules.add(mod_name)
 
         # Find module file (mod_name.sx in current directory or src/)
         # If base_path is provided, look in that directory first
         candidates = []
+
+        # Find the project root (containing simplex-std directory)
+        project_root = self._find_project_root()
+
+        # Check if we have a known source directory for a parent module
+        # This handles nested modules within libraries (e.g., simplex_std::dual)
+        if hasattr(self, 'module_source_dirs'):
+            # Look for the module in the parent's source directory
+            if base_path and base_path in self.module_source_dirs:
+                parent_dir = self.module_source_dirs[base_path]
+                simple_name = mod_name.split('::')[-1]
+                candidates.extend([
+                    f"{parent_dir}/{simple_name}.sx",
+                    f"{parent_dir}/{simple_name}/mod.sx",
+                ])
+
         if base_path:
             # Nested module: look relative to parent
             base_dir = base_path.replace('::', '/')
-            candidates = [
+            candidates.extend([
                 f"{base_dir}/{mod_name.split('::')[-1]}.sx",
                 f"{base_dir}/{mod_name.split('::')[-1]}/mod.sx",
                 f"src/{base_dir}/{mod_name.split('::')[-1]}.sx",
                 f"src/{base_dir}/{mod_name.split('::')[-1]}/mod.sx",
-            ]
+            ])
+            # Also check project root library paths
+            if project_root:
+                lib_base = base_path.replace('_', '-').replace('::', '-')
+                simple_name = mod_name.split('::')[-1]
+                candidates.extend([
+                    f"{project_root}/{lib_base}/src/{simple_name}.sx",
+                    f"{project_root}/{lib_base}/src/{simple_name}/mod.sx",
+                ])
         else:
             candidates = [
                 f"{mod_name}.sx",
@@ -2968,6 +3085,14 @@ class CodeGen:
                 f"src/{mod_name}/mod.sx",
                 f"runtime/{mod_name}.sx",  # Also check runtime directory
             ]
+            # Check project root for standard libraries (e.g., simplex_std -> simplex-std)
+            if project_root:
+                lib_name = mod_name.replace('_', '-')
+                candidates.extend([
+                    f"{project_root}/{lib_name}/src/mod.sx",
+                    f"{project_root}/{lib_name}/src/{mod_name}.sx",
+                    f"{project_root}/lib/{lib_name}/src/mod.sx",
+                ])
 
         mod_path = None
         for path in candidates:
@@ -2978,6 +3103,12 @@ class CodeGen:
         if not mod_path:
             print(f"Warning: Module '{mod_name}' not found (tried: {candidates})")
             return
+
+        # Track the source directory of this module for resolving sibling modules
+        if not hasattr(self, 'module_source_dirs'):
+            self.module_source_dirs = {}
+        mod_source_dir = os.path.dirname(mod_path)
+        self.module_source_dirs[full_mod_name] = mod_source_dir
 
         # Parse the module
         with open(mod_path, 'r') as f:
@@ -3033,9 +3164,17 @@ class CodeGen:
             if item['type'] == 'UseDef':
                 is_glob = item.get('glob', False)
                 is_pub = item.get('is_pub', False)
+                grouped_items = item.get('items', None)
                 if is_glob:
                     # Glob import: use foo::*
                     self.import_glob_from_module(item['path'], is_pub_reexport=is_pub)
+                elif grouped_items:
+                    # Grouped import: use foo::{A, B, C}
+                    for grouped_item in grouped_items:
+                        full_path = item['path'] + [grouped_item]
+                        self.import_from_path(full_path)
+                        if is_pub:
+                            self.register_reexport(full_mod_name, full_path)
                 else:
                     self.import_from_path(item['path'])
                     # Track pub use re-exports
@@ -3156,9 +3295,17 @@ class CodeGen:
             if item['type'] == 'UseDef':
                 is_glob = item.get('glob', False)
                 is_pub = item.get('is_pub', False)
+                grouped_items = item.get('items', None)
                 if is_glob:
                     # Glob import: use foo::*
                     self.import_glob_from_module(item['path'], is_pub_reexport=is_pub)
+                elif grouped_items:
+                    # Grouped import: use foo::{A, B, C}
+                    for grouped_item in grouped_items:
+                        full_path = item['path'] + [grouped_item]
+                        self.import_from_path(full_path)
+                        if is_pub:
+                            self.register_reexport(full_mod_name, full_path)
                 else:
                     self.import_from_path(item['path'])
                     # Track pub use re-exports
@@ -3225,6 +3372,7 @@ class CodeGen:
         4. use super::sibling;-> imports from parent module
         5. use self::sub;     -> imports from current module
         """
+        import os
         if len(path) < 1:
             return
 
@@ -3237,14 +3385,37 @@ class CodeGen:
         if not hasattr(self, 'imported_items'):
             self.imported_items = {}
 
+        # Check if we're inside a module and should resolve relative to it
+        current_mod = getattr(self, 'current_module_path', [])
+        current_mod_name = '::'.join(current_mod) if current_mod else None
+
         if len(path) == 1:
             # Simple module import: use foo;
             mod_name = path[0]
+            # If inside a module, try to resolve relative to the current module first
+            if current_mod_name:
+                relative_mod = f"{current_mod_name}::{mod_name}"
+                # Check if this relative path exists by checking module source directories
+                if hasattr(self, 'module_source_dirs') and current_mod_name in self.module_source_dirs:
+                    src_dir = self.module_source_dirs[current_mod_name]
+                    if os.path.exists(f"{src_dir}/{mod_name}.sx") or os.path.exists(f"{src_dir}/{mod_name}/mod.sx"):
+                        self.load_module(relative_mod, current_mod_name)
+                        return
             self.load_module(mod_name)
         else:
             # Path with multiple components: use foo::bar or use foo::bar::Item
             parent_mod = '::'.join(path[:-1])
             item_name = path[-1]
+
+            # If inside a module, check if the first path component should be relative
+            if current_mod_name and hasattr(self, 'module_source_dirs') and current_mod_name in self.module_source_dirs:
+                src_dir = self.module_source_dirs[current_mod_name]
+                first_component = path[0]
+                if os.path.exists(f"{src_dir}/{first_component}.sx") or os.path.exists(f"{src_dir}/{first_component}/mod.sx"):
+                    # Rewrite the path relative to current module
+                    relative_path = [current_mod_name] + path
+                    parent_mod = '::'.join(relative_path[:-1])
+                    item_name = relative_path[-1]
 
             # Always load the parent module first
             self.load_module(parent_mod)
@@ -3397,7 +3568,7 @@ class CodeGen:
 
         # Header
         self.emit('; ModuleID = "simplex_program"')
-        self.emit('target triple = "x86_64-apple-macosx15.0.0"')
+        self.emit(f'target triple = "{get_target_triple()}"')
         self.emit('')
 
         # External declarations
@@ -5100,6 +5271,29 @@ class CodeGen:
         self.emit('declare ptr @f64_to_string(double)')
         self.emit('declare double @f64_from_string(ptr)')
 
+        self.emit('; Math intrinsics (for dual numbers / automatic differentiation)')
+        self.emit('declare double @intrinsic_sin(double)')
+        self.emit('declare double @intrinsic_cos(double)')
+        self.emit('declare double @intrinsic_tan(double)')
+        self.emit('declare double @intrinsic_asin(double)')
+        self.emit('declare double @intrinsic_acos(double)')
+        self.emit('declare double @intrinsic_atan(double)')
+        self.emit('declare double @intrinsic_atan2(double, double)')
+        self.emit('declare double @intrinsic_sinh(double)')
+        self.emit('declare double @intrinsic_cosh(double)')
+        self.emit('declare double @intrinsic_tanh(double)')
+        self.emit('declare double @intrinsic_exp(double)')
+        self.emit('declare double @intrinsic_log(double)')
+        self.emit('declare double @intrinsic_log10(double)')
+        self.emit('declare double @intrinsic_log2(double)')
+        self.emit('declare double @intrinsic_sqrt(double)')
+        self.emit('declare double @intrinsic_pow(double, double)')
+        self.emit('declare double @intrinsic_fabs(double)')
+        self.emit('declare double @intrinsic_floor(double)')
+        self.emit('declare double @intrinsic_ceil(double)')
+        self.emit('declare double @intrinsic_round(double)')
+        self.emit('declare void @intrinsic_print_f64(double)')
+
         self.emit('; Phase 34 Wave 6: Low Priority Items')
         self.emit('; 34.2.4 Vector<T, N> Fixed-Size Type (SIMD)')
         self.emit('declare i64 @simd_vec_new(i64)')                    # new(size)
@@ -5298,9 +5492,20 @@ class CodeGen:
                 path = item['path']
                 is_glob = item.get('glob', False)
                 is_pub = item.get('is_pub', False)
+                grouped_items = item.get('items', None)
                 if is_glob:
                     # Glob import: use foo::*
                     self.import_glob_from_module(path, is_pub_reexport=is_pub)
+                elif grouped_items:
+                    # Grouped import: use foo::{A, B, C}
+                    for grouped_item in grouped_items:
+                        full_path = path + [grouped_item]
+                        self.import_from_path(full_path)
+                        if is_pub:
+                            current_mod = getattr(self, 'current_module_path', [])
+                            mod_name = '::'.join(current_mod) if current_mod else ''
+                            if mod_name:
+                                self.register_reexport(mod_name, full_path)
                 else:
                     self.import_from_path(path)
                     # Track pub use re-exports at top level (makes items part of this module's interface)
@@ -5600,18 +5805,29 @@ class CodeGen:
         for p in params:
             local = self.new_local(p['name'])
             self.emit(f'  {local} = alloca i64')
-            self.emit(f'  store i64 %param.{p["name"]}, ptr {local}')
-            self.locals[p['name']] = local
-            # Record type with substitution for generic params
+            # Handle f64 parameters: bitcast from double to i64 before storing
             param_type = p.get('ty', 'i64')
             if hasattr(self, 'type_subst') and param_type in self.type_subst:
                 param_type = self.type_subst[param_type]
+            if param_type == 'f64':
+                temp = self.new_temp()
+                self.emit(f'  {temp} = bitcast double %param.{p["name"]} to i64')
+                self.emit(f'  store i64 {temp}, ptr {local}')
+            else:
+                self.emit(f'  store i64 %param.{p["name"]}, ptr {local}')
+            self.locals[p['name']] = local
+            # Record type for method call resolution
             self.var_types[p['name']] = param_type
 
         result = self.generate_block(fn['body'])
 
         if ret_type == 'void':
             self.emit('  ret void')
+        elif ret_type == 'double':
+            # Handle f64 return type: bitcast i64 to double
+            dbl_temp = self.new_temp()
+            self.emit(f'  {dbl_temp} = bitcast i64 {result} to double')
+            self.emit(f'  ret double {dbl_temp}')
         else:
             self.emit(f'  ret {ret_type} {result}')
 
@@ -6200,6 +6416,10 @@ class CodeGen:
         params = fn['params']
         params_str = ', '.join(f"{self.type_to_llvm(p['ty'])} %param.{p['name']}" for p in params)
 
+        # Store parameter types for proper calling convention at call sites
+        fn_name_for_types = fn['name']
+        self.function_param_types[fn_name_for_types] = [(p['name'], p.get('ty', 'i64')) for p in params]
+
         fn_name = 'simplex_main' if is_main else fn['name']
         self.emit(f'define {ret_type} @"{fn_name}"({params_str}) {{')
         self.emit('entry:')
@@ -6219,8 +6439,16 @@ class CodeGen:
         for p in params:
             local = self.new_local(p['name'])
             self.emit(f'  {local} = alloca i64')
-            self.emit(f'  store i64 %param.{p["name"]}, ptr {local}')
+            # Handle f64 parameters: bitcast from double to i64 before storing
+            param_type = p.get('ty', 'i64')
+            if param_type == 'f64':
+                temp = self.new_temp()
+                self.emit(f'  {temp} = bitcast double %param.{p["name"]} to i64')
+                self.emit(f'  store i64 {temp}, ptr {local}')
+            else:
+                self.emit(f'  store i64 %param.{p["name"]}, ptr {local}')
             self.locals[p['name']] = local
+            self.var_types[p['name']] = param_type
 
         result = self.generate_block(fn['body'])
 
@@ -6230,6 +6458,11 @@ class CodeGen:
             self.emit('  ret i64 0')
         elif ret_type == 'void':
             self.emit('  ret void')
+        elif ret_type == 'double':
+            # Handle f64 return type: bitcast i64 to double
+            dbl_temp = self.new_temp()
+            self.emit(f'  {dbl_temp} = bitcast i64 {result} to double')
+            self.emit(f'  ret double {dbl_temp}')
         else:
             self.emit(f'  ret {ret_type} {result}')
 
@@ -6462,8 +6695,16 @@ class CodeGen:
             for p in all_params:
                 local = self.new_local(p['name'])
                 self.emit(f'  {local} = alloca i64')
-                self.emit(f'  store i64 %param.{p["name"]}, ptr {local}')
+                # Handle f64 parameters: bitcast from double to i64 before storing
+                param_type = p.get('ty', 'i64')
+                if param_type == 'f64':
+                    temp = self.new_temp()
+                    self.emit(f'  {temp} = bitcast double %param.{p["name"]} to i64')
+                    self.emit(f'  store i64 {temp}, ptr {local}')
+                else:
+                    self.emit(f'  store i64 %param.{p["name"]}, ptr {local}')
                 self.locals[p['name']] = local
+                self.var_types[p['name']] = param_type
                 if p['name'] == 'self':
                     self.current_actor_self = local
 
@@ -6471,6 +6712,11 @@ class CodeGen:
 
             if ret_type == 'void':
                 self.emit('  ret void')
+            elif ret_type == 'double':
+                # Handle f64 return type: bitcast i64 to double
+                dbl_temp = self.new_temp()
+                self.emit(f'  {dbl_temp} = bitcast i64 {result} to double')
+                self.emit(f'  ret double {dbl_temp}')
             else:
                 self.emit(f'  ret {ret_type} {result}')
 
@@ -7034,7 +7280,13 @@ class CodeGen:
         elif stmt['type'] == 'ReturnStmt':
             if stmt['value']:
                 value = self.generate_expr(stmt['value'])
-                self.emit(f'  ret {self.current_fn_return_type} {value}')
+                # Handle f64 return type: bitcast i64 to double
+                if self.current_fn_return_type == 'double':
+                    dbl_temp = self.new_temp()
+                    self.emit(f'  {dbl_temp} = bitcast i64 {value} to double')
+                    self.emit(f'  ret double {dbl_temp}')
+                else:
+                    self.emit(f'  ret {self.current_fn_return_type} {value}')
             else:
                 self.emit('  ret void')
         elif stmt['type'] == 'ExprStmt':
@@ -7182,6 +7434,57 @@ class CodeGen:
             self.emit(f'  {result} = ptrtoint ptr {label} to i64')
 
         return result
+
+    def is_f64_expr(self, expr):
+        """Check if an expression has f64 type."""
+        if expr is None:
+            return False
+        expr_type = expr.get('type')
+        if expr_type == 'FloatExpr':
+            return True
+        if expr_type == 'IdentExpr':
+            name = expr.get('name', '')
+            return self.var_types.get(name) == 'f64'
+        if expr_type == 'FieldAccess':
+            # Check if the field being accessed is of f64 type
+            field_name = expr.get('field', '')
+            obj = expr.get('object')
+            # Try to determine struct type from object
+            if obj and obj.get('type') == 'IdentExpr':
+                obj_name = obj.get('name', '')
+                struct_type = self.var_types.get(obj_name)
+                if struct_type and struct_type in self.structs:
+                    for fname, ftype in self.structs[struct_type]:
+                        if fname == field_name:
+                            return ftype == 'f64'
+            # Fallback: search all structs for this field
+            for struct_name, fields in self.structs.items():
+                for fname, ftype in fields:
+                    if fname == field_name and ftype == 'f64':
+                        return True
+            return False
+        if expr_type == 'CallExpr':
+            # Check if function returns f64
+            func_name = expr.get('func', '')
+            if func_name in ('sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'sinh', 'cosh', 'tanh',
+                           'exp', 'log', 'ln', 'log10', 'log2', 'sqrt', 'abs', 'fabs',
+                           'floor', 'ceil', 'round', 'pow', 'atan2',
+                           'f64_add', 'f64_sub', 'f64_mul', 'f64_div', 'f64_neg', 'f64_abs',
+                           'f64_sqrt', 'f64_pow', 'f64_sin', 'f64_cos', 'f64_tan',
+                           'f64_asin', 'f64_acos', 'f64_atan', 'f64_atan2',
+                           'f64_exp', 'f64_log', 'f64_log10', 'f64_log2',
+                           'f64_floor', 'f64_ceil', 'f64_round', 'f64_trunc',
+                           'f64_min', 'f64_max', 'f64_from_i64', 'f64_from_string'):
+                return True
+        if expr_type == 'BinaryExpr':
+            # If either operand is f64, result is f64
+            return self.is_f64_expr(expr.get('left')) or self.is_f64_expr(expr.get('right'))
+        if expr_type == 'UnaryExpr':
+            return self.is_f64_expr(expr.get('operand'))
+        if expr_type == 'CastExpr':
+            # Cast to f64 results in f64
+            return expr.get('target_type') == 'f64'
+        return False
 
     def generate_expr(self, expr):
         expr_type = expr['type']
@@ -7419,9 +7722,50 @@ class CodeGen:
                 self.emit(f'  {temp} = ptrtoint ptr {result_ptr} to i64')
                 return temp
 
+            # Check if this is f64 arithmetic
+            is_f64_op = self.is_f64_expr(left_expr) or self.is_f64_expr(right_expr)
+
             left = self.generate_expr(left_expr)
             right = self.generate_expr(right_expr)
             temp = self.new_temp()
+
+            if is_f64_op and op in ('+', '-', '*', '/'):
+                # Use f64 runtime functions for floating-point arithmetic
+                # Convert i64 bits to double for the call
+                left_dbl = self.new_temp()
+                right_dbl = self.new_temp()
+                self.emit(f'  {left_dbl} = bitcast i64 {left} to double')
+                self.emit(f'  {right_dbl} = bitcast i64 {right} to double')
+                result_dbl = self.new_temp()
+                if op == '+':
+                    self.emit(f'  {result_dbl} = call double @f64_add(double {left_dbl}, double {right_dbl})')
+                elif op == '-':
+                    self.emit(f'  {result_dbl} = call double @f64_sub(double {left_dbl}, double {right_dbl})')
+                elif op == '*':
+                    self.emit(f'  {result_dbl} = call double @f64_mul(double {left_dbl}, double {right_dbl})')
+                elif op == '/':
+                    self.emit(f'  {result_dbl} = call double @f64_div(double {left_dbl}, double {right_dbl})')
+                self.emit(f'  {temp} = bitcast double {result_dbl} to i64')
+                return temp
+            elif is_f64_op and op in ('==', '!=', '<', '>', '<=', '>='):
+                # Use f64 comparison functions
+                left_dbl = self.new_temp()
+                right_dbl = self.new_temp()
+                self.emit(f'  {left_dbl} = bitcast i64 {left} to double')
+                self.emit(f'  {right_dbl} = bitcast i64 {right} to double')
+                if op == '==':
+                    self.emit(f'  {temp} = call i64 @f64_eq(double {left_dbl}, double {right_dbl})')
+                elif op == '!=':
+                    self.emit(f'  {temp} = call i64 @f64_ne(double {left_dbl}, double {right_dbl})')
+                elif op == '<':
+                    self.emit(f'  {temp} = call i64 @f64_lt(double {left_dbl}, double {right_dbl})')
+                elif op == '>':
+                    self.emit(f'  {temp} = call i64 @f64_gt(double {left_dbl}, double {right_dbl})')
+                elif op == '<=':
+                    self.emit(f'  {temp} = call i64 @f64_le(double {left_dbl}, double {right_dbl})')
+                elif op == '>=':
+                    self.emit(f'  {temp} = call i64 @f64_ge(double {left_dbl}, double {right_dbl})')
+                return temp
 
             if op == '+':
                 self.emit(f'  {temp} = add i64 {left}, {right}')
@@ -7496,6 +7840,55 @@ class CodeGen:
             else:
                 self.emit(f'  {temp} = add i64 {left}, {right}  ; unknown op {op}')
             return temp
+
+        if expr_type == 'CastExpr':
+            # Type cast: expr as Type
+            inner_expr = expr['expr']
+            target_type = expr['target_type']
+            inner = self.generate_expr(inner_expr)
+            temp = self.new_temp()
+
+            # Determine source type
+            source_is_f64 = self.is_f64_expr(inner_expr)
+
+            # Handle casts based on source and target types
+            if target_type == 'f64':
+                if source_is_f64:
+                    # f64 -> f64: no-op
+                    return inner
+                else:
+                    # i64 -> f64: convert integer value to double, then bitcast to i64 for storage
+                    dbl_temp = self.new_temp()
+                    self.emit(f'  {dbl_temp} = sitofp i64 {inner} to double')
+                    self.emit(f'  {temp} = bitcast double {dbl_temp} to i64')
+                    return temp
+            elif target_type == 'i64':
+                if source_is_f64:
+                    # f64 -> i64: bitcast to double, then convert to integer
+                    dbl_temp = self.new_temp()
+                    self.emit(f'  {dbl_temp} = bitcast i64 {inner} to double')
+                    self.emit(f'  {temp} = fptosi double {dbl_temp} to i64')
+                    return temp
+                else:
+                    # i64 -> i64: no-op
+                    return inner
+            elif target_type in ('i32', 'i16', 'i8'):
+                # Truncate to smaller integer
+                bit_width = {'i32': 32, 'i16': 16, 'i8': 8}[target_type]
+                trunc_temp = self.new_temp()
+                self.emit(f'  {trunc_temp} = trunc i64 {inner} to i{bit_width}')
+                self.emit(f'  {temp} = sext i{bit_width} {trunc_temp} to i64')
+                return temp
+            elif target_type in ('u32', 'u16', 'u8'):
+                # Truncate to smaller unsigned integer
+                bit_width = {'u32': 32, 'u16': 16, 'u8': 8}[target_type]
+                trunc_temp = self.new_temp()
+                self.emit(f'  {trunc_temp} = trunc i64 {inner} to i{bit_width}')
+                self.emit(f'  {temp} = zext i{bit_width} {trunc_temp} to i64')
+                return temp
+            else:
+                # Unknown target type - just return inner (might be pointer cast, etc.)
+                return inner
 
         if expr_type == 'CallExpr':
             orig_func_name = expr['func']
@@ -7643,6 +8036,9 @@ class CodeGen:
                     self.emit(f'  {temp2} = ptrtoint ptr {temp} to i64')
                     return temp2
 
+            # Track which args are f64 expressions BEFORE generating them
+            # This is needed for proper conversion when calling intrinsics that expect double
+            arg_is_f64 = [self.is_f64_expr(a) for a in raw_args]
             args = [self.generate_expr(a) for a in raw_args]
             temp = self.new_temp()
 
@@ -8095,6 +8491,30 @@ class CodeGen:
                 'string_replace': 'intrinsic_string_replace',
                 'copy_file': 'intrinsic_copy_file',
                 'get_home_dir': 'intrinsic_get_home_dir',
+                # Math intrinsics (for dual numbers / automatic differentiation)
+                'sin': 'intrinsic_sin',
+                'cos': 'intrinsic_cos',
+                'tan': 'intrinsic_tan',
+                'asin': 'intrinsic_asin',
+                'acos': 'intrinsic_acos',
+                'atan': 'intrinsic_atan',
+                'atan2': 'intrinsic_atan2',
+                'sinh': 'intrinsic_sinh',
+                'cosh': 'intrinsic_cosh',
+                'tanh': 'intrinsic_tanh',
+                'exp': 'intrinsic_exp',
+                'log': 'intrinsic_log',
+                'ln': 'intrinsic_log',
+                'log10': 'intrinsic_log10',
+                'log2': 'intrinsic_log2',
+                'sqrt': 'intrinsic_sqrt',
+                'pow': 'intrinsic_pow',
+                'abs': 'intrinsic_fabs',
+                'fabs': 'intrinsic_fabs',
+                'floor': 'intrinsic_floor',
+                'ceil': 'intrinsic_ceil',
+                'round': 'intrinsic_round',
+                'print_f64': 'intrinsic_print_f64',
             }
 
             is_intrinsic = orig_func_name in intrinsic_map
@@ -8412,6 +8832,28 @@ class CodeGen:
                 'f64_to_i64': (['double'], 'i64'),
                 'f64_to_string': (['double'], 'ptr'),
                 'f64_from_string': (['ptr'], 'double'),
+                # Math intrinsics (for dual numbers / automatic differentiation)
+                'intrinsic_sin': (['double'], 'double'),
+                'intrinsic_cos': (['double'], 'double'),
+                'intrinsic_tan': (['double'], 'double'),
+                'intrinsic_asin': (['double'], 'double'),
+                'intrinsic_acos': (['double'], 'double'),
+                'intrinsic_atan': (['double'], 'double'),
+                'intrinsic_atan2': (['double', 'double'], 'double'),
+                'intrinsic_sinh': (['double'], 'double'),
+                'intrinsic_cosh': (['double'], 'double'),
+                'intrinsic_tanh': (['double'], 'double'),
+                'intrinsic_exp': (['double'], 'double'),
+                'intrinsic_log': (['double'], 'double'),
+                'intrinsic_log10': (['double'], 'double'),
+                'intrinsic_log2': (['double'], 'double'),
+                'intrinsic_sqrt': (['double'], 'double'),
+                'intrinsic_pow': (['double', 'double'], 'double'),
+                'intrinsic_fabs': (['double'], 'double'),
+                'intrinsic_floor': (['double'], 'double'),
+                'intrinsic_ceil': (['double'], 'double'),
+                'intrinsic_round': (['double'], 'double'),
+                'intrinsic_print_f64': (['double'], 'void'),
                 # Phase 26 functions with double params
                 'embedding_get': (['i64', 'i64'], 'double'),
                 'embedding_cosine_similarity': (['i64', 'i64'], 'double'),
@@ -8872,14 +9314,19 @@ class CodeGen:
                         self.emit(f'  {conv_temp} = inttoptr i64 {arg} to ptr')
                         converted_args.append(f'ptr {conv_temp}')
                     elif expected_type == 'double':
-                        # Arg might be a double constant or need bitcast from i64
+                        # Arg might be a double constant or need conversion from i64
                         # Check if arg looks like a double constant (0x... format)
                         if arg.startswith('0x') or arg.startswith('-') or (arg[0].isdigit() and '.' in str(arg)):
                             converted_args.append(f'double {arg}')
-                        else:
-                            # Bitcast i64 to double
+                        elif i < len(arg_is_f64) and arg_is_f64[i]:
+                            # Original expression was f64 - use bitcast (stored as i64 bit pattern)
                             conv_temp = self.new_temp()
                             self.emit(f'  {conv_temp} = bitcast i64 {arg} to double')
+                            converted_args.append(f'double {conv_temp}')
+                        else:
+                            # Original expression was integer - use sitofp to convert value
+                            conv_temp = self.new_temp()
+                            self.emit(f'  {conv_temp} = sitofp i64 {arg} to double')
                             converted_args.append(f'double {conv_temp}')
                     else:
                         converted_args.append(f'{expected_type} {arg}')
@@ -8969,8 +9416,22 @@ class CodeGen:
                         self.emit(f'  {temp} = bitcast double {dbl_result} to i64')
                         return temp
                     else:
-                        # User-defined function - assume all i64
-                        args_str = ', '.join(f'i64 {a}' for a in args)
+                        # User-defined function - check for f64 parameters
+                        if func_name in self.function_param_types:
+                            param_types = self.function_param_types[func_name]
+                            converted_args = []
+                            for i, a in enumerate(args):
+                                if i < len(param_types) and param_types[i][1] == 'f64':
+                                    # Parameter is f64 - bitcast i64 to double
+                                    dbl_temp = self.new_temp()
+                                    self.emit(f'  {dbl_temp} = bitcast i64 {a} to double')
+                                    converted_args.append(f'double {dbl_temp}')
+                                else:
+                                    converted_args.append(f'i64 {a}')
+                            args_str = ', '.join(converted_args)
+                        else:
+                            # Unknown function - assume all i64
+                            args_str = ', '.join(f'i64 {a}' for a in args)
                         self.emit(f'  {temp} = call i64 @"{func_name}"({args_str})')
                         return temp
 
@@ -9872,9 +10333,22 @@ class CodeGen:
             else:
                 callee_name = method_name
 
-            # Emit call
+            # Emit call - check for f64 parameters
             result_temp = self.new_temp()
-            args_str = ', '.join(f'i64 {v}' for v in arg_vals)
+            if callee_name in self.function_param_types:
+                param_types = self.function_param_types[callee_name]
+                converted_args = []
+                for i, v in enumerate(arg_vals):
+                    if i < len(param_types) and param_types[i][1] == 'f64':
+                        # Parameter is f64 - bitcast i64 to double
+                        dbl_temp = self.new_temp()
+                        self.emit(f'  {dbl_temp} = bitcast i64 {v} to double')
+                        converted_args.append(f'double {dbl_temp}')
+                    else:
+                        converted_args.append(f'i64 {v}')
+                args_str = ', '.join(converted_args)
+            else:
+                args_str = ', '.join(f'i64 {v}' for v in arg_vals)
             self.emit(f'  {result_temp} = call i64 @"{callee_name}"({args_str})')
             return result_temp
 

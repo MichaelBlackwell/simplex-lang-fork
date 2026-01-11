@@ -2,6 +2,44 @@
 // CONSTRAINT: Only uses features stage1 supports
 // No: impl, self, for, match, traits, generics
 
+// ============================================================================
+// Cross-Platform Support
+// ============================================================================
+
+/// Detect the operating system
+/// Returns: "windows", "linux", or "macos"
+fn get_os_name() -> i64 {
+    // Check for Windows via WINDIR environment variable
+    let windir: i64 = cli_getenv("WINDIR");
+    if windir != 0 {
+        if string_len(windir) > 0 {
+            return "windows";
+        }
+    }
+    // Check for macOS via OSTYPE or uname
+    let ostype: i64 = cli_getenv("OSTYPE");
+    if ostype != 0 {
+        if string_starts_with(ostype, "darwin") {
+            return "macos";
+        }
+    }
+    // Default to linux (covers most Unix-like systems)
+    "linux"
+}
+
+/// Get the LLVM target triple for the current platform
+fn get_target_triple() -> i64 {
+    let os: i64 = get_os_name();
+    if string_eq(os, "windows") {
+        return "x86_64-pc-windows-msvc";
+    }
+    if string_eq(os, "macos") {
+        return "x86_64-apple-macosx14.0.0";
+    }
+    // Linux/other Unix
+    "x86_64-unknown-linux-gnu"
+}
+
 // Token types as enum
 enum TokenKind {
     Eof,
@@ -1552,7 +1590,10 @@ fn gen_item(cg: i64, item: i64) -> i64 {
 // Generate program header
 fn gen_header(cg: i64) -> i64 {
     emit_line(cg, "; ModuleID = 'simplex_program'");
-    emit_line(cg, "target triple = \"x86_64-apple-macosx14.0.0\"");
+    // Use platform-appropriate target triple
+    let triple: i64 = get_target_triple();
+    let triple_line: i64 = string_concat("target triple = \"", string_concat(triple, "\""));
+    emit_line(cg, triple_line);
     emit_line(cg, "");
     emit_line(cg, "declare ptr @malloc(i64)");
     emit_line(cg, "declare void @intrinsic_println(ptr)");

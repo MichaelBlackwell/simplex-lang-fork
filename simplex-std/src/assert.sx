@@ -1,0 +1,660 @@
+// simplex-std::assert - Testing Assertions
+//
+// Assertion utilities for testing and debugging.
+//
+// # Functions
+//
+// - `assert`: Assert a condition is true
+// - `assert_eq`: Assert two values are equal
+// - `assert_ne`: Assert two values are not equal
+// - `assert_lt`: Assert left is less than right
+// - `assert_le`: Assert left is less than or equal to right
+// - `assert_gt`: Assert left is greater than right
+// - `assert_ge`: Assert left is greater than or equal to right
+// - `debug_assert`: Assert only in debug builds
+// - `unreachable`: Mark code as unreachable
+// - `panic`: Panic with a message
+//
+// # Example
+//
+// ```simplex
+// use simplex_std::assert::*;
+//
+// fn test_addition() {
+//     assert_eq(2 + 2, 4);
+//     assert(true);
+//     assert_ne(1, 2);
+// }
+// ```
+
+use super::fmt::{print, println, int_to_string, float_to_string, bool_to_string, Display, Debug};
+
+// =============================================================================
+// Core Panic Function
+// =============================================================================
+
+/// Panic with a message, halting execution.
+///
+/// # Example
+/// ```simplex
+/// if critical_error {
+///     panic("Critical error occurred!");
+/// }
+/// ```
+pub fn panic(message: &str) -> ! {
+    print("PANIC: ");
+    println(message);
+    unsafe { abort(); }
+}
+
+/// Panic with a formatted message.
+pub fn panic_fmt(args: &[&str]) -> ! {
+    print("PANIC: ");
+    for arg in args.iter() {
+        print(*arg);
+    }
+    println("");
+    unsafe { abort(); }
+}
+
+// =============================================================================
+// Basic Assertions
+// =============================================================================
+
+/// Assert that a condition is true.
+///
+/// Panics with a message if the condition is false.
+///
+/// # Example
+/// ```simplex
+/// assert(x > 0);
+/// assert(valid);
+/// ```
+pub fn assert(condition: bool) {
+    if !condition {
+        panic("assertion failed");
+    }
+}
+
+/// Assert with a custom message.
+///
+/// # Example
+/// ```simplex
+/// assert_msg(x > 0, "x must be positive");
+/// ```
+pub fn assert_msg(condition: bool, message: &str) {
+    if !condition {
+        print("assertion failed: ");
+        panic(message);
+    }
+}
+
+// =============================================================================
+// Equality Assertions
+// =============================================================================
+
+/// Assert that two values are equal.
+///
+/// # Example
+/// ```simplex
+/// assert_eq(2 + 2, 4);
+/// assert_eq(foo, expected);
+/// ```
+pub fn assert_eq<T: Eq + Debug>(left: T, right: T) {
+    if !left.eq(&right) {
+        print("assertion `left == right` failed\n");
+        print("  left: ");
+        println(&left.debug_fmt());
+        print(" right: ");
+        println(&right.debug_fmt());
+        panic("assert_eq failed");
+    }
+}
+
+/// Assert that two values are equal with a custom message.
+pub fn assert_eq_msg<T: Eq + Debug>(left: T, right: T, message: &str) {
+    if !left.eq(&right) {
+        print("assertion `left == right` failed: ");
+        println(message);
+        print("  left: ");
+        println(&left.debug_fmt());
+        print(" right: ");
+        println(&right.debug_fmt());
+        panic("assert_eq failed");
+    }
+}
+
+/// Assert that two values are not equal.
+///
+/// # Example
+/// ```simplex
+/// assert_ne(result, 0);
+/// assert_ne(a, b);
+/// ```
+pub fn assert_ne<T: Eq + Debug>(left: T, right: T) {
+    if left.eq(&right) {
+        print("assertion `left != right` failed\n");
+        print("  both: ");
+        println(&left.debug_fmt());
+        panic("assert_ne failed");
+    }
+}
+
+/// Assert that two values are not equal with a custom message.
+pub fn assert_ne_msg<T: Eq + Debug>(left: T, right: T, message: &str) {
+    if left.eq(&right) {
+        print("assertion `left != right` failed: ");
+        println(message);
+        print("  both: ");
+        println(&left.debug_fmt());
+        panic("assert_ne failed");
+    }
+}
+
+// =============================================================================
+// Comparison Assertions
+// =============================================================================
+
+/// Assert that left is less than right.
+///
+/// # Example
+/// ```simplex
+/// assert_lt(1, 2);
+/// assert_lt(small, large);
+/// ```
+pub fn assert_lt<T: Ord + Debug>(left: T, right: T) {
+    if !left.lt(&right) {
+        print("assertion `left < right` failed\n");
+        print("  left: ");
+        println(&left.debug_fmt());
+        print(" right: ");
+        println(&right.debug_fmt());
+        panic("assert_lt failed");
+    }
+}
+
+/// Assert that left is less than or equal to right.
+pub fn assert_le<T: Ord + Debug>(left: T, right: T) {
+    if !left.le(&right) {
+        print("assertion `left <= right` failed\n");
+        print("  left: ");
+        println(&left.debug_fmt());
+        print(" right: ");
+        println(&right.debug_fmt());
+        panic("assert_le failed");
+    }
+}
+
+/// Assert that left is greater than right.
+pub fn assert_gt<T: Ord + Debug>(left: T, right: T) {
+    if !left.gt(&right) {
+        print("assertion `left > right` failed\n");
+        print("  left: ");
+        println(&left.debug_fmt());
+        print(" right: ");
+        println(&right.debug_fmt());
+        panic("assert_gt failed");
+    }
+}
+
+/// Assert that left is greater than or equal to right.
+pub fn assert_ge<T: Ord + Debug>(left: T, right: T) {
+    if !left.ge(&right) {
+        print("assertion `left >= right` failed\n");
+        print("  left: ");
+        println(&left.debug_fmt());
+        print(" right: ");
+        println(&right.debug_fmt());
+        panic("assert_ge failed");
+    }
+}
+
+// =============================================================================
+// Option/Result Assertions
+// =============================================================================
+
+/// Assert that an Option is Some.
+///
+/// # Example
+/// ```simplex
+/// let value = assert_some(maybe_value);
+/// ```
+pub fn assert_some<T>(opt: Option<T>) -> T {
+    match opt {
+        Some(v) => v,
+        None => panic("assertion failed: expected Some, got None"),
+    }
+}
+
+/// Assert that an Option is None.
+pub fn assert_none<T: Debug>(opt: Option<T>) {
+    match opt {
+        Some(v) => {
+            print("assertion failed: expected None, got Some(");
+            print(&v.debug_fmt());
+            println(")");
+            panic("assert_none failed");
+        }
+        None => {}
+    }
+}
+
+/// Assert that a Result is Ok.
+///
+/// # Example
+/// ```simplex
+/// let value = assert_ok(result);
+/// ```
+pub fn assert_ok<T, E: Debug>(result: Result<T, E>) -> T {
+    match result {
+        Ok(v) => v,
+        Err(e) => {
+            print("assertion failed: expected Ok, got Err(");
+            print(&e.debug_fmt());
+            println(")");
+            panic("assert_ok failed");
+        }
+    }
+}
+
+/// Assert that a Result is Err.
+pub fn assert_err<T: Debug, E>(result: Result<T, E>) -> E {
+    match result {
+        Ok(v) => {
+            print("assertion failed: expected Err, got Ok(");
+            print(&v.debug_fmt());
+            println(")");
+            panic("assert_err failed");
+        }
+        Err(e) => e,
+    }
+}
+
+// =============================================================================
+// Floating Point Assertions
+// =============================================================================
+
+/// Assert that two floats are approximately equal.
+///
+/// Uses a default epsilon of 1e-10.
+///
+/// # Example
+/// ```simplex
+/// assert_approx_eq(0.1 + 0.2, 0.3);
+/// ```
+pub fn assert_approx_eq(left: f64, right: f64) {
+    assert_approx_eq_eps(left, right, 1e-10);
+}
+
+/// Assert that two floats are approximately equal within epsilon.
+///
+/// # Example
+/// ```simplex
+/// assert_approx_eq_eps(result, expected, 0.001);
+/// ```
+pub fn assert_approx_eq_eps(left: f64, right: f64, epsilon: f64) {
+    let diff = if left > right { left - right } else { right - left };
+    if diff > epsilon {
+        print("assertion `|left - right| <= epsilon` failed\n");
+        print("  left: ");
+        println(&float_to_string(left));
+        print(" right: ");
+        println(&float_to_string(right));
+        print("  diff: ");
+        println(&float_to_string(diff));
+        print("   eps: ");
+        println(&float_to_string(epsilon));
+        panic("assert_approx_eq failed");
+    }
+}
+
+/// Assert that a float is NaN.
+pub fn assert_nan(value: f64) {
+    // NaN != NaN is the standard check
+    if value == value {
+        print("assertion failed: expected NaN, got ");
+        println(&float_to_string(value));
+        panic("assert_nan failed");
+    }
+}
+
+/// Assert that a float is not NaN.
+pub fn assert_not_nan(value: f64) {
+    if value != value {
+        panic("assertion failed: expected non-NaN value");
+    }
+}
+
+/// Assert that a float is finite (not infinite or NaN).
+pub fn assert_finite(value: f64) {
+    if value != value {
+        panic("assertion failed: value is NaN");
+    }
+    // Check for infinity: if abs(x) is very large and x != x/2, it's finite
+    // Actually, for infinity: inf / 2 == inf, but finite / 2 != finite
+    // Better: use the fact that inf + 1 == inf
+    if value > 1e308 || value < -1e308 {
+        panic("assertion failed: value is infinite");
+    }
+}
+
+// =============================================================================
+// Debug Assertions (No-op in Release)
+// =============================================================================
+
+/// Assert only in debug builds.
+///
+/// This assertion is compiled out in release builds.
+#[cfg(debug)]
+pub fn debug_assert(condition: bool) {
+    assert(condition);
+}
+
+#[cfg(not(debug))]
+pub fn debug_assert(condition: bool) {
+    // No-op in release
+}
+
+/// Debug assert with message.
+#[cfg(debug)]
+pub fn debug_assert_msg(condition: bool, message: &str) {
+    assert_msg(condition, message);
+}
+
+#[cfg(not(debug))]
+pub fn debug_assert_msg(condition: bool, message: &str) {
+    // No-op in release
+}
+
+/// Debug assert equal.
+#[cfg(debug)]
+pub fn debug_assert_eq<T: Eq + Debug>(left: T, right: T) {
+    assert_eq(left, right);
+}
+
+#[cfg(not(debug))]
+pub fn debug_assert_eq<T: Eq + Debug>(left: T, right: T) {
+    // No-op in release
+}
+
+/// Debug assert not equal.
+#[cfg(debug)]
+pub fn debug_assert_ne<T: Eq + Debug>(left: T, right: T) {
+    assert_ne(left, right);
+}
+
+#[cfg(not(debug))]
+pub fn debug_assert_ne<T: Eq + Debug>(left: T, right: T) {
+    // No-op in release
+}
+
+// =============================================================================
+// Unreachable
+// =============================================================================
+
+/// Mark code as unreachable.
+///
+/// Panics if executed, indicating a logic error.
+///
+/// # Example
+/// ```simplex
+/// match x {
+///     Some(v) => process(v),
+///     None => unreachable("x is always Some here"),
+/// }
+/// ```
+pub fn unreachable(message: &str) -> ! {
+    print("entered unreachable code: ");
+    panic(message);
+}
+
+/// Mark code as unreachable with a default message.
+pub fn unreachable_unchecked() -> ! {
+    panic("entered unreachable code");
+}
+
+// =============================================================================
+// Test Helpers
+// =============================================================================
+
+/// Helper to run a test and report success/failure.
+pub fn run_test(name: &str, test: fn() -> bool) -> bool {
+    print("test ");
+    print(name);
+    print(" ... ");
+
+    if test() {
+        println("ok");
+        true
+    } else {
+        println("FAILED");
+        false
+    }
+}
+
+/// Run multiple tests and report summary.
+pub fn run_tests(tests: &[(&str, fn() -> bool)]) -> bool {
+    println("running tests...\n");
+
+    var passed = 0i64;
+    var failed = 0i64;
+
+    for (name, test) in tests.iter() {
+        if run_test(*name, *test) {
+            passed += 1;
+        } else {
+            failed += 1;
+        }
+    }
+
+    println("");
+    print("test result: ");
+    if failed == 0 {
+        print("ok. ");
+    } else {
+        print("FAILED. ");
+    }
+    print(&int_to_string(passed));
+    print(" passed; ");
+    print(&int_to_string(failed));
+    println(" failed");
+
+    failed == 0
+}
+
+// =============================================================================
+// Test Framework Counters
+// =============================================================================
+
+/// Global counters for test tracking.
+static mut ASSERTION_COUNT: i64 = 0;
+static mut PASSED_COUNT: i64 = 0;
+static mut FAILED_COUNT: i64 = 0;
+
+/// Get the number of assertions made.
+pub fn assertion_count() -> i64 {
+    unsafe { ASSERTION_COUNT }
+}
+
+/// Get the number of passed assertions.
+pub fn passed_count() -> i64 {
+    unsafe { PASSED_COUNT }
+}
+
+/// Get the number of failed assertions.
+pub fn failed_count() -> i64 {
+    unsafe { FAILED_COUNT }
+}
+
+/// Reset all test counters.
+pub fn reset_counters() {
+    unsafe {
+        ASSERTION_COUNT = 0;
+        PASSED_COUNT = 0;
+        FAILED_COUNT = 0;
+    }
+}
+
+/// Reset the assertion counter (legacy).
+pub fn reset_assertion_count() {
+    reset_counters();
+}
+
+/// Increment assertion counter (called by assert functions).
+fn count_assertion() {
+    unsafe { ASSERTION_COUNT += 1; }
+}
+
+/// Record a passed test.
+fn record_pass() {
+    unsafe { PASSED_COUNT += 1; }
+}
+
+/// Record a failed test.
+fn record_fail() {
+    unsafe { FAILED_COUNT += 1; }
+}
+
+/// Check if all tests passed.
+pub fn all_passed() -> bool {
+    unsafe { FAILED_COUNT == 0 }
+}
+
+/// Print a summary of test results.
+pub fn test_summary() {
+    let passed = passed_count();
+    let failed = failed_count();
+    let total = passed + failed;
+
+    println("");
+    println("============================");
+    println("       TEST SUMMARY");
+    println("============================");
+    print("  Total:  ");
+    println(&int_to_string(total));
+    print("  Passed: ");
+    println(&int_to_string(passed));
+    print("  Failed: ");
+    println(&int_to_string(failed));
+    println("============================");
+
+    if failed == 0 {
+        println("  All tests passed!");
+    } else {
+        println("  SOME TESTS FAILED");
+    }
+    println("");
+}
+
+// =============================================================================
+// Test Framework Assertions (tfw_ prefix for compatibility)
+// =============================================================================
+
+/// Reset test framework counters (tfw compatibility).
+pub fn tfw_reset() {
+    reset_counters();
+}
+
+/// Get passed count (tfw compatibility).
+pub fn tfw_passed_count() -> i64 {
+    passed_count()
+}
+
+/// Get failed count (tfw compatibility).
+pub fn tfw_failed_count() -> i64 {
+    failed_count()
+}
+
+/// Print test summary (tfw compatibility).
+pub fn tfw_summary() {
+    test_summary();
+}
+
+/// Assert with tracking (tfw compatibility).
+pub fn tfw_assert(condition: bool, msg: &str) -> bool {
+    count_assertion();
+    if condition {
+        record_pass();
+        true
+    } else {
+        record_fail();
+        print("FAIL: ");
+        println(msg);
+        false
+    }
+}
+
+/// Assert equal i64 (tfw compatibility).
+pub fn tfw_assert_eq_i64(expected: i64, actual: i64, msg: &str) -> bool {
+    count_assertion();
+    if expected == actual {
+        record_pass();
+        true
+    } else {
+        record_fail();
+        print("FAIL: ");
+        print(msg);
+        print(" (expected ");
+        print(&int_to_string(expected));
+        print(", got ");
+        print(&int_to_string(actual));
+        println(")");
+        false
+    }
+}
+
+/// Assert equal strings (tfw compatibility).
+pub fn tfw_assert_eq_str(expected: &str, actual: &str, msg: &str) -> bool {
+    count_assertion();
+    if expected == actual {
+        record_pass();
+        true
+    } else {
+        record_fail();
+        print("FAIL: ");
+        print(msg);
+        print(" (expected '");
+        print(expected);
+        print("', got '");
+        print(actual);
+        println("')");
+        false
+    }
+}
+
+/// Assert not equal i64 (tfw compatibility).
+pub fn tfw_assert_ne_i64(a: i64, b: i64, msg: &str) -> bool {
+    count_assertion();
+    if a != b {
+        record_pass();
+        true
+    } else {
+        record_fail();
+        print("FAIL: ");
+        print(msg);
+        print(" (both are ");
+        print(&int_to_string(a));
+        println(")");
+        false
+    }
+}
+
+/// Explicitly fail a test (tfw compatibility).
+pub fn tfw_fail(msg: &str) {
+    record_fail();
+    print("FAIL: ");
+    println(msg);
+}
+
+/// Check if all tests passed (tfw compatibility).
+pub fn tfw_all_passed() -> bool {
+    all_passed()
+}
+
+// =============================================================================
+// FFI Declarations
+// =============================================================================
+
+extern "C" {
+    fn abort() -> !;
+}

@@ -1,0 +1,271 @@
+// simplex-std::task - Async Task Management
+//
+// Primitives for spawning and managing asynchronous tasks.
+
+use super::sync::Arc;
+use super::core::{PhantomData, Box, forget};
+
+// =============================================================================
+// Task Spawning
+// =============================================================================
+
+/// Spawn an async task to run concurrently.
+///
+/// Returns a JoinHandle that can be awaited to get the result.
+///
+/// # Example
+/// ```simplex
+/// let handle = spawn(async {
+///     expensive_computation().await
+/// });
+/// let result = handle.await;
+/// ```
+pub fn spawn<F, T>(future: F) -> JoinHandle<T>
+where
+    F: Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    // In real implementation, this would schedule on the runtime
+    JoinHandle {
+        handle: unsafe { task_spawn(future as i64) },
+        _marker: PhantomData,
+    }
+}
+
+/// Spawn a blocking task on a dedicated thread pool.
+///
+/// Use for CPU-intensive or blocking operations that would
+/// block the async runtime.
+///
+/// # Example
+/// ```simplex
+/// let result = spawn_blocking(|| {
+///     heavy_cpu_work()
+/// }).await;
+/// ```
+pub async fn spawn_blocking<F, T>(f: F) -> T
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    // Would use a blocking thread pool
+    unsafe { task_spawn_blocking(f as i64) as T }
+}
+
+// =============================================================================
+// JoinHandle
+// =============================================================================
+
+/// Handle to a spawned task that can be awaited.
+pub struct JoinHandle<T> {
+    handle: i64,
+    _marker: PhantomData<T>,
+}
+
+impl<T> JoinHandle<T> {
+    /// Check if the task has completed.
+    pub fn is_finished(&self) -> bool {
+        unsafe { task_is_finished(self.handle) != 0 }
+    }
+
+    /// Abort the task.
+    pub fn abort(&self) {
+        unsafe { task_abort(self.handle) }
+    }
+}
+
+impl<T> Future for JoinHandle<T> {
+    type Output = Result<T, JoinError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+        if self.is_finished() {
+            let result = unsafe { task_get_result(self.handle) };
+            Poll::Ready(Ok(result as T))
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
+/// Error returned when a task fails.
+#[derive(Debug)]
+pub enum JoinError {
+    Cancelled,
+    Panicked,
+}
+
+// =============================================================================
+// Yielding
+// =============================================================================
+
+/// Yield control back to the scheduler.
+///
+/// Allows other tasks to run before continuing.
+pub async fn yield_now() {
+    YieldNow { yielded: false }.await
+}
+
+struct YieldNow {
+    yielded: bool,
+}
+
+impl Future for YieldNow {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<()> {
+        if self.yielded {
+            Poll::Ready(())
+        } else {
+            self.yielded = true;
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    }
+}
+
+// =============================================================================
+// Task-Local Storage
+// =============================================================================
+
+/// Task-local storage key.
+///
+/// Provides per-task storage that is unique to each spawned task.
+/// Values stored in task-local storage are initialized lazily on first access.
+///
+/// # Example
+/// ```simplex
+/// task_local! {
+///     static COUNTER: Cell<i64> = Cell::new(0);
+/// }
+///
+/// COUNTER.with(|c| {
+///     c.set(c.get() + 1);
+/// });
+/// ```
+pub struct LocalKey<T: 'static> {
+    // Slot index in the task-local storage array
+    slot: i64,
+    // Initializer function
+    init: fn() -> T,
+    _marker: PhantomData<T>,
+}
+
+impl<T: 'static> LocalKey<T> {
+    /// Create a new task-local key with an initializer.
+    pub const fn new(init: fn() -> T) -> LocalKey<T> {
+        LocalKey {
+            slot: unsafe { task_local_alloc_slot() },
+            init,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Access the task-local value.
+    ///
+    /// The value is initialized on first access using the initializer function.
+    /// Subsequent accesses return the same value for the current task.
+    ///
+    /// # Example
+    /// ```simplex
+    /// MY_LOCAL.with(|value| {
+    ///     println!("Value: {}", value);
+    /// });
+    /// ```
+    pub fn with<F, R>(&'static self, f: F) -> R
+    where
+        F: FnOnce(&T) -> R,
+    {
+        // Get or initialize the task-local value
+        let ptr = unsafe { task_local_get(self.slot) };
+        if ptr == 0 {
+            // First access - initialize the value
+            let value = (self.init)();
+            let boxed = Box::new(value);
+            let raw_ptr = Box::into_raw(boxed);
+            unsafe { task_local_set(self.slot, raw_ptr as i64); }
+            f(unsafe { &*raw_ptr })
+        } else {
+            // Already initialized - return existing value
+            f(unsafe { &*(ptr as *const T) })
+        }
+    }
+
+    /// Try to access the task-local value without initializing.
+    ///
+    /// Returns None if the value has not been initialized yet.
+    pub fn try_with<F, R>(&'static self, f: F) -> Option<R>
+    where
+        F: FnOnce(&T) -> R,
+    {
+        let ptr = unsafe { task_local_get(self.slot) };
+        if ptr == 0 {
+            None
+        } else {
+            Some(f(unsafe { &*(ptr as *const T) }))
+        }
+    }
+
+    /// Set the task-local value directly.
+    ///
+    /// This replaces any existing value for the current task.
+    pub fn set(&'static self, value: T) {
+        let old_ptr = unsafe { task_local_get(self.slot) };
+        if old_ptr != 0 {
+            // Drop old value
+            unsafe { drop(Box::from_raw(old_ptr as *mut T)); }
+        }
+        let boxed = Box::new(value);
+        let raw_ptr = Box::into_raw(boxed);
+        unsafe { task_local_set(self.slot, raw_ptr as i64); }
+    }
+}
+
+/// Scoped task-local value that restores on drop.
+pub struct LocalKeyGuard<'a, T: 'static> {
+    key: &'static LocalKey<T>,
+    old_value: Option<T>,
+    _marker: PhantomData<&'a ()>,
+}
+
+impl<'a, T: 'static> Drop for LocalKeyGuard<'a, T> {
+    fn drop(&mut self) {
+        // Restore old value if there was one
+        if let Some(old) = self.old_value.take() {
+            self.key.set(old);
+        }
+    }
+}
+
+impl<T: 'static> LocalKey<T> where T: Clone {
+    /// Temporarily override the task-local value.
+    ///
+    /// The old value is restored when the guard is dropped.
+    pub fn scope<'a>(&'static self, value: T) -> LocalKeyGuard<'a, T> {
+        let old_value = self.try_with(|v| v.clone());
+        self.set(value);
+        LocalKeyGuard {
+            key: self,
+            old_value,
+            _marker: PhantomData,
+        }
+    }
+}
+
+// =============================================================================
+// FFI Declarations
+// =============================================================================
+
+extern "C" {
+    fn task_spawn(future: i64) -> i64;
+    fn task_spawn_blocking(f: i64) -> i64;
+    fn task_is_finished(handle: i64) -> i64;
+    fn task_abort(handle: i64);
+    fn task_get_result(handle: i64) -> i64;
+
+    // Task-local storage
+    fn task_local_alloc_slot() -> i64;
+    fn task_local_get(slot: i64) -> i64;
+    fn task_local_set(slot: i64, value: i64);
+}
+
+// PhantomData and Box imported from core module

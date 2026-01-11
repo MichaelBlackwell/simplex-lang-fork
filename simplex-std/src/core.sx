@@ -1,0 +1,673 @@
+// simplex-std::core - Core Language Primitives
+//
+// Foundational types and utilities used throughout the standard library.
+// These are the building blocks for higher-level abstractions.
+//
+// # Types
+//
+// - `PhantomData<T>`: Zero-sized marker for generic type parameters
+// - `Box<T>`: Heap-allocated value with ownership semantics
+// - `UnsafeCell<T>`: Interior mutability primitive
+// - `ManuallyDrop<T>`: Prevents automatic drop of contained value
+//
+// # Memory Functions
+//
+// - `alloc(size)`: Allocate memory
+// - `dealloc(ptr)`: Deallocate memory
+//
+// # Intrinsics
+//
+// - `size_of<T>()`: Get size of type in bytes
+// - `forget(value)`: Prevent running destructor
+// - `drop_in_place(ptr)`: Drop value at pointer
+
+// =============================================================================
+// PhantomData - Zero-Sized Type Marker
+// =============================================================================
+
+/// Zero-sized type used to mark generic type parameters.
+///
+/// `PhantomData<T>` allows a struct to "use" a type parameter without
+/// actually storing a value of that type. This is useful for:
+///
+/// - Indicating variance over a type parameter
+/// - Marking ownership of a type for drop checking
+/// - Creating type-safe wrappers around raw pointers
+///
+/// # Example
+/// ```simplex
+/// struct Handle<T> {
+///     id: i64,
+///     _marker: PhantomData<T>,
+/// }
+/// ```
+#[repr(C)]
+pub struct PhantomData<T>;
+
+impl<T> PhantomData<T> {
+    /// Create a new PhantomData.
+    pub const fn new() -> PhantomData<T> {
+        PhantomData
+    }
+}
+
+impl<T> Clone for PhantomData<T> {
+    fn clone(&self) -> Self {
+        PhantomData
+    }
+}
+
+impl<T> Copy for PhantomData<T> {}
+
+impl<T> Default for PhantomData<T> {
+    fn default() -> Self {
+        PhantomData
+    }
+}
+
+// =============================================================================
+// Box - Heap Allocation
+// =============================================================================
+
+/// A pointer type for heap allocation.
+///
+/// `Box<T>` allocates a value on the heap and owns it. When the box goes
+/// out of scope, the value is dropped and the memory is deallocated.
+///
+/// # Example
+/// ```simplex
+/// let boxed = Box::new(42);
+/// assert_eq!(*boxed, 42);
+/// ```
+#[repr(C)]
+pub struct Box<T> {
+    ptr: *mut T,
+}
+
+impl<T> Box<T> {
+    /// Allocate a new value on the heap.
+    pub fn new(value: T) -> Box<T> {
+        unsafe {
+            let ptr = alloc(size_of::<T>() as i64) as *mut T;
+            write(ptr, value);
+            Box { ptr }
+        }
+    }
+
+    /// Create a box from a raw pointer.
+    ///
+    /// # Safety
+    /// The pointer must have been allocated with the same allocator
+    /// and must not be aliased.
+    pub unsafe fn from_raw(ptr: *mut T) -> Box<T> {
+        Box { ptr }
+    }
+
+    /// Consume the box and return the raw pointer.
+    ///
+    /// The caller is responsible for deallocating the memory.
+    pub fn into_raw(self) -> *mut T {
+        let ptr = self.ptr;
+        forget(self);
+        ptr
+    }
+
+    /// Get a reference to the boxed value.
+    pub fn get(&self) -> &T {
+        unsafe { &*self.ptr }
+    }
+
+    /// Get a mutable reference to the boxed value.
+    pub fn get_mut(&mut self) -> &mut T {
+        unsafe { &mut *self.ptr }
+    }
+
+    /// Get the raw pointer without consuming the box.
+    pub fn as_ptr(&self) -> *const T {
+        self.ptr
+    }
+
+    /// Get the raw mutable pointer without consuming the box.
+    pub fn as_mut_ptr(&mut self) -> *mut T {
+        self.ptr
+    }
+
+    /// Leak the box, returning a mutable reference with a static lifetime.
+    ///
+    /// This intentionally leaks memory. Use sparingly.
+    pub fn leak(b: Box<T>) -> &'static mut T {
+        unsafe {
+            let ptr = b.ptr;
+            forget(b);
+            &mut *ptr
+        }
+    }
+}
+
+impl<T> core::ops::Deref for Box<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        self.get()
+    }
+}
+
+impl<T> core::ops::DerefMut for Box<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.get_mut()
+    }
+}
+
+impl<T> Drop for Box<T> {
+    fn drop(&mut self) {
+        unsafe {
+            drop_in_place(self.ptr);
+            dealloc(self.ptr as i64);
+        }
+    }
+}
+
+impl<T: Clone> Clone for Box<T> {
+    fn clone(&self) -> Box<T> {
+        Box::new(self.get().clone())
+    }
+}
+
+unsafe impl<T: Send> Send for Box<T> {}
+unsafe impl<T: Sync> Sync for Box<T> {}
+
+// =============================================================================
+// UnsafeCell - Interior Mutability
+// =============================================================================
+
+/// The core primitive for interior mutability.
+///
+/// `UnsafeCell<T>` is the only way to get mutable access to data through
+/// a shared reference. It is the foundation for `Cell`, `RefCell`, `Mutex`,
+/// and other interior mutability types.
+///
+/// # Safety
+///
+/// Using `UnsafeCell` requires careful attention to aliasing rules.
+/// Multiple mutable references to the same data is undefined behavior.
+///
+/// # Example
+/// ```simplex
+/// struct MyCell<T> {
+///     value: UnsafeCell<T>,
+/// }
+///
+/// impl<T: Copy> MyCell<T> {
+///     fn get(&self) -> T {
+///         unsafe { *self.value.get() }
+///     }
+///
+///     fn set(&self, value: T) {
+///         unsafe { *self.value.get() = value; }
+///     }
+/// }
+/// ```
+#[repr(transparent)]
+pub struct UnsafeCell<T> {
+    value: T,
+}
+
+impl<T> UnsafeCell<T> {
+    /// Create a new UnsafeCell.
+    pub const fn new(value: T) -> UnsafeCell<T> {
+        UnsafeCell { value }
+    }
+
+    /// Get a raw pointer to the underlying value.
+    ///
+    /// This can be cast to a mutable pointer to mutate the value,
+    /// even through a shared reference to the UnsafeCell.
+    pub fn get(&self) -> *mut T {
+        &self.value as *const T as *mut T
+    }
+
+    /// Get the underlying value, consuming the cell.
+    pub fn into_inner(self) -> T {
+        self.value
+    }
+
+    /// Get a mutable reference to the underlying value.
+    ///
+    /// This is safe because having a mutable reference to the cell
+    /// means we have exclusive access.
+    pub fn get_mut(&mut self) -> &mut T {
+        &mut self.value
+    }
+
+    /// Returns a raw pointer to the underlying value.
+    pub fn raw_get(this: *const Self) -> *mut T {
+        // UnsafeCell is repr(transparent), so this cast is valid
+        this as *const T as *mut T
+    }
+}
+
+// UnsafeCell is !Sync by default - this is intentional
+// Types wrapping UnsafeCell must explicitly implement Sync if safe
+
+// =============================================================================
+// ManuallyDrop - Prevent Automatic Drop
+// =============================================================================
+
+/// A wrapper to prevent automatic dropping of a value.
+///
+/// `ManuallyDrop<T>` inhibits the destructor of `T`. The wrapped value
+/// must be explicitly dropped using `ManuallyDrop::drop()`.
+///
+/// # Example
+/// ```simplex
+/// let mut md = ManuallyDrop::new(expensive_resource());
+/// // Use the resource...
+/// // Explicitly drop when done:
+/// unsafe { ManuallyDrop::drop(&mut md); }
+/// ```
+#[repr(transparent)]
+pub struct ManuallyDrop<T> {
+    value: T,
+}
+
+impl<T> ManuallyDrop<T> {
+    /// Wrap a value to prevent automatic drop.
+    pub const fn new(value: T) -> ManuallyDrop<T> {
+        ManuallyDrop { value }
+    }
+
+    /// Extract the value, allowing it to be dropped normally.
+    pub fn into_inner(slot: ManuallyDrop<T>) -> T {
+        slot.value
+    }
+
+    /// Manually drop the contained value.
+    ///
+    /// # Safety
+    /// The value must not be used after this call.
+    pub unsafe fn drop(slot: &mut ManuallyDrop<T>) {
+        drop_in_place(&mut slot.value);
+    }
+
+    /// Take the value without dropping.
+    ///
+    /// # Safety
+    /// The slot must be logically uninitialized after this.
+    pub unsafe fn take(slot: &mut ManuallyDrop<T>) -> T {
+        read(&slot.value as *const T)
+    }
+}
+
+impl<T> core::ops::Deref for ManuallyDrop<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.value
+    }
+}
+
+impl<T> core::ops::DerefMut for ManuallyDrop<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.value
+    }
+}
+
+impl<T: Clone> Clone for ManuallyDrop<T> {
+    fn clone(&self) -> ManuallyDrop<T> {
+        ManuallyDrop::new(self.value.clone())
+    }
+}
+
+impl<T: Copy> Copy for ManuallyDrop<T> {}
+
+// =============================================================================
+// MaybeUninit - Uninitialized Memory
+// =============================================================================
+
+/// A wrapper type to represent potentially uninitialized memory.
+///
+/// `MaybeUninit<T>` is useful for:
+/// - Arrays of uninitialized values
+/// - Manual initialization patterns
+/// - FFI with uninitialized outputs
+///
+/// # Safety
+/// Reading from uninitialized memory is undefined behavior.
+/// Always ensure the value is initialized before reading.
+#[repr(transparent)]
+pub union MaybeUninit<T> {
+    uninit: (),
+    value: ManuallyDrop<T>,
+}
+
+impl<T> MaybeUninit<T> {
+    /// Create a new uninitialized value.
+    pub const fn uninit() -> MaybeUninit<T> {
+        MaybeUninit { uninit: () }
+    }
+
+    /// Create a new initialized value.
+    pub const fn new(value: T) -> MaybeUninit<T> {
+        MaybeUninit { value: ManuallyDrop::new(value) }
+    }
+
+    /// Write a value, overwriting any previous contents without dropping.
+    pub fn write(&mut self, value: T) -> &mut T {
+        self.value = ManuallyDrop::new(value);
+        unsafe { &mut self.value }
+    }
+
+    /// Assume the value is initialized and read it.
+    ///
+    /// # Safety
+    /// The value must have been initialized.
+    pub unsafe fn assume_init(self) -> T {
+        ManuallyDrop::into_inner(self.value)
+    }
+
+    /// Assume the value is initialized and get a reference.
+    ///
+    /// # Safety
+    /// The value must have been initialized.
+    pub unsafe fn assume_init_ref(&self) -> &T {
+        &self.value
+    }
+
+    /// Assume the value is initialized and get a mutable reference.
+    ///
+    /// # Safety
+    /// The value must have been initialized.
+    pub unsafe fn assume_init_mut(&mut self) -> &mut T {
+        &mut self.value
+    }
+
+    /// Get a pointer to the contained value.
+    pub fn as_ptr(&self) -> *const T {
+        &self.value as *const ManuallyDrop<T> as *const T
+    }
+
+    /// Get a mutable pointer to the contained value.
+    pub fn as_mut_ptr(&mut self) -> *mut T {
+        &mut self.value as *mut ManuallyDrop<T> as *mut T
+    }
+}
+
+// =============================================================================
+// Memory Operations
+// =============================================================================
+
+/// Get the size of a type in bytes.
+pub fn size_of<T>() -> usize {
+    unsafe { intrinsic_size_of::<T>() }
+}
+
+/// Get the alignment of a type in bytes.
+pub fn align_of<T>() -> usize {
+    unsafe { intrinsic_align_of::<T>() }
+}
+
+/// Forget a value without running its destructor.
+///
+/// This leaks any resources the value owns.
+pub fn forget<T>(value: T) {
+    unsafe { intrinsic_forget(value); }
+}
+
+/// Swap two values.
+pub fn swap<T>(a: &mut T, b: &mut T) {
+    unsafe {
+        let tmp = read(a as *const T);
+        write(a as *mut T, read(b as *const T));
+        write(b as *mut T, tmp);
+    }
+}
+
+/// Replace a value, returning the old one.
+pub fn replace<T>(dest: &mut T, src: T) -> T {
+    unsafe {
+        let old = read(dest as *const T);
+        write(dest as *mut T, src);
+        old
+    }
+}
+
+/// Take ownership of a value, leaving the default in its place.
+pub fn take<T: Default>(dest: &mut T) -> T {
+    replace(dest, T::default())
+}
+
+/// Read a value from a pointer.
+///
+/// # Safety
+/// The pointer must be valid and properly aligned.
+pub unsafe fn read<T>(src: *const T) -> T {
+    intrinsic_read(src)
+}
+
+/// Write a value to a pointer.
+///
+/// # Safety
+/// The pointer must be valid and properly aligned.
+pub unsafe fn write<T>(dst: *mut T, src: T) {
+    intrinsic_write(dst, src);
+}
+
+/// Drop a value in place.
+///
+/// # Safety
+/// The pointer must be valid and the value must not be used afterward.
+pub unsafe fn drop_in_place<T>(ptr: *mut T) {
+    intrinsic_drop_in_place(ptr);
+}
+
+/// Copy bytes from src to dst (may overlap).
+///
+/// # Safety
+/// Both pointers must be valid for the given length.
+pub unsafe fn copy<T>(src: *const T, dst: *mut T, count: usize) {
+    intrinsic_copy(src, dst, count);
+}
+
+/// Copy bytes from src to dst (must not overlap).
+///
+/// # Safety
+/// Both pointers must be valid for the given length and must not overlap.
+pub unsafe fn copy_nonoverlapping<T>(src: *const T, dst: *mut T, count: usize) {
+    intrinsic_copy_nonoverlapping(src, dst, count);
+}
+
+/// Set memory to a byte value.
+///
+/// # Safety
+/// The pointer must be valid for the given length.
+pub unsafe fn write_bytes<T>(dst: *mut T, val: u8, count: usize) {
+    intrinsic_write_bytes(dst, val, count);
+}
+
+/// Create a null pointer.
+pub const fn null<T>() -> *const T {
+    0 as *const T
+}
+
+/// Create a null mutable pointer.
+pub const fn null_mut<T>() -> *mut T {
+    0 as *mut T
+}
+
+// =============================================================================
+// Hints for the Compiler/CPU
+// =============================================================================
+
+/// Hint to the CPU that we're in a spin loop.
+///
+/// This can improve performance by reducing power consumption
+/// and allowing hyperthreading siblings to proceed.
+pub fn spin_loop() {
+    unsafe { cpu_spin_hint(); }
+}
+
+/// Hint that a condition is unlikely.
+pub fn unlikely(cond: bool) -> bool {
+    cond
+}
+
+/// Hint that a condition is likely.
+pub fn likely(cond: bool) -> bool {
+    cond
+}
+
+/// Trigger a breakpoint for debugging.
+pub fn breakpoint() {
+    unsafe { debug_breakpoint(); }
+}
+
+/// Hint that code is unreachable.
+///
+/// # Safety
+/// If this is executed, behavior is undefined.
+pub unsafe fn unreachable_unchecked() -> ! {
+    intrinsic_unreachable()
+}
+
+// =============================================================================
+// Core Operations Module (for internal use)
+// =============================================================================
+
+pub mod ops {
+    /// Trait for dereferencing.
+    pub trait Deref {
+        type Target;
+        fn deref(&self) -> &Self::Target;
+    }
+
+    /// Trait for mutable dereferencing.
+    pub trait DerefMut: Deref {
+        fn deref_mut(&mut self) -> &mut Self::Target;
+    }
+}
+
+// =============================================================================
+// Slice Module
+// =============================================================================
+
+pub mod slice {
+    /// Create a slice from a raw pointer and length.
+    ///
+    /// # Safety
+    /// The pointer must be valid for `len` elements and properly aligned.
+    pub unsafe fn from_raw_parts<'a, T>(ptr: *const T, len: usize) -> &'a [T] {
+        // In the real implementation, this would be a compiler intrinsic
+        &*(ptr as *const [T; 0] as *const [T])
+    }
+
+    /// Create a mutable slice from a raw pointer and length.
+    ///
+    /// # Safety
+    /// The pointer must be valid for `len` elements, properly aligned,
+    /// and not aliased for the lifetime of the returned slice.
+    pub unsafe fn from_raw_parts_mut<'a, T>(ptr: *mut T, len: usize) -> &'a mut [T] {
+        &mut *(ptr as *mut [T; 0] as *mut [T])
+    }
+}
+
+// =============================================================================
+// Pointer Module
+// =============================================================================
+
+pub mod ptr {
+    use super::{read, write};
+
+    /// Swap the values at two pointers.
+    ///
+    /// # Safety
+    /// Both pointers must be valid, properly aligned, and non-overlapping.
+    pub unsafe fn swap<T>(a: *mut T, b: *mut T) {
+        let tmp = read(a);
+        write(a, read(b));
+        write(b, tmp);
+    }
+
+    /// Read a value from a pointer.
+    pub unsafe fn read<T>(src: *const T) -> T {
+        super::read(src)
+    }
+
+    /// Write a value to a pointer.
+    pub unsafe fn write<T>(dst: *mut T, src: T) {
+        super::write(dst, src);
+    }
+
+    /// Returns true if the pointer is null.
+    pub fn is_null<T>(ptr: *const T) -> bool {
+        ptr as usize == 0
+    }
+
+    /// Create a null pointer.
+    pub const fn null<T>() -> *const T {
+        0 as *const T
+    }
+
+    /// Create a null mutable pointer.
+    pub const fn null_mut<T>() -> *mut T {
+        0 as *mut T
+    }
+}
+
+// =============================================================================
+// Memory Allocation FFI
+// =============================================================================
+
+/// Allocate memory.
+///
+/// Returns a pointer to the allocated memory, or 0 on failure.
+pub fn alloc(size: usize) -> *mut u8 {
+    unsafe { ffi_alloc(size as i64) as *mut u8 }
+}
+
+/// Allocate zeroed memory.
+pub fn alloc_zeroed(size: usize) -> *mut u8 {
+    let ptr = alloc(size);
+    if !ptr.is_null() {
+        unsafe { write_bytes(ptr, 0, size); }
+    }
+    ptr
+}
+
+/// Reallocate memory.
+pub unsafe fn realloc(ptr: *mut u8, old_size: usize, new_size: usize) -> *mut u8 {
+    ffi_realloc(ptr as i64, old_size as i64, new_size as i64) as *mut u8
+}
+
+/// Deallocate memory.
+pub unsafe fn dealloc(ptr: *mut u8) {
+    ffi_dealloc(ptr as i64);
+}
+
+// =============================================================================
+// FFI Declarations
+// =============================================================================
+
+extern "C" {
+    // Memory allocation
+    fn ffi_alloc(size: i64) -> i64;
+    fn ffi_dealloc(ptr: i64);
+    fn ffi_realloc(ptr: i64, old_size: i64, new_size: i64) -> i64;
+
+    // Intrinsics
+    fn intrinsic_size_of<T>() -> usize;
+    fn intrinsic_align_of<T>() -> usize;
+    fn intrinsic_forget<T>(value: T);
+    fn intrinsic_read<T>(src: *const T) -> T;
+    fn intrinsic_write<T>(dst: *mut T, src: T);
+    fn intrinsic_drop_in_place<T>(ptr: *mut T);
+    fn intrinsic_copy<T>(src: *const T, dst: *mut T, count: usize);
+    fn intrinsic_copy_nonoverlapping<T>(src: *const T, dst: *mut T, count: usize);
+    fn intrinsic_write_bytes<T>(dst: *mut T, val: u8, count: usize);
+    fn intrinsic_unreachable() -> !;
+
+    // CPU hints
+    fn cpu_spin_hint();
+    fn debug_breakpoint();
+}
+
+// Backward compatibility aliases
+pub use ffi_alloc as alloc_raw;
+pub use ffi_dealloc as dealloc_raw;

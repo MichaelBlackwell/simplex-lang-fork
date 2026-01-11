@@ -1,0 +1,104 @@
+// Phase 36 Test: C2.6 - Multi-await async state machines
+
+async fn fetch_a() -> i64 {
+    42
+}
+
+async fn fetch_b() -> i64 {
+    58
+}
+
+async fn fetch_slow() -> i64 {
+    // Simulated delay
+    100
+}
+
+async fn test_single_await() -> i64 {
+    let a: i64 = fetch_a().await;
+    a
+}
+
+async fn test_sequential_await() -> i64 {
+    let a: i64 = fetch_a().await;
+    let b: i64 = fetch_b().await;
+    a + b  // Should be 100
+}
+
+async fn test_three_awaits() -> i64 {
+    let a: i64 = fetch_a().await;
+    let b: i64 = fetch_b().await;
+    let c: i64 = fetch_slow().await;
+    a + b + c  // Should be 200
+}
+
+async fn test_await_in_loop() -> i64 {
+    let sum: i64 = 0;
+    let i: i64 = 0;
+    while i < 3 {
+        let val: i64 = fetch_a().await;
+        sum = sum + val;
+        i = i + 1;
+    }
+    sum  // Should be 126 (42 * 3)
+}
+
+async fn test_await_in_conditional() -> i64 {
+    let x: i64 = fetch_a().await;
+    if x > 40 {
+        fetch_b().await
+    } else {
+        0
+    }
+}
+
+async fn test_nested_async_call() -> i64 {
+    let result: i64 = test_sequential_await().await;
+    result + 10
+}
+
+fn main() -> i64 {
+    print("Testing C2.6: Multi-await async state machines");
+
+    // Run single await
+    let r1: i64 = block_on(test_single_await());
+    if r1 != 42 {
+        print("FAIL: single await");
+        return 1;
+    }
+    print("  PASS: single await");
+
+    // Run sequential awaits
+    let r2: i64 = block_on(test_sequential_await());
+    if r2 != 100 {
+        print("FAIL: sequential await");
+        return 1;
+    }
+    print("  PASS: sequential awaits");
+
+    // Run three awaits
+    let r3: i64 = block_on(test_three_awaits());
+    if r3 != 200 {
+        print("FAIL: three awaits");
+        return 1;
+    }
+    print("  PASS: three awaits");
+
+    // Run await in conditional
+    let r4: i64 = block_on(test_await_in_conditional());
+    if r4 != 58 {
+        print("FAIL: await in conditional");
+        return 1;
+    }
+    print("  PASS: await in conditional");
+
+    // Run nested async
+    let r5: i64 = block_on(test_nested_async_call());
+    if r5 != 110 {
+        print("FAIL: nested async");
+        return 1;
+    }
+    print("  PASS: nested async");
+
+    print("All C2.6 tests passed!");
+    0
+}

@@ -1,10 +1,12 @@
 # Neural IR and Differentiable Execution
 
-**Version 0.6.0**
+**Version 0.9.0**
 
 ---
 
 ## Overview
+
+![Neural IR Compilation Pipeline](../diagrams/neural-ir-compilation.svg)
 
 Neural IR (Intermediate Representation) introduces differentiable program execution to Simplex. This enables program logic itself to become learnable and optimizable via gradient descent, bridging traditional programming with machine learning.
 
@@ -27,6 +29,8 @@ neural_gate should_retry(confidence: f64) -> bool {
 ```
 
 ### Gumbel-Softmax
+
+![Gumbel-Softmax Temperature Control](../diagrams/gumbel-softmax.svg)
 
 For categorical choices, Simplex uses the Gumbel-Softmax trick to enable gradient flow:
 
@@ -259,6 +263,155 @@ neural_gate learnable_branch(x: f64) -> bool
     x > threshold
 }
 ```
+
+---
+
+## Self-Learning Annealing (v0.9.0)
+
+![Meta-Gradient Annealing](../diagrams/meta-gradient-annealing.svg)
+
+Instead of manually tuning temperature schedules, Simplex can **learn optimal schedules** through meta-gradients. By wrapping the temperature (τ) as a dual number, the system calculates how changes in the cooling rate affect the final loss.
+
+### Visual Overview: Two Training Scenarios
+
+**Scenario 1: Rapid Convergence (Simple Problems like XOR)**
+
+```
+Temperature (τ)              Loss
+    │                          │
+1.0 ┤  ╲ High τ: Explore     1.0 ┤  ╲
+    │    ╲  (Fuzzy Logic)        │    ╲
+    │      ╲                     │      ╲
+    │        ╲ ∂L/∂τ < 0         │        ╲
+    │          ╲ (keep cooling)  │          ╲____
+0.0 ┤            ╲___________  0.0 ┤
+    └───────────────────────      └───────────────────────
+    0     Training Steps →        0     Training Steps →
+                        Low τ: Exploit (Hard Logic Found!)
+```
+
+For simple problems, temperature smoothly decreases. The meta-gradient `∂L/∂τ` remains negative, signaling continued cooling is beneficial.
+
+**Scenario 2: Complex Patterns (Self-Learning Kicks In)**
+
+```
+Temperature (τ)              Loss
+    │                          │
+1.0 ┤  ╲       ╱╲            1.0 ┤  ╲         ____
+    │    ╲   ╱    ╲              │    ╲_______/    ╲
+    │      ╲╱ Re-heat! ╲         │     Stuck!        ╲
+    │    (escape)        ╲       │                     ╲___
+0.0 ┤                      ╲   0.0 ┤
+    └───────────────────────      └───────────────────────
+    0     Training Steps →        0     Training Steps →
+```
+
+For complex patterns, the meta-gradient detects when loss plateaus (stuck in local minima). When `∂L/∂τ > 0`, it signals re-heating would help—the system automatically increases τ to explore, then re-cools to converge.
+
+> **Key Insight:** "Temperature (τᵢ) controls the 'hardness' of Neural Gates. Simplex learns the best τᵢ schedule using Meta-Gradients."
+
+See [Meta-Gradient Temperature Control](09-cognitive-hive.md#meta-gradient-temperature-control) for additional implementation details.
+
+### The Meta-Dual Number
+
+Temperature becomes a dual number that tracks sensitivity:
+
+```
+τ + τ̇ε
+```
+
+Where **τ̇** represents: "If I change the temperature slightly, how does it affect the gate's ability to learn?"
+
+### Inner and Outer Loop Optimization
+
+The language performs nested optimization:
+
+**Inner Loop:** Neural Gates use the current τ to learn the task (e.g., solving a logic puzzle).
+
+**Outer Loop:** After iterations, the system uses Reverse-Mode AD to look back through the training process to determine if a higher or lower temperature would have resulted in faster convergence.
+
+### The Chain Rule for Temperature
+
+When the backward pass executes, it calculates the gradient of Loss (L) with respect to Temperature (τ):
+
+```
+∂L/∂τ = (∂L/∂y) · (∂y/∂τ)
+```
+
+The second term (∂y/∂τ) tells the system: "If I lower the temperature, does the output move closer to the correct answer or further away?"
+
+For the Gumbel-Softmax function:
+
+```
+y = exp((log(π) + g) / τ) / Σ exp((log(π) + g) / τ)
+```
+
+The derivative ∂y/∂τ encodes how the "sharpness" of the probability distribution affects the error.
+
+### Meta-Update Rule
+
+The meta-gradient updates the temperature schedule:
+
+```simplex
+τ_new = τ_old - η · (∂L/∂τ)
+```
+
+**Positive meta-gradient:** Temperature is too low (hardening too fast, making mistakes). The system slows cooling or "re-heats."
+
+**Negative meta-gradient:** Gate is too "soft" or blurry. The system accelerates cooling to force decisions.
+
+### Code Example
+
+```simplex
+// Initialize temperature as a trainable Dual Number
+var tau: dual = dual::variable(1.0);
+let meta_lr = 0.01;
+
+fn train_step(data: &Batch) {
+    // Forward Pass: Create gate using current tau
+    // Dual number system tracks how tau affects 'choice'
+    let gate = Gate::gumbel(logits, temperature: tau);
+    let output = gate.forward(data);
+
+    // Reverse Mode: Calculate standard loss gradient
+    let loss = compute_loss(output, target);
+    loss.backward();  // Triggers chain rule back to tau
+
+    // THE META-UPDATE:
+    // Adjust tau based on whether a change would have reduced loss
+    let tau_gradient = tau.der;  // Extract ε coefficient (∂L/∂τ)
+
+    tau = dual::variable(tau.val - meta_lr * tau_gradient);
+
+    // Ensure tau stays positive
+    tau = tau.max(dual::constant(0.01));
+}
+```
+
+### Why Self-Learning Annealing is Powerful
+
+| Feature | Benefit |
+|---------|---------|
+| **Optimal Hardening** | Each gate can have its own local temperature that cools at its ideal speed |
+| **Avoiding Local Minima** | Meta-gradient can trigger "re-heating" to escape stuck states |
+| **Automatic Logic Synthesis** | System discovers when search phase is over and freezes into discrete logic |
+| **No Manual Tuning** | Schedule optimizes itself through gradient descent |
+
+### Comparison: Fixed vs Self-Learning Schedules
+
+| Component | Traditional Annealing | Simplex Meta-Annealing |
+|-----------|----------------------|------------------------|
+| Decay Rate | Fixed (e.g., 0.99^t) | Dynamic (Learned via ε) |
+| Adaptability | None (same for every problem) | High (fast for easy, slow for hard) |
+| Complexity | Manual tuning (Trial & Error) | Automated (Gradient Descent on τ) |
+
+### Neurosymbolic Transition
+
+Self-learning annealing enables automatic transition from **Neural Network** (fuzzy/probabilistic) to **Symbolic Program** (discrete/exact):
+
+1. The compiler figures out when the "search phase" is over
+2. Gates automatically transition from soft to hard
+3. No human intervention required to find optimal annealing schedule
 
 ---
 

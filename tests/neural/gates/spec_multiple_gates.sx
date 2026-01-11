@@ -1,0 +1,36 @@
+// Neural gate test - multiple gates
+
+neural_gate gate1(x: f64) -> bool {
+    x > 0.5
+}
+
+neural_gate gate2(x: f64) -> bool {
+    x > 0.7
+}
+
+neural_gate gate3(x: f64) -> bool {
+    x > 0.95
+}
+
+fn main() -> i64 {
+    println("Test: Multiple neural gates");
+
+    neural_set_training_mode(0);
+
+    let r1: f64 = gate1(0.8);  // 0.8 > 0.5 -> true
+    println("Called gate1");
+
+    let r2: f64 = gate2(0.6);  // 0.6 > 0.7 -> false
+    println("Called gate2");
+
+    let r3: f64 = gate3(0.9);  // 0.9 > 0.95 -> false
+    println("Called gate3");
+
+    if r1 > 0.5 && r2 < 0.5 && r3 < 0.5 {
+        println("ALL TESTS PASSED");
+        return 0;
+    }
+
+    println("TEST FAILED");
+    1
+}

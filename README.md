@@ -1,6 +1,6 @@
 # Simplex Programming Language
 
-**Version 0.7.0**
+**Version 0.9.0**
 
 Simplex is a modern systems programming language designed for AI-native applications, featuring first-class support for actors, cognitive agents, and distributed computing.
 
@@ -12,6 +12,8 @@ Simplex is a modern systems programming language designed for AI-native applicat
 - **HiveMnemonic**: Shared consciousness across specialists within a hive
 - **Neural IR**: Differentiable program execution with learnable control flow (v0.6.0)
 - **Real-Time Learning**: Online training during inference without retraining (v0.7.0)
+- **Dual Numbers**: Native forward-mode automatic differentiation (v0.8.0)
+- **Self-Learning Annealing**: Optimization schedules that learn themselves (v0.9.0)
 - **Self-Hosted**: Compiler written in Simplex itself (bootstrapped from Python)
 - **LLVM Backend**: Compiles to optimized native code via LLVM IR
 - **Rust-Inspired Syntax**: Familiar syntax with enums, traits, and pattern matching
@@ -251,13 +253,20 @@ simplex-lang/
 │   ├── cursus.sx           # Bytecode VM
 │   ├── sxdoc.sx            # Documentation generator
 │   └── sxlsp.sx            # Language server protocol
-├── tests/
-│   ├── language/           # Language feature tests
-│   ├── stdlib/             # Standard library tests
-│   ├── runtime/            # Runtime tests
-│   ├── ai/                 # AI/Cognitive tests
-│   ├── toolchain/          # Toolchain tests
-│   └── integration/        # End-to-end scenario tests
+├── tests/                  # 156 tests across 13 categories
+│   ├── language/           # Core language features (40)
+│   ├── types/              # Type system tests (24)
+│   ├── neural/             # Neural IR and gates (16)
+│   ├── stdlib/             # Standard library (16)
+│   ├── ai/                 # AI/Cognitive tests (17)
+│   ├── toolchain/          # Toolchain tests (14)
+│   ├── runtime/            # Runtime systems (5)
+│   ├── integration/        # End-to-end tests (7)
+│   ├── basics/             # Basic language (6)
+│   ├── async/              # Async/await (3)
+│   ├── learning/           # Automatic differentiation (3)
+│   ├── actors/             # Actor model (1)
+│   └── observability/      # Metrics and tracing (1)
 ├── simplex-docs/
 │   ├── spec/               # Language specification
 │   ├── tutorial/           # Learning tutorial
@@ -270,13 +279,54 @@ simplex-lang/
 
 | Tool | Version | Description |
 |------|---------|-------------|
-| **sxc** | 0.7.0 | Simplex Compiler with Neural IR |
-| **sxpm** | 0.7.0 | Package Manager with SLM provisioning |
-| **cursus** | 0.7.0 | Bytecode Virtual Machine |
-| **sxdoc** | 0.7.0 | Documentation Generator |
-| **sxlsp** | 0.7.0 | Language Server Protocol |
+| **sxc** | 0.9.0 | Simplex Compiler with Neural IR and Dual Numbers |
+| **sxpm** | 0.9.0 | Package Manager with SLM provisioning |
+| **cursus** | 0.9.0 | Bytecode Virtual Machine |
+| **sxdoc** | 0.9.0 | Documentation Generator |
+| **sxlsp** | 0.9.0 | Language Server Protocol |
 
 ## Release History
+
+### v0.9.0 (2026-01-11) - Self-Learning Annealing
+
+**Self-Learning Annealing (TASK-006):**
+- Learnable temperature schedules via meta-gradients
+- Soft acceptance function using differentiable sigmoid
+- Stagnation-triggered reheating with learned thresholds
+- Meta-optimization framework for schedule parameter learning
+- Integration with Neural Gates, Belief System, and HiveOS
+
+**Test Suite Restructure:**
+- 156 tests organized across 13 categories
+- Consistent naming convention: `unit_`, `spec_`, `integ_`, `e2e_` prefixes
+- New `run_tests.sh` with category and type filtering
+- Categories: language, types, neural, stdlib, ai, toolchain, integration, runtime, basics, async, actors, learning, observability
+
+**Library Architecture:**
+- New `simplex-training` library for self-optimizing training pipelines
+- Learnable schedules: LR, distillation, pruning, quantization, curriculum
+- MetaTrainer for unified meta-optimization
+- CompressionPipeline for model compression
+
+See [RELEASE-0.9.0.md](simplex-docs/RELEASE-0.9.0.md) for details.
+
+### v0.8.0 (2026-01-10) - Dual Numbers
+
+**Dual Numbers (TASK-005):**
+- Native `dual` type for forward-mode automatic differentiation
+- Zero-overhead compilation: same assembly as hand-written derivative code
+- Arithmetic with automatic chain rule propagation
+- Transcendental functions: sin, cos, exp, ln, sqrt, tanh, sigmoid
+- `multidual<N>` for computing N partial derivatives simultaneously
+- `dual2` for second-order derivatives (Hessians)
+- `diff::derivative()`, `diff::gradient()`, `diff::jacobian()`, `diff::hessian()`
+
+**Integration:**
+- Neural Gates with dual number gradients
+- Belief confidence sensitivity tracking
+- Safety constraint margin prediction
+
+See [RELEASE-0.8.0.md](simplex-docs/RELEASE-0.8.0.md) for details.
 
 ### v0.7.0 (2026-01-09) - Real-Time Continuous Learning
 
@@ -470,15 +520,26 @@ sxpm model install <name> # Install a model
 ## Running Tests
 
 ```bash
-# Run all tests
-sxpm test
+# Run all tests (156 tests across 13 categories)
+./tests/run_tests.sh
 
 # Run specific category
-sxpm test --category ai
-sxpm test --category integration
+./tests/run_tests.sh neural
+./tests/run_tests.sh learning
+./tests/run_tests.sh ai
 
-# Run a specific test
-sxc run tests/language/basics/test_loops.sx
+# Filter by test type
+./tests/run_tests.sh all unit    # Only unit tests
+./tests/run_tests.sh all spec    # Only spec tests
+./tests/run_tests.sh all integ   # Only integration tests
+./tests/run_tests.sh all e2e     # Only end-to-end tests
+
+# Combine category and type
+./tests/run_tests.sh stdlib unit
+./tests/run_tests.sh neural spec
+
+# Run a specific test directly
+sxc run tests/learning/unit_dual_numbers.sx
 ```
 
 ## Documentation
@@ -487,9 +548,11 @@ sxc run tests/language/basics/test_loops.sx
 - [Tutorial](simplex-docs/tutorial/)
 - [Testing Documentation](simplex-docs/testing/)
 - [Getting Started Guide](simplex-docs/guides/getting-started.md)
-- [Release Notes v0.7.0](simplex-docs/RELEASE-0.7.0.md)
-- [Release Notes v0.6.0](simplex-docs/RELEASE-0.6.0.md)
-- [Release Notes v0.5.0](simplex-docs/RELEASE-0.5.0.md)
+- [Release Notes v0.9.0](simplex-docs/RELEASE-0.9.0.md) - Self-Learning Annealing
+- [Release Notes v0.8.0](simplex-docs/RELEASE-0.8.0.md) - Dual Numbers
+- [Release Notes v0.7.0](simplex-docs/RELEASE-0.7.0.md) - Real-Time Learning
+- [Release Notes v0.6.0](simplex-docs/RELEASE-0.6.0.md) - Neural IR
+- [Release Notes v0.5.0](simplex-docs/RELEASE-0.5.0.md) - SLM Provisioning
 
 ## Contributing
 

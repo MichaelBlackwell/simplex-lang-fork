@@ -1,0 +1,497 @@
+// simplex-std::dual - Dual Numbers for Automatic Differentiation
+//
+// Dual numbers enable forward-mode automatic differentiation.
+// A dual number has the form: a + bε where ε² = 0.
+//
+// This is the foundation for self-learning annealing and meta-gradient optimization.
+//
+// # Example
+//
+// ```simplex
+// use simplex_std::dual;
+//
+// // Create a variable we want to differentiate with respect to
+// let x = dual::variable(3.0);
+//
+// // Compute f(x) = x² + 2x + 1
+// let f = x * x + dual::constant(2.0) * x + dual::constant(1.0);
+//
+// // f.val = 16.0 (the function value at x=3)
+// // f.der = 8.0  (the derivative: 2x + 2 = 8 at x=3)
+// ```
+//
+// # Mathematical Foundation
+//
+// For f(a + bε):
+// - f(a + bε) = f(a) + f'(a)·b·ε
+//
+// This gives us both the value and derivative in a single forward pass.
+
+use super::{Clone, Copy, Eq, Ord, Ordering, Display, Default};
+
+/// Dual number: value + derivative·ε
+///
+/// The `val` field holds the primal (actual) value.
+/// The `der` field holds the tangent (derivative) value.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct dual {
+    /// Primal value
+    pub val: f64,
+    /// Tangent (derivative) value
+    pub der: f64,
+}
+
+impl dual {
+    // =========================================================================
+    // Constructors
+    // =========================================================================
+
+    /// Create a constant (derivative = 0).
+    /// Use for values that don't need gradients.
+    #[inline]
+    pub fn constant(value: f64) -> dual {
+        dual { val: value, der: 0.0 }
+    }
+
+    /// Create a variable (derivative = 1).
+    /// Use for values you want to differentiate with respect to.
+    #[inline]
+    pub fn variable(value: f64) -> dual {
+        dual { val: value, der: 1.0 }
+    }
+
+    /// Create a dual number with explicit derivative.
+    #[inline]
+    pub fn new(val: f64, der: f64) -> dual {
+        dual { val, der }
+    }
+
+    /// Create zero.
+    #[inline]
+    pub fn zero() -> dual {
+        dual { val: 0.0, der: 0.0 }
+    }
+
+    /// Create one.
+    #[inline]
+    pub fn one() -> dual {
+        dual { val: 1.0, der: 0.0 }
+    }
+
+    // =========================================================================
+    // Arithmetic Operations
+    // =========================================================================
+
+    /// Addition: (a + bε) + (c + dε) = (a+c) + (b+d)ε
+    #[inline]
+    pub fn add(self, other: dual) -> dual {
+        dual {
+            val: self.val + other.val,
+            der: self.der + other.der,
+        }
+    }
+
+    /// Subtraction: (a + bε) - (c + dε) = (a-c) + (b-d)ε
+    #[inline]
+    pub fn sub(self, other: dual) -> dual {
+        dual {
+            val: self.val - other.val,
+            der: self.der - other.der,
+        }
+    }
+
+    /// Multiplication: (a + bε)(c + dε) = ac + (ad + bc)ε
+    /// Note: ε² = 0, so bdε² term vanishes
+    #[inline]
+    pub fn mul(self, other: dual) -> dual {
+        dual {
+            val: self.val * other.val,
+            der: self.val * other.der + self.der * other.val,
+        }
+    }
+
+    /// Division: (a + bε)/(c + dε) = a/c + (bc - ad)/c²·ε
+    #[inline]
+    pub fn div(self, other: dual) -> dual {
+        let val = self.val / other.val;
+        let der = (self.der * other.val - self.val * other.der) / (other.val * other.val);
+        dual { val, der }
+    }
+
+    /// Negation: -(a + bε) = -a + (-b)ε
+    #[inline]
+    pub fn neg(self) -> dual {
+        dual {
+            val: -self.val,
+            der: -self.der,
+        }
+    }
+
+    // =========================================================================
+    // Mathematical Functions
+    // =========================================================================
+
+    /// Exponential: exp(a + bε) = exp(a) + exp(a)·b·ε
+    #[inline]
+    pub fn exp(self) -> dual {
+        let e = self.val.exp();
+        dual {
+            val: e,
+            der: e * self.der,
+        }
+    }
+
+    /// Natural logarithm: ln(a + bε) = ln(a) + (b/a)ε
+    #[inline]
+    pub fn ln(self) -> dual {
+        dual {
+            val: self.val.ln(),
+            der: self.der / self.val,
+        }
+    }
+
+    /// Power: (a + bε)^n = a^n + n·a^(n-1)·b·ε
+    #[inline]
+    pub fn pow(self, n: dual) -> dual {
+        if n.der == 0.0 {
+            // Constant exponent: d/dx x^n = n·x^(n-1)
+            let val = self.val.powf(n.val);
+            let der = n.val * self.val.powf(n.val - 1.0) * self.der;
+            dual { val, der }
+        } else {
+            // Variable exponent: use exp(n·ln(x))
+            (n * self.ln()).exp()
+        }
+    }
+
+    /// Power with integer exponent
+    #[inline]
+    pub fn powi(self, n: i32) -> dual {
+        let val = self.val.powi(n);
+        let der = (n as f64) * self.val.powi(n - 1) * self.der;
+        dual { val, der }
+    }
+
+    /// Square root: sqrt(a + bε) = sqrt(a) + b/(2·sqrt(a))·ε
+    #[inline]
+    pub fn sqrt(self) -> dual {
+        let s = self.val.sqrt();
+        dual {
+            val: s,
+            der: self.der / (2.0 * s),
+        }
+    }
+
+    /// Sine: sin(a + bε) = sin(a) + cos(a)·b·ε
+    #[inline]
+    pub fn sin(self) -> dual {
+        dual {
+            val: self.val.sin(),
+            der: self.val.cos() * self.der,
+        }
+    }
+
+    /// Cosine: cos(a + bε) = cos(a) - sin(a)·b·ε
+    #[inline]
+    pub fn cos(self) -> dual {
+        dual {
+            val: self.val.cos(),
+            der: -self.val.sin() * self.der,
+        }
+    }
+
+    /// Tangent: tan(a + bε) = tan(a) + sec²(a)·b·ε
+    #[inline]
+    pub fn tan(self) -> dual {
+        let t = self.val.tan();
+        let sec2 = 1.0 + t * t;
+        dual {
+            val: t,
+            der: sec2 * self.der,
+        }
+    }
+
+    /// Hyperbolic sine
+    #[inline]
+    pub fn sinh(self) -> dual {
+        dual {
+            val: self.val.sinh(),
+            der: self.val.cosh() * self.der,
+        }
+    }
+
+    /// Hyperbolic cosine
+    #[inline]
+    pub fn cosh(self) -> dual {
+        dual {
+            val: self.val.cosh(),
+            der: self.val.sinh() * self.der,
+        }
+    }
+
+    /// Hyperbolic tangent (common activation function)
+    #[inline]
+    pub fn tanh(self) -> dual {
+        let t = self.val.tanh();
+        dual {
+            val: t,
+            der: (1.0 - t * t) * self.der,
+        }
+    }
+
+    /// Sigmoid: σ(x) = 1/(1 + e^(-x))
+    /// Derivative: σ'(x) = σ(x)·(1 - σ(x))
+    #[inline]
+    pub fn sigmoid(self) -> dual {
+        let s = 1.0 / (1.0 + (-self.val).exp());
+        dual {
+            val: s,
+            der: s * (1.0 - s) * self.der,
+        }
+    }
+
+    /// ReLU: max(0, x)
+    #[inline]
+    pub fn relu(self) -> dual {
+        if self.val > 0.0 {
+            self
+        } else {
+            dual::zero()
+        }
+    }
+
+    /// Leaky ReLU: max(αx, x) where α is small (e.g., 0.01)
+    #[inline]
+    pub fn leaky_relu(self, alpha: f64) -> dual {
+        if self.val > 0.0 {
+            self
+        } else {
+            dual {
+                val: alpha * self.val,
+                der: alpha * self.der,
+            }
+        }
+    }
+
+    /// Softplus: ln(1 + e^x) - smooth approximation to ReLU
+    #[inline]
+    pub fn softplus(self) -> dual {
+        let e = self.val.exp();
+        dual {
+            val: (1.0 + e).ln(),
+            der: e / (1.0 + e) * self.der,
+        }
+    }
+
+    /// Absolute value (subgradient at 0)
+    #[inline]
+    pub fn abs(self) -> dual {
+        if self.val >= 0.0 {
+            self
+        } else {
+            self.neg()
+        }
+    }
+
+    // =========================================================================
+    // Comparison Operations (returns dual for smooth gradients)
+    // =========================================================================
+
+    /// Smooth minimum using softmin
+    #[inline]
+    pub fn min(self, other: dual) -> dual {
+        if self.val <= other.val {
+            self
+        } else {
+            other
+        }
+    }
+
+    /// Smooth maximum using softmax
+    #[inline]
+    pub fn max(self, other: dual) -> dual {
+        if self.val >= other.val {
+            self
+        } else {
+            other
+        }
+    }
+
+    /// Clamp to range
+    #[inline]
+    pub fn clamp(self, min_val: f64, max_val: f64) -> dual {
+        self.max(dual::constant(min_val)).min(dual::constant(max_val))
+    }
+
+    // =========================================================================
+    // Utility Methods
+    // =========================================================================
+
+    /// Check if derivative is zero (constant)
+    #[inline]
+    pub fn is_constant(&self) -> bool {
+        self.der == 0.0
+    }
+
+    /// Get only the value, discarding derivative
+    #[inline]
+    pub fn value(&self) -> f64 {
+        self.val
+    }
+
+    /// Get only the derivative
+    #[inline]
+    pub fn derivative(&self) -> f64 {
+        self.der
+    }
+
+    /// Create a new dual with same value but zero derivative
+    #[inline]
+    pub fn detach(&self) -> dual {
+        dual::constant(self.val)
+    }
+}
+
+// =============================================================================
+// Operator Overloading
+// =============================================================================
+
+impl std::ops::Add for dual {
+    type Output = dual;
+    fn add(self, other: dual) -> dual { self.add(other) }
+}
+
+impl std::ops::Add<f64> for dual {
+    type Output = dual;
+    fn add(self, other: f64) -> dual { self.add(dual::constant(other)) }
+}
+
+impl std::ops::Sub for dual {
+    type Output = dual;
+    fn sub(self, other: dual) -> dual { self.sub(other) }
+}
+
+impl std::ops::Sub<f64> for dual {
+    type Output = dual;
+    fn sub(self, other: f64) -> dual { self.sub(dual::constant(other)) }
+}
+
+impl std::ops::Mul for dual {
+    type Output = dual;
+    fn mul(self, other: dual) -> dual { self.mul(other) }
+}
+
+impl std::ops::Mul<f64> for dual {
+    type Output = dual;
+    fn mul(self, other: f64) -> dual { self.mul(dual::constant(other)) }
+}
+
+impl std::ops::Div for dual {
+    type Output = dual;
+    fn div(self, other: dual) -> dual { self.div(other) }
+}
+
+impl std::ops::Div<f64> for dual {
+    type Output = dual;
+    fn div(self, other: f64) -> dual { self.div(dual::constant(other)) }
+}
+
+impl std::ops::Neg for dual {
+    type Output = dual;
+    fn neg(self) -> dual { self.neg() }
+}
+
+// =============================================================================
+// Trait Implementations
+// =============================================================================
+
+impl Default for dual {
+    fn default() -> dual {
+        dual::zero()
+    }
+}
+
+impl Display for dual {
+    fn fmt(&self) -> String {
+        if self.der == 0.0 {
+            format!("{}", self.val)
+        } else if self.der == 1.0 {
+            format!("{}+ε", self.val)
+        } else {
+            format!("{}+{}ε", self.val, self.der)
+        }
+    }
+}
+
+impl Eq for dual {
+    fn eq(&self, other: &dual) -> bool {
+        self.val == other.val && self.der == other.der
+    }
+}
+
+// =============================================================================
+// Vector Operations for Dual Numbers
+// =============================================================================
+
+/// Dot product of dual vectors
+pub fn dot(a: &[dual], b: &[dual]) -> dual {
+    assert!(a.len() == b.len(), "Vector lengths must match");
+    var result = dual::zero();
+    for i in 0..a.len() {
+        result = result + a[i] * b[i];
+    }
+    result
+}
+
+/// Sum of dual vector
+pub fn sum(v: &[dual]) -> dual {
+    var result = dual::zero();
+    for x in v {
+        result = result + *x;
+    }
+    result
+}
+
+/// Mean of dual vector
+pub fn mean(v: &[dual]) -> dual {
+    sum(v) / dual::constant(v.len() as f64)
+}
+
+/// Variance of dual vector
+pub fn variance(v: &[dual]) -> dual {
+    let m = mean(v);
+    var sum_sq = dual::zero();
+    for x in v {
+        let diff = *x - m;
+        sum_sq = sum_sq + diff * diff;
+    }
+    sum_sq / dual::constant(v.len() as f64)
+}
+
+/// Softmax of dual vector
+pub fn softmax(v: &[dual]) -> Vec<dual> {
+    // Find max for numerical stability
+    var max_val = v[0];
+    for x in v {
+        if x.val > max_val.val {
+            max_val = *x;
+        }
+    }
+
+    // Compute exp(x - max) for each element
+    var exps = Vec::new();
+    var sum_exp = dual::zero();
+    for x in v {
+        let e = (*x - max_val).exp();
+        exps.push(e);
+        sum_exp = sum_exp + e;
+    }
+
+    // Normalize
+    var result = Vec::new();
+    for e in exps.iter() {
+        result.push(*e / sum_exp);
+    }
+    result
+}

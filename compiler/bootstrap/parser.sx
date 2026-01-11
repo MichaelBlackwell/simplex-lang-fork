@@ -460,11 +460,13 @@ fn ast_match(scrutinee: i64, arms: i64) -> i64 {
     node
 }
 
-// Match arm: pattern(0), result(1)
-fn ast_match_arm(pattern: i64, result: i64) -> i64 {
-    let node: i64 = malloc(16);
+// Match arm: pattern(0), guard(1), result(2)
+// guard is 0 if no guard, otherwise an expression
+fn ast_match_arm(pattern: i64, guard: i64, result: i64) -> i64 {
+    let node: i64 = malloc(24);
     store_ptr(node, 0, pattern);
-    store_ptr(node, 1, result);
+    store_ptr(node, 1, guard);
+    store_ptr(node, 2, result);
     node
 }
 
@@ -1086,8 +1088,8 @@ fn parse_primary(parser: i64) -> i64 {
 
     // Parenthesized expression or closure: (expr) or (params) => body
     if parser_check(parser, TokenKind::LParen) {
-        // Check if this is a closure: () => body or (x: i64) => body
-        // Lookahead: if we see ) => or ident : after (, it's likely a closure
+        // Check if this is a closure: () => body, (x) => body, or (x: i64) => body
+        // Lookahead to determine if this is a closure
         let is_closure: bool = false;
 
         // () => body  - empty params closure
@@ -1096,7 +1098,21 @@ fn parse_primary(parser: i64) -> i64 {
                 is_closure = true;
             }
         }
-        // (ident : type) => body  - closure with params
+        // (ident) => body  - untyped single param closure
+        if parser_peek_check(parser, 1, TokenKind::Ident) {
+            if parser_peek_check(parser, 2, TokenKind::RParen) {
+                if parser_peek_check(parser, 3, TokenKind::FatArrow) {
+                    is_closure = true;
+                }
+            }
+        }
+        // (ident, ...) => body  - untyped multi param closure
+        if parser_peek_check(parser, 1, TokenKind::Ident) {
+            if parser_peek_check(parser, 2, TokenKind::Comma) {
+                is_closure = true;
+            }
+        }
+        // (ident : type) => body  - typed closure with params
         if parser_peek_check(parser, 1, TokenKind::Ident) {
             if parser_peek_check(parser, 2, TokenKind::Colon) {
                 is_closure = true;
@@ -1109,19 +1125,23 @@ fn parse_primary(parser: i64) -> i64 {
 
             // Parse params if not empty
             if parser_check(parser, TokenKind::RParen) == false {
-                // Parse first param: name : type
+                // Parse first param: name or name : type
                 let p_name_tok: i64 = parser_expect(parser, TokenKind::Ident);
                 let p_name: i64 = token_text(p_name_tok);
-                parser_expect(parser, TokenKind::Colon);
-                let p_type: i64 = parse_type(parser);
+                let p_type: i64 = 0;
+                if parser_match(parser, TokenKind::Colon) {
+                    p_type = parse_type(parser);
+                }
                 vec_push(params, ast_param(p_name, p_type));
 
                 // Parse more params
                 while parser_match(parser, TokenKind::Comma) {
                     let pn_tok: i64 = parser_expect(parser, TokenKind::Ident);
                     let pn: i64 = token_text(pn_tok);
-                    parser_expect(parser, TokenKind::Colon);
-                    let pt: i64 = parse_type(parser);
+                    let pt: i64 = 0;
+                    if parser_match(parser, TokenKind::Colon) {
+                        pt = parse_type(parser);
+                    }
                     vec_push(params, ast_param(pn, pt));
                 }
             }
@@ -1565,6 +1585,12 @@ fn parse_match(parser: i64) -> i64 {
             pattern = parse_expr(parser);
         }
 
+        // Parse optional guard: if condition
+        let guard: i64 = 0;
+        if parser_match(parser, TokenKind::KwIf) {
+            guard = parse_expr(parser);
+        }
+
         parser_expect(parser, TokenKind::FatArrow);
 
         // Parse arm result (could be block or expression)
@@ -1575,7 +1601,7 @@ fn parse_match(parser: i64) -> i64 {
             result = parse_expr(parser);
         }
 
-        vec_push(arms, ast_match_arm(pattern, result));
+        vec_push(arms, ast_match_arm(pattern, guard, result));
 
         // Optional comma between arms
         parser_match(parser, TokenKind::Comma);

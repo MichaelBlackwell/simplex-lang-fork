@@ -1,0 +1,774 @@
+// Inference Caching - Prompt and Response Caches
+//
+// Provides two complementary caching strategies:
+// 1. PromptCache: Caches tokenized prompt prefixes (system prompts, few-shot examples)
+// 2. ResponseCache: Caches complete responses for deterministic queries
+//
+// Both caches are OPTIONAL runtime enhancements. Simplex applications work without
+// them, but inference instances can enable caching for significant speedups.
+//
+// # Performance Impact
+//
+// - PromptCache: Saves ~10-50ms per request by avoiding re-tokenization
+// - ResponseCache: Saves 100-500ms+ by skipping inference entirely for cache hits
+//
+// # Thread Safety
+//
+// Both caches are fully thread-safe and can be shared across async tasks.
+//
+// # Implementation Notes
+//
+// Uses a doubly-linked list combined with HashMap for O(1) LRU operations:
+// - get(): O(1) lookup + O(1) move to head
+// - put(): O(1) insert + O(1) eviction if needed
+// - evict(): O(1) remove from tail
+
+use simplex_std::sync::{Arc, RwLock};
+use simplex_std::collections::HashMap;
+use simplex_std::time::now_unix_ms;
+use simplex_std::crypto::sha256;
+
+// =============================================================================
+// Cache Configuration
+// =============================================================================
+
+/// Configuration for response cache
+#[derive(Clone)]
+pub struct CacheConfig {
+    /// Maximum number of entries
+    pub capacity: usize,
+    /// Time-to-live in milliseconds (0 = no expiry)
+    pub ttl_ms: u64,
+    /// Enable LRU eviction (vs random eviction)
+    pub use_lru: bool,
+    /// Maximum value size in bytes (0 = no limit)
+    pub max_value_size: usize,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        CacheConfig {
+            capacity: 10000,
+            ttl_ms: 3600000, // 1 hour
+            use_lru: true,
+            max_value_size: 0,
+        }
+    }
+}
+
+impl CacheConfig {
+    /// Config for short-lived cache (e.g., deduplication within a batch)
+    pub fn short_lived() -> Self {
+        CacheConfig {
+            capacity: 1000,
+            ttl_ms: 60000, // 1 minute
+            use_lru: true,
+            max_value_size: 0,
+        }
+    }
+
+    /// Config for long-lived cache (e.g., common queries)
+    pub fn long_lived() -> Self {
+        CacheConfig {
+            capacity: 50000,
+            ttl_ms: 86400000, // 24 hours
+            use_lru: true,
+            max_value_size: 10240, // 10KB max
+        }
+    }
+
+    /// Config for unlimited cache (be careful with memory!)
+    pub fn unlimited() -> Self {
+        CacheConfig {
+            capacity: usize::MAX,
+            ttl_ms: 0,
+            use_lru: false,
+            max_value_size: 0,
+        }
+    }
+}
+
+// =============================================================================
+// LRU List - O(1) Doubly-Linked List for LRU Ordering
+// =============================================================================
+
+/// Node index in the LRU list (using indices instead of pointers for safety)
+type NodeIndex = usize;
+
+/// Sentinel values for list head/tail
+const NULL_INDEX: NodeIndex = usize::MAX;
+
+/// Doubly-linked list node for LRU ordering
+struct LruNode<K> {
+    key: K,
+    prev: NodeIndex,
+    next: NodeIndex,
+}
+
+/// O(1) LRU list using a doubly-linked list with index-based references
+struct LruList<K>
+where
+    K: Clone + Eq + std::hash::Hash,
+{
+    /// Nodes storage (uses indices instead of pointers)
+    nodes: Vec<LruNode<K>>,
+    /// Free list for recycling node slots
+    free_list: Vec<NodeIndex>,
+    /// Head of list (most recently used)
+    head: NodeIndex,
+    /// Tail of list (least recently used)
+    tail: NodeIndex,
+    /// Map from key to node index for O(1) lookup
+    key_to_index: HashMap<K, NodeIndex>,
+}
+
+impl<K> LruList<K>
+where
+    K: Clone + Eq + std::hash::Hash,
+{
+    fn new(capacity: usize) -> Self {
+        LruList {
+            nodes: Vec::with_capacity(capacity),
+            free_list: Vec::with_capacity(capacity / 4),
+            head: NULL_INDEX,
+            tail: NULL_INDEX,
+            key_to_index: HashMap::with_capacity(capacity),
+        }
+    }
+
+    /// Touch a key (move to front). Returns true if key exists.
+    fn touch(&mut self, key: &K) -> bool {
+        if let Some(&idx) = self.key_to_index.get(key) {
+            self.move_to_front(idx);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Insert a new key at the front. Returns the index.
+    fn insert(&mut self, key: K) -> NodeIndex {
+        // Check if key already exists
+        if let Some(&idx) = self.key_to_index.get(&key) {
+            self.move_to_front(idx);
+            return idx;
+        }
+
+        // Get or create a node slot
+        let idx = if let Some(free_idx) = self.free_list.pop() {
+            // Reuse freed slot
+            self.nodes[free_idx] = LruNode {
+                key: key.clone(),
+                prev: NULL_INDEX,
+                next: self.head,
+            };
+            free_idx
+        } else {
+            // Allocate new slot
+            let idx = self.nodes.len();
+            self.nodes.push(LruNode {
+                key: key.clone(),
+                prev: NULL_INDEX,
+                next: self.head,
+            });
+            idx
+        };
+
+        // Link to front
+        if self.head != NULL_INDEX {
+            self.nodes[self.head].prev = idx;
+        }
+        self.head = idx;
+
+        // Update tail if this is the first node
+        if self.tail == NULL_INDEX {
+            self.tail = idx;
+        }
+
+        self.key_to_index.insert(key, idx);
+        idx
+    }
+
+    /// Remove and return the least recently used key (from tail)
+    fn pop_lru(&mut self) -> Option<K> {
+        if self.tail == NULL_INDEX {
+            return None;
+        }
+
+        let idx = self.tail;
+        let key = self.nodes[idx].key.clone();
+
+        // Remove from key map
+        self.key_to_index.remove(&key);
+
+        // Update tail
+        let prev = self.nodes[idx].prev;
+        self.tail = prev;
+
+        if prev != NULL_INDEX {
+            self.nodes[prev].next = NULL_INDEX;
+        } else {
+            // List is now empty
+            self.head = NULL_INDEX;
+        }
+
+        // Add slot to free list for reuse
+        self.free_list.push(idx);
+
+        Some(key)
+    }
+
+    /// Remove a specific key. Returns true if it existed.
+    fn remove(&mut self, key: &K) -> bool {
+        if let Some(idx) = self.key_to_index.remove(key) {
+            self.unlink(idx);
+            self.free_list.push(idx);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Clear all entries
+    fn clear(&mut self) {
+        self.nodes.clear();
+        self.free_list.clear();
+        self.head = NULL_INDEX;
+        self.tail = NULL_INDEX;
+        self.key_to_index.clear();
+    }
+
+    /// Get number of entries
+    fn len(&self) -> usize {
+        self.key_to_index.len()
+    }
+
+    /// Check if empty
+    fn is_empty(&self) -> bool {
+        self.key_to_index.is_empty()
+    }
+
+    /// Move a node to the front (most recently used)
+    fn move_to_front(&mut self, idx: NodeIndex) {
+        if idx == self.head {
+            return; // Already at front
+        }
+
+        // Unlink from current position
+        self.unlink(idx);
+
+        // Link to front
+        self.nodes[idx].prev = NULL_INDEX;
+        self.nodes[idx].next = self.head;
+
+        if self.head != NULL_INDEX {
+            self.nodes[self.head].prev = idx;
+        }
+        self.head = idx;
+
+        if self.tail == NULL_INDEX {
+            self.tail = idx;
+        }
+    }
+
+    /// Unlink a node from the list (but don't free it)
+    fn unlink(&mut self, idx: NodeIndex) {
+        let prev = self.nodes[idx].prev;
+        let next = self.nodes[idx].next;
+
+        if prev != NULL_INDEX {
+            self.nodes[prev].next = next;
+        } else {
+            self.head = next;
+        }
+
+        if next != NULL_INDEX {
+            self.nodes[next].prev = prev;
+        } else {
+            self.tail = prev;
+        }
+    }
+}
+
+// =============================================================================
+// Prompt Cache - Cache Tokenized Prompts
+// =============================================================================
+
+/// Cache for tokenized prompt prefixes
+///
+/// Stores tokenized versions of frequently-used prompts (system prompts,
+/// few-shot examples, etc.) to avoid re-tokenization overhead.
+///
+/// Uses O(1) LRU eviction via doubly-linked list.
+///
+/// # Example
+///
+/// ```simplex
+/// let cache = PromptCache::new(100);
+///
+/// // Cache a system prompt
+/// let tokens = tokenize("You are a helpful assistant...");
+/// cache.put("system_default", tokens).await;
+///
+/// // Later, retrieve cached tokens
+/// if let Some(tokens) = cache.get("system_default").await {
+///     // Use cached tokens directly - no re-tokenization needed
+/// }
+/// ```
+pub struct PromptCache {
+    cache: Arc<RwLock<PromptCacheInner>>,
+    capacity: usize,
+}
+
+struct PromptCacheInner {
+    /// Map from prompt key to entry data
+    entries: HashMap<String, PromptEntry>,
+    /// LRU ordering for O(1) eviction
+    lru_list: LruList<String>,
+    /// Total token count for memory tracking
+    total_tokens: usize,
+    /// Cache statistics
+    stats: PromptCacheStats,
+}
+
+struct PromptEntry {
+    tokens: Vec<i32>,
+    created_at: u64,
+    access_count: u64,
+}
+
+#[derive(Default)]
+struct PromptCacheStats {
+    hits: u64,
+    misses: u64,
+    evictions: u64,
+}
+
+impl PromptCache {
+    /// Create a new prompt cache with the given capacity (number of entries)
+    pub fn new(capacity: usize) -> Self {
+        PromptCache {
+            cache: Arc::new(RwLock::new(PromptCacheInner {
+                entries: HashMap::with_capacity(capacity),
+                lru_list: LruList::new(capacity),
+                total_tokens: 0,
+                stats: PromptCacheStats::default(),
+            })),
+            capacity,
+        }
+    }
+
+    /// Get cached tokens for a prompt key - O(1)
+    pub async fn get(&self, key: &str) -> Option<Vec<i32>> {
+        let mut cache = self.cache.write().await;
+
+        if let Some(entry) = cache.entries.get_mut(key) {
+            // O(1) move to front of LRU list
+            cache.lru_list.touch(&key.to_string());
+            entry.access_count += 1;
+            cache.stats.hits += 1;
+            return Some(entry.tokens.clone());
+        }
+
+        cache.stats.misses += 1;
+        None
+    }
+
+    /// Cache tokens for a prompt key - O(1)
+    pub async fn put(&self, key: &str, tokens: Vec<i32>) {
+        let mut cache = self.cache.write().await;
+        let key_string = key.to_string();
+
+        // Evict if at capacity - O(1)
+        if cache.entries.len() >= self.capacity && !cache.entries.contains_key(key) {
+            if let Some(evicted_key) = cache.lru_list.pop_lru() {
+                if let Some(entry) = cache.entries.remove(&evicted_key) {
+                    cache.total_tokens -= entry.tokens.len();
+                    cache.stats.evictions += 1;
+                }
+            }
+        }
+
+        let token_count = tokens.len();
+
+        // Update or insert
+        if let Some(existing) = cache.entries.get_mut(key) {
+            cache.total_tokens -= existing.tokens.len();
+            cache.total_tokens += token_count;
+            existing.tokens = tokens;
+            // O(1) move to front
+            cache.lru_list.touch(&key_string);
+        } else {
+            cache.total_tokens += token_count;
+            cache.entries.insert(key_string.clone(), PromptEntry {
+                tokens,
+                created_at: now_unix_ms(),
+                access_count: 0,
+            });
+            // O(1) insert at front
+            cache.lru_list.insert(key_string);
+        }
+    }
+
+    /// Check if a key exists in cache
+    pub async fn contains(&self, key: &str) -> bool {
+        self.cache.read().await.entries.contains_key(key)
+    }
+
+    /// Remove a specific entry - O(1)
+    pub async fn remove(&self, key: &str) -> Option<Vec<i32>> {
+        let mut cache = self.cache.write().await;
+        let key_string = key.to_string();
+
+        if let Some(entry) = cache.entries.remove(key) {
+            cache.lru_list.remove(&key_string);
+            cache.total_tokens -= entry.tokens.len();
+            return Some(entry.tokens);
+        }
+
+        None
+    }
+
+    /// Clear all entries
+    pub async fn clear(&self) {
+        let mut cache = self.cache.write().await;
+        cache.entries.clear();
+        cache.lru_list.clear();
+        cache.total_tokens = 0;
+    }
+
+    /// Get cache statistics
+    pub async fn stats(&self) -> CacheStats {
+        let cache = self.cache.read().await;
+
+        CacheStats {
+            entries: cache.entries.len(),
+            capacity: self.capacity,
+            total_tokens: cache.total_tokens,
+            hits: cache.stats.hits,
+            misses: cache.stats.misses,
+            evictions: cache.stats.evictions,
+        }
+    }
+}
+
+// =============================================================================
+// Response Cache - Cache Complete Responses
+// =============================================================================
+
+/// Generic response cache with TTL support
+///
+/// Caches complete responses for deterministic queries. Useful for:
+/// - Greeting responses
+/// - Simple factual queries
+/// - Frequently asked questions
+///
+/// Uses O(1) LRU eviction via doubly-linked list.
+///
+/// # Type Parameters
+///
+/// - `K`: Key type (typically String or query hash)
+/// - `V`: Value type (typically String or response struct)
+///
+/// # Example
+///
+/// ```simplex
+/// let cache = ResponseCache::new(CacheConfig::default());
+///
+/// // Cache a response
+/// cache.put("greeting_morning".to_string(), "Good morning! How can I help you?".to_string()).await;
+///
+/// // Later, check cache before inference
+/// if let Some(response) = cache.get(&"greeting_morning".to_string()).await {
+///     return response; // Skip inference entirely!
+/// }
+/// ```
+pub struct ResponseCache<K, V>
+where
+    K: Eq + std::hash::Hash + Clone + Send + Sync,
+    V: Clone + Send + Sync,
+{
+    cache: Arc<RwLock<ResponseCacheInner<K, V>>>,
+    config: CacheConfig,
+}
+
+struct ResponseCacheInner<K, V>
+where
+    K: Clone + Eq + std::hash::Hash,
+{
+    entries: HashMap<K, CacheEntry<V>>,
+    /// LRU ordering for O(1) eviction
+    lru_list: LruList<K>,
+    stats: CacheStatsInternal,
+}
+
+struct CacheEntry<V> {
+    value: V,
+    created_at: u64,
+    access_count: u64,
+    expires_at: u64,
+}
+
+#[derive(Default)]
+struct CacheStatsInternal {
+    hits: u64,
+    misses: u64,
+    evictions: u64,
+    expired: u64,
+}
+
+impl<K, V> ResponseCache<K, V>
+where
+    K: Eq + std::hash::Hash + Clone + Send + Sync + 'static,
+    V: Clone + Send + Sync + 'static,
+{
+    /// Create a new response cache with the given configuration
+    pub fn new(config: CacheConfig) -> Self {
+        let capacity = config.capacity.min(10000);
+        ResponseCache {
+            cache: Arc::new(RwLock::new(ResponseCacheInner {
+                entries: HashMap::with_capacity(capacity),
+                lru_list: LruList::new(capacity),
+                stats: CacheStatsInternal::default(),
+            })),
+            config,
+        }
+    }
+
+    /// Get a cached response - O(1)
+    pub async fn get(&self, key: &K) -> Option<V> {
+        let mut cache = self.cache.write().await;
+        let now = now_unix_ms();
+
+        if let Some(entry) = cache.entries.get_mut(key) {
+            // Check expiry
+            if self.config.ttl_ms > 0 && now > entry.expires_at {
+                cache.lru_list.remove(key);
+                cache.entries.remove(key);
+                cache.stats.expired += 1;
+                cache.stats.misses += 1;
+                return None;
+            }
+
+            // O(1) move to front
+            cache.lru_list.touch(key);
+            entry.access_count += 1;
+            cache.stats.hits += 1;
+            return Some(entry.value.clone());
+        }
+
+        cache.stats.misses += 1;
+        None
+    }
+
+    /// Cache a response - O(1)
+    pub async fn put(&self, key: K, value: V) {
+        let mut cache = self.cache.write().await;
+        let now = now_unix_ms();
+
+        // O(1) eviction if at capacity
+        if cache.entries.len() >= self.config.capacity && !cache.entries.contains_key(&key) {
+            if let Some(evicted_key) = cache.lru_list.pop_lru() {
+                cache.entries.remove(&evicted_key);
+                cache.stats.evictions += 1;
+            }
+        }
+
+        let expires_at = if self.config.ttl_ms > 0 {
+            now + self.config.ttl_ms
+        } else {
+            u64::MAX
+        };
+
+        if cache.entries.contains_key(&key) {
+            // Update existing - O(1) touch
+            cache.lru_list.touch(&key);
+        } else {
+            // Insert new - O(1) insert at front
+            cache.lru_list.insert(key.clone());
+        }
+
+        cache.entries.insert(key, CacheEntry {
+            value,
+            created_at: now,
+            access_count: 0,
+            expires_at,
+        });
+    }
+
+    /// Cache a response with custom TTL (overrides config) - O(1)
+    pub async fn put_with_ttl(&self, key: K, value: V, ttl_ms: u64) {
+        let mut cache = self.cache.write().await;
+        let now = now_unix_ms();
+
+        // O(1) eviction if at capacity
+        if cache.entries.len() >= self.config.capacity && !cache.entries.contains_key(&key) {
+            if let Some(evicted_key) = cache.lru_list.pop_lru() {
+                cache.entries.remove(&evicted_key);
+                cache.stats.evictions += 1;
+            }
+        }
+
+        if cache.entries.contains_key(&key) {
+            cache.lru_list.touch(&key);
+        } else {
+            cache.lru_list.insert(key.clone());
+        }
+
+        cache.entries.insert(key, CacheEntry {
+            value,
+            created_at: now,
+            access_count: 0,
+            expires_at: now + ttl_ms,
+        });
+    }
+
+    /// Check if a key exists and is not expired
+    pub async fn contains(&self, key: &K) -> bool {
+        let cache = self.cache.read().await;
+
+        if let Some(entry) = cache.entries.get(key) {
+            if self.config.ttl_ms == 0 {
+                return true;
+            }
+            return now_unix_ms() <= entry.expires_at;
+        }
+
+        false
+    }
+
+    /// Remove a specific entry - O(1)
+    pub async fn remove(&self, key: &K) -> Option<V> {
+        let mut cache = self.cache.write().await;
+        cache.lru_list.remove(key);
+        cache.entries.remove(key).map(|e| e.value)
+    }
+
+    /// Clear all entries
+    pub async fn clear(&self) {
+        let mut cache = self.cache.write().await;
+        cache.entries.clear();
+        cache.lru_list.clear();
+    }
+
+    /// Remove all expired entries
+    ///
+    /// Note: This operation is O(n) where n is the number of entries.
+    /// For high-frequency cleanup, consider using TTL-based eviction
+    /// on access instead.
+    pub async fn cleanup_expired(&self) -> usize {
+        let mut cache = self.cache.write().await;
+        let now = now_unix_ms();
+
+        if self.config.ttl_ms == 0 {
+            return 0; // No TTL configured
+        }
+
+        // Collect expired keys
+        let expired_keys: Vec<K> = cache.entries.iter()
+            .filter(|(_, entry)| now > entry.expires_at)
+            .map(|(k, _)| k.clone())
+            .collect();
+
+        let removed = expired_keys.len();
+
+        // Remove from both HashMap and LRU list
+        for key in expired_keys {
+            cache.entries.remove(&key);
+            cache.lru_list.remove(&key);
+        }
+
+        cache.stats.expired += removed as u64;
+        removed
+    }
+
+    /// Get cache statistics
+    pub async fn stats(&self) -> CacheStats {
+        let cache = self.cache.read().await;
+
+        CacheStats {
+            entries: cache.entries.len(),
+            capacity: self.config.capacity,
+            total_tokens: 0, // N/A for response cache
+            hits: cache.stats.hits,
+            misses: cache.stats.misses,
+            evictions: cache.stats.evictions,
+        }
+    }
+
+    /// Get hit rate (0.0 - 1.0)
+    pub async fn hit_rate(&self) -> f64 {
+        let cache = self.cache.read().await;
+        let total = cache.stats.hits + cache.stats.misses;
+
+        if total == 0 {
+            0.0
+        } else {
+            cache.stats.hits as f64 / total as f64
+        }
+    }
+
+    // Note: The old O(n) evict() method has been removed.
+    // Eviction is now handled inline in put() and put_with_ttl() using the O(1) LRU list.
+}
+
+// =============================================================================
+// Shared Types
+// =============================================================================
+
+/// Cache statistics
+#[derive(Clone, Default)]
+pub struct CacheStats {
+    /// Number of entries currently in cache
+    pub entries: usize,
+    /// Maximum capacity
+    pub capacity: usize,
+    /// Total tokens stored (PromptCache only)
+    pub total_tokens: usize,
+    /// Cache hits
+    pub hits: u64,
+    /// Cache misses
+    pub misses: u64,
+    /// Entries evicted due to capacity
+    pub evictions: u64,
+}
+
+impl CacheStats {
+    /// Cache utilization (0.0 - 1.0)
+    pub fn utilization(&self) -> f64 {
+        if self.capacity == 0 {
+            0.0
+        } else {
+            self.entries as f64 / self.capacity as f64
+        }
+    }
+
+    /// Hit rate (0.0 - 1.0)
+    pub fn hit_rate(&self) -> f64 {
+        let total = self.hits + self.misses;
+        if total == 0 {
+            0.0
+        } else {
+            self.hits as f64 / total as f64
+        }
+    }
+}
+
+// =============================================================================
+// Convenience Functions
+// =============================================================================
+
+/// Compute a cache key from arbitrary content using SHA256
+pub fn compute_cache_key(content: &str) -> String {
+    hex_encode(&sha256(content.as_bytes()))
+}
+
+/// Compute a cache key from multiple parts
+pub fn compute_cache_key_multi(parts: &[&str]) -> String {
+    let combined = parts.join("\x00");
+    compute_cache_key(&combined)
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}

@@ -1,6 +1,6 @@
 # Simplex Language Syntax
 
-**Version 0.4.0**
+**Version 0.9.0**
 
 Complete syntax reference for the Simplex programming language.
 
@@ -169,6 +169,72 @@ let batch: Tensor<f32, [32, 3, 224, 224]> = stack_images(images)
 let similarity = dot(embedding1, embedding2)
 let normalized = normalize(embedding)
 ```
+
+### Dual Numbers (v0.8.0)
+
+![Dual Numbers](../diagrams/dual-numbers.svg)
+
+Native forward-mode automatic differentiation using dual numbers:
+
+```
+a + bε   where ε² = 0
+```
+
+- `a` = the computed value
+- `b` = the derivative (gradient)
+- `ε` = infinitesimal (nilpotent element)
+
+This representation computes both values and derivatives in a single forward pass.
+
+```simplex
+// First-order dual number
+let x: dual = dual::variable(3.0);   // value=3, derivative seed=1
+let c: dual = dual::constant(2.0);   // value=2, derivative=0
+
+// Arithmetic propagates derivatives automatically
+let y = x * x + c * x;               // y.val = 15, y.der = 8 (= 2x + 2)
+
+// All transcendental functions are differentiable
+let z = x.sin() + x.exp();           // Chain rule applied automatically
+
+// Access value and derivative
+println(y.val);  // Function value
+println(y.der);  // Derivative at x=3
+
+// Multi-dimensional gradients
+let dx = multidual::<3>::variable(x, 0);  // ∂/∂x
+let dy = multidual::<3>::variable(y, 1);  // ∂/∂y
+let result = dx * dx * dy;
+let gradient = result.gradient();          // [2xy, x², 0]
+
+// Higher-order derivatives
+let d2 = dual2::variable(x);
+let h = d2 * d2 * d2;                      // x³
+// h.val = x³, h.d1 = 3x², h.d2 = 6x
+```
+
+#### Meta-Gradient Applications (v0.9.0)
+
+Dual numbers power self-learning annealing in neural gates. The meta-gradient `∂Loss/∂τ` automatically controls temperature schedules:
+
+```simplex
+use simplex::optimize::anneal::{LearnableSchedule, MetaOptimizer};
+
+// Temperature as dual number enables meta-gradient computation
+let temp: dual = dual::variable(1.0);
+let loss = train_with_temperature(model, data, temp);
+
+// Meta-gradient tells us: heat up or cool down?
+if loss.der > 0.0 {
+    // Positive: re-heat to escape local minimum
+} else {
+    // Negative: continue cooling toward solution
+}
+```
+
+For simple problems, temperature smoothly decreases. For complex patterns, the meta-gradient detects when the system is stuck in local minima and automatically triggers re-heating to escape.
+
+See [Meta-Gradient Temperature Control](09-cognitive-hive.md#meta-gradient-temperature-control) for the full explanation with diagrams.
 
 ---
 

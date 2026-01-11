@@ -1,12 +1,14 @@
 # Getting Started with Simplex
 
-**Version 0.1.0**
+**Version 0.9.0**
 
 A quick introduction to writing and running Simplex programs.
 
 ---
 
 ## Installation
+
+### Pre-built Binaries (Coming Soon)
 
 ```bash
 # macOS
@@ -17,17 +19,41 @@ curl -fsSL https://simplex-lang.org/install.sh | sh
 
 # Windows
 winget install simplex
+```
 
-# From source
+### Building from Source
+
+The Simplex toolchain is **fully cross-platform** and can be bootstrapped on macOS, Linux, and Windows.
+
+#### Prerequisites
+
+| Platform | Requirements |
+|----------|-------------|
+| **macOS** | Xcode Command Line Tools, Python 3 |
+| **Linux** | clang or gcc, Python 3 |
+| **Windows** | Visual Studio Build Tools or LLVM/Clang, Python 3 |
+
+#### Bootstrap Process
+
+```bash
+# Clone repository
 git clone https://github.com/simplex-lang/simplex
-cd simplex && cargo install --path .
+cd simplex
+
+# Bootstrap the compiler (works on all platforms)
+python3 stage0.py compiler/bootstrap/codegen.sx -o sxc-compile
+
+# Build tools
+./sxc build tools/sxpm.sx -o sxpm
+./sxc build tools/cursus.sx -o cursus
+./sxc build tools/sxdoc.sx -o sxdoc
 ```
 
 Verify installation:
 
 ```bash
-simplex --version
-# simplex 0.1.0
+./sxc version
+# sxc 0.9.0
 ```
 
 ---

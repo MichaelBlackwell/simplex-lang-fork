@@ -1,0 +1,246 @@
+// HTTP Middleware chain
+
+use crate::request::Request;
+use crate::response::Response;
+
+/// Middleware trait
+pub trait Middleware: Send + Sync {
+    /// Called before request handling
+    async fn before(&self, request: &mut Request) -> Result<(), Response>;
+
+    /// Called after request handling
+    async fn after(&self, response: &mut Response);
+}
+
+/// Middleware chain
+pub struct Chain {
+    pub pre: Vec<Box<dyn Middleware>>,
+    pub post: Vec<Box<dyn Middleware>>,
+}
+
+impl Chain {
+    pub fn new() -> Self {
+        Chain {
+            pre: Vec::new(),
+            post: Vec::new(),
+        }
+    }
+
+    pub fn add<M: Middleware + 'static>(mut self, mw: M) -> Self {
+        let boxed = Box::new(mw);
+        self.pre.push(boxed.clone());
+        self.post.push(boxed);
+        self
+    }
+
+    pub fn add_pre<M: Middleware + 'static>(mut self, mw: M) -> Self {
+        self.pre.push(Box::new(mw));
+        self
+    }
+
+    pub fn add_post<M: Middleware + 'static>(mut self, mw: M) -> Self {
+        self.post.push(Box::new(mw));
+        self
+    }
+}
+
+/// Logging middleware
+pub struct LoggingMiddleware {
+    pub log_headers: bool,
+    pub log_body: bool,
+}
+
+impl LoggingMiddleware {
+    pub fn new() -> Self {
+        LoggingMiddleware {
+            log_headers: false,
+            log_body: false,
+        }
+    }
+
+    pub fn with_headers(mut self) -> Self {
+        self.log_headers = true;
+        self
+    }
+}
+
+impl Middleware for LoggingMiddleware {
+    async fn before(&self, request: &mut Request) -> Result<(), Response> {
+        let timestamp = simplex_std::time::now_utc().format("%Y-%m-%d %H:%M:%S");
+        println(f"[{timestamp}] {} {} ", request.method.as_str(), request.path);
+
+        if self.log_headers {
+            for (k, v) in request.headers.iter() {
+                println(f"  {k}: {v}");
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn after(&self, response: &mut Response) {
+        println(f"  -> {}", response.status.code());
+    }
+}
+
+/// Rate limiting middleware
+pub struct RateLimitMiddleware {
+    requests_per_second: u32,
+    burst: u32,
+    store: Arc<RwLock<HashMap<String, RateLimitState>>>,
+}
+
+struct RateLimitState {
+    tokens: f64,
+    last_update: Instant,
+}
+
+impl RateLimitMiddleware {
+    pub fn new(requests_per_second: u32) -> Self {
+        RateLimitMiddleware {
+            requests_per_second,
+            burst: requests_per_second * 2,
+            store: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    pub fn burst(mut self, burst: u32) -> Self {
+        self.burst = burst;
+        self
+    }
+
+    fn get_client_key(request: &Request) -> String {
+        // Use IP from X-Forwarded-For or connection
+        request.header("x-forwarded-for")
+            .and_then(|h| h.split(',').next())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|| "unknown".to_string())
+    }
+}
+
+impl Middleware for RateLimitMiddleware {
+    async fn before(&self, request: &mut Request) -> Result<(), Response> {
+        let key = Self::get_client_key(request);
+        let now = Instant::now();
+
+        let mut store = self.store.write().await;
+        let state = store.entry(key).or_insert(RateLimitState {
+            tokens: self.burst as f64,
+            last_update: now,
+        });
+
+        // Refill tokens
+        let elapsed = now.duration_since(state.last_update).as_secs_f64();
+        state.tokens = (state.tokens + elapsed * self.requests_per_second as f64)
+            .min(self.burst as f64);
+        state.last_update = now;
+
+        // Check rate limit
+        if state.tokens >= 1.0 {
+            state.tokens -= 1.0;
+            Ok(())
+        } else {
+            let retry_after = ((1.0 - state.tokens) / self.requests_per_second as f64).ceil() as u32;
+            Err(Response::error(StatusCode::TooManyRequests, "Rate limit exceeded".to_string())
+                .header("Retry-After", &retry_after.to_string()))
+        }
+    }
+
+    async fn after(&self, _response: &mut Response) {
+        // No-op
+    }
+}
+
+/// Request timeout middleware
+pub struct TimeoutMiddleware {
+    timeout_ms: u64,
+}
+
+impl TimeoutMiddleware {
+    pub fn new(timeout_ms: u64) -> Self {
+        TimeoutMiddleware { timeout_ms }
+    }
+}
+
+impl Middleware for TimeoutMiddleware {
+    async fn before(&self, request: &mut Request) -> Result<(), Response> {
+        request.headers.insert(
+            "x-request-timeout".to_string(),
+            self.timeout_ms.to_string(),
+        );
+        Ok(())
+    }
+
+    async fn after(&self, _response: &mut Response) {
+        // Timeout handled at server level
+    }
+}
+
+/// Compression middleware
+pub struct CompressionMiddleware {
+    min_size: usize,
+}
+
+impl CompressionMiddleware {
+    pub fn new() -> Self {
+        CompressionMiddleware {
+            min_size: 1024,  // Only compress responses > 1KB
+        }
+    }
+}
+
+impl Middleware for CompressionMiddleware {
+    async fn before(&self, _request: &mut Request) -> Result<(), Response> {
+        Ok(())
+    }
+
+    async fn after(&self, response: &mut Response) {
+        if let Some(ref body) = response.body {
+            if body.len() >= self.min_size {
+                // Add compression (gzip)
+                if let Ok(compressed) = gzip_compress(body) {
+                    if compressed.len() < body.len() {
+                        response.body = Some(compressed);
+                        response.headers.insert(
+                            "Content-Encoding".to_string(),
+                            "gzip".to_string(),
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn gzip_compress(data: &[u8]) -> Result<Vec<u8>, CompressionError> {
+    // Use Simplex std compression
+    simplex_std::compress::gzip(data)
+}
+
+/// Security headers middleware
+pub struct SecurityHeadersMiddleware;
+
+impl Middleware for SecurityHeadersMiddleware {
+    async fn before(&self, _request: &mut Request) -> Result<(), Response> {
+        Ok(())
+    }
+
+    async fn after(&self, response: &mut Response) {
+        response.headers.insert(
+            "X-Content-Type-Options".to_string(),
+            "nosniff".to_string(),
+        );
+        response.headers.insert(
+            "X-Frame-Options".to_string(),
+            "DENY".to_string(),
+        );
+        response.headers.insert(
+            "X-XSS-Protection".to_string(),
+            "1; mode=block".to_string(),
+        );
+        response.headers.insert(
+            "Referrer-Policy".to_string(),
+            "strict-origin-when-cross-origin".to_string(),
+        );
+    }
+}

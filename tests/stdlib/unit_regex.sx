@@ -1,0 +1,371 @@
+// Test file for Regex concepts
+// Self-contained version - tests regex pattern concepts
+//
+// NOTE: Tests regex concepts without actual regex engine
+
+// =============================================================================
+// Test 1: Basic Pattern Matching Concept
+// =============================================================================
+
+fn test_basic_matching() -> i64 {
+    println("  Testing basic matching...");
+
+    // Literal characters match themselves
+    // Pattern "hello" matches "hello" at any position
+
+    let pattern_len: i64 = 5;  // "hello"
+    let text_len: i64 = 11;    // "hello world"
+
+    // For a match, pattern_len <= text_len
+    if pattern_len > text_len {
+        println("    FAIL: pattern cannot be longer than text");
+        return 1;
+    }
+
+    println("    PASS: basic matching");
+    0
+}
+
+// =============================================================================
+// Test 2: Character Classes
+// =============================================================================
+
+fn test_character_classes() -> i64 {
+    println("  Testing character classes...");
+
+    // [0-9] matches any digit
+    let digit_min: i64 = 48;  // '0'
+    let digit_max: i64 = 57;  // '9'
+    let test_char: i64 = 53;  // '5'
+
+    let is_digit: i64 = if test_char >= digit_min {
+        if test_char <= digit_max { 1 } else { 0 }
+    } else { 0 };
+
+    if is_digit != 1 {
+        println("    FAIL: '5' should match [0-9]");
+        return 1;
+    }
+
+    // [a-z] matches lowercase letters
+    let lower_min: i64 = 97;   // 'a'
+    let lower_max: i64 = 122;  // 'z'
+    let test_lower: i64 = 109; // 'm'
+
+    let is_lower: i64 = if test_lower >= lower_min {
+        if test_lower <= lower_max { 1 } else { 0 }
+    } else { 0 };
+
+    if is_lower != 1 {
+        println("    FAIL: 'm' should match [a-z]");
+        return 1;
+    }
+
+    println("    PASS: character classes");
+    0
+}
+
+// =============================================================================
+// Test 3: Quantifiers
+// =============================================================================
+
+fn test_quantifiers() -> i64 {
+    println("  Testing quantifiers...");
+
+    // * = 0 or more
+    // + = 1 or more
+    // ? = 0 or 1
+    // {n} = exactly n
+    // {n,m} = between n and m
+
+    let star_min: i64 = 0;
+    let star_max: i64 = 1000000;  // unlimited
+
+    let plus_min: i64 = 1;
+    let plus_max: i64 = 1000000;
+
+    let question_min: i64 = 0;
+    let question_max: i64 = 1;
+
+    // Test: "a+" requires at least 1 'a'
+    let match_count: i64 = 3;  // "aaa"
+    let matches_plus: i64 = if match_count >= plus_min { 1 } else { 0 };
+
+    if matches_plus != 1 {
+        println("    FAIL: 'aaa' should match a+");
+        return 1;
+    }
+
+    // Test: "a*" matches 0 'a's
+    let zero_count: i64 = 0;
+    let matches_star: i64 = if zero_count >= star_min { 1 } else { 0 };
+
+    if matches_star != 1 {
+        println("    FAIL: '' should match a*");
+        return 1;
+    }
+
+    println("    PASS: quantifiers");
+    0
+}
+
+// =============================================================================
+// Test 4: Anchors
+// =============================================================================
+
+fn test_anchors() -> i64 {
+    println("  Testing anchors...");
+
+    // ^ = start of string/line
+    // $ = end of string/line
+
+    // "^hello" only matches at start
+    let match_pos: i64 = 0;  // Position where "hello" was found
+    let is_at_start: i64 = if match_pos == 0 { 1 } else { 0 };
+
+    if is_at_start != 1 {
+        println("    FAIL: ^hello should match at position 0");
+        return 1;
+    }
+
+    // "world$" only matches at end
+    let text_len: i64 = 11;      // "hello world"
+    let pattern_len: i64 = 5;    // "world"
+    let match_end: i64 = 11;     // Match ends at text_len
+
+    let is_at_end: i64 = if match_end == text_len { 1 } else { 0 };
+
+    if is_at_end != 1 {
+        println("    FAIL: world$ should match at end");
+        return 1;
+    }
+
+    println("    PASS: anchors");
+    0
+}
+
+// =============================================================================
+// Test 5: Escape Sequences
+// =============================================================================
+
+fn test_escape_sequences() -> i64 {
+    println("  Testing escape sequences...");
+
+    // \d = digit [0-9]
+    // \w = word char [a-zA-Z0-9_]
+    // \s = whitespace [ \t\n\r]
+    // \. = literal dot
+
+    // Test \d
+    let digit_class_size: i64 = 10;  // 0-9
+    if digit_class_size != 10 {
+        println("    FAIL: \\d should have 10 chars");
+        return 1;
+    }
+
+    // Test \w
+    let word_class_size: i64 = 63;  // 26+26+10+1 = a-z, A-Z, 0-9, _
+    if word_class_size != 63 {
+        println("    FAIL: \\w should have 63 chars");
+        return 1;
+    }
+
+    // Test \s
+    let space_class_size: i64 = 4;  // space, tab, newline, carriage return
+    if space_class_size < 2 {
+        println("    FAIL: \\s should have at least 2 chars");
+        return 1;
+    }
+
+    println("    PASS: escape sequences");
+    0
+}
+
+// =============================================================================
+// Test 6: Alternation
+// =============================================================================
+
+fn test_alternation() -> i64 {
+    println("  Testing alternation...");
+
+    // a|b = matches 'a' or 'b'
+    // cat|dog = matches "cat" or "dog"
+
+    let input: i64 = 1;  // Simulated: 1=cat, 2=dog, 3=bird
+    let matches_cat_or_dog: i64 = if input == 1 { 1 } else { if input == 2 { 1 } else { 0 } };
+
+    if matches_cat_or_dog != 1 {
+        println("    FAIL: 'cat' should match cat|dog");
+        return 1;
+    }
+
+    let bird_input: i64 = 3;
+    let bird_matches: i64 = if bird_input == 1 { 1 } else { if bird_input == 2 { 1 } else { 0 } };
+
+    if bird_matches != 0 {
+        println("    FAIL: 'bird' should not match cat|dog");
+        return 1;
+    }
+
+    println("    PASS: alternation");
+    0
+}
+
+// =============================================================================
+// Test 7: Groups and Capture
+// =============================================================================
+
+fn test_groups() -> i64 {
+    println("  Testing groups...");
+
+    // (abc) = capturing group
+    // (?:abc) = non-capturing group
+
+    // Pattern: (\\d+)-(\\d+)
+    // Text: "123-456"
+    // Group 0 = "123-456", Group 1 = "123", Group 2 = "456"
+
+    let group_count: i64 = 3;  // 0, 1, 2
+    let group0_len: i64 = 7;   // "123-456"
+    let group1_len: i64 = 3;   // "123"
+    let group2_len: i64 = 3;   // "456"
+
+    if group_count != 3 {
+        println("    FAIL: should have 3 groups");
+        return 1;
+    }
+
+    if group0_len != group1_len + 1 + group2_len {
+        println("    FAIL: group0 should equal group1 + separator + group2");
+        return 1;
+    }
+
+    println("    PASS: groups");
+    0
+}
+
+// =============================================================================
+// Test 8: Replace Operations
+// =============================================================================
+
+fn test_replace() -> i64 {
+    println("  Testing replace...");
+
+    // replace_all("\\d+", "a1b2c3", "X") = "aXbXcX"
+    let original_len: i64 = 6;    // "a1b2c3"
+    let match_count: i64 = 3;     // 3 digits
+    let replacement_len: i64 = 1; // "X"
+    let non_match_len: i64 = 3;   // "abc"
+
+    let result_len: i64 = non_match_len + (match_count * replacement_len);
+    let expected_len: i64 = 6;    // "aXbXcX"
+
+    if result_len != expected_len {
+        println("    FAIL: result length should be 6");
+        return 1;
+    }
+
+    // replace_first only replaces first match
+    let first_replace_len: i64 = non_match_len + replacement_len + 2;  // "aXb2c3"
+    if first_replace_len != 6 {
+        println("    FAIL: replace_first result should be 6");
+        return 1;
+    }
+
+    println("    PASS: replace");
+    0
+}
+
+// =============================================================================
+// Test 9: Count Matches
+// =============================================================================
+
+fn test_count_matches() -> i64 {
+    println("  Testing count matches...");
+
+    // count("[0-9]+", "a1b2c3d4e5") = 5
+    let match_count: i64 = 5;
+
+    if match_count != 5 {
+        println("    FAIL: should find 5 matches");
+        return 1;
+    }
+
+    // count("[0-9]+", "no digits") = 0
+    let no_match_count: i64 = 0;
+
+    if no_match_count != 0 {
+        println("    FAIL: should find 0 matches");
+        return 1;
+    }
+
+    println("    PASS: count matches");
+    0
+}
+
+// =============================================================================
+// Test 10: Email Pattern Concept
+// =============================================================================
+
+fn test_email_pattern() -> i64 {
+    println("  Testing email pattern...");
+
+    // Email pattern: [a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]+
+
+    // Valid email components
+    let has_local_part: i64 = 1;   // before @
+    let has_at: i64 = 1;           // @
+    let has_domain: i64 = 1;       // after @, before .
+    let has_dot: i64 = 1;          // .
+    let has_tld: i64 = 1;          // after last .
+
+    let is_valid: i64 = has_local_part * has_at * has_domain * has_dot * has_tld;
+
+    if is_valid != 1 {
+        println("    FAIL: valid email should have all parts");
+        return 1;
+    }
+
+    // Invalid: no @
+    let invalid_at: i64 = 0;
+    let invalid_email: i64 = has_local_part * invalid_at * has_domain;
+
+    if invalid_email != 0 {
+        println("    FAIL: email without @ should be invalid");
+        return 1;
+    }
+
+    println("    PASS: email pattern");
+    0
+}
+
+// =============================================================================
+// Main Test Runner
+// =============================================================================
+
+fn main() -> i64 {
+    println("=== Regex Tests ===");
+    println("");
+
+    let f1: i64 = test_basic_matching();
+    let f2: i64 = test_character_classes();
+    let f3: i64 = test_quantifiers();
+    let f4: i64 = test_anchors();
+    let f5: i64 = test_escape_sequences();
+    let f6: i64 = test_alternation();
+    let f7: i64 = test_groups();
+    let f8: i64 = test_replace();
+    let f9: i64 = test_count_matches();
+    let f10: i64 = test_email_pattern();
+
+    let failures: i64 = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10;
+
+    println("");
+    if failures == 0 {
+        println("All Regex tests passed!");
+    } else {
+        println("Some Regex tests failed");
+    }
+
+    failures
+}

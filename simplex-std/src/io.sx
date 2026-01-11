@@ -1,0 +1,290 @@
+// simplex-std/io - Input/Output primitives
+//
+// Provides async I/O traits and utilities for stream-based operations.
+//
+// # Core Traits
+//
+// - `AsyncRead`: Asynchronous reading
+// - `AsyncWrite`: Asynchronous writing
+// - `BufReader`: Buffered reading
+// - `BufWriter`: Buffered writing
+//
+// # Implementation Notes
+//
+// These traits are implemented by the C runtime for actual I/O operations.
+// The Simplex definitions here provide the type signatures and documentation.
+
+// =============================================================================
+// Async I/O Traits
+// =============================================================================
+
+/// Asynchronous read trait
+///
+/// Types that implement this trait can be read from asynchronously.
+pub trait AsyncRead {
+    /// Read into buffer, returning bytes read
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, IoError>;
+
+    /// Read exact number of bytes
+    async fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), IoError>;
+
+    /// Read until EOF, returning all bytes
+    async fn read_to_end(&mut self) -> Result<Vec<u8>, IoError>;
+
+    /// Read until newline
+    async fn read_line(&mut self) -> Result<String, IoError>;
+}
+
+/// Asynchronous write trait
+///
+/// Types that implement this trait can be written to asynchronously.
+pub trait AsyncWrite {
+    /// Write buffer, returning bytes written
+    async fn write(&mut self, buf: &[u8]) -> Result<usize, IoError>;
+
+    /// Write all bytes in buffer
+    async fn write_all(&mut self, buf: &[u8]) -> Result<(), IoError>;
+
+    /// Flush buffered data
+    async fn flush(&mut self) -> Result<(), IoError>;
+}
+
+// =============================================================================
+// Buffered I/O
+// =============================================================================
+
+/// Buffered reader wrapper
+///
+/// Wraps an AsyncRead with buffering for efficient small reads.
+pub struct BufReader<R: AsyncRead> {
+    inner: R,
+    buffer: Vec<u8>,
+    pos: usize,
+    cap: usize,
+}
+
+impl<R: AsyncRead> BufReader<R> {
+    /// Create new buffered reader with default buffer size (8KB)
+    pub fn new(inner: R) -> Self {
+        Self::with_capacity(8192, inner)
+    }
+
+    /// Create buffered reader with specified buffer size
+    pub fn with_capacity(capacity: usize, inner: R) -> Self {
+        BufReader {
+            inner,
+            buffer: vec![0u8; capacity],
+            pos: 0,
+            cap: 0,
+        }
+    }
+
+    /// Get reference to inner reader
+    pub fn get_ref(&self) -> &R {
+        &self.inner
+    }
+
+    /// Get mutable reference to inner reader
+    pub fn get_mut(&mut self) -> &mut R {
+        &mut self.inner
+    }
+
+    /// Consume and return inner reader
+    pub fn into_inner(self) -> R {
+        self.inner
+    }
+}
+
+impl<R: AsyncRead> AsyncRead for BufReader<R> {
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, IoError> {
+        // If buffer is empty, fill it
+        if self.pos >= self.cap {
+            self.cap = self.inner.read(&mut self.buffer).await?;
+            self.pos = 0;
+            if self.cap == 0 {
+                return Ok(0);  // EOF
+            }
+        }
+
+        // Copy from buffer
+        let available = self.cap - self.pos;
+        let to_copy = buf.len().min(available);
+        buf[..to_copy].copy_from_slice(&self.buffer[self.pos..self.pos + to_copy]);
+        self.pos += to_copy;
+        Ok(to_copy)
+    }
+
+    async fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), IoError> {
+        let mut total = 0;
+        while total < buf.len() {
+            let n = self.read(&mut buf[total..]).await?;
+            if n == 0 {
+                return Err(IoError::UnexpectedEof);
+            }
+            total += n;
+        }
+        Ok(())
+    }
+
+    async fn read_to_end(&mut self) -> Result<Vec<u8>, IoError> {
+        let mut result = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = self.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            result.extend_from_slice(&buf[..n]);
+        }
+        Ok(result)
+    }
+
+    async fn read_line(&mut self) -> Result<String, IoError> {
+        let mut result = Vec::new();
+        let mut buf = [0u8; 1];
+        loop {
+            let n = self.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            if buf[0] == b'\n' {
+                break;
+            }
+            result.push(buf[0]);
+        }
+        String::from_utf8(result).map_err(|_| IoError::InvalidData)
+    }
+}
+
+/// Buffered writer wrapper
+///
+/// Wraps an AsyncWrite with buffering for efficient small writes.
+pub struct BufWriter<W: AsyncWrite> {
+    inner: W,
+    buffer: Vec<u8>,
+    capacity: usize,
+}
+
+impl<W: AsyncWrite> BufWriter<W> {
+    /// Create new buffered writer with default buffer size (8KB)
+    pub fn new(inner: W) -> Self {
+        Self::with_capacity(8192, inner)
+    }
+
+    /// Create buffered writer with specified buffer size
+    pub fn with_capacity(capacity: usize, inner: W) -> Self {
+        BufWriter {
+            inner,
+            buffer: Vec::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    /// Get reference to inner writer
+    pub fn get_ref(&self) -> &W {
+        &self.inner
+    }
+
+    /// Get mutable reference to inner writer
+    pub fn get_mut(&mut self) -> &mut W {
+        &mut self.inner
+    }
+
+    /// Consume and return inner writer, flushing first
+    pub async fn into_inner(mut self) -> Result<W, IoError> {
+        self.flush().await?;
+        Ok(self.inner)
+    }
+}
+
+impl<W: AsyncWrite> AsyncWrite for BufWriter<W> {
+    async fn write(&mut self, buf: &[u8]) -> Result<usize, IoError> {
+        // If buffer would overflow, flush first
+        if self.buffer.len() + buf.len() > self.capacity {
+            self.flush().await?;
+        }
+
+        // If buf is larger than capacity, write directly
+        if buf.len() >= self.capacity {
+            return self.inner.write(buf).await;
+        }
+
+        // Buffer the write
+        self.buffer.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    async fn write_all(&mut self, buf: &[u8]) -> Result<(), IoError> {
+        let mut written = 0;
+        while written < buf.len() {
+            let n = self.write(&buf[written..]).await?;
+            if n == 0 {
+                return Err(IoError::WriteZero);
+            }
+            written += n;
+        }
+        Ok(())
+    }
+
+    async fn flush(&mut self) -> Result<(), IoError> {
+        if !self.buffer.is_empty() {
+            self.inner.write_all(&self.buffer).await?;
+            self.buffer.clear();
+        }
+        self.inner.flush().await
+    }
+}
+
+// =============================================================================
+// Error Type
+// =============================================================================
+
+/// I/O Error
+#[derive(Debug, Clone)]
+pub enum IoError {
+    /// End of file reached unexpectedly
+    UnexpectedEof,
+    /// Write returned zero bytes
+    WriteZero,
+    /// Invalid data encoding
+    InvalidData,
+    /// Connection refused
+    ConnectionRefused,
+    /// Connection reset
+    ConnectionReset,
+    /// Connection closed
+    ConnectionClosed,
+    /// Timeout
+    Timeout,
+    /// Address in use
+    AddrInUse,
+    /// Address not available
+    AddrNotAvailable,
+    /// Permission denied
+    PermissionDenied,
+    /// Not found
+    NotFound,
+    /// Other error
+    Other(String),
+}
+
+impl std::fmt::Display for IoError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IoError::UnexpectedEof => write!(f, "unexpected end of file"),
+            IoError::WriteZero => write!(f, "write returned zero bytes"),
+            IoError::InvalidData => write!(f, "invalid data"),
+            IoError::ConnectionRefused => write!(f, "connection refused"),
+            IoError::ConnectionReset => write!(f, "connection reset"),
+            IoError::ConnectionClosed => write!(f, "connection closed"),
+            IoError::Timeout => write!(f, "operation timed out"),
+            IoError::AddrInUse => write!(f, "address in use"),
+            IoError::AddrNotAvailable => write!(f, "address not available"),
+            IoError::PermissionDenied => write!(f, "permission denied"),
+            IoError::NotFound => write!(f, "not found"),
+            IoError::Other(msg) => write!(f, "{}", msg),
+        }
+    }
+}
+
+impl std::error::Error for IoError {}

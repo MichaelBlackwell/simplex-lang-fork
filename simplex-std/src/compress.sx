@@ -1,0 +1,228 @@
+// simplex-std/compress - Compression utilities
+//
+// Provides compression and decompression for common formats.
+//
+// # Supported Formats
+//
+// - gzip: Standard gzip compression
+// - deflate: Raw DEFLATE compression
+//
+// # Example
+//
+// ```simplex
+// use simplex_std::compress::{gzip, gunzip};
+//
+// let data = b"Hello, World!";
+// let compressed = gzip(data)?;
+// let decompressed = gunzip(&compressed)?;
+// assert_eq!(data, &decompressed[..]);
+// ```
+//
+// # Implementation Notes
+//
+// Compression is implemented via the C runtime using zlib.
+
+// =============================================================================
+// Gzip Compression
+// =============================================================================
+
+/// Compress data using gzip
+///
+/// # Arguments
+/// * `data` - Raw data to compress
+///
+/// # Returns
+/// Gzip-compressed data with header and trailer
+pub fn gzip(data: &[u8]) -> Result<Vec<u8>, CompressError> {
+    compress_gzip(data)
+}
+
+/// Decompress gzip data
+///
+/// # Arguments
+/// * `data` - Gzip-compressed data
+///
+/// # Returns
+/// Decompressed data
+pub fn gunzip(data: &[u8]) -> Result<Vec<u8>, CompressError> {
+    decompress_gzip(data)
+}
+
+/// Compress data using gzip with specified compression level
+///
+/// # Arguments
+/// * `data` - Raw data to compress
+/// * `level` - Compression level (0-9, where 9 is maximum compression)
+pub fn gzip_level(data: &[u8], level: u32) -> Result<Vec<u8>, CompressError> {
+    compress_gzip_level(data, level)
+}
+
+// =============================================================================
+// Deflate Compression
+// =============================================================================
+
+/// Compress data using raw DEFLATE
+///
+/// # Arguments
+/// * `data` - Raw data to compress
+///
+/// # Returns
+/// DEFLATE-compressed data (no header/trailer)
+pub fn deflate(data: &[u8]) -> Result<Vec<u8>, CompressError> {
+    compress_deflate(data)
+}
+
+/// Decompress raw DEFLATE data
+///
+/// # Arguments
+/// * `data` - DEFLATE-compressed data
+///
+/// # Returns
+/// Decompressed data
+pub fn inflate(data: &[u8]) -> Result<Vec<u8>, CompressError> {
+    decompress_deflate(data)
+}
+
+// =============================================================================
+// Streaming Compression
+// =============================================================================
+
+/// Gzip compressor for streaming data
+pub struct GzipEncoder {
+    handle: i64,
+}
+
+impl GzipEncoder {
+    /// Create new gzip encoder
+    pub fn new() -> Self {
+        GzipEncoder {
+            handle: gzip_encoder_new(6),  // Default level
+        }
+    }
+
+    /// Create encoder with specified compression level
+    pub fn with_level(level: u32) -> Self {
+        GzipEncoder {
+            handle: gzip_encoder_new(level),
+        }
+    }
+
+    /// Compress a chunk of data
+    pub fn compress(&mut self, data: &[u8]) -> Result<Vec<u8>, CompressError> {
+        gzip_encoder_write(self.handle, data)
+    }
+
+    /// Finish compression and return final bytes
+    pub fn finish(self) -> Result<Vec<u8>, CompressError> {
+        gzip_encoder_finish(self.handle)
+    }
+}
+
+impl Drop for GzipEncoder {
+    fn drop(&mut self) {
+        gzip_encoder_free(self.handle);
+    }
+}
+
+/// Gzip decompressor for streaming data
+pub struct GzipDecoder {
+    handle: i64,
+}
+
+impl GzipDecoder {
+    /// Create new gzip decoder
+    pub fn new() -> Self {
+        GzipDecoder {
+            handle: gzip_decoder_new(),
+        }
+    }
+
+    /// Decompress a chunk of data
+    pub fn decompress(&mut self, data: &[u8]) -> Result<Vec<u8>, CompressError> {
+        gzip_decoder_write(self.handle, data)
+    }
+
+    /// Finish decompression
+    pub fn finish(self) -> Result<Vec<u8>, CompressError> {
+        gzip_decoder_finish(self.handle)
+    }
+}
+
+impl Drop for GzipDecoder {
+    fn drop(&mut self) {
+        gzip_decoder_free(self.handle);
+    }
+}
+
+// =============================================================================
+// Error Type
+// =============================================================================
+
+/// Compression/decompression error
+#[derive(Debug, Clone)]
+pub enum CompressError {
+    /// Invalid compressed data
+    InvalidData,
+    /// Buffer too small
+    BufferTooSmall,
+    /// Compression failed
+    CompressionFailed(String),
+    /// Decompression failed
+    DecompressionFailed(String),
+}
+
+impl std::fmt::Display for CompressError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CompressError::InvalidData => write!(f, "invalid compressed data"),
+            CompressError::BufferTooSmall => write!(f, "output buffer too small"),
+            CompressError::CompressionFailed(msg) => write!(f, "compression failed: {}", msg),
+            CompressError::DecompressionFailed(msg) => write!(f, "decompression failed: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for CompressError {}
+
+// =============================================================================
+// Native FFI Functions (implemented in C runtime)
+// =============================================================================
+
+/// Gzip compress
+fn compress_gzip(data: &[u8]) -> Result<Vec<u8>, CompressError>;
+
+/// Gzip compress with level
+fn compress_gzip_level(data: &[u8], level: u32) -> Result<Vec<u8>, CompressError>;
+
+/// Gzip decompress
+fn decompress_gzip(data: &[u8]) -> Result<Vec<u8>, CompressError>;
+
+/// Deflate compress
+fn compress_deflate(data: &[u8]) -> Result<Vec<u8>, CompressError>;
+
+/// Deflate decompress
+fn decompress_deflate(data: &[u8]) -> Result<Vec<u8>, CompressError>;
+
+/// Create gzip encoder
+fn gzip_encoder_new(level: u32) -> i64;
+
+/// Write to gzip encoder
+fn gzip_encoder_write(handle: i64, data: &[u8]) -> Result<Vec<u8>, CompressError>;
+
+/// Finish gzip encoder
+fn gzip_encoder_finish(handle: i64) -> Result<Vec<u8>, CompressError>;
+
+/// Free gzip encoder
+fn gzip_encoder_free(handle: i64);
+
+/// Create gzip decoder
+fn gzip_decoder_new() -> i64;
+
+/// Write to gzip decoder
+fn gzip_decoder_write(handle: i64, data: &[u8]) -> Result<Vec<u8>, CompressError>;
+
+/// Finish gzip decoder
+fn gzip_decoder_finish(handle: i64) -> Result<Vec<u8>, CompressError>;
+
+/// Free gzip decoder
+fn gzip_decoder_free(handle: i64);

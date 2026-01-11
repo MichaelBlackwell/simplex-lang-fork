@@ -1,0 +1,378 @@
+// Inference Metrics - Observability for Inference Optimization
+//
+// Provides comprehensive metrics collection for monitoring inference
+// performance, cache efficiency, and routing decisions.
+//
+// # Metrics Categories
+//
+// - Latency: Request latency percentiles, batch latency
+// - Throughput: Requests per second, tokens per second
+// - Cache: Hit rates, eviction rates, memory usage
+// - Routing: Model tier distribution, accuracy
+// - Errors: Error rates by type
+
+use simplex_std::sync::{Arc, RwLock};
+use simplex_std::collections::VecDeque;
+use simplex_std::time::now_unix_ms;
+use super::ModelTier;
+
+// =============================================================================
+// Metrics Collector
+// =============================================================================
+
+/// Central metrics collector for inference operations
+pub struct MetricsCollector {
+    inner: Arc<RwLock<MetricsInner>>,
+    /// Window size for rolling metrics (in requests)
+    window_size: usize,
+}
+
+struct MetricsInner {
+    // Latency tracking
+    latencies: VecDeque<LatencyRecord>,
+
+    // Counters
+    total_requests: u64,
+    cache_hits: u64,
+    batch_count: u64,
+    error_count: u64,
+
+    // Per-tier counts
+    tier_counts: [u64; 4], // Tiny, Light, Full, Cached
+    tier_latencies: [VecDeque<u32>; 4],
+
+    // Throughput tracking
+    tokens_generated: u64,
+    last_throughput_check: u64,
+    throughput_window_requests: u64,
+    throughput_window_tokens: u64,
+}
+
+struct LatencyRecord {
+    latency_ms: u32,
+    timestamp: u64,
+    tier: ModelTier,
+    from_cache: bool,
+}
+
+impl MetricsCollector {
+    /// Create a new metrics collector
+    pub fn new() -> Self {
+        Self::with_window_size(1000)
+    }
+
+    /// Create with custom window size
+    pub fn with_window_size(window_size: usize) -> Self {
+        MetricsCollector {
+            inner: Arc::new(RwLock::new(MetricsInner {
+                latencies: VecDeque::with_capacity(window_size),
+                total_requests: 0,
+                cache_hits: 0,
+                batch_count: 0,
+                error_count: 0,
+                tier_counts: [0; 4],
+                tier_latencies: [
+                    VecDeque::with_capacity(window_size / 4),
+                    VecDeque::with_capacity(window_size / 4),
+                    VecDeque::with_capacity(window_size / 4),
+                    VecDeque::with_capacity(window_size / 4),
+                ],
+                tokens_generated: 0,
+                last_throughput_check: now_unix_ms(),
+                throughput_window_requests: 0,
+                throughput_window_tokens: 0,
+            })),
+            window_size,
+        }
+    }
+
+    /// Record a completed inference request
+    pub async fn record_request(
+        &self,
+        latency_ms: u32,
+        tier: ModelTier,
+        from_cache: bool,
+        tokens_generated: u32,
+    ) {
+        let mut inner = self.inner.write().await;
+        let now = now_unix_ms();
+
+        // Add latency record
+        if inner.latencies.len() >= self.window_size {
+            inner.latencies.pop_front();
+        }
+        inner.latencies.push_back(LatencyRecord {
+            latency_ms,
+            timestamp: now,
+            tier,
+            from_cache,
+        });
+
+        // Update counters
+        inner.total_requests += 1;
+        if from_cache {
+            inner.cache_hits += 1;
+        }
+
+        // Update tier stats
+        let tier_idx = tier_to_index(tier);
+        inner.tier_counts[tier_idx] += 1;
+
+        let tier_latencies = &mut inner.tier_latencies[tier_idx];
+        if tier_latencies.len() >= self.window_size / 4 {
+            tier_latencies.pop_front();
+        }
+        tier_latencies.push_back(latency_ms);
+
+        // Update throughput tracking
+        inner.tokens_generated += tokens_generated as u64;
+        inner.throughput_window_requests += 1;
+        inner.throughput_window_tokens += tokens_generated as u64;
+    }
+
+    /// Record a batch execution
+    pub async fn record_batch(&self, batch_size: usize, latency_ms: u32) {
+        let mut inner = self.inner.write().await;
+        inner.batch_count += 1;
+    }
+
+    /// Record an error
+    pub async fn record_error(&self) {
+        let mut inner = self.inner.write().await;
+        inner.error_count += 1;
+    }
+
+    /// Get comprehensive metrics snapshot
+    pub async fn snapshot(&self) -> InferenceMetrics {
+        let inner = self.inner.read().await;
+        let now = now_unix_ms();
+
+        // Calculate latency percentiles
+        let mut latencies: Vec<u32> = inner.latencies.iter()
+            .map(|r| r.latency_ms)
+            .collect();
+        latencies.sort();
+
+        let p50 = percentile(&latencies, 50);
+        let p90 = percentile(&latencies, 90);
+        let p99 = percentile(&latencies, 99);
+
+        // Calculate throughput
+        let elapsed_seconds = (now - inner.last_throughput_check) as f64 / 1000.0;
+        let rps = if elapsed_seconds > 0.0 {
+            inner.throughput_window_requests as f64 / elapsed_seconds
+        } else {
+            0.0
+        };
+        let tps = if elapsed_seconds > 0.0 {
+            inner.throughput_window_tokens as f64 / elapsed_seconds
+        } else {
+            0.0
+        };
+
+        InferenceMetrics {
+            total_requests: inner.total_requests,
+            cache_hits: inner.cache_hits,
+            cache_hit_rate: if inner.total_requests > 0 {
+                inner.cache_hits as f64 / inner.total_requests as f64
+            } else {
+                0.0
+            },
+
+            latency_p50_ms: p50,
+            latency_p90_ms: p90,
+            latency_p99_ms: p99,
+
+            requests_per_second: rps,
+            tokens_per_second: tps,
+
+            tiny_requests: inner.tier_counts[0],
+            light_requests: inner.tier_counts[1],
+            full_requests: inner.tier_counts[2],
+
+            batch_count: inner.batch_count,
+            error_count: inner.error_count,
+            error_rate: if inner.total_requests > 0 {
+                inner.error_count as f64 / inner.total_requests as f64
+            } else {
+                0.0
+            },
+        }
+    }
+
+    /// Get metrics for a specific model tier
+    pub async fn tier_metrics(&self, tier: ModelTier) -> TierMetrics {
+        let inner = self.inner.read().await;
+        let tier_idx = tier_to_index(tier);
+
+        let latencies = &inner.tier_latencies[tier_idx];
+        let mut sorted: Vec<u32> = latencies.iter().copied().collect();
+        sorted.sort();
+
+        TierMetrics {
+            tier,
+            request_count: inner.tier_counts[tier_idx],
+            latency_p50_ms: percentile(&sorted, 50),
+            latency_p90_ms: percentile(&sorted, 90),
+            latency_p99_ms: percentile(&sorted, 99),
+        }
+    }
+
+    /// Reset all metrics
+    pub async fn reset(&self) {
+        let mut inner = self.inner.write().await;
+        inner.latencies.clear();
+        inner.total_requests = 0;
+        inner.cache_hits = 0;
+        inner.batch_count = 0;
+        inner.error_count = 0;
+        inner.tier_counts = [0; 4];
+        for tier_latencies in &mut inner.tier_latencies {
+            tier_latencies.clear();
+        }
+        inner.tokens_generated = 0;
+        inner.last_throughput_check = now_unix_ms();
+        inner.throughput_window_requests = 0;
+        inner.throughput_window_tokens = 0;
+    }
+}
+
+// =============================================================================
+// Metrics Types
+// =============================================================================
+
+/// Comprehensive inference metrics
+#[derive(Clone, Default)]
+pub struct InferenceMetrics {
+    // Request counts
+    pub total_requests: u64,
+    pub cache_hits: u64,
+    pub cache_hit_rate: f64,
+
+    // Latency (in milliseconds)
+    pub latency_p50_ms: u32,
+    pub latency_p90_ms: u32,
+    pub latency_p99_ms: u32,
+
+    // Throughput
+    pub requests_per_second: f64,
+    pub tokens_per_second: f64,
+
+    // Tier distribution
+    pub tiny_requests: u64,
+    pub light_requests: u64,
+    pub full_requests: u64,
+
+    // Batching and errors
+    pub batch_count: u64,
+    pub error_count: u64,
+    pub error_rate: f64,
+}
+
+impl InferenceMetrics {
+    /// Calculate estimated cost savings from routing
+    pub fn routing_savings_percent(&self) -> f64 {
+        let total_inferences = self.tiny_requests + self.light_requests + self.full_requests;
+        if total_inferences == 0 {
+            return 0.0;
+        }
+
+        // Tiny = 90% savings, Light = 70% savings
+        let tiny_savings = self.tiny_requests as f64 * 0.9;
+        let light_savings = self.light_requests as f64 * 0.7;
+        let cache_savings = self.cache_hits as f64 * 1.0;
+
+        (tiny_savings + light_savings + cache_savings) / self.total_requests as f64 * 100.0
+    }
+
+    /// Percentage of requests using small models
+    pub fn small_model_percent(&self) -> f64 {
+        let total_inferences = self.tiny_requests + self.light_requests + self.full_requests;
+        if total_inferences == 0 {
+            return 0.0;
+        }
+
+        (self.tiny_requests + self.light_requests) as f64 / total_inferences as f64 * 100.0
+    }
+
+    /// Format as human-readable summary
+    pub fn summary(&self) -> String {
+        format!(
+            "Requests: {} | Cache hit: {:.1}% | P50: {}ms | P99: {}ms | RPS: {:.1} | Small model: {:.1}%",
+            self.total_requests,
+            self.cache_hit_rate * 100.0,
+            self.latency_p50_ms,
+            self.latency_p99_ms,
+            self.requests_per_second,
+            self.small_model_percent(),
+        )
+    }
+}
+
+/// Metrics for a specific model tier
+#[derive(Clone)]
+pub struct TierMetrics {
+    pub tier: ModelTier,
+    pub request_count: u64,
+    pub latency_p50_ms: u32,
+    pub latency_p90_ms: u32,
+    pub latency_p99_ms: u32,
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+fn tier_to_index(tier: ModelTier) -> usize {
+    match tier {
+        ModelTier::Tiny => 0,
+        ModelTier::Light => 1,
+        ModelTier::Full => 2,
+        ModelTier::Cached => 3,
+    }
+}
+
+fn percentile(sorted: &[u32], p: usize) -> u32 {
+    if sorted.is_empty() {
+        return 0;
+    }
+    let idx = (sorted.len() * p / 100).min(sorted.len() - 1);
+    sorted[idx]
+}
+
+// =============================================================================
+// Prometheus/OpenMetrics Export
+// =============================================================================
+
+impl InferenceMetrics {
+    /// Export metrics in Prometheus format
+    pub fn to_prometheus(&self) -> String {
+        let mut output = String::new();
+
+        output.push_str("# HELP simplex_inference_requests_total Total inference requests\n");
+        output.push_str("# TYPE simplex_inference_requests_total counter\n");
+        output.push_str(&format!("simplex_inference_requests_total {}\n", self.total_requests));
+
+        output.push_str("# HELP simplex_inference_cache_hits_total Cache hits\n");
+        output.push_str("# TYPE simplex_inference_cache_hits_total counter\n");
+        output.push_str(&format!("simplex_inference_cache_hits_total {}\n", self.cache_hits));
+
+        output.push_str("# HELP simplex_inference_latency_ms Latency percentiles\n");
+        output.push_str("# TYPE simplex_inference_latency_ms summary\n");
+        output.push_str(&format!("simplex_inference_latency_ms{{quantile=\"0.5\"}} {}\n", self.latency_p50_ms));
+        output.push_str(&format!("simplex_inference_latency_ms{{quantile=\"0.9\"}} {}\n", self.latency_p90_ms));
+        output.push_str(&format!("simplex_inference_latency_ms{{quantile=\"0.99\"}} {}\n", self.latency_p99_ms));
+
+        output.push_str("# HELP simplex_inference_by_tier Requests by model tier\n");
+        output.push_str("# TYPE simplex_inference_by_tier counter\n");
+        output.push_str(&format!("simplex_inference_by_tier{{tier=\"tiny\"}} {}\n", self.tiny_requests));
+        output.push_str(&format!("simplex_inference_by_tier{{tier=\"light\"}} {}\n", self.light_requests));
+        output.push_str(&format!("simplex_inference_by_tier{{tier=\"full\"}} {}\n", self.full_requests));
+
+        output.push_str("# HELP simplex_inference_errors_total Total errors\n");
+        output.push_str("# TYPE simplex_inference_errors_total counter\n");
+        output.push_str(&format!("simplex_inference_errors_total {}\n", self.error_count));
+
+        output
+    }
+}

@@ -1,0 +1,917 @@
+// Dual Numbers for Forward-Mode Automatic Differentiation
+//
+// A dual number extends real numbers with an infinitesimal component:
+//   d = a + bε  where ε² = 0 (nilpotent)
+//
+// This single rule (ε² = 0) encodes the chain rule into arithmetic:
+//   (a + bε) × (c + dε) = ac + (ad + bc)ε + bdε²
+//                       = ac + (ad + bc)ε    [since ε² = 0]
+//
+// This is exactly the product rule: (f·g)' = f·g' + f'·g
+//
+// The coefficient of ε in the result IS the derivative.
+//
+// Usage:
+//   let x = Dual::variable(3.0);  // val=3, der=1 (seed)
+//   let y = x * x + x.sin();      // Derivatives propagate automatically
+//   println(y.val);               // f(3)
+//   println(y.der);               // f'(3) - exact, not numerical approximation
+
+use std::fmt::{Display, Formatter};
+use std::cmp::{PartialEq, PartialOrd, Ordering};
+
+/// Core dual number type for forward-mode automatic differentiation
+///
+/// A Dual represents a value and its derivative simultaneously:
+///   Dual { val: f(x), der: f'(x) }
+///
+/// When you perform arithmetic on Duals, both the value AND the derivative
+/// are computed together using the rules of calculus (chain rule, product rule, etc.)
+///
+/// # Zero-Overhead Abstraction
+/// The @primitive and @zero_overhead annotations instruct the compiler to:
+/// 1. Inline all dual operations
+/// 2. Eliminate struct allocation
+/// 3. Produce the same assembly as hand-written derivative code
+#[derive(Clone, Copy, Debug)]
+pub struct Dual {
+    /// The function value f(x)
+    pub val: f64,
+    /// The derivative value f'(x)
+    pub der: f64,
+}
+
+// ==================== Constructors ====================
+
+impl Dual {
+    /// Create a new dual number with explicit value and derivative
+    ///
+    /// # Example
+    /// ```
+    /// let d = Dual::new(3.0, 2.0);  // Represents value 3 with derivative 2
+    /// ```
+    #[inline(always)]
+    pub fn new(val: f64, der: f64) -> Dual {
+        Dual { val, der }
+    }
+
+    /// Create a constant (derivative = 0)
+    ///
+    /// Use this when a value should not contribute to the derivative.
+    ///
+    /// # Example
+    /// ```
+    /// let c = Dual::constant(5.0);  // val=5, der=0
+    /// let x = Dual::variable(3.0);
+    /// let y = x * c;                // der = 5 (only x contributes)
+    /// ```
+    #[inline(always)]
+    pub fn constant(val: f64) -> Dual {
+        Dual { val, der: 0.0 }
+    }
+
+    /// Create a variable (derivative = 1, the differentiation seed)
+    ///
+    /// Use this to mark which input you're differentiating with respect to.
+    ///
+    /// # Example
+    /// ```
+    /// let x = Dual::variable(3.0);  // val=3, der=1
+    /// let y = x * x;                // val=9, der=6 (derivative of x² is 2x)
+    /// ```
+    #[inline(always)]
+    pub fn variable(val: f64) -> Dual {
+        Dual { val, der: 1.0 }
+    }
+
+    /// Create from an f64 value (same as constant)
+    #[inline(always)]
+    pub fn from_f64(val: f64) -> Dual {
+        Dual::constant(val)
+    }
+
+    // ==================== Accessors ====================
+
+    /// Get the function value
+    #[inline(always)]
+    pub fn value(self) -> f64 {
+        self.val
+    }
+
+    /// Get the derivative value
+    #[inline(always)]
+    pub fn derivative(self) -> f64 {
+        self.der
+    }
+
+    /// Extract both components as a tuple
+    #[inline(always)]
+    pub fn components(self) -> (f64, f64) {
+        (self.val, self.der)
+    }
+
+    // ==================== Predicates ====================
+
+    /// Check if this is a constant (derivative is zero)
+    #[inline(always)]
+    pub fn is_constant(self) -> bool {
+        self.der == 0.0
+    }
+
+    /// Check if the value is finite (not NaN or infinity)
+    #[inline(always)]
+    pub fn is_finite(self) -> bool {
+        self.val.is_finite() && self.der.is_finite()
+    }
+
+    /// Check if the value is NaN
+    #[inline(always)]
+    pub fn is_nan(self) -> bool {
+        self.val.is_nan() || self.der.is_nan()
+    }
+}
+
+// ==================== Arithmetic Operations ====================
+
+impl Dual {
+    /// Addition: (a + bε) + (c + dε) = (a+c) + (b+d)ε
+    #[inline(always)]
+    pub fn add(self, other: Dual) -> Dual {
+        Dual {
+            val: self.val + other.val,
+            der: self.der + other.der,
+        }
+    }
+
+    /// Subtraction: (a + bε) - (c + dε) = (a-c) + (b-d)ε
+    #[inline(always)]
+    pub fn sub(self, other: Dual) -> Dual {
+        Dual {
+            val: self.val - other.val,
+            der: self.der - other.der,
+        }
+    }
+
+    /// Multiplication (product rule):
+    /// (a + bε) × (c + dε) = ac + (ad + bc)ε
+    ///
+    /// This is the product rule: (f·g)' = f·g' + f'·g
+    #[inline(always)]
+    pub fn mul(self, other: Dual) -> Dual {
+        Dual {
+            val: self.val * other.val,
+            der: self.val * other.der + self.der * other.val,
+        }
+    }
+
+    /// Division (quotient rule):
+    /// (a + bε) / (c + dε) = (a/c) + ((bc - ad)/c²)ε
+    ///
+    /// This is the quotient rule: (f/g)' = (f'g - fg')/g²
+    #[inline(always)]
+    pub fn div(self, other: Dual) -> Dual {
+        let val = self.val / other.val;
+        let der = (self.der * other.val - self.val * other.der) / (other.val * other.val);
+        Dual { val, der }
+    }
+
+    /// Negation: -(a + bε) = -a - bε
+    #[inline(always)]
+    pub fn neg(self) -> Dual {
+        Dual {
+            val: -self.val,
+            der: -self.der,
+        }
+    }
+
+    /// Absolute value
+    /// |a + bε| = |a| + sign(a)·b·ε
+    #[inline(always)]
+    pub fn abs(self) -> Dual {
+        if self.val >= 0.0 {
+            self
+        } else {
+            self.neg()
+        }
+    }
+
+    /// Reciprocal: 1/(a + bε) = (1/a) - (b/a²)ε
+    #[inline(always)]
+    pub fn recip(self) -> Dual {
+        let val = 1.0 / self.val;
+        let der = -self.der / (self.val * self.val);
+        Dual { val, der }
+    }
+}
+
+// ==================== Scalar Operations ====================
+
+impl Dual {
+    /// Add a scalar: (a + bε) + c = (a+c) + bε
+    #[inline(always)]
+    pub fn add_scalar(self, scalar: f64) -> Dual {
+        Dual {
+            val: self.val + scalar,
+            der: self.der,
+        }
+    }
+
+    /// Subtract a scalar: (a + bε) - c = (a-c) + bε
+    #[inline(always)]
+    pub fn sub_scalar(self, scalar: f64) -> Dual {
+        Dual {
+            val: self.val - scalar,
+            der: self.der,
+        }
+    }
+
+    /// Multiply by a scalar: (a + bε) × c = ac + bcε
+    #[inline(always)]
+    pub fn mul_scalar(self, scalar: f64) -> Dual {
+        Dual {
+            val: self.val * scalar,
+            der: self.der * scalar,
+        }
+    }
+
+    /// Divide by a scalar: (a + bε) / c = (a/c) + (b/c)ε
+    #[inline(always)]
+    pub fn div_scalar(self, scalar: f64) -> Dual {
+        Dual {
+            val: self.val / scalar,
+            der: self.der / scalar,
+        }
+    }
+
+    /// Scalar divided by dual: c / (a + bε) = (c/a) - (cb/a²)ε
+    #[inline(always)]
+    pub fn scalar_div(scalar: f64, d: Dual) -> Dual {
+        let val = scalar / d.val;
+        let der = -scalar * d.der / (d.val * d.val);
+        Dual { val, der }
+    }
+}
+
+// ==================== Transcendental Functions ====================
+
+impl Dual {
+    /// Sine: sin(a + bε) = sin(a) + b·cos(a)·ε
+    ///
+    /// d/dx sin(x) = cos(x)
+    #[inline(always)]
+    pub fn sin(self) -> Dual {
+        Dual {
+            val: self.val.sin(),
+            der: self.der * self.val.cos(),
+        }
+    }
+
+    /// Cosine: cos(a + bε) = cos(a) - b·sin(a)·ε
+    ///
+    /// d/dx cos(x) = -sin(x)
+    #[inline(always)]
+    pub fn cos(self) -> Dual {
+        Dual {
+            val: self.val.cos(),
+            der: -self.der * self.val.sin(),
+        }
+    }
+
+    /// Tangent: tan(a + bε) = tan(a) + b·sec²(a)·ε
+    ///
+    /// d/dx tan(x) = sec²(x) = 1/cos²(x)
+    #[inline(always)]
+    pub fn tan(self) -> Dual {
+        let t = self.val.tan();
+        let cos_val = self.val.cos();
+        let sec2 = 1.0 / (cos_val * cos_val);
+        Dual {
+            val: t,
+            der: self.der * sec2,
+        }
+    }
+
+    /// Arcsine: asin(a + bε) = asin(a) + b/√(1-a²)·ε
+    ///
+    /// d/dx asin(x) = 1/√(1-x²)
+    #[inline(always)]
+    pub fn asin(self) -> Dual {
+        let val = self.val.asin();
+        let der = self.der / (1.0 - self.val * self.val).sqrt();
+        Dual { val, der }
+    }
+
+    /// Arccosine: acos(a + bε) = acos(a) - b/√(1-a²)·ε
+    ///
+    /// d/dx acos(x) = -1/√(1-x²)
+    #[inline(always)]
+    pub fn acos(self) -> Dual {
+        let val = self.val.acos();
+        let der = -self.der / (1.0 - self.val * self.val).sqrt();
+        Dual { val, der }
+    }
+
+    /// Arctangent: atan(a + bε) = atan(a) + b/(1+a²)·ε
+    ///
+    /// d/dx atan(x) = 1/(1+x²)
+    #[inline(always)]
+    pub fn atan(self) -> Dual {
+        let val = self.val.atan();
+        let der = self.der / (1.0 + self.val * self.val);
+        Dual { val, der }
+    }
+
+    /// Two-argument arctangent
+    ///
+    /// atan2(y, x) with dual numbers for both arguments
+    #[inline(always)]
+    pub fn atan2(self, other: Dual) -> Dual {
+        let val = self.val.atan2(other.val);
+        let denom = self.val * self.val + other.val * other.val;
+        let der = (self.der * other.val - self.val * other.der) / denom;
+        Dual { val, der }
+    }
+
+    /// Exponential: exp(a + bε) = exp(a) + b·exp(a)·ε
+    ///
+    /// d/dx exp(x) = exp(x)
+    #[inline(always)]
+    pub fn exp(self) -> Dual {
+        let e = self.val.exp();
+        Dual {
+            val: e,
+            der: self.der * e,
+        }
+    }
+
+    /// Natural logarithm: ln(a + bε) = ln(a) + (b/a)·ε
+    ///
+    /// d/dx ln(x) = 1/x
+    #[inline(always)]
+    pub fn ln(self) -> Dual {
+        Dual {
+            val: self.val.ln(),
+            der: self.der / self.val,
+        }
+    }
+
+    /// Logarithm base 10: log10(a + bε) = log10(a) + b/(a·ln(10))·ε
+    #[inline(always)]
+    pub fn log10(self) -> Dual {
+        let ln10 = 10.0_f64.ln();
+        Dual {
+            val: self.val.log10(),
+            der: self.der / (self.val * ln10),
+        }
+    }
+
+    /// Logarithm base 2: log2(a + bε) = log2(a) + b/(a·ln(2))·ε
+    #[inline(always)]
+    pub fn log2(self) -> Dual {
+        let ln2 = 2.0_f64.ln();
+        Dual {
+            val: self.val.log2(),
+            der: self.der / (self.val * ln2),
+        }
+    }
+
+    /// Power with dual exponent:
+    /// x^n where both x and n are dual numbers
+    ///
+    /// d/dx x^n = x^n · (n' · ln(x) + n · x'/x)
+    #[inline(always)]
+    pub fn pow(self, n: Dual) -> Dual {
+        let val = self.val.powf(n.val);
+        // d/dx x^n = x^n * (n' * ln(x) + n * x'/x)
+        let der = val * (n.der * self.val.ln() + n.val * self.der / self.val);
+        Dual { val, der }
+    }
+
+    /// Power with scalar exponent:
+    /// x^n where n is a constant
+    ///
+    /// d/dx x^n = n · x^(n-1)
+    #[inline(always)]
+    pub fn powf(self, n: f64) -> Dual {
+        let val = self.val.powf(n);
+        let der = self.der * n * self.val.powf(n - 1.0);
+        Dual { val, der }
+    }
+
+    /// Integer power (more efficient for integer exponents)
+    #[inline(always)]
+    pub fn powi(self, n: i32) -> Dual {
+        let val = self.val.powi(n);
+        let der = self.der * (n as f64) * self.val.powi(n - 1);
+        Dual { val, der }
+    }
+
+    /// Square root: sqrt(a + bε) = sqrt(a) + b/(2·sqrt(a))·ε
+    ///
+    /// d/dx sqrt(x) = 1/(2·sqrt(x))
+    #[inline(always)]
+    pub fn sqrt(self) -> Dual {
+        let s = self.val.sqrt();
+        Dual {
+            val: s,
+            der: self.der / (2.0 * s),
+        }
+    }
+
+    /// Cube root
+    ///
+    /// d/dx cbrt(x) = 1/(3·x^(2/3))
+    #[inline(always)]
+    pub fn cbrt(self) -> Dual {
+        let val = self.val.cbrt();
+        let der = self.der / (3.0 * self.val.powf(2.0 / 3.0));
+        Dual { val, der }
+    }
+
+    /// Hyperbolic sine: sinh(a + bε) = sinh(a) + b·cosh(a)·ε
+    ///
+    /// d/dx sinh(x) = cosh(x)
+    #[inline(always)]
+    pub fn sinh(self) -> Dual {
+        Dual {
+            val: self.val.sinh(),
+            der: self.der * self.val.cosh(),
+        }
+    }
+
+    /// Hyperbolic cosine: cosh(a + bε) = cosh(a) + b·sinh(a)·ε
+    ///
+    /// d/dx cosh(x) = sinh(x)
+    #[inline(always)]
+    pub fn cosh(self) -> Dual {
+        Dual {
+            val: self.val.cosh(),
+            der: self.der * self.val.sinh(),
+        }
+    }
+
+    /// Hyperbolic tangent: tanh(a + bε) = tanh(a) + b·(1 - tanh²(a))·ε
+    ///
+    /// d/dx tanh(x) = 1 - tanh²(x) = sech²(x)
+    #[inline(always)]
+    pub fn tanh(self) -> Dual {
+        let t = self.val.tanh();
+        Dual {
+            val: t,
+            der: self.der * (1.0 - t * t),
+        }
+    }
+
+    /// Inverse hyperbolic sine
+    ///
+    /// d/dx asinh(x) = 1/√(x²+1)
+    #[inline(always)]
+    pub fn asinh(self) -> Dual {
+        let val = self.val.asinh();
+        let der = self.der / (self.val * self.val + 1.0).sqrt();
+        Dual { val, der }
+    }
+
+    /// Inverse hyperbolic cosine
+    ///
+    /// d/dx acosh(x) = 1/√(x²-1)
+    #[inline(always)]
+    pub fn acosh(self) -> Dual {
+        let val = self.val.acosh();
+        let der = self.der / (self.val * self.val - 1.0).sqrt();
+        Dual { val, der }
+    }
+
+    /// Inverse hyperbolic tangent
+    ///
+    /// d/dx atanh(x) = 1/(1-x²)
+    #[inline(always)]
+    pub fn atanh(self) -> Dual {
+        let val = self.val.atanh();
+        let der = self.der / (1.0 - self.val * self.val);
+        Dual { val, der }
+    }
+}
+
+// ==================== ML Activation Functions ====================
+
+impl Dual {
+    /// Sigmoid: σ(x) = 1/(1 + exp(-x))
+    ///
+    /// d/dx σ(x) = σ(x) · (1 - σ(x))
+    #[inline(always)]
+    pub fn sigmoid(self) -> Dual {
+        let s = 1.0 / (1.0 + (-self.val).exp());
+        Dual {
+            val: s,
+            der: self.der * s * (1.0 - s),
+        }
+    }
+
+    /// ReLU: max(0, x)
+    ///
+    /// d/dx ReLU(x) = 1 if x > 0, else 0
+    #[inline(always)]
+    pub fn relu(self) -> Dual {
+        if self.val > 0.0 {
+            self
+        } else {
+            Dual { val: 0.0, der: 0.0 }
+        }
+    }
+
+    /// Leaky ReLU: x if x > 0, else α·x (default α = 0.01)
+    #[inline(always)]
+    pub fn leaky_relu(self, alpha: f64) -> Dual {
+        if self.val > 0.0 {
+            self
+        } else {
+            Dual {
+                val: self.val * alpha,
+                der: self.der * alpha,
+            }
+        }
+    }
+
+    /// ELU: x if x > 0, else α·(exp(x) - 1)
+    #[inline(always)]
+    pub fn elu(self, alpha: f64) -> Dual {
+        if self.val > 0.0 {
+            self
+        } else {
+            let e = self.val.exp();
+            Dual {
+                val: alpha * (e - 1.0),
+                der: self.der * alpha * e,
+            }
+        }
+    }
+
+    /// GELU: Gaussian Error Linear Unit
+    /// GELU(x) ≈ x · Φ(x) where Φ is the CDF of standard normal
+    /// We use the tanh approximation: 0.5x(1 + tanh(√(2/π)(x + 0.044715x³)))
+    #[inline(always)]
+    pub fn gelu(self) -> Dual {
+        let sqrt_2_over_pi = (2.0 / std::f64::consts::PI).sqrt();
+        let x = self.val;
+        let x3 = x * x * x;
+        let inner = sqrt_2_over_pi * (x + 0.044715 * x3);
+        let tanh_inner = inner.tanh();
+
+        // GELU = 0.5 * x * (1 + tanh(inner))
+        let val = 0.5 * x * (1.0 + tanh_inner);
+
+        // Derivative of GELU (approximate)
+        let sech2 = 1.0 - tanh_inner * tanh_inner;
+        let inner_der = sqrt_2_over_pi * (1.0 + 3.0 * 0.044715 * x * x);
+        let der = self.der * (0.5 * (1.0 + tanh_inner) + 0.5 * x * sech2 * inner_der);
+
+        Dual { val, der }
+    }
+
+    /// Softplus: ln(1 + exp(x))
+    ///
+    /// d/dx softplus(x) = σ(x)
+    #[inline(always)]
+    pub fn softplus(self) -> Dual {
+        // Use stable computation to avoid overflow
+        let val = if self.val > 20.0 {
+            self.val
+        } else if self.val < -20.0 {
+            self.val.exp()
+        } else {
+            (1.0 + self.val.exp()).ln()
+        };
+
+        // Derivative is sigmoid
+        let sigmoid = 1.0 / (1.0 + (-self.val).exp());
+        Dual {
+            val,
+            der: self.der * sigmoid,
+        }
+    }
+
+    /// Swish: x · σ(x)
+    ///
+    /// d/dx swish(x) = σ(x) + x · σ(x) · (1 - σ(x)) = σ(x) · (1 + x · (1 - σ(x)))
+    #[inline(always)]
+    pub fn swish(self) -> Dual {
+        let s = 1.0 / (1.0 + (-self.val).exp());
+        let val = self.val * s;
+        let der = self.der * s * (1.0 + self.val * (1.0 - s));
+        Dual { val, der }
+    }
+
+    /// Mish: x · tanh(softplus(x))
+    #[inline(always)]
+    pub fn mish(self) -> Dual {
+        let sp = if self.val > 20.0 {
+            self.val
+        } else {
+            (1.0 + self.val.exp()).ln()
+        };
+        let tanh_sp = sp.tanh();
+        let val = self.val * tanh_sp;
+
+        // Derivative of mish
+        let sigmoid = 1.0 / (1.0 + (-self.val).exp());
+        let sech2_sp = 1.0 - tanh_sp * tanh_sp;
+        let der = self.der * (tanh_sp + self.val * sech2_sp * sigmoid);
+
+        Dual { val, der }
+    }
+}
+
+// ==================== Utility Functions ====================
+
+impl Dual {
+    /// Minimum of two duals (not differentiable at the boundary)
+    #[inline(always)]
+    pub fn min(self, other: Dual) -> Dual {
+        if self.val <= other.val {
+            self
+        } else {
+            other
+        }
+    }
+
+    /// Maximum of two duals (not differentiable at the boundary)
+    #[inline(always)]
+    pub fn max(self, other: Dual) -> Dual {
+        if self.val >= other.val {
+            self
+        } else {
+            other
+        }
+    }
+
+    /// Clamp to range [min, max]
+    #[inline(always)]
+    pub fn clamp(self, min: f64, max: f64) -> Dual {
+        if self.val < min {
+            Dual::constant(min)
+        } else if self.val > max {
+            Dual::constant(max)
+        } else {
+            self
+        }
+    }
+
+    /// Floor function
+    #[inline(always)]
+    pub fn floor(self) -> Dual {
+        Dual {
+            val: self.val.floor(),
+            der: 0.0, // Floor has zero derivative almost everywhere
+        }
+    }
+
+    /// Ceiling function
+    #[inline(always)]
+    pub fn ceil(self) -> Dual {
+        Dual {
+            val: self.val.ceil(),
+            der: 0.0, // Ceil has zero derivative almost everywhere
+        }
+    }
+
+    /// Round to nearest integer
+    #[inline(always)]
+    pub fn round(self) -> Dual {
+        Dual {
+            val: self.val.round(),
+            der: 0.0, // Round has zero derivative almost everywhere
+        }
+    }
+
+    /// Fractional part
+    #[inline(always)]
+    pub fn fract(self) -> Dual {
+        Dual {
+            val: self.val.fract(),
+            der: self.der, // d/dx fract(x) = 1 almost everywhere
+        }
+    }
+
+    /// Sign function: returns -1, 0, or 1
+    #[inline(always)]
+    pub fn signum(self) -> Dual {
+        Dual {
+            val: self.val.signum(),
+            der: 0.0, // Derivative is 0 except at 0
+        }
+    }
+
+    /// Hypotenuse: sqrt(x² + y²) with stable computation
+    #[inline(always)]
+    pub fn hypot(self, other: Dual) -> Dual {
+        let val = self.val.hypot(other.val);
+        let der = (self.val * self.der + other.val * other.der) / val;
+        Dual { val, der }
+    }
+}
+
+// ==================== Display ====================
+
+impl Display for Dual {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        if self.der >= 0.0 {
+            write!(f, "{} + {}ε", self.val, self.der)
+        } else {
+            write!(f, "{} - {}ε", self.val, -self.der)
+        }
+    }
+}
+
+// ==================== Comparison (value-only) ====================
+
+impl PartialEq for Dual {
+    fn eq(&self, other: &Dual) -> bool {
+        self.val == other.val && self.der == other.der
+    }
+}
+
+impl PartialOrd for Dual {
+    fn partial_cmp(&self, other: &Dual) -> Option<Ordering> {
+        self.val.partial_cmp(&other.val)
+    }
+}
+
+// ==================== Constants ====================
+
+impl Dual {
+    /// Zero dual: 0 + 0ε
+    pub const ZERO: Dual = Dual { val: 0.0, der: 0.0 };
+
+    /// One dual: 1 + 0ε
+    pub const ONE: Dual = Dual { val: 1.0, der: 0.0 };
+
+    /// Pi as a constant
+    pub const PI: Dual = Dual { val: std::f64::consts::PI, der: 0.0 };
+
+    /// e as a constant
+    pub const E: Dual = Dual { val: std::f64::consts::E, der: 0.0 };
+
+    /// Not a Number
+    pub const NAN: Dual = Dual { val: f64::NAN, der: f64::NAN };
+
+    /// Positive infinity
+    pub const INFINITY: Dual = Dual { val: f64::INFINITY, der: 0.0 };
+
+    /// Negative infinity
+    pub const NEG_INFINITY: Dual = Dual { val: f64::NEG_INFINITY, der: 0.0 };
+}
+
+// ==================== Operator Traits ====================
+// These allow using +, -, *, / operators directly on Dual numbers
+
+use std::ops::{Add, Sub, Mul, Div, Neg};
+
+impl Add for Dual {
+    type Output = Dual;
+
+    #[inline(always)]
+    fn add(self, other: Dual) -> Dual {
+        Dual::add(self, other)
+    }
+}
+
+impl Add<f64> for Dual {
+    type Output = Dual;
+
+    #[inline(always)]
+    fn add(self, other: f64) -> Dual {
+        self.add_scalar(other)
+    }
+}
+
+impl Add<Dual> for f64 {
+    type Output = Dual;
+
+    #[inline(always)]
+    fn add(self, other: Dual) -> Dual {
+        other.add_scalar(self)
+    }
+}
+
+impl Sub for Dual {
+    type Output = Dual;
+
+    #[inline(always)]
+    fn sub(self, other: Dual) -> Dual {
+        Dual::sub(self, other)
+    }
+}
+
+impl Sub<f64> for Dual {
+    type Output = Dual;
+
+    #[inline(always)]
+    fn sub(self, other: f64) -> Dual {
+        self.sub_scalar(other)
+    }
+}
+
+impl Sub<Dual> for f64 {
+    type Output = Dual;
+
+    #[inline(always)]
+    fn sub(self, other: Dual) -> Dual {
+        Dual::constant(self).sub(other)
+    }
+}
+
+impl Mul for Dual {
+    type Output = Dual;
+
+    #[inline(always)]
+    fn mul(self, other: Dual) -> Dual {
+        Dual::mul(self, other)
+    }
+}
+
+impl Mul<f64> for Dual {
+    type Output = Dual;
+
+    #[inline(always)]
+    fn mul(self, other: f64) -> Dual {
+        self.mul_scalar(other)
+    }
+}
+
+impl Mul<Dual> for f64 {
+    type Output = Dual;
+
+    #[inline(always)]
+    fn mul(self, other: Dual) -> Dual {
+        other.mul_scalar(self)
+    }
+}
+
+impl Div for Dual {
+    type Output = Dual;
+
+    #[inline(always)]
+    fn div(self, other: Dual) -> Dual {
+        Dual::div(self, other)
+    }
+}
+
+impl Div<f64> for Dual {
+    type Output = Dual;
+
+    #[inline(always)]
+    fn div(self, other: f64) -> Dual {
+        self.div_scalar(other)
+    }
+}
+
+impl Div<Dual> for f64 {
+    type Output = Dual;
+
+    #[inline(always)]
+    fn div(self, other: Dual) -> Dual {
+        Dual::scalar_div(self, other)
+    }
+}
+
+impl Neg for Dual {
+    type Output = Dual;
+
+    #[inline(always)]
+    fn neg(self) -> Dual {
+        Dual::neg(self)
+    }
+}
+
+// ==================== From Conversions ====================
+
+impl From<f64> for Dual {
+    fn from(val: f64) -> Dual {
+        Dual::constant(val)
+    }
+}
+
+impl From<f32> for Dual {
+    fn from(val: f32) -> Dual {
+        Dual::constant(val as f64)
+    }
+}
+
+impl From<i32> for Dual {
+    fn from(val: i32) -> Dual {
+        Dual::constant(val as f64)
+    }
+}
+
+impl From<i64> for Dual {
+    fn from(val: i64) -> Dual {
+        Dual::constant(val as f64)
+    }
+}
+
+impl From<(f64, f64)> for Dual {
+    fn from(tuple: (f64, f64)) -> Dual {
+        Dual::new(tuple.0, tuple.1)
+    }
+}

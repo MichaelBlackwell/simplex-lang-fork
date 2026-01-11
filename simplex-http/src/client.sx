@@ -1,0 +1,381 @@
+// HTTP Client implementation
+// Pure Simplex async client
+
+use simplex_std::net::TcpStream;
+use simplex_std::io::{AsyncRead, AsyncWrite, BufReader, BufWriter};
+use simplex_std::collections::HashMap;
+use crate::request::{Request, Method, Headers};
+use crate::response::{Response, StatusCode};
+use crate::json::{JsonValue, to_json, from_json, Serialize, Deserialize};
+
+/// Client configuration
+pub struct ClientConfig {
+    pub timeout_ms: u64,
+    pub follow_redirects: bool,
+    pub max_redirects: u32,
+    pub user_agent: String,
+}
+
+impl ClientConfig {
+    pub fn new() -> Self {
+        ClientConfig {
+            timeout_ms: 30000,
+            follow_redirects: true,
+            max_redirects: 10,
+            user_agent: "Codex/0.1.0 (Simplex)".to_string(),
+        }
+    }
+
+    pub fn timeout(mut self, ms: u64) -> Self {
+        self.timeout_ms = ms;
+        self
+    }
+
+    pub fn no_redirects(mut self) -> Self {
+        self.follow_redirects = false;
+        self
+    }
+}
+
+/// HTTP Client
+pub struct HttpClient {
+    config: ClientConfig,
+    default_headers: Headers,
+}
+
+impl HttpClient {
+    pub fn new(config: ClientConfig) -> Self {
+        let mut default_headers = Headers::new();
+        default_headers.insert("User-Agent".to_string(), config.user_agent.clone());
+        default_headers.insert("Accept".to_string(), "*/*".to_string());
+        default_headers.insert("Connection".to_string(), "keep-alive".to_string());
+
+        HttpClient {
+            config,
+            default_headers,
+        }
+    }
+
+    /// Set default header
+    pub fn header(mut self, key: &str, value: &str) -> Self {
+        self.default_headers.insert(key.to_string(), value.to_string());
+        self
+    }
+
+    /// Set bearer token
+    pub fn bearer_token(self, token: &str) -> Self {
+        self.header("Authorization", &format!("Bearer {}", token))
+    }
+
+    /// GET request
+    pub async fn get(&self, url: &str) -> Result<ClientResponse, ClientError> {
+        self.request(Method::GET, url, None).await
+    }
+
+    /// POST request with JSON body
+    pub async fn post<T: Serialize>(&self, url: &str, body: &T) -> Result<ClientResponse, ClientError> {
+        let json = to_json(body);
+        self.request_with_body(Method::POST, url, json.into_bytes(), "application/json").await
+    }
+
+    /// PUT request with JSON body
+    pub async fn put<T: Serialize>(&self, url: &str, body: &T) -> Result<ClientResponse, ClientError> {
+        let json = to_json(body);
+        self.request_with_body(Method::PUT, url, json.into_bytes(), "application/json").await
+    }
+
+    /// DELETE request
+    pub async fn delete(&self, url: &str) -> Result<ClientResponse, ClientError> {
+        self.request(Method::DELETE, url, None).await
+    }
+
+    /// Generic request
+    pub async fn request(
+        &self,
+        method: Method,
+        url: &str,
+        body: Option<Vec<u8>>,
+    ) -> Result<ClientResponse, ClientError> {
+        let parsed = UrlParser::parse(url)?;
+        let mut redirects = 0;
+        let mut current_url = parsed;
+
+        loop {
+            let response = self.do_request(method, &current_url, body.clone()).await?;
+
+            // Handle redirects
+            if self.config.follow_redirects && response.is_redirect() {
+                if redirects >= self.config.max_redirects {
+                    return Err(ClientError::TooManyRedirects);
+                }
+                if let Some(location) = response.header("location") {
+                    current_url = UrlParser::parse(location)?;
+                    redirects += 1;
+                    continue;
+                }
+            }
+
+            return Ok(response);
+        }
+    }
+
+    async fn request_with_body(
+        &self,
+        method: Method,
+        url: &str,
+        body: Vec<u8>,
+        content_type: &str,
+    ) -> Result<ClientResponse, ClientError> {
+        let parsed = UrlParser::parse(url)?;
+
+        let mut headers = self.default_headers.clone();
+        headers.insert("Content-Type".to_string(), content_type.to_string());
+        headers.insert("Content-Length".to_string(), body.len().to_string());
+
+        self.do_request_with_headers(method, &parsed, Some(body), headers).await
+    }
+
+    async fn do_request(
+        &self,
+        method: Method,
+        url: &ParsedUrl,
+        body: Option<Vec<u8>>,
+    ) -> Result<ClientResponse, ClientError> {
+        self.do_request_with_headers(method, url, body, self.default_headers.clone()).await
+    }
+
+    async fn do_request_with_headers(
+        &self,
+        method: Method,
+        url: &ParsedUrl,
+        body: Option<Vec<u8>>,
+        headers: Headers,
+    ) -> Result<ClientResponse, ClientError> {
+        // Connect
+        let addr = format!("{}:{}", url.host, url.port);
+        let stream = TcpStream::connect(&addr).await
+            .map_err(|e| ClientError::ConnectionFailed(e.to_string()))?;
+
+        let mut reader = BufReader::new(&stream);
+        let mut writer = BufWriter::new(&stream);
+
+        // Build request
+        let mut request_line = format!(
+            "{} {} HTTP/1.1\r\nHost: {}\r\n",
+            method.as_str(),
+            url.path_with_query(),
+            url.host
+        );
+
+        for (key, value) in headers.iter() {
+            request_line.push_str(&format!("{}: {}\r\n", key, value));
+        }
+
+        if let Some(ref body) = body {
+            request_line.push_str(&format!("Content-Length: {}\r\n", body.len()));
+        }
+
+        request_line.push_str("\r\n");
+
+        // Send request
+        writer.write_all(request_line.as_bytes()).await?;
+        if let Some(body) = body {
+            writer.write_all(&body).await?;
+        }
+        writer.flush().await?;
+
+        // Read response
+        self.read_response(&mut reader).await
+    }
+
+    async fn read_response<R: AsyncRead>(&self, reader: &mut BufReader<R>) -> Result<ClientResponse, ClientError> {
+        // Read status line
+        let status_line = reader.read_line().await?;
+        let parts: Vec<&str> = status_line.split_whitespace().collect();
+
+        if parts.len() < 2 {
+            return Err(ClientError::InvalidResponse("Invalid status line".to_string()));
+        }
+
+        let status_code: u16 = parts[1].parse()
+            .map_err(|_| ClientError::InvalidResponse("Invalid status code".to_string()))?;
+
+        // Read headers
+        let mut headers = Headers::new();
+        loop {
+            let line = reader.read_line().await?;
+            if line.trim().is_empty() {
+                break;
+            }
+            if let Some((key, value)) = line.split_once(':') {
+                headers.insert(key.trim().to_lowercase(), value.trim().to_string());
+            }
+        }
+
+        // Read body
+        let body = if let Some(len) = headers.get("content-length") {
+            let len: usize = len.parse().unwrap_or(0);
+            if len > 0 {
+                let mut buf = vec![0u8; len];
+                reader.read_exact(&mut buf).await?;
+                Some(buf)
+            } else {
+                None
+            }
+        } else if headers.get("transfer-encoding").map(|s| s.contains("chunked")).unwrap_or(false) {
+            Some(self.read_chunked(reader).await?)
+        } else {
+            None
+        };
+
+        Ok(ClientResponse {
+            status_code,
+            headers,
+            body,
+        })
+    }
+
+    async fn read_chunked<R: AsyncRead>(&self, reader: &mut BufReader<R>) -> Result<Vec<u8>, ClientError> {
+        let mut body = Vec::new();
+
+        loop {
+            let size_line = reader.read_line().await?;
+            let size = usize::from_str_radix(size_line.trim(), 16)
+                .map_err(|_| ClientError::InvalidResponse("Invalid chunk size".to_string()))?;
+
+            if size == 0 {
+                // Read trailing CRLF
+                reader.read_line().await?;
+                break;
+            }
+
+            let mut chunk = vec![0u8; size];
+            reader.read_exact(&mut chunk).await?;
+            body.extend(chunk);
+
+            // Read chunk trailing CRLF
+            reader.read_line().await?;
+        }
+
+        Ok(body)
+    }
+}
+
+/// Client response
+pub struct ClientResponse {
+    pub status_code: u16,
+    pub headers: Headers,
+    pub body: Option<Vec<u8>>,
+}
+
+impl ClientResponse {
+    pub fn is_success(&self) -> bool {
+        self.status_code >= 200 && self.status_code < 300
+    }
+
+    pub fn is_redirect(&self) -> bool {
+        self.status_code >= 300 && self.status_code < 400
+    }
+
+    pub fn is_error(&self) -> bool {
+        self.status_code >= 400
+    }
+
+    pub fn header(&self, key: &str) -> Option<&str> {
+        self.headers.get(&key.to_lowercase()).map(|s| s.as_str())
+    }
+
+    pub fn body_string(&self) -> Option<String> {
+        self.body.as_ref().map(|b| String::from_utf8_lossy(b).to_string())
+    }
+
+    pub fn json<T: Deserialize>(&self) -> Result<T, ClientError> {
+        let body = self.body_string()
+            .ok_or(ClientError::EmptyBody)?;
+        from_json(&body).map_err(|e| ClientError::JsonError(format!("{:?}", e)))
+    }
+}
+
+/// URL parsing
+struct ParsedUrl {
+    scheme: String,
+    host: String,
+    port: u16,
+    path: String,
+    query: Option<String>,
+}
+
+impl ParsedUrl {
+    fn path_with_query(&self) -> String {
+        match &self.query {
+            Some(q) => format!("{}?{}", self.path, q),
+            None => self.path.clone(),
+        }
+    }
+}
+
+struct UrlParser;
+
+impl UrlParser {
+    fn parse(url: &str) -> Result<ParsedUrl, ClientError> {
+        // Extract scheme
+        let (scheme, rest) = if url.starts_with("https://") {
+            ("https", &url[8..])
+        } else if url.starts_with("http://") {
+            ("http", &url[7..])
+        } else {
+            return Err(ClientError::InvalidUrl("Missing scheme".to_string()));
+        };
+
+        // Extract host and path
+        let (host_port, path_query) = match rest.find('/') {
+            Some(idx) => (&rest[..idx], &rest[idx..]),
+            None => (rest, "/"),
+        };
+
+        // Extract port
+        let (host, port) = match host_port.find(':') {
+            Some(idx) => {
+                let port: u16 = host_port[idx + 1..].parse()
+                    .map_err(|_| ClientError::InvalidUrl("Invalid port".to_string()))?;
+                (&host_port[..idx], port)
+            }
+            None => {
+                let port = if scheme == "https" { 443 } else { 80 };
+                (host_port, port)
+            }
+        };
+
+        // Extract path and query
+        let (path, query) = match path_query.find('?') {
+            Some(idx) => (&path_query[..idx], Some(&path_query[idx + 1..])),
+            None => (path_query, None),
+        };
+
+        Ok(ParsedUrl {
+            scheme: scheme.to_string(),
+            host: host.to_string(),
+            port,
+            path: path.to_string(),
+            query: query.map(|s| s.to_string()),
+        })
+    }
+}
+
+#[derive(Debug)]
+pub enum ClientError {
+    ConnectionFailed(String),
+    Timeout,
+    TooManyRedirects,
+    InvalidUrl(String),
+    InvalidResponse(String),
+    EmptyBody,
+    JsonError(String),
+    IoError(String),
+}
+
+impl From<std::io::Error> for ClientError {
+    fn from(e: std::io::Error) -> Self {
+        ClientError::IoError(e.to_string())
+    }
+}

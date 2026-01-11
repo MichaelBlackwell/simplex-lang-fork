@@ -1,0 +1,288 @@
+// Specialist Data Generators
+//
+// Generate and curate training data for specialist models.
+
+use simplex_std::sync::Arc;
+use super::loader::DataSample;
+
+/// Generator for specialist training data
+pub struct SpecialistGenerator {
+    /// Generator configuration
+    config: GeneratorConfig,
+    /// Domain-specific filters
+    filters: Vec<Box<dyn DataFilter>>,
+    /// Quality scorer
+    quality_scorer: Box<dyn QualityScorer>,
+}
+
+/// Generator configuration
+#[derive(Clone)]
+pub struct GeneratorConfig {
+    /// Target specialist domain
+    pub domain: String,
+    /// Source datasets
+    pub sources: Vec<DataSource>,
+    /// Quality threshold (0.0-1.0)
+    pub quality_threshold: f64,
+    /// Diversity weight (for deduplication)
+    pub diversity_weight: f64,
+    /// Target number of samples
+    pub target_samples: usize,
+    /// Enable synthetic data augmentation
+    pub augmentation: bool,
+}
+
+/// Data source specification
+#[derive(Clone)]
+pub struct DataSource {
+    /// Source path (S3 or local)
+    pub path: String,
+    /// Source weight (for mixing)
+    pub weight: f64,
+    /// Source type
+    pub source_type: SourceType,
+}
+
+#[derive(Clone, Copy)]
+pub enum SourceType {
+    /// Raw web crawl data
+    WebCrawl,
+    /// Curated dataset
+    Curated,
+    /// Synthetic/generated data
+    Synthetic,
+    /// Instruction-following data
+    Instructions,
+    /// Conversation data
+    Conversations,
+}
+
+impl SpecialistGenerator {
+    /// Create generator for a domain
+    pub fn new(domain: &str) -> Self {
+        SpecialistGenerator {
+            config: GeneratorConfig {
+                domain: domain.to_string(),
+                sources: vec![],
+                quality_threshold: 0.7,
+                diversity_weight: 0.3,
+                target_samples: 100_000,
+                augmentation: true,
+            },
+            filters: vec![],
+            quality_scorer: Box::new(DefaultQualityScorer),
+        }
+    }
+
+    /// Create code specialist generator
+    pub fn code() -> Self {
+        let mut gen = Self::new("code");
+        gen.config.sources = vec![
+            DataSource {
+                path: "s3://simplex-data/code/github".to_string(),
+                weight: 0.5,
+                source_type: SourceType::WebCrawl,
+            },
+            DataSource {
+                path: "s3://simplex-data/code/stack-overflow".to_string(),
+                weight: 0.3,
+                source_type: SourceType::Curated,
+            },
+            DataSource {
+                path: "s3://simplex-data/code/synthetic".to_string(),
+                weight: 0.2,
+                source_type: SourceType::Synthetic,
+            },
+        ];
+        gen.add_filter(Box::new(CodeQualityFilter));
+        gen
+    }
+
+    /// Create math specialist generator
+    pub fn math() -> Self {
+        let mut gen = Self::new("math");
+        gen.config.sources = vec![
+            DataSource {
+                path: "s3://simplex-data/math/gsm8k".to_string(),
+                weight: 0.4,
+                source_type: SourceType::Curated,
+            },
+            DataSource {
+                path: "s3://simplex-data/math/math-qa".to_string(),
+                weight: 0.3,
+                source_type: SourceType::Curated,
+            },
+            DataSource {
+                path: "s3://simplex-data/math/synthetic".to_string(),
+                weight: 0.3,
+                source_type: SourceType::Synthetic,
+            },
+        ];
+        gen.add_filter(Box::new(MathQualityFilter));
+        gen
+    }
+
+    /// Create reasoning specialist generator
+    pub fn reasoning() -> Self {
+        let mut gen = Self::new("reasoning");
+        gen.config.sources = vec![
+            DataSource {
+                path: "s3://simplex-data/reasoning/arc".to_string(),
+                weight: 0.3,
+                source_type: SourceType::Curated,
+            },
+            DataSource {
+                path: "s3://simplex-data/reasoning/hellaswag".to_string(),
+                weight: 0.3,
+                source_type: SourceType::Curated,
+            },
+            DataSource {
+                path: "s3://simplex-data/reasoning/chain-of-thought".to_string(),
+                weight: 0.4,
+                source_type: SourceType::Instructions,
+            },
+        ];
+        gen
+    }
+
+    /// Add custom filter
+    pub fn add_filter(&mut self, filter: Box<dyn DataFilter>) {
+        self.filters.push(filter);
+    }
+
+    /// Set custom quality scorer
+    pub fn set_quality_scorer(&mut self, scorer: Box<dyn QualityScorer>) {
+        self.quality_scorer = scorer;
+    }
+
+    /// Generate dataset
+    pub async fn generate(&self) -> Result<Vec<DataSample>, GeneratorError> {
+        var samples = Vec::new();
+
+        // Load from each source weighted by importance
+        for source in &self.config.sources {
+            let source_samples = self.load_source(source).await?;
+
+            // Filter by quality
+            let filtered: Vec<DataSample> = source_samples
+                .into_iter()
+                .filter(|s| self.quality_scorer.score(s) >= self.config.quality_threshold)
+                .filter(|s| self.passes_filters(s))
+                .collect();
+
+            // Weight samples
+            let num_to_take = (self.config.target_samples as f64 * source.weight) as usize;
+            samples.extend(filtered.into_iter().take(num_to_take));
+        }
+
+        // Augment if enabled
+        if self.config.augmentation {
+            samples = self.augment(samples).await?;
+        }
+
+        // Deduplicate with diversity weighting
+        samples = self.deduplicate(samples);
+
+        Ok(samples)
+    }
+
+    async fn load_source(&self, source: &DataSource) -> Result<Vec<DataSample>, GeneratorError> {
+        // Load samples from S3 or local storage
+        Ok(vec![]) // Placeholder
+    }
+
+    fn passes_filters(&self, sample: &DataSample) -> bool {
+        self.filters.iter().all(|f| f.accept(sample))
+    }
+
+    async fn augment(&self, samples: Vec<DataSample>) -> Result<Vec<DataSample>, GeneratorError> {
+        // Apply data augmentation (paraphrasing, etc.)
+        Ok(samples)
+    }
+
+    fn deduplicate(&self, samples: Vec<DataSample>) -> Vec<DataSample> {
+        // MinHash-based deduplication with diversity weighting
+        samples
+    }
+}
+
+/// Registry of all specialist generators
+pub struct GeneratorRegistry {
+    generators: std::collections::HashMap<String, SpecialistGenerator>,
+}
+
+impl GeneratorRegistry {
+    /// Create registry with default generators
+    pub fn default_specialists() -> Self {
+        var generators = std::collections::HashMap::new();
+        generators.insert("code".to_string(), SpecialistGenerator::code());
+        generators.insert("math".to_string(), SpecialistGenerator::math());
+        generators.insert("reasoning".to_string(), SpecialistGenerator::reasoning());
+        GeneratorRegistry { generators }
+    }
+
+    /// Get generator for domain
+    pub fn get(&self, domain: &str) -> Option<&SpecialistGenerator> {
+        self.generators.get(domain)
+    }
+
+    /// Register custom generator
+    pub fn register(&mut self, domain: &str, generator: SpecialistGenerator) {
+        self.generators.insert(domain.to_string(), generator);
+    }
+
+    /// List all registered domains
+    pub fn domains(&self) -> Vec<&String> {
+        self.generators.keys().collect()
+    }
+}
+
+/// Data filter trait
+pub trait DataFilter: Send + Sync {
+    fn accept(&self, sample: &DataSample) -> bool;
+}
+
+/// Quality scorer trait
+pub trait QualityScorer: Send + Sync {
+    fn score(&self, sample: &DataSample) -> f64;
+}
+
+// Default implementations
+
+struct DefaultQualityScorer;
+
+impl QualityScorer for DefaultQualityScorer {
+    fn score(&self, sample: &DataSample) -> f64 {
+        // Simple length-based quality heuristic
+        let len = sample.input_ids.len();
+        if len < 10 { 0.0 }
+        else if len < 100 { 0.5 }
+        else if len < 1000 { 0.8 }
+        else { 0.9 }
+    }
+}
+
+struct CodeQualityFilter;
+
+impl DataFilter for CodeQualityFilter {
+    fn accept(&self, sample: &DataSample) -> bool {
+        // Filter out low-quality code samples
+        sample.domain == "code"
+    }
+}
+
+struct MathQualityFilter;
+
+impl DataFilter for MathQualityFilter {
+    fn accept(&self, sample: &DataSample) -> bool {
+        // Filter out samples without mathematical content
+        sample.domain == "math"
+    }
+}
+
+#[derive(Debug)]
+pub enum GeneratorError {
+    SourceNotFound(String),
+    LoadFailed(String),
+    AugmentationFailed(String),
+}

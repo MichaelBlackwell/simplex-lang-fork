@@ -1,6 +1,6 @@
 # Simplex Compiler Toolchain
 
-**Version 0.3.5**
+**Version 0.9.0**
 
 This document describes the Simplex compiler toolchain, which is **self-hosted** and compiles to native binaries via LLVM.
 
@@ -12,11 +12,11 @@ The Simplex toolchain consists of five main components:
 
 | Component | Binary | Version | Description |
 |-----------|--------|---------|-------------|
-| **sxc** | `sxc` | v0.3.5 | Simplex Compiler - compiles `.sx` source to native executables |
-| **sxpm** | `sxpm` | v0.1.5 | Package manager with dependency resolution |
-| **cursus** | `cursus` | v0.1.5 | Bytecode VM with garbage collection |
-| **sxdoc** | `sxdoc` | v0.1.5 | Documentation generator |
-| **sxlsp** | `sxlsp` | v0.1.5 | Language Server Protocol implementation |
+| **sxc** | `sxc` | v0.9.0 | Simplex Compiler - compiles `.sx` source to native executables |
+| **sxpm** | `sxpm` | v0.9.0 | Package manager with dependency resolution |
+| **cursus** | `cursus` | v0.9.0 | Bytecode VM with garbage collection |
+| **sxdoc** | `sxdoc` | v0.9.0 | Documentation generator |
+| **sxlsp** | `sxlsp` | v0.9.0 | Language Server Protocol implementation |
 
 All components are written in **Simplex** and compile to native binaries.
 
@@ -268,9 +268,29 @@ println(s);
 
 ### Prerequisites
 
-- macOS or Linux
-- clang (LLVM)
-- Python 3 (for bootstrap only)
+| Platform | Requirements |
+|----------|-------------|
+| **macOS** | Xcode Command Line Tools (includes clang), Python 3 |
+| **Linux** | clang or gcc, Python 3 |
+| **Windows** | Visual Studio Build Tools (includes clang-cl), Python 3 |
+
+### Platform Support
+
+The Simplex toolchain is **fully cross-platform** as of v0.9.0:
+
+| Component | macOS | Linux | Windows |
+|-----------|-------|-------|---------|
+| `stage0.py` (bootstrap) | ✅ | ✅ | ✅ |
+| `sxc` (compiler) | ✅ | ✅ | ✅ |
+| `sxpm` (package manager) | ✅ | ✅ | ✅ |
+| `cursus` (VM) | ✅ | ✅ | ✅ |
+| `sxdoc` (docs) | ✅ | ✅ | ✅ |
+| `sxlsp` (LSP) | ✅ | ✅ | ✅ |
+
+The bootstrap compiler (`stage0.py`) automatically detects the platform and generates the appropriate LLVM target triple:
+- **macOS**: `x86_64-apple-macosx<version>` or `aarch64-apple-macosx<version>`
+- **Linux**: `x86_64-unknown-linux-gnu` or `aarch64-unknown-linux-gnu`
+- **Windows**: `x86_64-pc-windows-msvc`
 
 ### Full Bootstrap
 
@@ -280,6 +300,7 @@ git clone https://github.com/user/simplex-lang.git
 cd simplex-lang
 
 # Bootstrap from Python (only needed once)
+# Works on macOS, Linux, and Windows
 python3 stage0.py compiler/bootstrap/codegen.sx -o sxc-compile
 
 # Self-host verification
@@ -289,6 +310,38 @@ python3 stage0.py compiler/bootstrap/codegen.sx -o sxc-compile
 ./sxc build tools/cursus.sx -o cursus
 ./sxc build tools/sxdoc.sx -o sxdoc
 ./sxc build tools/sxlsp.sx -o sxlsp
+```
+
+### Platform-Specific Notes
+
+#### macOS
+```bash
+# Ensure Xcode CLI tools are installed
+xcode-select --install
+
+# Bootstrap
+python3 stage0.py compiler/bootstrap/codegen.sx -o sxc-compile
+```
+
+#### Linux
+```bash
+# Install clang (Debian/Ubuntu)
+sudo apt install clang python3
+
+# Install clang (Fedora/RHEL)
+sudo dnf install clang python3
+
+# Bootstrap
+python3 stage0.py compiler/bootstrap/codegen.sx -o sxc-compile
+```
+
+#### Windows
+```powershell
+# Install Visual Studio Build Tools with C++ workload
+# Or install LLVM/Clang directly
+
+# Bootstrap (PowerShell)
+python stage0.py compiler/bootstrap/codegen.sx -o sxc-compile.exe
 ```
 
 ### Quick Build (already bootstrapped)
@@ -316,6 +369,71 @@ Total toolchain: ~1MB of native binaries.
 
 ---
 
+## Test Suite (v0.9.0)
+
+The test suite has been completely reorganized with 156 tests across 13 categories.
+
+### Directory Structure
+
+```
+tests/
+├── language/           # Core language features (40 tests)
+│   ├── actors/
+│   ├── async/
+│   ├── basics/
+│   ├── closures/
+│   ├── control/
+│   ├── functions/
+│   ├── modules/
+│   ├── traits/
+│   └── types/
+├── types/              # Type system tests (24 tests)
+├── neural/             # Neural IR and gates (16 tests)
+├── stdlib/             # Standard library (16 tests)
+├── ai/                 # AI/Cognitive tests (17 tests)
+├── toolchain/          # Compiler toolchain (14 tests)
+├── runtime/            # Runtime systems (5 tests)
+├── integration/        # End-to-end tests (7 tests)
+├── basics/             # Basic language tests (6 tests)
+├── async/              # Async/await tests (3 tests)
+├── learning/           # Automatic differentiation (3 tests)
+├── actors/             # Actor model tests (1 test)
+└── observability/      # Metrics and tracing (1 test)
+```
+
+### Naming Convention
+
+| Prefix | Type | Description |
+|--------|------|-------------|
+| `unit_` | Unit | Tests individual functions/types in isolation |
+| `spec_` | Specification | Tests language specification compliance |
+| `integ_` | Integration | Tests integration between components |
+| `e2e_` | End-to-End | Tests complete workflows |
+
+### Running Tests
+
+```bash
+# Run all tests
+./tests/run_tests.sh
+
+# Run specific category
+./tests/run_tests.sh neural
+./tests/run_tests.sh learning
+./tests/run_tests.sh ai
+
+# Filter by test type
+./tests/run_tests.sh all unit    # Only unit tests
+./tests/run_tests.sh all spec    # Only spec tests
+./tests/run_tests.sh all integ   # Only integration tests
+./tests/run_tests.sh all e2e     # Only end-to-end tests
+
+# Combine category and type
+./tests/run_tests.sh stdlib unit
+./tests/run_tests.sh neural spec
+```
+
+---
+
 ## Version History
 
 | Version | Date | Changes |
@@ -324,6 +442,8 @@ Total toolchain: ~1MB of native binaries.
 | 0.2.0 | 2024-12 | Self-hosted compiler (Stage 1) |
 | 0.3.0 | 2025-01 | Native binary compilation |
 | 0.3.1 | 2025-01 | Fixed lookup_variant bug, all tools compiled |
+| 0.8.0 | 2026-01 | Native dual numbers for automatic differentiation |
+| 0.9.0 | 2026-01 | Self-learning annealing, test suite restructure, llama.cpp integration |
 
 ---
 

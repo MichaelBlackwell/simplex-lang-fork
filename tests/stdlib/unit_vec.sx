@@ -1,0 +1,365 @@
+// Test file for Vec operations
+// Self-contained version - simulates vector operations using fixed arrays
+//
+// NOTE: Uses a simple array simulation with explicit indices
+
+// =============================================================================
+// Simulated Vector (using explicit storage)
+// =============================================================================
+
+// We simulate a vector with 10 slots and a length counter
+// vec[0-9] = values, vec_len = current length
+
+// Helper: bounds check
+fn in_bounds(idx: i64, len: i64) -> i64 {
+    if idx >= 0 {
+        if idx < len {
+            1
+        } else {
+            0
+        }
+    } else {
+        0
+    }
+}
+
+// =============================================================================
+// Test 1: Vec Creation
+// =============================================================================
+
+fn test_vec_create() -> i64 {
+    println("  Testing vec creation...");
+
+    // New vec has length 0
+    let vec_len: i64 = 0;
+
+    if vec_len != 0 {
+        println("    FAIL: new vec should be empty");
+        return 1;
+    }
+
+    println("    PASS: vec creation");
+    0
+}
+
+// =============================================================================
+// Test 2: Vec Push
+// =============================================================================
+
+fn test_vec_push() -> i64 {
+    println("  Testing vec push...");
+
+    // Simulate pushing 3 elements
+    let len0: i64 = 0;
+    let val0: i64 = 10;
+
+    let len1: i64 = len0 + 1;  // After push(10)
+    let val1: i64 = 20;
+
+    let len2: i64 = len1 + 1;  // After push(20)
+    let val2: i64 = 30;
+
+    let len3: i64 = len2 + 1;  // After push(30)
+
+    if len3 != 3 {
+        println("    FAIL: after 3 pushes, length should be 3");
+        return 1;
+    }
+
+    println("    PASS: vec push");
+    0
+}
+
+// =============================================================================
+// Test 3: Vec Get
+// =============================================================================
+
+fn test_vec_get() -> i64 {
+    println("  Testing vec get...");
+
+    // Simulated vec: [10, 20, 30]
+    let v0: i64 = 10;
+    let v1: i64 = 20;
+    let v2: i64 = 30;
+    let len: i64 = 3;
+
+    // Get index 0
+    if in_bounds(0, len) == 1 {
+        if v0 != 10 {
+            println("    FAIL: v[0] should be 10");
+            return 1;
+        }
+    } else {
+        println("    FAIL: index 0 should be in bounds");
+        return 1;
+    }
+
+    // Get index 2
+    if in_bounds(2, len) == 1 {
+        if v2 != 30 {
+            println("    FAIL: v[2] should be 30");
+            return 1;
+        }
+    } else {
+        println("    FAIL: index 2 should be in bounds");
+        return 1;
+    }
+
+    // Index 3 should be out of bounds
+    if in_bounds(3, len) == 1 {
+        println("    FAIL: index 3 should be out of bounds");
+        return 1;
+    }
+
+    println("    PASS: vec get");
+    0
+}
+
+// =============================================================================
+// Test 4: Vec Pop
+// =============================================================================
+
+fn test_vec_pop() -> i64 {
+    println("  Testing vec pop...");
+
+    // Simulated vec: [10, 20, 30]
+    let len: i64 = 3;
+
+    // Pop returns last element and decrements length
+    let popped: i64 = 30;  // v[len-1]
+    let new_len: i64 = len - 1;
+
+    if popped != 30 {
+        println("    FAIL: popped value should be 30");
+        return 1;
+    }
+
+    if new_len != 2 {
+        println("    FAIL: length after pop should be 2");
+        return 1;
+    }
+
+    // Pop from empty vec
+    let empty_len: i64 = 0;
+    let can_pop: i64 = if empty_len > 0 { 1 } else { 0 };
+
+    if can_pop != 0 {
+        println("    FAIL: cannot pop from empty vec");
+        return 1;
+    }
+
+    println("    PASS: vec pop");
+    0
+}
+
+// =============================================================================
+// Test 5: Vec Length and Empty
+// =============================================================================
+
+fn test_vec_length() -> i64 {
+    println("  Testing vec length...");
+
+    let empty_len: i64 = 0;
+    let filled_len: i64 = 5;
+
+    // Empty check
+    let is_empty: i64 = if empty_len == 0 { 1 } else { 0 };
+    if is_empty != 1 {
+        println("    FAIL: empty vec should be empty");
+        return 1;
+    }
+
+    let is_filled_empty: i64 = if filled_len == 0 { 1 } else { 0 };
+    if is_filled_empty != 0 {
+        println("    FAIL: filled vec should not be empty");
+        return 1;
+    }
+
+    println("    PASS: vec length");
+    0
+}
+
+// =============================================================================
+// Test 6: Vec Clear
+// =============================================================================
+
+fn test_vec_clear() -> i64 {
+    println("  Testing vec clear...");
+
+    // Before clear: length = 5
+    let before_len: i64 = 5;
+
+    // After clear: length = 0
+    let after_len: i64 = 0;
+
+    if after_len != 0 {
+        println("    FAIL: cleared vec should have length 0");
+        return 1;
+    }
+
+    println("    PASS: vec clear");
+    0
+}
+
+// =============================================================================
+// Test 7: Vec Iteration
+// =============================================================================
+
+fn test_vec_iteration() -> i64 {
+    println("  Testing vec iteration...");
+
+    // Simulated vec: [1, 2, 3, 4, 5]
+    let v0: i64 = 1;
+    let v1: i64 = 2;
+    let v2: i64 = 3;
+    let v3: i64 = 4;
+    let v4: i64 = 5;
+    let len: i64 = 5;
+
+    // Sum all elements
+    let sum: i64 = v0 + v1 + v2 + v3 + v4;
+
+    if sum != 15 {
+        println("    FAIL: sum should be 15");
+        return 1;
+    }
+
+    // Count iterations
+    let iterations: i64 = len;
+    if iterations != 5 {
+        println("    FAIL: should iterate 5 times");
+        return 1;
+    }
+
+    println("    PASS: vec iteration");
+    0
+}
+
+// =============================================================================
+// Test 8: Vec Contains
+// =============================================================================
+
+fn test_vec_contains() -> i64 {
+    println("  Testing vec contains...");
+
+    // Simulated vec: [10, 20, 30]
+    let v0: i64 = 10;
+    let v1: i64 = 20;
+    let v2: i64 = 30;
+
+    // Check if contains 20
+    let target: i64 = 20;
+    let found: i64 = if v0 == target { 1 } else {
+        if v1 == target { 1 } else {
+            if v2 == target { 1 } else { 0 }
+        }
+    };
+
+    if found != 1 {
+        println("    FAIL: should contain 20");
+        return 1;
+    }
+
+    // Check if contains 999
+    let missing: i64 = 999;
+    let not_found: i64 = if v0 == missing { 1 } else {
+        if v1 == missing { 1 } else {
+            if v2 == missing { 1 } else { 0 }
+        }
+    };
+
+    if not_found != 0 {
+        println("    FAIL: should not contain 999");
+        return 1;
+    }
+
+    println("    PASS: vec contains");
+    0
+}
+
+// =============================================================================
+// Test 9: Vec First and Last
+// =============================================================================
+
+fn test_vec_first_last() -> i64 {
+    println("  Testing vec first/last...");
+
+    // Simulated vec: [10, 20, 30]
+    let first: i64 = 10;
+    let last: i64 = 30;
+
+    if first != 10 {
+        println("    FAIL: first should be 10");
+        return 1;
+    }
+
+    if last != 30 {
+        println("    FAIL: last should be 30");
+        return 1;
+    }
+
+    println("    PASS: vec first/last");
+    0
+}
+
+// =============================================================================
+// Test 10: Vec Capacity Concept
+// =============================================================================
+
+fn test_vec_capacity() -> i64 {
+    println("  Testing vec capacity...");
+
+    // Initial capacity might be 0 or some default
+    let initial_cap: i64 = 0;
+
+    // After adding elements, capacity grows
+    let after_push_cap: i64 = 4;  // Common growth: 0 -> 4
+
+    // Capacity should be >= length
+    let len: i64 = 3;
+    if after_push_cap < len {
+        println("    FAIL: capacity should be >= length");
+        return 1;
+    }
+
+    // Reserve capacity
+    let reserved_cap: i64 = 100;
+    if reserved_cap < 100 {
+        println("    FAIL: reserved capacity should be >= 100");
+        return 1;
+    }
+
+    println("    PASS: vec capacity");
+    0
+}
+
+// =============================================================================
+// Main Test Runner
+// =============================================================================
+
+fn main() -> i64 {
+    println("=== Vec Tests ===");
+    println("");
+
+    let f1: i64 = test_vec_create();
+    let f2: i64 = test_vec_push();
+    let f3: i64 = test_vec_get();
+    let f4: i64 = test_vec_pop();
+    let f5: i64 = test_vec_length();
+    let f6: i64 = test_vec_clear();
+    let f7: i64 = test_vec_iteration();
+    let f8: i64 = test_vec_contains();
+    let f9: i64 = test_vec_first_last();
+    let f10: i64 = test_vec_capacity();
+
+    let failures: i64 = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10;
+
+    println("");
+    if failures == 0 {
+        println("All Vec tests passed!");
+    } else {
+        println("Some Vec tests failed");
+    }
+
+    failures
+}

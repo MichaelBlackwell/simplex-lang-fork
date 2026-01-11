@@ -1,0 +1,230 @@
+// simplex-std::string - String Utilities
+//
+// Additional string manipulation functions beyond intrinsics.
+
+// =============================================================================
+// String Utilities
+// =============================================================================
+
+/// Repeat a string N times.
+pub fn repeat(s: &str, count: usize) -> String {
+    var result = String::with_capacity(s.len() * count);
+    for _ in 0..count {
+        result.push_str(s);
+    }
+    result
+}
+
+/// Pad string on the left to reach target width.
+pub fn pad_left(s: &str, width: usize, pad_char: char) -> String {
+    if s.len() >= width {
+        return s.to_string();
+    }
+    let padding = repeat(&pad_char.to_string(), width - s.len());
+    format!("{}{}", padding, s)
+}
+
+/// Pad string on the right to reach target width.
+pub fn pad_right(s: &str, width: usize, pad_char: char) -> String {
+    if s.len() >= width {
+        return s.to_string();
+    }
+    let padding = repeat(&pad_char.to_string(), width - s.len());
+    format!("{}{}", s, padding)
+}
+
+/// Center a string in the given width.
+pub fn center(s: &str, width: usize, pad_char: char) -> String {
+    if s.len() >= width {
+        return s.to_string();
+    }
+    let total_pad = width - s.len();
+    let left_pad = total_pad / 2;
+    let right_pad = total_pad - left_pad;
+    let left = repeat(&pad_char.to_string(), left_pad);
+    let right = repeat(&pad_char.to_string(), right_pad);
+    format!("{}{}{}", left, s, right)
+}
+
+/// Trim whitespace from both ends.
+pub fn trim(s: &str) -> &str {
+    s.trim()
+}
+
+/// Trim whitespace from the left.
+pub fn trim_left(s: &str) -> &str {
+    s.trim_start()
+}
+
+/// Trim whitespace from the right.
+pub fn trim_right(s: &str) -> &str {
+    s.trim_end()
+}
+
+// =============================================================================
+// Character Classification
+// =============================================================================
+
+/// Check if character is a digit (0-9).
+pub fn is_digit(c: char) -> bool {
+    c >= '0' && c <= '9'
+}
+
+/// Check if character is alphabetic (A-Z, a-z).
+pub fn is_alpha(c: char) -> bool {
+    (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+}
+
+/// Check if character is alphanumeric.
+pub fn is_alphanumeric(c: char) -> bool {
+    is_alpha(c) || is_digit(c)
+}
+
+/// Check if character is whitespace.
+pub fn is_whitespace(c: char) -> bool {
+    c == ' ' || c == '\t' || c == '\n' || c == '\r'
+}
+
+/// Check if character is uppercase.
+pub fn is_uppercase(c: char) -> bool {
+    c >= 'A' && c <= 'Z'
+}
+
+/// Check if character is lowercase.
+pub fn is_lowercase(c: char) -> bool {
+    c >= 'a' && c <= 'z'
+}
+
+/// Convert character to uppercase.
+pub fn to_uppercase(c: char) -> char {
+    if is_lowercase(c) {
+        ((c as u8) - 32) as char
+    } else {
+        c
+    }
+}
+
+/// Convert character to lowercase.
+pub fn to_lowercase(c: char) -> char {
+    if is_uppercase(c) {
+        ((c as u8) + 32) as char
+    } else {
+        c
+    }
+}
+
+// =============================================================================
+// String Case Conversion
+// =============================================================================
+
+/// Convert string to uppercase.
+pub fn to_upper(s: &str) -> String {
+    s.chars().map(to_uppercase).collect()
+}
+
+/// Convert string to lowercase.
+pub fn to_lower(s: &str) -> String {
+    s.chars().map(to_lowercase).collect()
+}
+
+/// Capitalize first character.
+pub fn capitalize(s: &str) -> String {
+    var chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => {
+            let upper = to_uppercase(first);
+            let rest: String = chars.collect();
+            format!("{}{}", upper, rest)
+        }
+    }
+}
+
+// =============================================================================
+// String Search and Replace
+// =============================================================================
+
+/// Check if string starts with prefix.
+pub fn starts_with(s: &str, prefix: &str) -> bool {
+    s.starts_with(prefix)
+}
+
+/// Check if string ends with suffix.
+pub fn ends_with(s: &str, suffix: &str) -> bool {
+    s.ends_with(suffix)
+}
+
+/// Check if string contains substring.
+pub fn contains(s: &str, substr: &str) -> bool {
+    s.contains(substr)
+}
+
+/// Replace all occurrences of pattern with replacement.
+pub fn replace(s: &str, pattern: &str, replacement: &str) -> String {
+    s.replace(pattern, replacement)
+}
+
+/// Replace first occurrence of pattern.
+pub fn replace_first(s: &str, pattern: &str, replacement: &str) -> String {
+    s.replacen(pattern, replacement, 1)
+}
+
+// =============================================================================
+// String Splitting and Joining
+// =============================================================================
+
+/// Split string by delimiter.
+pub fn split(s: &str, delimiter: &str) -> Vec<String> {
+    s.split(delimiter).map(|p| p.to_string()).collect()
+}
+
+/// Split string into lines.
+pub fn lines(s: &str) -> Vec<String> {
+    s.lines().map(|l| l.to_string()).collect()
+}
+
+/// Join strings with separator.
+pub fn join(parts: &[String], separator: &str) -> String {
+    parts.join(separator)
+}
+
+// =============================================================================
+// String Comparison
+// =============================================================================
+
+/// Compare strings, ignoring case.
+pub fn eq_ignore_case(a: &str, b: &str) -> bool {
+    to_lower(a) == to_lower(b)
+}
+
+/// Levenshtein edit distance between strings.
+pub fn edit_distance(a: &str, b: &str) -> usize {
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let m = a_chars.len();
+    let n = b_chars.len();
+
+    if m == 0 { return n; }
+    if n == 0 { return m; }
+
+    var prev = (0..=n).collect::<Vec<usize>>();
+    var curr = vec![0; n + 1];
+
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            let cost = if a_chars[i-1] == b_chars[j-1] { 0 } else { 1 };
+            curr[j] = min(
+                min(prev[j] + 1, curr[j-1] + 1),
+                prev[j-1] + cost
+            );
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+
+    prev[n]
+}
+
+fn min(a: usize, b: usize) -> usize {
+    if a < b { a } else { b }
+}

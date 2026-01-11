@@ -1,0 +1,244 @@
+// CORS (Cross-Origin Resource Sharing) middleware
+
+use simplex_std::collections::HashSet;
+use crate::request::{Request, Method};
+use crate::response::{Response, StatusCode};
+use crate::middleware::Middleware;
+
+/// CORS Configuration
+pub struct CorsConfig {
+    pub allowed_origins: Vec<String>,
+    pub allowed_methods: Vec<Method>,
+    pub allowed_headers: Vec<String>,
+    pub exposed_headers: Vec<String>,
+    pub allow_credentials: bool,
+    pub max_age: Option<u32>,
+}
+
+impl CorsConfig {
+    pub fn new() -> Self {
+        CorsConfig {
+            allowed_origins: vec!["*".to_string()],
+            allowed_methods: vec![Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::OPTIONS],
+            allowed_headers: vec![
+                "Content-Type".to_string(),
+                "Authorization".to_string(),
+                "X-Requested-With".to_string(),
+            ],
+            exposed_headers: Vec::new(),
+            allow_credentials: false,
+            max_age: Some(86400),  // 24 hours
+        }
+    }
+
+    /// Create config for specific origin (production)
+    pub fn for_origin(origin: &str) -> Self {
+        CorsConfig {
+            allowed_origins: vec![origin.to_string()],
+            allowed_methods: vec![Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE, Method::OPTIONS],
+            allowed_headers: vec![
+                "Content-Type".to_string(),
+                "Authorization".to_string(),
+                "X-Requested-With".to_string(),
+                "Accept".to_string(),
+                "Origin".to_string(),
+            ],
+            exposed_headers: vec![
+                "X-Request-Id".to_string(),
+                "X-RateLimit-Remaining".to_string(),
+            ],
+            allow_credentials: true,
+            max_age: Some(86400),
+        }
+    }
+
+    /// Create config for ciara.senuamedia.com
+    pub fn for_ciara() -> Self {
+        CorsConfig {
+            allowed_origins: vec![
+                "https://ciara.senuamedia.com".to_string(),
+                "http://localhost:3000".to_string(),  // Development
+            ],
+            allowed_methods: vec![Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE, Method::OPTIONS],
+            allowed_headers: vec![
+                "Content-Type".to_string(),
+                "Authorization".to_string(),
+                "X-Requested-With".to_string(),
+                "Accept".to_string(),
+                "Origin".to_string(),
+                "X-Request-Id".to_string(),
+            ],
+            exposed_headers: vec![
+                "X-Request-Id".to_string(),
+                "X-RateLimit-Limit".to_string(),
+                "X-RateLimit-Remaining".to_string(),
+                "X-RateLimit-Reset".to_string(),
+            ],
+            allow_credentials: true,
+            max_age: Some(86400),
+        }
+    }
+
+    pub fn allow_origin(mut self, origin: &str) -> Self {
+        self.allowed_origins.push(origin.to_string());
+        self
+    }
+
+    pub fn allow_method(mut self, method: Method) -> Self {
+        self.allowed_methods.push(method);
+        self
+    }
+
+    pub fn allow_header(mut self, header: &str) -> Self {
+        self.allowed_headers.push(header.to_string());
+        self
+    }
+
+    pub fn expose_header(mut self, header: &str) -> Self {
+        self.exposed_headers.push(header.to_string());
+        self
+    }
+
+    pub fn credentials(mut self, allow: bool) -> Self {
+        self.allow_credentials = allow;
+        self
+    }
+}
+
+/// CORS Middleware
+pub struct CorsMiddleware {
+    config: CorsConfig,
+    origin_set: HashSet<String>,
+}
+
+impl CorsMiddleware {
+    pub fn new(config: CorsConfig) -> Self {
+        let origin_set: HashSet<String> = config.allowed_origins.iter().cloned().collect();
+        CorsMiddleware { config, origin_set }
+    }
+
+    fn is_origin_allowed(&self, origin: &str) -> bool {
+        self.origin_set.contains("*") || self.origin_set.contains(origin)
+    }
+
+    fn get_allowed_origin(&self, request_origin: Option<&str>) -> Option<String> {
+        match request_origin {
+            Some(origin) if self.is_origin_allowed(origin) => {
+                if self.origin_set.contains("*") && !self.config.allow_credentials {
+                    Some("*".to_string())
+                } else {
+                    Some(origin.to_string())
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn add_cors_headers(&self, response: &mut Response, request_origin: Option<&str>) {
+        if let Some(allowed_origin) = self.get_allowed_origin(request_origin) {
+            response.headers.insert(
+                "Access-Control-Allow-Origin".to_string(),
+                allowed_origin,
+            );
+        }
+
+        if self.config.allow_credentials {
+            response.headers.insert(
+                "Access-Control-Allow-Credentials".to_string(),
+                "true".to_string(),
+            );
+        }
+
+        if !self.config.exposed_headers.is_empty() {
+            response.headers.insert(
+                "Access-Control-Expose-Headers".to_string(),
+                self.config.exposed_headers.join(", "),
+            );
+        }
+    }
+
+    fn handle_preflight(&self, request: &Request) -> Response {
+        let mut response = Response::new(StatusCode::NoContent);
+
+        // Add origin
+        if let Some(origin) = request.header("origin") {
+            if let Some(allowed_origin) = self.get_allowed_origin(Some(origin)) {
+                response.headers.insert(
+                    "Access-Control-Allow-Origin".to_string(),
+                    allowed_origin,
+                );
+            }
+        }
+
+        // Add methods
+        let methods: Vec<&str> = self.config.allowed_methods.iter()
+            .map(|m| m.as_str())
+            .collect();
+        response.headers.insert(
+            "Access-Control-Allow-Methods".to_string(),
+            methods.join(", "),
+        );
+
+        // Add headers
+        response.headers.insert(
+            "Access-Control-Allow-Headers".to_string(),
+            self.config.allowed_headers.join(", "),
+        );
+
+        // Add credentials
+        if self.config.allow_credentials {
+            response.headers.insert(
+                "Access-Control-Allow-Credentials".to_string(),
+                "true".to_string(),
+            );
+        }
+
+        // Add max age
+        if let Some(max_age) = self.config.max_age {
+            response.headers.insert(
+                "Access-Control-Max-Age".to_string(),
+                max_age.to_string(),
+            );
+        }
+
+        response
+    }
+}
+
+impl Middleware for CorsMiddleware {
+    async fn before(&self, request: &mut Request) -> Result<(), Response> {
+        // Handle preflight OPTIONS request
+        if request.method == Method::OPTIONS {
+            if request.header("access-control-request-method").is_some() {
+                return Err(self.handle_preflight(request));
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn after(&self, response: &mut Response) {
+        // Always add CORS headers to response
+        // Note: origin should be captured from request in before()
+        // For simplicity, allow configured origins
+        if !self.config.allowed_origins.is_empty() {
+            let origin = if self.config.allowed_origins.contains(&"*".to_string()) {
+                "*"
+            } else {
+                &self.config.allowed_origins[0]
+            };
+
+            response.headers.insert(
+                "Access-Control-Allow-Origin".to_string(),
+                origin.to_string(),
+            );
+
+            if self.config.allow_credentials {
+                response.headers.insert(
+                    "Access-Control-Allow-Credentials".to_string(),
+                    "true".to_string(),
+                );
+            }
+        }
+    }
+}

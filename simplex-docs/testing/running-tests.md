@@ -1,55 +1,129 @@
 # Running Simplex Tests
 
-**Version:** 0.5.0
+**Version:** 0.9.0
 
 ## Quick Start
 
 ### Run All Tests
 
 ```bash
-sxpm test
+./tests/run_tests.sh
 ```
 
 ### Expected Output
 
 ```
-==============================================
-         Simplex Language Test Suite
-==============================================
+================================================================================
+                         Simplex Language Test Suite
+================================================================================
 
-Language
-  basics
-    test_loops                                  PASS
-    test_closures                               PASS
-    test_enums                                  PASS
+Running tests in: language
+
+  language/actors:
+    [SPEC] spec_actor_basic                                              PASS
+
+  language/async:
+    [SPEC] spec_async_basic                                              PASS
+    [SPEC] spec_async_closures                                           PASS
     ...
 
-Standard Library
-  test_hashmap                                  PASS
-  test_strings                                  PASS
-  ...
+Running tests in: stdlib
 
-Runtime
-  ...
+  stdlib:
+    [UNIT] unit_hashmap                                                  PASS
+    [UNIT] unit_crypto                                                   PASS
+    [UNIT] unit_string                                                   PASS
+    ...
 
-AI / Cognitive
-  anima
-    test_anima_hive_integration                 PASS
-  hive
-    test_hive_mnemonic                          PASS
-    test_per_hive_slm                           PASS
-  ...
+Running tests in: learning
 
-Integration
-  test_multi_specialist_reasoning               PASS
-  test_knowledge_persistence                    PASS
-  ...
+  learning:
+    [UNIT] unit_dual_numbers                                             PASS
+    [UNIT] unit_dual_simple                                              PASS
+    ...
 
-==============================================
-  Passed:  103
-  Failed:  0
-  Total:   103 (100% pass rate)
-==============================================
+================================================================================
+                              Test Results Summary
+================================================================================
+  Passed:   156
+  Failed:   0
+  Warnings: 0 (static analysis)
+  Total:    156 tests (100% pass rate)
+================================================================================
+```
+
+## Running by Category
+
+```bash
+# Language tests
+./tests/run_tests.sh language
+
+# Type system tests
+./tests/run_tests.sh types
+
+# Neural IR tests
+./tests/run_tests.sh neural
+
+# Standard library tests
+./tests/run_tests.sh stdlib
+
+# AI/Cognitive tests
+./tests/run_tests.sh ai
+
+# Learning/AD tests
+./tests/run_tests.sh learning
+
+# Toolchain tests
+./tests/run_tests.sh toolchain
+
+# Runtime tests
+./tests/run_tests.sh runtime
+
+# Integration tests
+./tests/run_tests.sh integration
+
+# Basic language tests
+./tests/run_tests.sh basics
+
+# Async tests
+./tests/run_tests.sh async
+
+# Actor tests
+./tests/run_tests.sh actors
+
+# Observability tests
+./tests/run_tests.sh observability
+```
+
+## Running by Test Type
+
+Filter tests by their naming prefix:
+
+```bash
+# Only unit tests (unit_*)
+./tests/run_tests.sh all unit
+
+# Only spec tests (spec_*)
+./tests/run_tests.sh all spec
+
+# Only integration tests (integ_*)
+./tests/run_tests.sh all integ
+
+# Only end-to-end tests (e2e_*)
+./tests/run_tests.sh all e2e
+```
+
+## Combining Category and Type
+
+```bash
+# Only stdlib unit tests
+./tests/run_tests.sh stdlib unit
+
+# Only neural spec tests
+./tests/run_tests.sh neural spec
+
+# Only toolchain integration tests
+./tests/run_tests.sh toolchain integ
 ```
 
 ## Running Individual Tests
@@ -58,61 +132,29 @@ Integration
 
 ```bash
 # Compile and run a single test
-sxc run tests/language/basics/test_loops.sx
+sxc run tests/stdlib/unit_hashmap.sx
 
-# Compile only (produces .sxb bytecode)
-sxc compile tests/language/basics/test_loops.sx
+# Compile only (produces executable)
+sxc compile tests/stdlib/unit_hashmap.sx
 
 # Check syntax without running
-sxc check tests/language/basics/test_loops.sx
+sxc check tests/stdlib/unit_hashmap.sx
 ```
 
-### Using sxpm (Package Manager)
+### Direct Execution
 
 ```bash
-# Run a specific test file
-sxpm test tests/stdlib/test_hashmap.sx
-
-# Run tests matching a pattern
-sxpm test --filter "test_hive*"
-```
-
-### Using spx (Runner)
-
-```bash
-# Run compiled bytecode directly
-spx tests/language/basics/test_loops.sxb
-```
-
-## Running Tests by Category
-
-```bash
-# Language tests only
-sxpm test --category language
-
-# Standard library tests
-sxpm test --category stdlib
-
-# AI/Cognitive tests
-sxpm test --category ai
-
-# Integration tests
-sxpm test --category integration
-
-# Multiple categories
-sxpm test --category language --category stdlib
+# Run the test runner for a single file
+./tests/run_tests.sh stdlib | grep hashmap
 ```
 
 ## Verbose Output
 
-To see detailed test output:
+The test runner shows detailed output for each test. To see even more detail:
 
 ```bash
-# Full verbose output
-sxpm test --verbose
-
-# Verbose for specific test
-sxc run tests/stdlib/test_hashmap.sx
+# Run single test directly for full output
+sxc run tests/stdlib/unit_hashmap.sx
 ```
 
 Example verbose output:
@@ -131,66 +173,74 @@ PASS: Contains key works
 === HashMap Test Complete! ===
 ```
 
-## Test Filtering
+## Test Output Colors
 
-```bash
-# Run tests matching pattern
-sxpm test --filter "hashmap"
+The test runner uses colors to indicate test types and results:
 
-# Run tests in specific subdirectory
-sxpm test tests/ai/hive/
-
-# Exclude tests matching pattern
-sxpm test --exclude "slow_*"
-```
+| Color | Meaning |
+|-------|---------|
+| GREEN | Test passed (PASS) |
+| RED | Test failed (FAIL) |
+| BLUE | Unit test (`[UNIT]`) |
+| CYAN | Spec test (`[SPEC]`) |
+| MAGENTA | Integration test (`[INTEG]`) |
+| YELLOW | E2E test (`[E2E]`) / Category headers |
 
 ## Debugging Failed Tests
 
-### Step 1: Run with Verbose Output
+### Step 1: Run the Specific Test
 
 ```bash
-sxc run tests/failing_test.sx
+sxc run tests/path/to/failing_test.sx
 ```
 
 ### Step 2: Check Compilation
 
 ```bash
 # Syntax check only
-sxc check tests/failing_test.sx
+sxc check tests/path/to/failing_test.sx
 
 # Compile with debug info
-sxc compile --debug tests/failing_test.sx
+sxc compile --debug tests/path/to/failing_test.sx
 ```
 
-### Step 3: Inspect Compiled Output
+### Step 3: Inspect Generated Code
 
 ```bash
 # Generate readable IR
-sxc compile --emit-ir tests/failing_test.sx
+sxc compile --emit-ir tests/path/to/failing_test.sx
 
-# View generated bytecode
-sxc compile --emit-asm tests/failing_test.sx
+# View generated assembly
+sxc compile --emit-asm tests/path/to/failing_test.sx
 ```
 
 ## Test Result Interpretation
-
-### Color Codes
-
-| Color | Meaning |
-|-------|---------|
-| CYAN | Category/subcategory name |
-| GREEN | Test passed |
-| RED | Test failed |
-| YELLOW | Top-level category |
 
 ### Failure Types
 
 | Result | Cause |
 |--------|-------|
 | `COMPILE FAIL` | Syntax error or type error in test |
+| `LINK FAIL` | Linking error |
 | `RUNTIME FAIL` | Runtime exception or panic |
 | `FAIL` | Test assertions failed (exit code non-zero) |
-| `TIMEOUT` | Test exceeded time limit |
+
+### Static Analysis Warnings
+
+The test runner tracks static analysis warnings (e.g., contract violations) separately:
+
+```
+================================================================================
+                              Test Results Summary
+================================================================================
+  Passed:   156
+  Failed:   0
+  Warnings: 3 (static analysis)
+  Total:    156 tests (100% pass rate)
+================================================================================
+```
+
+Warnings do not cause test failure but are reported for attention.
 
 ## Continuous Integration
 
@@ -205,7 +255,7 @@ stages:
 
 test:
   script:
-    - sxpm test
+    - ./tests/run_tests.sh
   artifacts:
     reports:
       - test-results.xml
@@ -215,57 +265,47 @@ test:
 
 The test runner returns:
 - `0` if all tests pass
-- `1` if any test fails
+- Non-zero if any test fails
 
-## Watch Mode
-
-Run tests automatically on file changes:
+## Show Help
 
 ```bash
-# Watch all tests
-sxpm test --watch
-
-# Watch specific category
-sxpm test --watch --category ai
+./tests/run_tests.sh --help
 ```
 
-## Parallel Execution
-
-Run tests in parallel for faster execution:
-
-```bash
-# Run with 4 parallel workers
-sxpm test --parallel 4
-
-# Auto-detect CPU cores
-sxpm test --parallel auto
+Output:
 ```
+Simplex Test Runner
 
-## Test Coverage
+Usage: ./run_tests.sh [category] [type]
 
-Generate coverage reports:
+Categories:
+  all           Run all test categories (default)
+  language      Core language features
+  types         Type system tests
+  neural        Neural IR and gates
+  stdlib        Standard library
+  ai            AI/Cognitive tests
+  learning      Automatic differentiation
+  toolchain     Compiler toolchain
+  runtime       Runtime systems
+  integration   End-to-end tests
+  basics        Basic language tests
+  async         Async/await tests
+  actors        Actor model tests
+  observability Metrics and tracing
 
-```bash
-# Run with coverage
-sxpm test --coverage
+Types:
+  unit          Run only unit tests (unit_*)
+  spec          Run only spec tests (spec_*)
+  integ         Run only integration tests (integ_*)
+  e2e           Run only end-to-end tests (e2e_*)
 
-# Generate HTML report
-sxpm test --coverage --format html
-
-# Coverage for specific category
-sxpm test --coverage --category ai
-```
-
-## Test Timeouts
-
-Configure test timeouts:
-
-```bash
-# Set global timeout (seconds)
-sxpm test --timeout 120
-
-# No timeout
-sxpm test --timeout 0
+Examples:
+  ./run_tests.sh                  # Run all tests
+  ./run_tests.sh neural           # Run neural category
+  ./run_tests.sh all spec         # Run all spec tests
+  ./run_tests.sh stdlib unit      # Run stdlib unit tests
 ```
 
 ## Troubleshooting
@@ -273,21 +313,21 @@ sxpm test --timeout 0
 ### "Test not found"
 
 ```bash
+# List all discovered tests
+ls tests/category/*.sx
+
 # Verify test file exists
 ls tests/path/to/test.sx
-
-# Check test pattern
-sxpm test --list  # Lists all discovered tests
 ```
 
 ### "Compilation failed"
 
 ```bash
 # Get detailed error
-sxc check tests/failing_test.sx
+sxc check tests/path/to/failing_test.sx
 
 # Check for missing imports
-sxc compile --verbose tests/failing_test.sx
+sxc compile --verbose tests/path/to/failing_test.sx
 ```
 
 ### "Test hangs"
@@ -295,19 +335,15 @@ sxc compile --verbose tests/failing_test.sx
 If a test appears to hang:
 1. Check for infinite loops in test code
 2. Check for blocking I/O without timeout
-3. Use `--timeout` flag to force termination
-
-```bash
-sxpm test tests/hanging_test.sx --timeout 10
-```
+3. Run with timeout (Ctrl+C to cancel)
 
 ### "Inconsistent results"
 
 If tests pass sometimes and fail others:
 1. Check for uninitialized variables
 2. Check for race conditions in async tests
-3. Run with `--no-parallel` to isolate issues
+3. Run tests individually to isolate issues
 
 ```bash
-sxpm test --no-parallel --verbose
+sxc run tests/path/to/flaky_test.sx
 ```

@@ -1,0 +1,244 @@
+// Tests for Semver parsing concepts
+// Part of Phase 2: Package Ecosystem
+//
+// Tests semver-like version comparison logic without depending on
+// runtime functions that may not be available.
+
+// Helper function for absolute value
+fn abs_i64(x: i64) -> i64 {
+    if x >= 0 {
+        x
+    } else {
+        0 - x
+    }
+}
+
+// Semver comparison: returns -1 if a < b, 0 if equal, 1 if a > b
+fn semver_compare(a_major: i64, a_minor: i64, a_patch: i64,
+                  b_major: i64, b_minor: i64, b_patch: i64) -> i64 {
+    if a_major < b_major {
+        return 0 - 1;
+    }
+    if a_major > b_major {
+        return 1;
+    }
+    // majors equal
+    if a_minor < b_minor {
+        return 0 - 1;
+    }
+    if a_minor > b_minor {
+        return 1;
+    }
+    // minors equal
+    if a_patch < b_patch {
+        return 0 - 1;
+    }
+    if a_patch > b_patch {
+        return 1;
+    }
+    0
+}
+
+// Check if version matches caret range ^major.minor.patch
+// Caret: allows changes that do not modify the left-most non-zero digit
+fn matches_caret(v_major: i64, v_minor: i64, v_patch: i64,
+                 r_major: i64, r_minor: i64, r_patch: i64) -> bool {
+    // Major must match
+    if v_major != r_major {
+        return false;
+    }
+    // If major is 0, minor must match too
+    if r_major == 0 && v_minor != r_minor {
+        return false;
+    }
+    // Version must be >= range
+    semver_compare(v_major, v_minor, v_patch, r_major, r_minor, r_patch) >= 0
+}
+
+// Check if version matches tilde range ~major.minor.patch
+// Tilde: allows patch-level changes
+fn matches_tilde(v_major: i64, v_minor: i64, v_patch: i64,
+                 r_major: i64, r_minor: i64, r_patch: i64) -> bool {
+    // Major and minor must match
+    if v_major != r_major {
+        return false;
+    }
+    if v_minor != r_minor {
+        return false;
+    }
+    // Patch must be >= range patch
+    v_patch >= r_patch
+}
+
+fn test_semver_comparison() -> i64 {
+    println("  Testing semver comparison...");
+
+    // 1.0.0 < 2.0.0
+    if semver_compare(1, 0, 0, 2, 0, 0) >= 0 {
+        println("    FAIL: 1.0.0 should be less than 2.0.0");
+        return 1;
+    }
+
+    // 2.0.0 > 1.0.0
+    if semver_compare(2, 0, 0, 1, 0, 0) <= 0 {
+        println("    FAIL: 2.0.0 should be greater than 1.0.0");
+        return 1;
+    }
+
+    // 1.0.0 == 1.0.0
+    if semver_compare(1, 0, 0, 1, 0, 0) != 0 {
+        println("    FAIL: 1.0.0 should equal 1.0.0");
+        return 1;
+    }
+
+    // 1.1.0 > 1.0.0
+    if semver_compare(1, 1, 0, 1, 0, 0) <= 0 {
+        println("    FAIL: 1.1.0 should be greater than 1.0.0");
+        return 1;
+    }
+
+    // 1.0.1 > 1.0.0
+    if semver_compare(1, 0, 1, 1, 0, 0) <= 0 {
+        println("    FAIL: 1.0.1 should be greater than 1.0.0");
+        return 1;
+    }
+
+    println("    PASS: semver comparison");
+    0
+}
+
+fn test_caret_range() -> i64 {
+    println("  Testing caret range matching...");
+
+    // ^1.2.0 should match 1.2.0, 1.5.0, 1.9.9
+    if matches_caret(1, 2, 0, 1, 2, 0) == false {
+        println("    FAIL: 1.2.0 should match ^1.2.0");
+        return 1;
+    }
+    if matches_caret(1, 5, 0, 1, 2, 0) == false {
+        println("    FAIL: 1.5.0 should match ^1.2.0");
+        return 1;
+    }
+    if matches_caret(1, 9, 9, 1, 2, 0) == false {
+        println("    FAIL: 1.9.9 should match ^1.2.0");
+        return 1;
+    }
+
+    // ^1.2.0 should NOT match 2.0.0 or 1.1.0
+    if matches_caret(2, 0, 0, 1, 2, 0) == true {
+        println("    FAIL: 2.0.0 should NOT match ^1.2.0");
+        return 1;
+    }
+    if matches_caret(1, 1, 0, 1, 2, 0) == true {
+        println("    FAIL: 1.1.0 should NOT match ^1.2.0");
+        return 1;
+    }
+
+    println("    PASS: caret range matching");
+    0
+}
+
+fn test_tilde_range() -> i64 {
+    println("  Testing tilde range matching...");
+
+    // ~1.2.0 should match 1.2.0, 1.2.5
+    if matches_tilde(1, 2, 0, 1, 2, 0) == false {
+        println("    FAIL: 1.2.0 should match ~1.2.0");
+        return 1;
+    }
+    if matches_tilde(1, 2, 5, 1, 2, 0) == false {
+        println("    FAIL: 1.2.5 should match ~1.2.0");
+        return 1;
+    }
+
+    // ~1.2.0 should NOT match 1.3.0
+    if matches_tilde(1, 3, 0, 1, 2, 0) == true {
+        println("    FAIL: 1.3.0 should NOT match ~1.2.0");
+        return 1;
+    }
+
+    println("    PASS: tilde range matching");
+    0
+}
+
+fn test_major_bump() -> i64 {
+    println("  Testing major version bumps...");
+
+    // 1.0.0 -> bump major -> 2.0.0
+    let old_major: i64 = 1;
+    let old_minor: i64 = 5;
+    let old_patch: i64 = 3;
+
+    let new_major: i64 = old_major + 1;
+    let new_minor: i64 = 0;  // reset on major bump
+    let new_patch: i64 = 0;  // reset on major bump
+
+    if new_major != 2 {
+        println("    FAIL: major should bump to 2");
+        return 1;
+    }
+    if new_minor != 0 {
+        println("    FAIL: minor should reset to 0");
+        return 1;
+    }
+    if new_patch != 0 {
+        println("    FAIL: patch should reset to 0");
+        return 1;
+    }
+
+    println("    PASS: major version bumps");
+    0
+}
+
+fn test_minor_bump() -> i64 {
+    println("  Testing minor version bumps...");
+
+    // 1.5.3 -> bump minor -> 1.6.0
+    let old_major: i64 = 1;
+    let old_minor: i64 = 5;
+    let old_patch: i64 = 3;
+
+    let new_major: i64 = old_major;  // unchanged
+    let new_minor: i64 = old_minor + 1;
+    let new_patch: i64 = 0;  // reset on minor bump
+
+    if new_major != 1 {
+        println("    FAIL: major should stay 1");
+        return 1;
+    }
+    if new_minor != 6 {
+        println("    FAIL: minor should bump to 6");
+        return 1;
+    }
+    if new_patch != 0 {
+        println("    FAIL: patch should reset to 0");
+        return 1;
+    }
+
+    println("    PASS: minor version bumps");
+    0
+}
+
+fn main() -> i64 {
+    println("=== Semver Tests ===");
+    println("");
+
+    let failures: i64 = 0;
+
+    let f1: i64 = test_semver_comparison();
+    let f2: i64 = test_caret_range();
+    let f3: i64 = test_tilde_range();
+    let f4: i64 = test_major_bump();
+    let f5: i64 = test_minor_bump();
+
+    let failures: i64 = f1 + f2 + f3 + f4 + f5;
+
+    println("");
+    if failures == 0 {
+        println("All Semver tests passed!");
+    } else {
+        println("Some Semver tests failed");
+    }
+
+    failures
+}

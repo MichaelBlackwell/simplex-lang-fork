@@ -1,0 +1,252 @@
+// Data Loader
+//
+// Streaming data loader with S3 integration and curriculum support.
+
+use simplex_std::sync::Arc;
+use super::super::Tensor;
+
+/// Streaming data loader with S3 support
+pub struct DataLoader {
+    /// Data configuration
+    config: DataConfig,
+    /// Current position in dataset
+    position: usize,
+    /// Shuffled indices (for epoch-based training)
+    indices: Vec<usize>,
+    /// Current epoch
+    epoch: i64,
+    /// Prefetch buffer
+    buffer: Vec<DataSample>,
+}
+
+/// Data loading configuration
+#[derive(Clone)]
+pub struct DataConfig {
+    /// Data source paths (local or S3)
+    pub sources: Vec<String>,
+    /// Batch size
+    pub batch_size: usize,
+    /// Maximum sequence length
+    pub max_seq_len: usize,
+    /// Number of samples to prefetch
+    pub prefetch_size: usize,
+    /// Shuffle data
+    pub shuffle: bool,
+    /// Seed for reproducibility
+    pub seed: u64,
+    /// Enable streaming (for large datasets)
+    pub streaming: bool,
+    /// Curriculum difficulty filter (0.0-1.0)
+    pub difficulty_filter: Option<f64>,
+}
+
+impl Default for DataConfig {
+    fn default() -> Self {
+        DataConfig {
+            sources: vec![],
+            batch_size: 8,
+            max_seq_len: 2048,
+            prefetch_size: 100,
+            shuffle: true,
+            seed: 42,
+            streaming: true,
+            difficulty_filter: None,
+        }
+    }
+}
+
+impl DataConfig {
+    /// Create config for S3 streaming
+    pub fn s3_streaming(bucket: &str, prefix: &str) -> Self {
+        DataConfig {
+            sources: vec![format!("s3://{}/{}", bucket, prefix)],
+            streaming: true,
+            prefetch_size: 1000,
+            ..Default::default()
+        }
+    }
+
+    /// Create config for local files
+    pub fn local(paths: Vec<String>) -> Self {
+        DataConfig {
+            sources: paths,
+            streaming: false,
+            ..Default::default()
+        }
+    }
+}
+
+/// Single training sample
+#[derive(Clone)]
+pub struct DataSample {
+    /// Input token IDs
+    pub input_ids: Vec<i64>,
+    /// Attention mask
+    pub attention_mask: Vec<i64>,
+    /// Labels for training
+    pub labels: Vec<i64>,
+    /// Sample difficulty (0.0-1.0)
+    pub difficulty: f64,
+    /// Domain tag
+    pub domain: String,
+}
+
+/// Batch of training samples
+pub struct DataBatch {
+    /// Batched input IDs [batch_size, seq_len]
+    pub input_ids: Tensor,
+    /// Batched attention mask
+    pub attention_mask: Tensor,
+    /// Batched labels
+    pub labels: Tensor,
+    /// Average difficulty of batch
+    pub avg_difficulty: f64,
+}
+
+impl DataLoader {
+    /// Create new data loader
+    pub fn new(config: DataConfig) -> Self {
+        DataLoader {
+            config,
+            position: 0,
+            indices: vec![],
+            epoch: 0,
+            buffer: vec![],
+        }
+    }
+
+    /// Initialize loader and prefetch first batch
+    pub async fn initialize(&mut self) -> Result<(), DataError> {
+        // Scan data sources and build index
+        self.build_index().await?;
+
+        // Prefetch initial samples
+        self.prefetch().await?;
+
+        Ok(())
+    }
+
+    /// Get next batch
+    pub async fn next_batch(&mut self) -> Option<DataBatch> {
+        if self.buffer.len() < self.config.batch_size {
+            // Trigger prefetch if buffer is low
+            if let Err(_) = self.prefetch().await {
+                return None;
+            }
+        }
+
+        if self.buffer.len() < self.config.batch_size {
+            return None; // End of epoch
+        }
+
+        // Take batch_size samples from buffer
+        let samples: Vec<DataSample> = self.buffer
+            .drain(..self.config.batch_size)
+            .collect();
+
+        Some(self.collate(&samples))
+    }
+
+    /// Get validation batch (separate from training data)
+    pub async fn validation_batch(&self) -> DataBatch {
+        // Return a validation batch
+        DataBatch {
+            input_ids: Tensor::zeros(&[self.config.batch_size, self.config.max_seq_len]),
+            attention_mask: Tensor::zeros(&[self.config.batch_size, self.config.max_seq_len]),
+            labels: Tensor::zeros(&[self.config.batch_size, self.config.max_seq_len]),
+            avg_difficulty: 0.5,
+        }
+    }
+
+    /// Reset for new epoch
+    pub fn reset(&mut self) {
+        self.position = 0;
+        self.epoch += 1;
+        if self.config.shuffle {
+            self.shuffle_indices();
+        }
+    }
+
+    /// Set difficulty filter for curriculum learning
+    pub fn set_difficulty(&mut self, max_difficulty: f64) {
+        self.config.difficulty_filter = Some(max_difficulty);
+    }
+
+    /// Get current epoch
+    pub fn epoch(&self) -> i64 {
+        self.epoch
+    }
+
+    /// Get number of samples processed
+    pub fn samples_processed(&self) -> usize {
+        self.position
+    }
+
+    // Internal methods
+
+    async fn build_index(&mut self) -> Result<(), DataError> {
+        // Build index of available samples
+        // For S3, this would list objects and parse metadata
+        self.indices = (0..10000).collect(); // Placeholder
+        Ok(())
+    }
+
+    async fn prefetch(&mut self) -> Result<(), DataError> {
+        // Prefetch samples from S3 or local storage
+        let num_to_fetch = self.config.prefetch_size - self.buffer.len();
+
+        for _ in 0..num_to_fetch {
+            if self.position >= self.indices.len() {
+                break;
+            }
+
+            // Create placeholder sample
+            let sample = DataSample {
+                input_ids: vec![0; self.config.max_seq_len],
+                attention_mask: vec![1; self.config.max_seq_len],
+                labels: vec![0; self.config.max_seq_len],
+                difficulty: 0.5,
+                domain: "general".to_string(),
+            };
+
+            // Apply difficulty filter if set
+            if let Some(max_diff) = self.config.difficulty_filter {
+                if sample.difficulty > max_diff {
+                    self.position += 1;
+                    continue;
+                }
+            }
+
+            self.buffer.push(sample);
+            self.position += 1;
+        }
+
+        Ok(())
+    }
+
+    fn shuffle_indices(&mut self) {
+        // Fisher-Yates shuffle with seed
+        // Uses simplex_std random with seed for reproducibility
+    }
+
+    fn collate(&self, samples: &[DataSample]) -> DataBatch {
+        // Collate samples into batch tensors
+        let batch_size = samples.len();
+        let seq_len = self.config.max_seq_len;
+
+        DataBatch {
+            input_ids: Tensor::zeros(&[batch_size, seq_len]),
+            attention_mask: Tensor::zeros(&[batch_size, seq_len]),
+            labels: Tensor::zeros(&[batch_size, seq_len]),
+            avg_difficulty: samples.iter().map(|s| s.difficulty).sum::<f64>() / batch_size as f64,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum DataError {
+    S3Error(String),
+    IoError(String),
+    ParseError(String),
+    EndOfData,
+}

@@ -1,0 +1,339 @@
+// Phase 34 Validation: Compiler & Type System
+// Tests: 34.3.1 Visibility, 34.3.2 Stdlib Types, 34.3.3 Format Macro, 34.3.4 if-let
+
+// ============================================
+// 34.3.1 Visibility Enforcement
+// ============================================
+
+mod private_module {
+    fn private_fn() -> i64 {
+        42
+    }
+
+    pub fn public_fn() -> i64 {
+        private_fn()  // Can call private from same module
+    }
+
+    struct PrivateStruct {
+        value: i64
+    }
+
+    pub struct PublicStruct {
+        pub visible: i64,
+        hidden: i64  // private field
+    }
+}
+
+fn test_visibility_public() -> i64 {
+    private_module::public_fn()  // Expected: 42
+}
+
+fn test_visibility_struct() -> i64 {
+    let s: private_module::PublicStruct = private_module::PublicStruct {
+        visible: 10
+        // hidden: 20  // Should error if uncommented
+    };
+    s.visible  // Expected: 10
+}
+
+// This should be a compile error:
+// fn test_visibility_private_error() -> i64 {
+//     private_module::private_fn()  // ERROR: private function
+// }
+
+// ============================================
+// 34.3.2 Standard Library Types
+// ============================================
+
+// Option<T>
+fn test_option_some() -> i64 {
+    let opt: Option<i64> = Some(42);
+    match opt {
+        Some(x) => x,
+        None => 0
+    }  // Expected: 42
+}
+
+fn test_option_none() -> i64 {
+    let opt: Option<i64> = None;
+    match opt {
+        Some(x) => x,
+        None => -1
+    }  // Expected: -1
+}
+
+fn test_option_unwrap() -> i64 {
+    let opt: Option<i64> = Some(100);
+    opt.unwrap()  // Expected: 100
+}
+
+fn test_option_map() -> i64 {
+    let opt: Option<i64> = Some(5);
+    let doubled: Option<i64> = opt.map((x) => x * 2);
+    doubled.unwrap()  // Expected: 10
+}
+
+// Result<T, E>
+fn test_result_ok() -> i64 {
+    let res: Result<i64, String> = Ok(42);
+    match res {
+        Ok(x) => x,
+        Err(_) => 0
+    }  // Expected: 42
+}
+
+fn test_result_err() -> i64 {
+    let res: Result<i64, String> = Err("error");
+    match res {
+        Ok(x) => x,
+        Err(_) => -1
+    }  // Expected: -1
+}
+
+fn test_result_unwrap() -> i64 {
+    let res: Result<i64, String> = Ok(77);
+    res.unwrap()  // Expected: 77
+}
+
+fn fallible_fn(x: i64) -> Result<i64, String> {
+    if x > 0 {
+        Ok(x * 2)
+    } else {
+        Err("negative input")
+    }
+}
+
+fn test_result_question_mark() -> Result<i64, String> {
+    let a: i64 = fallible_fn(5)?;
+    let b: i64 = fallible_fn(10)?;
+    Ok(a + b)  // Expected: Ok(30)
+}
+
+// Vec<T>
+fn test_vec_new() -> i64 {
+    let v: Vec<i64> = Vec::new();
+    v.len()  // Expected: 0
+}
+
+fn test_vec_push() -> i64 {
+    let v: Vec<i64> = Vec::new();
+    v.push(10);
+    v.push(20);
+    v.push(30);
+    v.len()  // Expected: 3
+}
+
+fn test_vec_get() -> i64 {
+    let v: Vec<i64> = Vec::new();
+    v.push(100);
+    v.push(200);
+    v[1]  // Expected: 200
+}
+
+fn test_vec_iter() -> i64 {
+    let v: Vec<i64> = Vec::new();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    let sum: i64 = 0;
+    for x in v {
+        sum = sum + x;
+    }
+    sum  // Expected: 6
+}
+
+// HashMap<K, V>
+fn test_hashmap_new() -> i64 {
+    let m: HashMap<String, i64> = HashMap::new();
+    m.len()  // Expected: 0
+}
+
+fn test_hashmap_insert_get() -> i64 {
+    let m: HashMap<String, i64> = HashMap::new();
+    m.insert("key", 42);
+    m.get("key").unwrap()  // Expected: 42
+}
+
+fn test_hashmap_contains() -> i64 {
+    let m: HashMap<String, i64> = HashMap::new();
+    m.insert("exists", 1);
+    if m.contains_key("exists") { 1 } else { 0 }  // Expected: 1
+}
+
+// String type
+fn test_string_new() -> i64 {
+    let s: String = String::new();
+    s.len()  // Expected: 0
+}
+
+fn test_string_from() -> i64 {
+    let s: String = String::from("hello");
+    s.len()  // Expected: 5
+}
+
+fn test_string_concat() -> i64 {
+    let a: String = String::from("hello");
+    let b: String = String::from(" world");
+    let c: String = a + b;
+    c.len()  // Expected: 11
+}
+
+// ============================================
+// 34.3.3 Format Macro
+// ============================================
+
+fn test_format_basic() -> i64 {
+    let s: String = format!("Hello, {}!", "World");
+    print_string(s);
+    print_string("\n");
+    1
+}
+
+fn test_format_multiple() -> i64 {
+    let s: String = format!("{} + {} = {}", 2, 3, 5);
+    print_string(s);
+    print_string("\n");
+    1
+}
+
+fn test_format_debug() -> i64 {
+    let v: Vec<i64> = Vec::new();
+    v.push(1);
+    v.push(2);
+    let s: String = format!("{:?}", v);  // Debug format
+    print_string(s);
+    print_string("\n");
+    1
+}
+
+// Display trait
+trait Display {
+    fn fmt(self) -> String;
+}
+
+struct Point {
+    x: i64,
+    y: i64
+}
+
+impl Display for Point {
+    fn fmt(self) -> String {
+        format!("({}, {})", self.x, self.y)
+    }
+}
+
+fn test_display_trait() -> i64 {
+    let p: Point = Point { x: 10, y: 20 };
+    let s: String = format!("{}", p);
+    print_string(s);
+    print_string("\n");
+    1
+}
+
+// ============================================
+// 34.3.4 if-let Pattern Matching
+// ============================================
+
+fn test_if_let_some() -> i64 {
+    let opt: Option<i64> = Some(42);
+    if let Some(x) = opt {
+        x
+    } else {
+        0
+    }  // Expected: 42
+}
+
+fn test_if_let_none() -> i64 {
+    let opt: Option<i64> = None;
+    if let Some(x) = opt {
+        x
+    } else {
+        -1
+    }  // Expected: -1
+}
+
+fn test_if_let_result() -> i64 {
+    let res: Result<i64, String> = Ok(100);
+    if let Ok(x) = res {
+        x
+    } else {
+        0
+    }  // Expected: 100
+}
+
+fn test_if_let_nested() -> i64 {
+    let opt: Option<Option<i64>> = Some(Some(99));
+    if let Some(inner) = opt {
+        if let Some(x) = inner {
+            x
+        } else {
+            0
+        }
+    } else {
+        0
+    }  // Expected: 99
+}
+
+fn test_while_let() -> i64 {
+    let mut opt: Option<i64> = Some(5);
+    let mut sum: i64 = 0;
+    while let Some(x) = opt {
+        sum = sum + x;
+        if x > 1 {
+            opt = Some(x - 1);
+        } else {
+            opt = None;
+        }
+    }
+    sum  // Expected: 15 (5+4+3+2+1)
+}
+
+// ============================================
+// Main test runner
+// ============================================
+
+fn main() -> i64 {
+    print_string("=== Compiler & Type System Tests ===\n");
+
+    // Visibility
+    print_string("Test visibility_public: ");
+    let r1: i64 = test_visibility_public();
+    print_i64(r1);
+    print_string(" (expected 42)\n");
+
+    // Option
+    print_string("Test option_some: ");
+    let r2: i64 = test_option_some();
+    print_i64(r2);
+    print_string(" (expected 42)\n");
+
+    print_string("Test option_none: ");
+    let r3: i64 = test_option_none();
+    print_i64(r3);
+    print_string(" (expected -1)\n");
+
+    // Result
+    print_string("Test result_ok: ");
+    let r4: i64 = test_result_ok();
+    print_i64(r4);
+    print_string(" (expected 42)\n");
+
+    // Vec
+    print_string("Test vec_push: ");
+    let r5: i64 = test_vec_push();
+    print_i64(r5);
+    print_string(" (expected 3)\n");
+
+    // if-let
+    print_string("Test if_let_some: ");
+    let r6: i64 = test_if_let_some();
+    print_i64(r6);
+    print_string(" (expected 42)\n");
+
+    print_string("Test while_let: ");
+    let r7: i64 = test_while_let();
+    print_i64(r7);
+    print_string(" (expected 15)\n");
+
+    0
+}

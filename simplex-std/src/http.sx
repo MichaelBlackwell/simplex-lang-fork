@@ -1,0 +1,1997 @@
+// Simplex HTTP Server Library
+// Actor-based HTTP server with native Hive integration
+//
+// Design principles:
+// - Actor-native: Server, handlers, middleware are actors
+// - Hive-integrated: First-class routing to cognitive specialists
+// - Async-first: All I/O is non-blocking
+// - Message-based: Request/response as actor messages
+// - Zero threads: Concurrency via actors, not OS threads
+
+use std::collections::HashMap;
+use std::string::String;
+use std::vec::Vec;
+use std::time::Duration;
+use std::net::{TcpListener, TcpStream, SocketAddr};
+use std::io::{AsyncRead, AsyncWrite};
+use std::sync::Arc;
+
+// =============================================================================
+// HTTP Method
+// =============================================================================
+
+/// HTTP request method
+enum Method {
+    Get,
+    Post,
+    Put,
+    Delete,
+    Patch,
+    Head,
+    Options,
+    Connect,
+    Trace,
+}
+
+impl Method {
+    /// Parse method from string
+    fn from_str(s: &str) -> Option<Method> {
+        match s.to_uppercase().as_str() {
+            "GET" => Some(Method::Get),
+            "POST" => Some(Method::Post),
+            "PUT" => Some(Method::Put),
+            "DELETE" => Some(Method::Delete),
+            "PATCH" => Some(Method::Patch),
+            "HEAD" => Some(Method::Head),
+            "OPTIONS" => Some(Method::Options),
+            "CONNECT" => Some(Method::Connect),
+            "TRACE" => Some(Method::Trace),
+            _ => None,
+        }
+    }
+
+    /// Convert to string
+    fn as_str(&self) -> &str {
+        match self {
+            Method::Get => "GET",
+            Method::Post => "POST",
+            Method::Put => "PUT",
+            Method::Delete => "DELETE",
+            Method::Patch => "PATCH",
+            Method::Head => "HEAD",
+            Method::Options => "OPTIONS",
+            Method::Connect => "CONNECT",
+            Method::Trace => "TRACE",
+        }
+    }
+}
+
+impl Display for Method {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), FormatError> {
+        f.write_str(self.as_str())
+    }
+}
+
+// =============================================================================
+// Status Code
+// =============================================================================
+
+/// HTTP response status code
+enum StatusCode {
+    // 2xx Success
+    Ok,                     // 200
+    Created,                // 201
+    Accepted,               // 202
+    NoContent,              // 204
+
+    // 3xx Redirection
+    MovedPermanently,       // 301
+    Found,                  // 302
+    SeeOther,               // 303
+    NotModified,            // 304
+    TemporaryRedirect,      // 307
+    PermanentRedirect,      // 308
+
+    // 4xx Client Errors
+    BadRequest,             // 400
+    Unauthorized,           // 401
+    Forbidden,              // 403
+    NotFound,               // 404
+    MethodNotAllowed,       // 405
+    Conflict,               // 409
+    Gone,                   // 410
+    PayloadTooLarge,        // 413
+    UriTooLong,             // 414
+    UnsupportedMediaType,   // 415
+    UnprocessableEntity,    // 422
+    TooManyRequests,        // 429
+
+    // 5xx Server Errors
+    InternalServerError,    // 500
+    NotImplemented,         // 501
+    BadGateway,             // 502
+    ServiceUnavailable,     // 503
+    GatewayTimeout,         // 504
+
+    // Custom status code
+    Custom(u16),
+}
+
+impl StatusCode {
+    /// Get numeric status code
+    fn code(&self) -> u16 {
+        match self {
+            StatusCode::Ok => 200,
+            StatusCode::Created => 201,
+            StatusCode::Accepted => 202,
+            StatusCode::NoContent => 204,
+            StatusCode::MovedPermanently => 301,
+            StatusCode::Found => 302,
+            StatusCode::SeeOther => 303,
+            StatusCode::NotModified => 304,
+            StatusCode::TemporaryRedirect => 307,
+            StatusCode::PermanentRedirect => 308,
+            StatusCode::BadRequest => 400,
+            StatusCode::Unauthorized => 401,
+            StatusCode::Forbidden => 403,
+            StatusCode::NotFound => 404,
+            StatusCode::MethodNotAllowed => 405,
+            StatusCode::Conflict => 409,
+            StatusCode::Gone => 410,
+            StatusCode::PayloadTooLarge => 413,
+            StatusCode::UriTooLong => 414,
+            StatusCode::UnsupportedMediaType => 415,
+            StatusCode::UnprocessableEntity => 422,
+            StatusCode::TooManyRequests => 429,
+            StatusCode::InternalServerError => 500,
+            StatusCode::NotImplemented => 501,
+            StatusCode::BadGateway => 502,
+            StatusCode::ServiceUnavailable => 503,
+            StatusCode::GatewayTimeout => 504,
+            StatusCode::Custom(code) => *code,
+        }
+    }
+
+    /// Get reason phrase
+    fn reason(&self) -> &str {
+        match self {
+            StatusCode::Ok => "OK",
+            StatusCode::Created => "Created",
+            StatusCode::Accepted => "Accepted",
+            StatusCode::NoContent => "No Content",
+            StatusCode::MovedPermanently => "Moved Permanently",
+            StatusCode::Found => "Found",
+            StatusCode::SeeOther => "See Other",
+            StatusCode::NotModified => "Not Modified",
+            StatusCode::TemporaryRedirect => "Temporary Redirect",
+            StatusCode::PermanentRedirect => "Permanent Redirect",
+            StatusCode::BadRequest => "Bad Request",
+            StatusCode::Unauthorized => "Unauthorized",
+            StatusCode::Forbidden => "Forbidden",
+            StatusCode::NotFound => "Not Found",
+            StatusCode::MethodNotAllowed => "Method Not Allowed",
+            StatusCode::Conflict => "Conflict",
+            StatusCode::Gone => "Gone",
+            StatusCode::PayloadTooLarge => "Payload Too Large",
+            StatusCode::UriTooLong => "URI Too Long",
+            StatusCode::UnsupportedMediaType => "Unsupported Media Type",
+            StatusCode::UnprocessableEntity => "Unprocessable Entity",
+            StatusCode::TooManyRequests => "Too Many Requests",
+            StatusCode::InternalServerError => "Internal Server Error",
+            StatusCode::NotImplemented => "Not Implemented",
+            StatusCode::BadGateway => "Bad Gateway",
+            StatusCode::ServiceUnavailable => "Service Unavailable",
+            StatusCode::GatewayTimeout => "Gateway Timeout",
+            StatusCode::Custom(_) => "Custom",
+        }
+    }
+
+    /// Check if status is success (2xx)
+    fn is_success(&self) -> bool {
+        let code = self.code();
+        code >= 200 && code < 300
+    }
+
+    /// Check if status is redirect (3xx)
+    fn is_redirect(&self) -> bool {
+        let code = self.code();
+        code >= 300 && code < 400
+    }
+
+    /// Check if status is client error (4xx)
+    fn is_client_error(&self) -> bool {
+        let code = self.code();
+        code >= 400 && code < 500
+    }
+
+    /// Check if status is server error (5xx)
+    fn is_server_error(&self) -> bool {
+        let code = self.code();
+        code >= 500 && code < 600
+    }
+
+    /// Check if status is any error (4xx or 5xx)
+    fn is_error(&self) -> bool {
+        self.is_client_error() || self.is_server_error()
+    }
+
+    /// Create from numeric code
+    fn from_code(code: u16) -> StatusCode {
+        match code {
+            200 => StatusCode::Ok,
+            201 => StatusCode::Created,
+            202 => StatusCode::Accepted,
+            204 => StatusCode::NoContent,
+            301 => StatusCode::MovedPermanently,
+            302 => StatusCode::Found,
+            303 => StatusCode::SeeOther,
+            304 => StatusCode::NotModified,
+            307 => StatusCode::TemporaryRedirect,
+            308 => StatusCode::PermanentRedirect,
+            400 => StatusCode::BadRequest,
+            401 => StatusCode::Unauthorized,
+            403 => StatusCode::Forbidden,
+            404 => StatusCode::NotFound,
+            405 => StatusCode::MethodNotAllowed,
+            409 => StatusCode::Conflict,
+            410 => StatusCode::Gone,
+            413 => StatusCode::PayloadTooLarge,
+            414 => StatusCode::UriTooLong,
+            415 => StatusCode::UnsupportedMediaType,
+            422 => StatusCode::UnprocessableEntity,
+            429 => StatusCode::TooManyRequests,
+            500 => StatusCode::InternalServerError,
+            501 => StatusCode::NotImplemented,
+            502 => StatusCode::BadGateway,
+            503 => StatusCode::ServiceUnavailable,
+            504 => StatusCode::GatewayTimeout,
+            _ => StatusCode::Custom(code),
+        }
+    }
+}
+
+impl Display for StatusCode {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), FormatError> {
+        write!(f, "{} {}", self.code(), self.reason())
+    }
+}
+
+// =============================================================================
+// Headers
+// =============================================================================
+
+/// HTTP headers collection
+struct Headers {
+    entries: Vec<(String, String)>,
+}
+
+impl Headers {
+    /// Create empty headers
+    fn new() -> Headers {
+        Headers { entries: Vec::new() }
+    }
+
+    /// Get header value (case-insensitive)
+    fn get(&self, name: &str) -> Option<&str> {
+        let name_lower = name.to_lowercase();
+        for (k, v) in &self.entries {
+            if k.to_lowercase() == name_lower {
+                return Some(v.as_str());
+            }
+        }
+        None
+    }
+
+    /// Set header (replaces existing)
+    fn set(&mut self, name: &str, value: &str) {
+        let name_lower = name.to_lowercase();
+        for (k, v) in &mut self.entries {
+            if k.to_lowercase() == name_lower {
+                *v = value.to_string();
+                return;
+            }
+        }
+        self.entries.push((name.to_string(), value.to_string()));
+    }
+
+    /// Append header (allows duplicates)
+    fn append(&mut self, name: &str, value: &str) {
+        self.entries.push((name.to_string(), value.to_string()));
+    }
+
+    /// Remove header
+    fn remove(&mut self, name: &str) {
+        let name_lower = name.to_lowercase();
+        self.entries.retain(|(k, _)| k.to_lowercase() != name_lower);
+    }
+
+    /// Check if header exists
+    fn contains(&self, name: &str) -> bool {
+        self.get(name).is_some()
+    }
+
+    /// Iterate over headers
+    fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.entries.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    }
+
+    /// Get Content-Type header
+    fn content_type(&self) -> Option<&str> {
+        self.get("Content-Type")
+    }
+
+    /// Get Content-Length header
+    fn content_length(&self) -> Option<u64> {
+        self.get("Content-Length")?.parse().ok()
+    }
+
+    /// Get Authorization header
+    fn authorization(&self) -> Option<&str> {
+        self.get("Authorization")
+    }
+
+    /// Get number of headers
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Check if empty
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+impl Default for Headers {
+    fn default() -> Headers {
+        Headers::new()
+    }
+}
+
+// =============================================================================
+// Body
+// =============================================================================
+
+/// HTTP request/response body
+struct Body {
+    data: Vec<u8>,
+}
+
+impl Body {
+    /// Create empty body
+    fn empty() -> Body {
+        Body { data: Vec::new() }
+    }
+
+    /// Create body from bytes
+    fn from_bytes(bytes: Vec<u8>) -> Body {
+        Body { data: bytes }
+    }
+
+    /// Create body from string
+    fn from_string(s: &str) -> Body {
+        Body { data: s.as_bytes().to_vec() }
+    }
+
+    /// Get body as bytes
+    fn bytes(&self) -> &[u8] {
+        &self.data
+    }
+
+    /// Get body as text (UTF-8)
+    fn text(&self) -> Result<String, HttpError> {
+        String::from_utf8(self.data.clone())
+            .map_err(|_| HttpError::InvalidBody {
+                message: "Invalid UTF-8 in body".to_string()
+            })
+    }
+
+    /// Parse body as JSON
+    fn json<T: Deserialize>(&self) -> Result<T, HttpError> {
+        let text = self.text()?;
+        json::from_str(&text)
+            .map_err(|e| HttpError::JsonError {
+                message: e.to_string()
+            })
+    }
+
+    /// Get body length
+    fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Check if body is empty
+    fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+}
+
+impl Default for Body {
+    fn default() -> Body {
+        Body::empty()
+    }
+}
+
+// =============================================================================
+// Request
+// =============================================================================
+
+/// HTTP request
+struct Request {
+    method: Method,
+    path: String,
+    query_string: String,
+    headers: Headers,
+    body: Body,
+    params: HashMap<String, String>,
+    query: HashMap<String, String>,
+    extensions: Extensions,
+    remote_addr: Option<SocketAddr>,
+}
+
+impl Request {
+    /// Create new request
+    fn new(method: Method, path: &str) -> Request {
+        let (path_part, query_part) = match path.find('?') {
+            Some(idx) => (&path[..idx], &path[idx+1..]),
+            None => (path, ""),
+        };
+
+        Request {
+            method,
+            path: path_part.to_string(),
+            query_string: query_part.to_string(),
+            headers: Headers::new(),
+            body: Body::empty(),
+            params: HashMap::new(),
+            query: parse_query_string(query_part),
+            extensions: Extensions::new(),
+            remote_addr: None,
+        }
+    }
+
+    /// Get request method
+    fn method(&self) -> &Method {
+        &self.method
+    }
+
+    /// Get request path
+    fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// Get raw query string
+    fn query_string(&self) -> &str {
+        &self.query_string
+    }
+
+    /// Get headers
+    fn headers(&self) -> &Headers {
+        &self.headers
+    }
+
+    /// Get single header
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers.get(name)
+    }
+
+    /// Get route parameter
+    fn param(&self, name: &str) -> Option<&str> {
+        self.params.get(name).map(|s| s.as_str())
+    }
+
+    /// Get route parameter and parse to type
+    fn param_as<T: FromStr>(&self, name: &str) -> Option<T> {
+        self.param(name)?.parse().ok()
+    }
+
+    /// Get query parameter
+    fn query_param(&self, name: &str) -> Option<&str> {
+        self.query.get(name).map(|s| s.as_str())
+    }
+
+    /// Get all query parameters
+    fn query_params(&self) -> &HashMap<String, String> {
+        &self.query
+    }
+
+    /// Get body as bytes
+    fn body_bytes(&self) -> &[u8] {
+        self.body.bytes()
+    }
+
+    /// Get body as text
+    fn body_text(&self) -> Result<String, HttpError> {
+        self.body.text()
+    }
+
+    /// Parse body as JSON
+    fn body_json<T: Deserialize>(&self) -> Result<T, HttpError> {
+        self.body.json()
+    }
+
+    /// Get extension value
+    fn extension<T: 'static>(&self) -> Option<&T> {
+        self.extensions.get::<T>()
+    }
+
+    /// Set extension value
+    fn set_extension<T: 'static>(&mut self, value: T) {
+        self.extensions.insert(value);
+    }
+
+    /// Get remote address
+    fn remote_addr(&self) -> Option<&SocketAddr> {
+        self.remote_addr.as_ref()
+    }
+
+    /// Get Content-Type header
+    fn content_type(&self) -> Option<&str> {
+        self.headers.content_type()
+    }
+
+    /// Check if request accepts JSON
+    fn accepts_json(&self) -> bool {
+        match self.header("Accept") {
+            Some(accept) => accept.contains("application/json") || accept.contains("*/*"),
+            None => true,
+        }
+    }
+}
+
+// =============================================================================
+// Response
+// =============================================================================
+
+/// HTTP response
+struct Response {
+    status: StatusCode,
+    headers: Headers,
+    body: Body,
+}
+
+impl Response {
+    /// Create response with status
+    fn new(status: StatusCode) -> Response {
+        Response {
+            status,
+            headers: Headers::new(),
+            body: Body::empty(),
+        }
+    }
+
+    /// Create 200 OK response
+    fn ok() -> Response {
+        Response::new(StatusCode::Ok)
+    }
+
+    /// Create 201 Created response
+    fn created() -> Response {
+        Response::new(StatusCode::Created)
+    }
+
+    /// Create 204 No Content response
+    fn no_content() -> Response {
+        Response::new(StatusCode::NoContent)
+    }
+
+    /// Create 404 Not Found response
+    fn not_found() -> Response {
+        Response::new(StatusCode::NotFound)
+            .with_body_text("Not Found")
+    }
+
+    /// Create 400 Bad Request response
+    fn bad_request(message: &str) -> Response {
+        Response::new(StatusCode::BadRequest)
+            .with_body_text(message)
+    }
+
+    /// Create 401 Unauthorized response
+    fn unauthorized() -> Response {
+        Response::new(StatusCode::Unauthorized)
+            .with_header("WWW-Authenticate", "Bearer")
+    }
+
+    /// Create 403 Forbidden response
+    fn forbidden() -> Response {
+        Response::new(StatusCode::Forbidden)
+    }
+
+    /// Create 500 Internal Server Error response
+    fn internal_error(message: &str) -> Response {
+        Response::new(StatusCode::InternalServerError)
+            .with_body_text(message)
+    }
+
+    /// Create 503 Service Unavailable response
+    fn service_unavailable() -> Response {
+        Response::new(StatusCode::ServiceUnavailable)
+    }
+
+    /// Create text response
+    fn text(body: &str) -> Response {
+        Response::ok()
+            .with_header("Content-Type", "text/plain; charset=utf-8")
+            .with_body_text(body)
+    }
+
+    /// Create HTML response
+    fn html(body: &str) -> Response {
+        Response::ok()
+            .with_header("Content-Type", "text/html; charset=utf-8")
+            .with_body_text(body)
+    }
+
+    /// Create JSON response
+    fn json<T: Serialize>(data: &T) -> Result<Response, HttpError> {
+        let json_str = json::to_string(data)
+            .map_err(|e| HttpError::JsonError { message: e.to_string() })?;
+        Ok(Response::ok()
+            .with_header("Content-Type", "application/json")
+            .with_body_text(&json_str))
+    }
+
+    /// Create bytes response
+    fn bytes(data: Vec<u8>) -> Response {
+        let len = data.len();
+        Response::ok()
+            .with_header("Content-Type", "application/octet-stream")
+            .with_header("Content-Length", &len.to_string())
+            .with_body(Body::from_bytes(data))
+    }
+
+    /// Create redirect response
+    fn redirect(url: &str) -> Response {
+        Response::new(StatusCode::Found)
+            .with_header("Location", url)
+    }
+
+    /// Create permanent redirect response
+    fn redirect_permanent(url: &str) -> Response {
+        Response::new(StatusCode::MovedPermanently)
+            .with_header("Location", url)
+    }
+
+    /// Set status code
+    fn with_status(mut self, status: StatusCode) -> Response {
+        self.status = status;
+        self
+    }
+
+    /// Set header
+    fn with_header(mut self, name: &str, value: &str) -> Response {
+        self.headers.set(name, value);
+        self
+    }
+
+    /// Set body
+    fn with_body(mut self, body: Body) -> Response {
+        self.body = body;
+        self
+    }
+
+    /// Set body from text
+    fn with_body_text(mut self, text: &str) -> Response {
+        self.body = Body::from_string(text);
+        self.headers.set("Content-Length", &self.body.len().to_string());
+        self
+    }
+
+    /// Set body from JSON
+    fn with_body_json<T: Serialize>(mut self, data: &T) -> Result<Response, HttpError> {
+        let json_str = json::to_string(data)
+            .map_err(|e| HttpError::JsonError { message: e.to_string() })?;
+        self.body = Body::from_string(&json_str);
+        self.headers.set("Content-Type", "application/json");
+        self.headers.set("Content-Length", &self.body.len().to_string());
+        Ok(self)
+    }
+
+    /// Get status code
+    fn status(&self) -> &StatusCode {
+        &self.status
+    }
+
+    /// Get headers
+    fn headers(&self) -> &Headers {
+        &self.headers
+    }
+
+    /// Get body
+    fn body(&self) -> &Body {
+        &self.body
+    }
+
+    /// Serialize response to HTTP format
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+
+        // Status line
+        let status_line = format!("HTTP/1.1 {} {}\r\n",
+            self.status.code(),
+            self.status.reason());
+        buf.extend_from_slice(status_line.as_bytes());
+
+        // Headers
+        for (name, value) in self.headers.iter() {
+            let header_line = format!("{}: {}\r\n", name, value);
+            buf.extend_from_slice(header_line.as_bytes());
+        }
+
+        // Empty line
+        buf.extend_from_slice(b"\r\n");
+
+        // Body
+        buf.extend_from_slice(self.body.bytes());
+
+        buf
+    }
+}
+
+// =============================================================================
+// Handler Trait
+// =============================================================================
+
+/// Handler for processing HTTP requests
+trait Handler: Send + Sync {
+    /// Handle request and return response
+    async fn handle(&self, req: Request) -> Response;
+}
+
+/// Function handler wrapper
+struct FnHandler<F> {
+    func: F,
+}
+
+impl<F, Fut> Handler for FnHandler<F>
+where
+    F: Fn(Request) -> Fut + Send + Sync,
+    Fut: Future<Output = Response> + Send,
+{
+    async fn handle(&self, req: Request) -> Response {
+        (self.func)(req).await
+    }
+}
+
+/// Create handler from function
+fn handler_fn<F, Fut>(f: F) -> FnHandler<F>
+where
+    F: Fn(Request) -> Fut + Send + Sync,
+    Fut: Future<Output = Response> + Send,
+{
+    FnHandler { func: f }
+}
+
+// =============================================================================
+// Middleware Trait
+// =============================================================================
+
+/// Middleware for request/response processing
+trait Middleware: Send + Sync {
+    /// Process request, call next handler, and process response
+    async fn handle(&self, req: Request, next: Next) -> Response;
+}
+
+/// Next handler in middleware chain
+struct Next {
+    handler: Arc<dyn Handler>,
+    middleware: Vec<Arc<dyn Middleware>>,
+    index: usize,
+}
+
+impl Next {
+    /// Run the next handler or middleware
+    async fn run(mut self, req: Request) -> Response {
+        if self.index < self.middleware.len() {
+            let mw = self.middleware[self.index].clone();
+            self.index += 1;
+            mw.handle(req, self).await
+        } else {
+            self.handler.handle(req).await
+        }
+    }
+}
+
+// =============================================================================
+// Router
+// =============================================================================
+
+/// Route definition
+struct Route {
+    method: Method,
+    pattern: String,
+    handler: Arc<dyn Handler>,
+    param_names: Vec<String>,
+}
+
+impl Route {
+    /// Check if route matches request
+    fn matches(&self, method: &Method, path: &str) -> Option<HashMap<String, String>> {
+        // Check method
+        if !self.method_matches(method) {
+            return None;
+        }
+
+        // Parse pattern and path
+        let pattern_parts: Vec<&str> = self.pattern.split('/').filter(|s| !s.is_empty()).collect();
+        let path_parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+
+        // Check for wildcard at end
+        let has_wildcard = pattern_parts.last().map(|p| p.starts_with('*')).unwrap_or(false);
+
+        if !has_wildcard && pattern_parts.len() != path_parts.len() {
+            return None;
+        }
+
+        let mut params = HashMap::new();
+
+        for (i, pattern_part) in pattern_parts.iter().enumerate() {
+            if pattern_part.starts_with(':') {
+                // Parameter
+                if i < path_parts.len() {
+                    let param_name = &pattern_part[1..];
+                    params.insert(param_name.to_string(), path_parts[i].to_string());
+                } else {
+                    return None;
+                }
+            } else if pattern_part.starts_with('*') {
+                // Wildcard - capture rest of path
+                let param_name = &pattern_part[1..];
+                let rest = path_parts[i..].join("/");
+                params.insert(param_name.to_string(), rest);
+                break;
+            } else {
+                // Literal match
+                if i >= path_parts.len() || *pattern_part != path_parts[i] {
+                    return None;
+                }
+            }
+        }
+
+        Some(params)
+    }
+
+    fn method_matches(&self, method: &Method) -> bool {
+        matches!((&self.method, method),
+            (Method::Get, Method::Get) |
+            (Method::Post, Method::Post) |
+            (Method::Put, Method::Put) |
+            (Method::Delete, Method::Delete) |
+            (Method::Patch, Method::Patch) |
+            (Method::Head, Method::Head) |
+            (Method::Options, Method::Options) |
+            (Method::Connect, Method::Connect) |
+            (Method::Trace, Method::Trace))
+    }
+}
+
+/// HTTP router
+struct Router {
+    routes: Vec<Route>,
+    middleware: Vec<Arc<dyn Middleware>>,
+    fallback: Option<Arc<dyn Handler>>,
+}
+
+impl Router {
+    /// Create new router
+    fn new() -> Router {
+        Router {
+            routes: Vec::new(),
+            middleware: Vec::new(),
+            fallback: None,
+        }
+    }
+
+    /// Add route with method and path
+    fn route<H: Handler + 'static>(mut self, method: Method, path: &str, handler: H) -> Router {
+        let param_names = extract_param_names(path);
+        self.routes.push(Route {
+            method,
+            pattern: path.to_string(),
+            handler: Arc::new(handler),
+            param_names,
+        });
+        self
+    }
+
+    /// Add GET route
+    fn get<H: Handler + 'static>(self, path: &str, handler: H) -> Router {
+        self.route(Method::Get, path, handler)
+    }
+
+    /// Add POST route
+    fn post<H: Handler + 'static>(self, path: &str, handler: H) -> Router {
+        self.route(Method::Post, path, handler)
+    }
+
+    /// Add PUT route
+    fn put<H: Handler + 'static>(self, path: &str, handler: H) -> Router {
+        self.route(Method::Put, path, handler)
+    }
+
+    /// Add DELETE route
+    fn delete<H: Handler + 'static>(self, path: &str, handler: H) -> Router {
+        self.route(Method::Delete, path, handler)
+    }
+
+    /// Add PATCH route
+    fn patch<H: Handler + 'static>(self, path: &str, handler: H) -> Router {
+        self.route(Method::Patch, path, handler)
+    }
+
+    /// Nest router under prefix
+    fn nest(mut self, prefix: &str, router: Router) -> Router {
+        for route in router.routes {
+            let new_pattern = format!("{}{}", prefix.trim_end_matches('/'), route.pattern);
+            self.routes.push(Route {
+                method: route.method,
+                pattern: new_pattern,
+                handler: route.handler,
+                param_names: route.param_names,
+            });
+        }
+        self
+    }
+
+    /// Merge another router
+    fn merge(mut self, router: Router) -> Router {
+        self.routes.extend(router.routes);
+        self.middleware.extend(router.middleware);
+        self
+    }
+
+    /// Add middleware
+    fn with<M: Middleware + 'static>(mut self, middleware: M) -> Router {
+        self.middleware.push(Arc::new(middleware));
+        self
+    }
+
+    /// Set fallback handler for unmatched routes
+    fn fallback<H: Handler + 'static>(mut self, handler: H) -> Router {
+        self.fallback = Some(Arc::new(handler));
+        self
+    }
+
+    /// Route request to handler
+    async fn handle(&self, mut req: Request) -> Response {
+        // Find matching route
+        for route in &self.routes {
+            if let Some(params) = route.matches(req.method(), req.path()) {
+                // Set route parameters
+                req.params = params;
+
+                // Build middleware chain
+                if self.middleware.is_empty() {
+                    return route.handler.handle(req).await;
+                }
+
+                let next = Next {
+                    handler: route.handler.clone(),
+                    middleware: self.middleware.clone(),
+                    index: 0,
+                };
+
+                return next.run(req).await;
+            }
+        }
+
+        // No route found - use fallback or 404
+        match &self.fallback {
+            Some(handler) => handler.handle(req).await,
+            None => Response::not_found(),
+        }
+    }
+}
+
+// =============================================================================
+// Built-in Middleware
+// =============================================================================
+
+/// Logging middleware
+struct Logger {
+    level: LogLevel,
+}
+
+enum LogLevel {
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+impl Logger {
+    fn new() -> Logger {
+        Logger { level: LogLevel::Info }
+    }
+
+    fn with_level(level: LogLevel) -> Logger {
+        Logger { level }
+    }
+}
+
+impl Middleware for Logger {
+    async fn handle(&self, req: Request, next: Next) -> Response {
+        let start = Instant::now();
+        let method = req.method().as_str().to_string();
+        let path = req.path().to_string();
+
+        let response = next.run(req).await;
+
+        let duration = start.elapsed();
+        let status = response.status().code();
+
+        println!("{} {} -> {} ({:?})", method, path, status, duration);
+
+        response
+    }
+}
+
+/// CORS middleware
+struct Cors {
+    allowed_origins: Vec<String>,
+    allowed_methods: Vec<Method>,
+    allowed_headers: Vec<String>,
+    max_age: Option<Duration>,
+    allow_credentials: bool,
+}
+
+impl Cors {
+    /// Create permissive CORS (allow all)
+    fn permissive() -> Cors {
+        Cors {
+            allowed_origins: vec!["*".to_string()],
+            allowed_methods: vec![
+                Method::Get, Method::Post, Method::Put,
+                Method::Delete, Method::Patch, Method::Options
+            ],
+            allowed_headers: vec!["*".to_string()],
+            max_age: Some(Duration::from_secs(86400)),
+            allow_credentials: false,
+        }
+    }
+
+    /// Create CORS builder
+    fn builder() -> CorsBuilder {
+        CorsBuilder::new()
+    }
+}
+
+struct CorsBuilder {
+    cors: Cors,
+}
+
+impl CorsBuilder {
+    fn new() -> CorsBuilder {
+        CorsBuilder {
+            cors: Cors {
+                allowed_origins: Vec::new(),
+                allowed_methods: Vec::new(),
+                allowed_headers: Vec::new(),
+                max_age: None,
+                allow_credentials: false,
+            }
+        }
+    }
+
+    fn allow_origin(mut self, origin: &str) -> CorsBuilder {
+        self.cors.allowed_origins.push(origin.to_string());
+        self
+    }
+
+    fn allow_method(mut self, method: Method) -> CorsBuilder {
+        self.cors.allowed_methods.push(method);
+        self
+    }
+
+    fn allow_header(mut self, header: &str) -> CorsBuilder {
+        self.cors.allowed_headers.push(header.to_string());
+        self
+    }
+
+    fn max_age(mut self, duration: Duration) -> CorsBuilder {
+        self.cors.max_age = Some(duration);
+        self
+    }
+
+    fn allow_credentials(mut self, allow: bool) -> CorsBuilder {
+        self.cors.allow_credentials = allow;
+        self
+    }
+
+    fn build(self) -> Cors {
+        self.cors
+    }
+}
+
+impl Middleware for Cors {
+    async fn handle(&self, req: Request, next: Next) -> Response {
+        // Handle preflight
+        if matches!(req.method(), Method::Options) {
+            return self.preflight_response(&req);
+        }
+
+        let mut response = next.run(req).await;
+
+        // Add CORS headers
+        self.add_cors_headers(&mut response);
+
+        response
+    }
+}
+
+impl Cors {
+    fn preflight_response(&self, req: &Request) -> Response {
+        let mut response = Response::no_content();
+        self.add_cors_headers(&mut response);
+
+        if let Some(max_age) = self.max_age {
+            response.headers.set("Access-Control-Max-Age", &max_age.as_secs().to_string());
+        }
+
+        response
+    }
+
+    fn add_cors_headers(&self, response: &mut Response) {
+        let origins = self.allowed_origins.join(", ");
+        response.headers.set("Access-Control-Allow-Origin", &origins);
+
+        let methods: Vec<&str> = self.allowed_methods.iter().map(|m| m.as_str()).collect();
+        response.headers.set("Access-Control-Allow-Methods", &methods.join(", "));
+
+        let headers = self.allowed_headers.join(", ");
+        response.headers.set("Access-Control-Allow-Headers", &headers);
+
+        if self.allow_credentials {
+            response.headers.set("Access-Control-Allow-Credentials", "true");
+        }
+    }
+}
+
+/// Rate limiter middleware (actor-based)
+actor RateLimiter {
+    requests: HashMap<String, Vec<Instant>>,
+    max_requests: u32,
+    window: Duration,
+}
+
+impl RateLimiter {
+    fn new(max_requests: u32, window: Duration) -> RateLimiter {
+        RateLimiter {
+            requests: HashMap::new(),
+            max_requests,
+            window,
+        }
+    }
+
+    fn is_rate_limited(&mut self, key: &str) -> bool {
+        let now = Instant::now();
+        let window_start = now - self.window;
+
+        // Get or create request list
+        let requests = self.requests.entry(key.to_string()).or_insert_with(Vec::new);
+
+        // Remove old requests
+        requests.retain(|t| *t > window_start);
+
+        // Check limit
+        if requests.len() >= self.max_requests as usize {
+            return true;
+        }
+
+        // Record request
+        requests.push(now);
+        false
+    }
+}
+
+impl Middleware for RateLimiter {
+    async fn handle(&self, req: Request, next: Next) -> Response {
+        // Use remote IP as rate limit key
+        let key = match req.remote_addr() {
+            Some(addr) => addr.to_string(),
+            None => "unknown".to_string(),
+        };
+
+        if self.is_rate_limited(&key) {
+            return Response::new(StatusCode::TooManyRequests)
+                .with_header("Retry-After", &self.window.as_secs().to_string());
+        }
+
+        next.run(req).await
+    }
+}
+
+/// Timeout middleware
+struct Timeout {
+    duration: Duration,
+}
+
+impl Timeout {
+    fn new(duration: Duration) -> Timeout {
+        Timeout { duration }
+    }
+}
+
+impl Middleware for Timeout {
+    async fn handle(&self, req: Request, next: Next) -> Response {
+        match timeout(self.duration, next.run(req)).await {
+            Ok(response) => response,
+            Err(_) => Response::new(StatusCode::GatewayTimeout),
+        }
+    }
+}
+
+/// Compression middleware
+struct Compression {
+    min_size: usize,
+}
+
+impl Compression {
+    fn new() -> Compression {
+        Compression { min_size: 1024 }  // Compress responses > 1KB
+    }
+
+    fn with_min_size(min_size: usize) -> Compression {
+        Compression { min_size }
+    }
+}
+
+impl Middleware for Compression {
+    async fn handle(&self, req: Request, next: Next) -> Response {
+        let accepts_gzip = req.header("Accept-Encoding")
+            .map(|h| h.contains("gzip"))
+            .unwrap_or(false);
+
+        let mut response = next.run(req).await;
+
+        if accepts_gzip && response.body.len() >= self.min_size {
+            // Compress body with gzip
+            if let Ok(compressed) = gzip(&response.body.data) {
+                response.body = Body::from_bytes(compressed);
+                response.headers.set("Content-Encoding", "gzip");
+                response.headers.set("Content-Length", &response.body.len().to_string());
+            }
+        }
+
+        response
+    }
+}
+
+// =============================================================================
+// HTTP Server Actor
+// =============================================================================
+
+/// Server configuration
+struct ServerConfig {
+    max_connections: usize,
+    read_timeout: Duration,
+    write_timeout: Duration,
+    keep_alive: Duration,
+    max_request_size: usize,
+}
+
+impl Default for ServerConfig {
+    fn default() -> ServerConfig {
+        ServerConfig {
+            max_connections: 10000,
+            read_timeout: Duration::from_secs(30),
+            write_timeout: Duration::from_secs(30),
+            keep_alive: Duration::from_secs(60),
+            max_request_size: 10 * 1024 * 1024,  // 10MB
+        }
+    }
+}
+
+/// HTTP server actor
+actor HttpServer {
+    addr: String,
+    router: Router,
+    config: ServerConfig,
+    hive: Option<HiveRef>,
+}
+
+impl HttpServer {
+    /// Create server builder
+    fn bind(addr: &str) -> ServerBuilder {
+        ServerBuilder {
+            addr: addr.to_string(),
+            router: None,
+            config: ServerConfig::default(),
+            hive: None,
+            shutdown_signal: None,
+        }
+    }
+}
+
+/// Server builder
+struct ServerBuilder {
+    addr: String,
+    router: Option<Router>,
+    config: ServerConfig,
+    hive: Option<HiveRef>,
+    shutdown_signal: Option<Box<dyn Future<Output = ()> + Send>>,
+}
+
+impl ServerBuilder {
+    /// Set router
+    fn router(mut self, router: Router) -> ServerBuilder {
+        self.router = Some(router);
+        self
+    }
+
+    /// Set configuration
+    fn config(mut self, config: ServerConfig) -> ServerBuilder {
+        self.config = config;
+        self
+    }
+
+    /// Set hive reference
+    fn with_hive(mut self, hive: HiveRef) -> ServerBuilder {
+        self.hive = Some(hive);
+        self
+    }
+
+    /// Set graceful shutdown signal
+    fn graceful_shutdown<F>(mut self, signal: F) -> ServerBuilder
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        self.shutdown_signal = Some(Box::new(signal));
+        self
+    }
+
+    /// Start the server
+    async fn serve(self) -> Result<(), HttpError> {
+        let router = self.router.ok_or(HttpError::Internal {
+            message: "Router not configured".to_string()
+        })?;
+
+        let listener = TcpListener::bind(&self.addr).await
+            .map_err(|e| HttpError::Internal {
+                message: format!("Failed to bind: {}", e)
+            })?;
+
+        println!("Server listening on {}", self.addr);
+
+        let router = Arc::new(router);
+        let config = Arc::new(self.config);
+        let hive = self.hive;
+
+        // Accept connections
+        loop {
+            match listener.accept().await {
+                Ok((stream, addr)) => {
+                    let router = router.clone();
+                    let config = config.clone();
+                    let hive = hive.clone();
+
+                    // Spawn connection handler
+                    spawn(async move {
+                        if let Err(e) = handle_connection(stream, addr, router, config, hive).await {
+                            eprintln!("Connection error: {}", e);
+                        }
+                    });
+                }
+                Err(e) => {
+                    eprintln!("Accept error: {}", e);
+                }
+            }
+        }
+    }
+}
+
+/// Handle single connection
+async fn handle_connection(
+    mut stream: TcpStream,
+    addr: SocketAddr,
+    router: Arc<Router>,
+    config: Arc<ServerConfig>,
+    hive: Option<HiveRef>,
+) -> Result<(), HttpError> {
+    // Read request
+    let mut buffer = vec![0u8; config.max_request_size];
+    let n = stream.read(&mut buffer).await
+        .map_err(|e| HttpError::Internal { message: e.to_string() })?;
+
+    if n == 0 {
+        return Ok(());  // Connection closed
+    }
+
+    // Parse request
+    let mut req = parse_request(&buffer[..n])?;
+    req.remote_addr = Some(addr);
+
+    // Add hive to extensions if available
+    if let Some(ref hive) = hive {
+        req.set_extension(hive.clone());
+    }
+
+    // Route request
+    let response = router.handle(req).await;
+
+    // Send response
+    let response_bytes = response.to_bytes();
+    stream.write_all(&response_bytes).await
+        .map_err(|e| HttpError::Internal { message: e.to_string() })?;
+
+    Ok(())
+}
+
+/// Parse HTTP request from bytes
+fn parse_request(data: &[u8]) -> Result<Request, HttpError> {
+    let text = String::from_utf8_lossy(data);
+    let mut lines = text.lines();
+
+    // Parse request line
+    let request_line = lines.next()
+        .ok_or(HttpError::BadRequest { message: "Empty request".to_string() })?;
+
+    let parts: Vec<&str> = request_line.split_whitespace().collect();
+    if parts.len() < 2 {
+        return Err(HttpError::BadRequest {
+            message: "Invalid request line".to_string()
+        });
+    }
+
+    let method = Method::from_str(parts[0])
+        .ok_or(HttpError::BadRequest {
+            message: format!("Unknown method: {}", parts[0])
+        })?;
+
+    let path = parts[1];
+    let mut req = Request::new(method, path);
+
+    // Parse headers
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+
+        if let Some(idx) = line.find(':') {
+            let name = line[..idx].trim();
+            let value = line[idx+1..].trim();
+            req.headers.set(name, value);
+        }
+    }
+
+    // Parse body (after empty line)
+    if let Some(body_start) = text.find("\r\n\r\n") {
+        let body = &data[body_start + 4..];
+        if !body.is_empty() {
+            req.body = Body::from_bytes(body.to_vec());
+        }
+    }
+
+    Ok(req)
+}
+
+// =============================================================================
+// Hive Integration
+// =============================================================================
+
+/// Handler that routes to a hive specialist
+struct HiveHandler<S> {
+    hive: HiveRef,
+    _marker: PhantomData<S>,
+}
+
+impl<S: Specialist> HiveHandler<S> {
+    fn new(hive: HiveRef) -> HiveHandler<S> {
+        HiveHandler {
+            hive,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<S: Specialist> Handler for HiveHandler<S>
+where
+    S::Input: Deserialize,
+    S::Output: Serialize,
+{
+    async fn handle(&self, req: Request) -> Response {
+        // Parse input from request body
+        let input: S::Input = match req.body_json() {
+            Ok(input) => input,
+            Err(e) => return Response::bad_request(&format!("Invalid JSON: {}", e)),
+        };
+
+        // Send to specialist
+        match self.hive.ask::<S>(input).await {
+            Ok(output) => {
+                match Response::json(&output) {
+                    Ok(response) => response,
+                    Err(e) => Response::internal_error(&format!("JSON error: {}", e)),
+                }
+            }
+            Err(e) => Response::internal_error(&format!("Hive error: {}", e)),
+        }
+    }
+}
+
+/// Extension trait for HiveRef
+impl HiveRef {
+    /// Create handler for specialist type
+    fn handler<S: Specialist + 'static>(&self) -> HiveHandler<S>
+    where
+        S::Input: Deserialize,
+        S::Output: Serialize,
+    {
+        HiveHandler::new(self.clone())
+    }
+}
+
+// =============================================================================
+// WebSocket Support
+// =============================================================================
+
+/// WebSocket message
+enum WsMessage {
+    Text(String),
+    Binary(Vec<u8>),
+    Ping(Vec<u8>),
+    Pong(Vec<u8>),
+    Close(Option<CloseReason>),
+}
+
+/// WebSocket close reason
+struct CloseReason {
+    code: u16,
+    reason: String,
+}
+
+/// WebSocket handler trait
+trait WebSocketHandler: Send + Sync {
+    /// Called when connection established
+    async fn on_connect(&mut self, ws: &WebSocket);
+
+    /// Called when message received
+    async fn on_message(&mut self, ws: &WebSocket, msg: WsMessage);
+
+    /// Called when connection closed
+    async fn on_close(&mut self, ws: &WebSocket, reason: Option<CloseReason>);
+}
+
+/// WebSocket connection
+struct WebSocket {
+    stream: TcpStream,
+}
+
+impl WebSocket {
+    /// Send message
+    async fn send(&self, msg: WsMessage) -> Result<(), HttpError> {
+        let frame = encode_ws_frame(&msg);
+        self.stream.write_all(&frame).await
+            .map_err(|e| HttpError::Internal { message: e.to_string() })
+    }
+
+    /// Close connection
+    async fn close(&self, reason: Option<CloseReason>) -> Result<(), HttpError> {
+        self.send(WsMessage::Close(reason)).await
+    }
+}
+
+/// WebSocket upgrade handler
+struct WsUpgrade<H> {
+    handler_factory: fn() -> H,
+}
+
+impl<H: WebSocketHandler + 'static> WsUpgrade<H> {
+    fn new(factory: fn() -> H) -> WsUpgrade<H> {
+        WsUpgrade { handler_factory: factory }
+    }
+}
+
+impl<H: WebSocketHandler + 'static> Handler for WsUpgrade<H> {
+    async fn handle(&self, req: Request) -> Response {
+        // Verify WebSocket upgrade request
+        let upgrade = req.header("Upgrade").unwrap_or("");
+        let connection = req.header("Connection").unwrap_or("");
+        let key = req.header("Sec-WebSocket-Key");
+
+        if upgrade.to_lowercase() != "websocket" ||
+           !connection.to_lowercase().contains("upgrade") ||
+           key.is_none() {
+            return Response::bad_request("Invalid WebSocket upgrade request");
+        }
+
+        // Generate accept key
+        let accept_key = generate_ws_accept_key(key.unwrap());
+
+        // Return upgrade response
+        Response::new(StatusCode::Custom(101))
+            .with_header("Upgrade", "websocket")
+            .with_header("Connection", "Upgrade")
+            .with_header("Sec-WebSocket-Accept", &accept_key)
+    }
+}
+
+/// Generate WebSocket accept key
+fn generate_ws_accept_key(key: &str) -> String {
+    let magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    let combined = format!("{}{}", key, magic);
+    let hash = sha1(&combined.as_bytes());
+    base64_encode(&hash)
+}
+
+/// Encode WebSocket frame
+fn encode_ws_frame(msg: &WsMessage) -> Vec<u8> {
+    let (opcode, payload) = match msg {
+        WsMessage::Text(s) => (0x01, s.as_bytes().to_vec()),
+        WsMessage::Binary(b) => (0x02, b.clone()),
+        WsMessage::Ping(b) => (0x09, b.clone()),
+        WsMessage::Pong(b) => (0x0A, b.clone()),
+        WsMessage::Close(_) => (0x08, Vec::new()),
+    };
+
+    let mut frame = Vec::new();
+    frame.push(0x80 | opcode);  // FIN + opcode
+
+    let len = payload.len();
+    if len <= 125 {
+        frame.push(len as u8);
+    } else if len <= 65535 {
+        frame.push(126);
+        frame.extend_from_slice(&(len as u16).to_be_bytes());
+    } else {
+        frame.push(127);
+        frame.extend_from_slice(&(len as u64).to_be_bytes());
+    }
+
+    frame.extend_from_slice(&payload);
+    frame
+}
+
+// =============================================================================
+// Server-Sent Events (SSE)
+// =============================================================================
+
+/// SSE event
+struct SseEvent {
+    id: Option<String>,
+    event: Option<String>,
+    data: String,
+    retry: Option<Duration>,
+}
+
+impl SseEvent {
+    /// Create new event with data
+    fn new(data: &str) -> SseEvent {
+        SseEvent {
+            id: None,
+            event: None,
+            data: data.to_string(),
+            retry: None,
+        }
+    }
+
+    /// Set event ID
+    fn with_id(mut self, id: &str) -> SseEvent {
+        self.id = Some(id.to_string());
+        self
+    }
+
+    /// Set event type
+    fn with_event(mut self, event: &str) -> SseEvent {
+        self.event = Some(event.to_string());
+        self
+    }
+
+    /// Set retry timeout
+    fn with_retry(mut self, retry: Duration) -> SseEvent {
+        self.retry = Some(retry);
+        self
+    }
+
+    /// Serialize to SSE format
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut buf = String::new();
+
+        if let Some(ref id) = self.id {
+            buf.push_str(&format!("id: {}\n", id));
+        }
+
+        if let Some(ref event) = self.event {
+            buf.push_str(&format!("event: {}\n", event));
+        }
+
+        if let Some(ref retry) = self.retry {
+            buf.push_str(&format!("retry: {}\n", retry.as_millis()));
+        }
+
+        for line in self.data.lines() {
+            buf.push_str(&format!("data: {}\n", line));
+        }
+
+        buf.push('\n');
+        buf.into_bytes()
+    }
+}
+
+/// SSE stream
+struct SseStream {
+    stream: TcpStream,
+}
+
+impl SseStream {
+    /// Send event
+    async fn send(&self, event: SseEvent) -> Result<(), HttpError> {
+        let bytes = event.to_bytes();
+        self.stream.write_all(&bytes).await
+            .map_err(|e| HttpError::Internal { message: e.to_string() })
+    }
+
+    /// Close stream
+    async fn close(&self) -> Result<(), HttpError> {
+        self.stream.shutdown().await
+            .map_err(|e| HttpError::Internal { message: e.to_string() })
+    }
+}
+
+/// Create SSE response
+impl Response {
+    /// Create SSE streaming response
+    fn sse<F, Fut>(handler: F) -> Response
+    where
+        F: FnOnce(SseStream) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), HttpError>> + Send,
+    {
+        // Return SSE headers - actual streaming handled by connection
+        Response::ok()
+            .with_header("Content-Type", "text/event-stream")
+            .with_header("Cache-Control", "no-cache")
+            .with_header("Connection", "keep-alive")
+    }
+}
+
+// =============================================================================
+// Error Types
+// =============================================================================
+
+/// HTTP error type
+enum HttpError {
+    // Request errors
+    BadRequest { message: String },
+    Unauthorized { message: String },
+    Forbidden { message: String },
+    NotFound { path: String },
+    MethodNotAllowed { method: String, path: String },
+    PayloadTooLarge { size: usize, max: usize },
+
+    // Server errors
+    Internal { message: String },
+    Timeout { duration: Duration },
+
+    // Connection errors
+    ConnectionClosed,
+    ConnectionReset,
+
+    // Parse errors
+    InvalidHeader { name: String },
+    InvalidBody { message: String },
+    JsonError { message: String },
+}
+
+impl Display for HttpError {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), FormatError> {
+        match self {
+            HttpError::BadRequest { message } => write!(f, "Bad request: {}", message),
+            HttpError::Unauthorized { message } => write!(f, "Unauthorized: {}", message),
+            HttpError::Forbidden { message } => write!(f, "Forbidden: {}", message),
+            HttpError::NotFound { path } => write!(f, "Not found: {}", path),
+            HttpError::MethodNotAllowed { method, path } =>
+                write!(f, "Method {} not allowed for {}", method, path),
+            HttpError::PayloadTooLarge { size, max } =>
+                write!(f, "Payload too large: {} > {}", size, max),
+            HttpError::Internal { message } => write!(f, "Internal error: {}", message),
+            HttpError::Timeout { duration } => write!(f, "Timeout after {:?}", duration),
+            HttpError::ConnectionClosed => write!(f, "Connection closed"),
+            HttpError::ConnectionReset => write!(f, "Connection reset"),
+            HttpError::InvalidHeader { name } => write!(f, "Invalid header: {}", name),
+            HttpError::InvalidBody { message } => write!(f, "Invalid body: {}", message),
+            HttpError::JsonError { message } => write!(f, "JSON error: {}", message),
+        }
+    }
+}
+
+impl From<HttpError> for Response {
+    fn from(error: HttpError) -> Response {
+        match error {
+            HttpError::BadRequest { message } => Response::bad_request(&message),
+            HttpError::Unauthorized { .. } => Response::unauthorized(),
+            HttpError::Forbidden { .. } => Response::forbidden(),
+            HttpError::NotFound { .. } => Response::not_found(),
+            HttpError::MethodNotAllowed { .. } =>
+                Response::new(StatusCode::MethodNotAllowed),
+            HttpError::PayloadTooLarge { .. } =>
+                Response::new(StatusCode::PayloadTooLarge),
+            HttpError::Internal { message } => Response::internal_error(&message),
+            HttpError::Timeout { .. } =>
+                Response::new(StatusCode::GatewayTimeout),
+            HttpError::ConnectionClosed | HttpError::ConnectionReset =>
+                Response::internal_error("Connection error"),
+            HttpError::InvalidHeader { .. } |
+            HttpError::InvalidBody { .. } |
+            HttpError::JsonError { .. } =>
+                Response::bad_request("Parse error"),
+        }
+    }
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+/// Parse query string into map
+fn parse_query_string(query: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+
+    if query.is_empty() {
+        return map;
+    }
+
+    for pair in query.split('&') {
+        if let Some(idx) = pair.find('=') {
+            let key = url_decode(&pair[..idx]);
+            let value = url_decode(&pair[idx+1..]);
+            map.insert(key, value);
+        } else {
+            map.insert(url_decode(pair), String::new());
+        }
+    }
+
+    map
+}
+
+/// Extract parameter names from route pattern
+fn extract_param_names(pattern: &str) -> Vec<String> {
+    let mut names = Vec::new();
+
+    for part in pattern.split('/') {
+        if part.starts_with(':') {
+            names.push(part[1..].to_string());
+        } else if part.starts_with('*') {
+            names.push(part[1..].to_string());
+        }
+    }
+
+    names
+}
+
+/// URL decode string
+fn url_decode(s: &str) -> String {
+    let mut result = String::new();
+    let mut chars = s.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            let hex: String = chars.by_ref().take(2).collect();
+            if let Ok(byte) = u8::from_str_radix(&hex, 16) {
+                result.push(byte as char);
+            }
+        } else if c == '+' {
+            result.push(' ');
+        } else {
+            result.push(c);
+        }
+    }
+
+    result
+}
+
+/// Type-safe extensions map
+struct Extensions {
+    map: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
+}
+
+impl Extensions {
+    fn new() -> Extensions {
+        Extensions { map: HashMap::new() }
+    }
+
+    fn insert<T: 'static + Send + Sync>(&mut self, value: T) {
+        self.map.insert(TypeId::of::<T>(), Box::new(value));
+    }
+
+    fn get<T: 'static>(&self) -> Option<&T> {
+        self.map.get(&TypeId::of::<T>())
+            .and_then(|boxed| boxed.downcast_ref())
+    }
+}
+
+// =============================================================================
+// Testing Support
+// =============================================================================
+
+/// Test client for HTTP handlers
+struct TestClient {
+    router: Arc<Router>,
+}
+
+impl TestClient {
+    /// Create test client for router
+    fn new(router: Router) -> TestClient {
+        TestClient { router: Arc::new(router) }
+    }
+
+    /// Send GET request
+    async fn get(&self, path: &str) -> Response {
+        let req = Request::new(Method::Get, path);
+        self.router.handle(req).await
+    }
+
+    /// Send POST request with body
+    async fn post(&self, path: &str, body: &str) -> Response {
+        let mut req = Request::new(Method::Post, path);
+        req.body = Body::from_string(body);
+        req.headers.set("Content-Type", "application/json");
+        self.router.handle(req).await
+    }
+
+    /// Send PUT request
+    async fn put(&self, path: &str, body: &str) -> Response {
+        let mut req = Request::new(Method::Put, path);
+        req.body = Body::from_string(body);
+        req.headers.set("Content-Type", "application/json");
+        self.router.handle(req).await
+    }
+
+    /// Send DELETE request
+    async fn delete(&self, path: &str) -> Response {
+        let req = Request::new(Method::Delete, path);
+        self.router.handle(req).await
+    }
+
+    /// Send custom request
+    async fn request(&self, req: Request) -> Response {
+        self.router.handle(req).await
+    }
+}
+
+// =============================================================================
+// Public API Exports
+// =============================================================================
+
+// Re-export main types
+pub use Method;
+pub use StatusCode;
+pub use Headers;
+pub use Body;
+pub use Request;
+pub use Response;
+pub use Handler;
+pub use Middleware;
+pub use Next;
+pub use Router;
+pub use HttpServer;
+pub use ServerBuilder;
+pub use ServerConfig;
+pub use HttpError;
+
+// Middleware
+pub use Logger;
+pub use LogLevel;
+pub use Cors;
+pub use CorsBuilder;
+pub use RateLimiter;
+pub use Timeout;
+pub use Compression;
+
+// WebSocket
+pub use WsMessage;
+pub use WebSocket;
+pub use WebSocketHandler;
+pub use CloseReason;
+
+// SSE
+pub use SseEvent;
+pub use SseStream;
+
+// Hive integration
+pub use HiveHandler;
+
+// Testing
+pub use TestClient;
+
+// Helper functions
+pub use handler_fn;

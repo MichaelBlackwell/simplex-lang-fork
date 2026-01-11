@@ -1,0 +1,79 @@
+// Phase 36 Test: C2.5 - Nested closure capture
+
+fn test_simple_capture() -> i64 {
+    let x: i64 = 10;
+    let f = || x;
+    f()
+}
+
+fn test_multi_capture() -> i64 {
+    let x: i64 = 10;
+    let y: i64 = 20;
+    let f = || x + y;
+    f()
+}
+
+fn test_nested_closure() -> i64 {
+    let x: i64 = 10;
+    let f = || {
+        let g = || x + 1;
+        g()
+    };
+    f()
+}
+
+fn test_deeply_nested() -> i64 {
+    let a: i64 = 1;
+    let b: i64 = 2;
+    let f = || {
+        let g = || {
+            let h = || a + b;
+            h()
+        };
+        g()
+    };
+    f()
+}
+
+fn test_closure_with_param() -> i64 {
+    let x: i64 = 5;
+    let adder = |y: i64| x + y;
+    adder(10)  // Should return 15
+}
+
+fn main() -> i64 {
+    print("Testing C2.5: Nested closure capture");
+
+    if test_simple_capture() != 10 {
+        print("FAIL: simple capture");
+        return 1;
+    }
+    print("  PASS: simple capture");
+
+    if test_multi_capture() != 30 {
+        print("FAIL: multi capture");
+        return 1;
+    }
+    print("  PASS: multi capture");
+
+    if test_nested_closure() != 11 {
+        print("FAIL: nested closure");
+        return 1;
+    }
+    print("  PASS: nested closure");
+
+    if test_deeply_nested() != 3 {
+        print("FAIL: deeply nested");
+        return 1;
+    }
+    print("  PASS: deeply nested");
+
+    if test_closure_with_param() != 15 {
+        print("FAIL: closure with param");
+        return 1;
+    }
+    print("  PASS: closure with param");
+
+    print("All C2.5 tests passed!");
+    0
+}

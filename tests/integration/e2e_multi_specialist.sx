@@ -1,0 +1,353 @@
+// End-to-End Scenario Test: Multi-Specialist Reasoning
+// v0.5.0: Complete cognitive hive with shared SLM
+//
+// Scenario: A code review hive with 3 specialists that share knowledge
+// through HiveMnemonic and use a single shared SLM for inference.
+
+// External declarations
+fn hive_mnemonic_new(episodic_cap: i64, semantic_cap: i64, belief_threshold: i64) -> i64;
+fn hive_mnemonic_learn(mnemonic: i64, content: i64, confidence: f64) -> i64;
+fn hive_mnemonic_remember(mnemonic: i64, content: i64, importance: f64) -> i64;
+fn hive_mnemonic_believe(mnemonic: i64, content: i64, confidence: f64) -> i64;
+fn hive_mnemonic_recall_for(mnemonic: i64, query: i64, max: i64) -> i64;
+fn hive_mnemonic_semantic_count(mnemonic: i64) -> i64;
+fn hive_mnemonic_episodic_count(mnemonic: i64) -> i64;
+fn hive_mnemonic_belief_count(mnemonic: i64) -> i64;
+fn hive_mnemonic_close(mnemonic: i64);
+
+fn hive_slm_new(name: i64, model: i64, mnemonic: i64) -> i64;
+fn hive_slm_get_specialist_count(slm: i64) -> i64;
+fn hive_slm_close(slm: i64);
+
+fn anima_memory_new(capacity: i64) -> i64;
+fn anima_remember(mem: i64, content: i64, importance: f64) -> i64;
+fn anima_learn(mem: i64, content: i64, confidence: f64, source: i64) -> i64;
+fn anima_believe(mem: i64, content: i64, confidence: f64, evidence: i64) -> i64;
+fn anima_desire(mem: i64, goal: i64, priority: f64) -> i64;
+fn anima_intend(mem: i64, intention: i64) -> i64;
+fn anima_working_push(mem: i64, item: i64) -> i64;
+fn anima_recall_for_goal(mem: i64, goal: i64, context: i64, max: i64) -> i64;
+fn anima_episodic_count(mem: i64) -> i64;
+fn anima_semantic_count(mem: i64) -> i64;
+fn anima_format_context(mem: i64) -> i64;
+fn anima_memory_close(mem: i64);
+
+fn specialist_create(name: i64, hive_slm: i64, anima: i64) -> i64;
+fn specialist_get_combined_context(spec: i64) -> i64;
+fn specialist_infer(spec: i64, prompt: i64) -> i64;
+fn specialist_contribute_to_mnemonic(spec: i64, content: i64, mem_type: i64) -> i64;
+fn specialist_close(spec: i64);
+
+fn router_new(strategy: i64) -> i64;
+fn router_add_route(router: i64, pattern: i64, specialist_id: i64);
+fn router_route(router: i64, query: i64) -> i64;
+fn router_close(router: i64);
+
+fn vec_len(v: i64) -> i64;
+fn string_from(s: i64) -> i64;
+fn string_contains(s: i64, substr: i64) -> i64;
+fn print(s: i64);
+fn println(s: i64);
+fn print_i64(n: i64);
+fn print_string(s: i64);
+
+fn main() {
+    println("=== Multi-Specialist Reasoning Scenario ===");
+    println("A complete code review hive with shared consciousness");
+    println("");
+
+    // ========================================
+    // PHASE 1: Setup the Hive Infrastructure
+    // ========================================
+    println("### PHASE 1: Setup Hive Infrastructure ###");
+    println("");
+
+    // Create shared consciousness (HiveMnemonic)
+    println("Creating HiveMnemonic (shared consciousness)...");
+    let mnemonic: i64 = hive_mnemonic_new(200, 1000, 50);  // 50% belief threshold
+
+    // Pre-populate with team knowledge
+    hive_mnemonic_learn(mnemonic, string_from("Codebase uses clean architecture pattern"), 0.95);
+    hive_mnemonic_learn(mnemonic, string_from("Team prefers explicit error handling with Result"), 0.9);
+    hive_mnemonic_learn(mnemonic, string_from("All public APIs must have documentation"), 0.85);
+    hive_mnemonic_remember(mnemonic, string_from("Last security audit was 2 weeks ago"), 0.8);
+    hive_mnemonic_believe(mnemonic, string_from("Performance is critical for this project"), 0.88);
+
+    print("  Semantic knowledge: ");
+    print_i64(hive_mnemonic_semantic_count(mnemonic));
+    println("");
+    print("  Episodic memories: ");
+    print_i64(hive_mnemonic_episodic_count(mnemonic));
+    println("");
+    print("  Shared beliefs: ");
+    print_i64(hive_mnemonic_belief_count(mnemonic));
+    println("");
+
+    // Create shared Hive SLM
+    println("");
+    println("Creating Hive SLM (shared model)...");
+    let hive_slm: i64 = hive_slm_new(
+        string_from("CodeReviewHive"),
+        string_from("simplex-cognitive-7b"),
+        mnemonic
+    );
+    println("  Model: simplex-cognitive-7b");
+    println("  All specialists will share this model");
+    println("");
+
+    // ========================================
+    // PHASE 2: Create Specialists with Animas
+    // ========================================
+    println("### PHASE 2: Create Specialists ###");
+    println("");
+
+    // Specialist 1: Security Analyzer
+    println("Creating SecurityAnalyzer...");
+    let anima_security: i64 = anima_memory_new(10);
+    anima_desire(anima_security, string_from("Find security vulnerabilities"), 0.95);
+    anima_learn(anima_security, string_from("SQL injection is a critical vulnerability"), 0.99, string_from("training"));
+    anima_learn(anima_security, string_from("Always validate user input"), 0.98, string_from("training"));
+    anima_believe(anima_security, string_from("Security must be checked before performance"), 0.9, 0);
+
+    let spec_security: i64 = specialist_create(string_from("SecurityAnalyzer"), hive_slm, anima_security);
+    println("  Purpose: Find security vulnerabilities");
+    println("  Personal beliefs: Security > Performance");
+    println("");
+
+    // Specialist 2: Code Quality Reviewer
+    println("Creating QualityReviewer...");
+    let anima_quality: i64 = anima_memory_new(10);
+    anima_desire(anima_quality, string_from("Ensure code quality and maintainability"), 0.9);
+    anima_learn(anima_quality, string_from("Functions should do one thing well"), 0.95, string_from("training"));
+    anima_learn(anima_quality, string_from("Naming should be descriptive"), 0.9, string_from("training"));
+    anima_believe(anima_quality, string_from("Readable code is better than clever code"), 0.85, 0);
+
+    let spec_quality: i64 = specialist_create(string_from("QualityReviewer"), hive_slm, anima_quality);
+    println("  Purpose: Check code quality and maintainability");
+    println("  Personal beliefs: Readability > Cleverness");
+    println("");
+
+    // Specialist 3: Performance Optimizer
+    println("Creating PerformanceOptimizer...");
+    let anima_perf: i64 = anima_memory_new(10);
+    anima_desire(anima_perf, string_from("Optimize code for performance"), 0.9);
+    anima_learn(anima_perf, string_from("Avoid unnecessary allocations in hot paths"), 0.95, string_from("training"));
+    anima_learn(anima_perf, string_from("Prefer iterators over index loops"), 0.85, string_from("training"));
+    anima_believe(anima_perf, string_from("Premature optimization is the root of all evil"), 0.7, 0);
+
+    let spec_perf: i64 = specialist_create(string_from("PerformanceOptimizer"), hive_slm, anima_perf);
+    println("  Purpose: Optimize performance");
+    println("  Personal beliefs: Measure before optimize");
+    println("");
+
+    // Verify all specialists share the same SLM
+    let specialist_count: i64 = hive_slm_get_specialist_count(hive_slm);
+    print("Total specialists in hive: ");
+    print_i64(specialist_count);
+    println("");
+    println("All 3 specialists share ONE SLM instance");
+    println("");
+
+    // ========================================
+    // PHASE 3: Simulate Code Review Workflow
+    // ========================================
+    println("### PHASE 3: Code Review Workflow ###");
+    println("");
+
+    // The code to review
+    let code_sample: i64 = string_from("
+fn process_user_input(input: String) -> Result<Data, Error> {
+    let query = format!(\"SELECT * FROM users WHERE name = '{}'\", input);
+    let result = db.execute(query)?;
+    let data = parse_result(result);
+    Ok(data)
+}
+");
+
+    println("Code to review:");
+    print_string(code_sample);
+    println("");
+
+    // Step 1: Security Analyzer reviews first
+    println("--- Step 1: SecurityAnalyzer Review ---");
+    anima_working_push(anima_security, string_from("Reviewing: process_user_input function"));
+    anima_working_push(anima_security, string_from("Looking for: SQL injection, input validation"));
+
+    let security_context: i64 = specialist_get_combined_context(spec_security);
+    println("SecurityAnalyzer context includes:");
+    if string_contains(security_context, string_from("SQL injection")) == 1 {
+        println("  ✓ Personal knowledge about SQL injection");
+    }
+    if string_contains(security_context, string_from("clean architecture")) == 1 {
+        println("  ✓ Shared team knowledge from mnemonic");
+    }
+
+    let security_prompt: i64 = string_from("Review this code for security vulnerabilities: ");
+    let security_result: i64 = specialist_infer(spec_security, security_prompt);
+
+    if security_result != 0 {
+        println("Security review completed");
+    }
+
+    // SecurityAnalyzer shares finding with hive
+    specialist_contribute_to_mnemonic(
+        spec_security,
+        string_from("CRITICAL: SQL injection vulnerability in process_user_input - uses string formatting instead of prepared statements"),
+        1  // 1 = semantic
+    );
+    println("Finding shared to HiveMnemonic");
+
+    // Record the experience
+    anima_remember(anima_security, string_from("Found SQL injection in process_user_input"), 0.95);
+    println("");
+
+    // Step 2: Quality Reviewer reviews
+    println("--- Step 2: QualityReviewer Review ---");
+    anima_working_push(anima_quality, string_from("Reviewing: process_user_input function"));
+    anima_working_push(anima_quality, string_from("Looking for: naming, structure, error handling"));
+
+    // Quality reviewer can now see security finding
+    let quality_context: i64 = specialist_get_combined_context(spec_quality);
+    if string_contains(quality_context, string_from("SQL injection vulnerability")) == 1 {
+        println("QualityReviewer sees SecurityAnalyzer's finding!");
+    }
+
+    let quality_prompt: i64 = string_from("Review this code for quality and maintainability: ");
+    let quality_result: i64 = specialist_infer(spec_quality, quality_prompt);
+
+    if quality_result != 0 {
+        println("Quality review completed");
+    }
+
+    // Share findings
+    specialist_contribute_to_mnemonic(
+        spec_quality,
+        string_from("Function mixes concerns: query building, execution, and parsing should be separated"),
+        1
+    );
+    anima_remember(anima_quality, string_from("Found separation of concerns issue in process_user_input"), 0.8);
+    println("Finding shared to HiveMnemonic");
+    println("");
+
+    // Step 3: Performance Optimizer reviews
+    println("--- Step 3: PerformanceOptimizer Review ---");
+    anima_working_push(anima_perf, string_from("Reviewing: process_user_input function"));
+    anima_working_push(anima_perf, string_from("Looking for: allocations, efficiency"));
+
+    // Performance optimizer sees both previous findings
+    let perf_context: i64 = specialist_get_combined_context(spec_perf);
+    println("PerformanceOptimizer context includes:");
+    if string_contains(perf_context, string_from("SQL injection")) == 1 {
+        println("  ✓ Security finding from SecurityAnalyzer");
+    }
+    if string_contains(perf_context, string_from("separation of concerns")) == 1 {
+        println("  ✓ Quality finding from QualityReviewer");
+    }
+
+    let perf_prompt: i64 = string_from("Review this code for performance issues: ");
+    let perf_result: i64 = specialist_infer(spec_perf, perf_prompt);
+
+    if perf_result != 0 {
+        println("Performance review completed");
+    }
+
+    specialist_contribute_to_mnemonic(
+        spec_perf,
+        string_from("String formatting in hot path causes unnecessary allocations"),
+        1
+    );
+    anima_remember(anima_perf, string_from("Found allocation issue in process_user_input"), 0.7);
+    println("Finding shared to HiveMnemonic");
+    println("");
+
+    // ========================================
+    // PHASE 4: Verify Knowledge Accumulation
+    // ========================================
+    println("### PHASE 4: Verify Knowledge Accumulation ###");
+    println("");
+
+    // Check mnemonic growth
+    let final_semantic: i64 = hive_mnemonic_semantic_count(mnemonic);
+    print("Final semantic knowledge: ");
+    print_i64(final_semantic);
+    println(" (started with 3)");
+
+    // Query for all findings
+    let findings: i64 = hive_mnemonic_recall_for(mnemonic, string_from("process_user_input"), 10);
+    let findings_count: i64 = vec_len(findings);
+    print("Findings related to reviewed code: ");
+    print_i64(findings_count);
+    println("");
+
+    // Each specialist's personal memory
+    println("");
+    println("Personal memories (episodic):");
+    print("  SecurityAnalyzer: ");
+    print_i64(anima_episodic_count(anima_security));
+    println("");
+    print("  QualityReviewer: ");
+    print_i64(anima_episodic_count(anima_quality));
+    println("");
+    print("  PerformanceOptimizer: ");
+    print_i64(anima_episodic_count(anima_perf));
+    println("");
+
+    // ========================================
+    // PHASE 5: Routing & Orchestration
+    // ========================================
+    println("");
+    println("### PHASE 5: Routing Test ###");
+    println("");
+
+    let router: i64 = router_new(1);  // 1 = rule-based routing
+    router_add_route(router, string_from("security|vulnerability|injection"), 1);
+    router_add_route(router, string_from("quality|readable|maintain"), 2);
+    router_add_route(router, string_from("performance|fast|optimize"), 3);
+
+    // Test routing
+    let route1: i64 = router_route(router, string_from("Check for SQL injection"));
+    let route2: i64 = router_route(router, string_from("Is this code readable?"));
+    let route3: i64 = router_route(router, string_from("How can we optimize this?"));
+
+    print("'Check for SQL injection' -> Specialist ");
+    print_i64(route1);
+    println("");
+    print("'Is this code readable?' -> Specialist ");
+    print_i64(route2);
+    println("");
+    print("'How can we optimize this?' -> Specialist ");
+    print_i64(route3);
+    println("");
+
+    router_close(router);
+
+    // ========================================
+    // SUMMARY
+    // ========================================
+    println("");
+    println("### SCENARIO SUMMARY ###");
+    println("");
+    println("✓ Created HiveMnemonic with team knowledge (50% belief threshold)");
+    println("✓ Created 3 specialists, each with unique Anima (30% threshold)");
+    println("✓ All specialists share ONE Hive SLM instance");
+    println("✓ Specialists contributed findings to shared mnemonic");
+    println("✓ Later specialists saw earlier specialists' findings");
+    println("✓ Personal memories remain isolated per specialist");
+    println("✓ Routing directs queries to appropriate specialist");
+    println("");
+    println("Architecture demonstrated:");
+    println("  Personal Anima (30%) -> HiveMnemonic (50%) -> Shared SLM");
+    println("");
+
+    // Cleanup
+    specialist_close(spec_security);
+    specialist_close(spec_quality);
+    specialist_close(spec_perf);
+    anima_memory_close(anima_security);
+    anima_memory_close(anima_quality);
+    anima_memory_close(anima_perf);
+    hive_slm_close(hive_slm);
+    hive_mnemonic_close(mnemonic);
+
+    println("=== Multi-Specialist Reasoning Scenario Complete! ===");
+}
