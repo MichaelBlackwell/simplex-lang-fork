@@ -5,7 +5,7 @@
 // - struct literals and field access
 //
 // Copyright (c) 2025-2026 Rod Higgins
-// Licensed under MIT License - see LICENSE file
+// Licensed under AGPL-3.0 - see LICENSE file
 // https://github.com/senuamedia/simplex-lang
 
 // AST tags - duplicated from parser.sx for standalone compilation
@@ -1816,6 +1816,10 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
             emit_intrinsic_void_ptr(cg, "intrinsic_print", vec_get(arg_values, 0));
             return string_from("0");
         }
+        if string_eq(callee_name, "print_i64") {
+            emit_intrinsic_void_i64(cg, "print_i64", vec_get(arg_values, 0));
+            return string_from("0");
+        }
         if string_eq(callee_name, "vec_push") {
             emit_intrinsic_void_ptr2(cg, "intrinsic_vec_push", vec_get(arg_values, 0), vec_get(arg_values, 1));
             return string_from("0");
@@ -2253,6 +2257,37 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
         if string_eq(callee_name, "json_string") {
             return emit_call_i64_1arg(cg, "json_string", vec_get(arg_values, 0));
         }
+        if string_eq(callee_name, "json_string_sx") {
+            return emit_call_i64_1arg(cg, "json_string_sx", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "json_array_len") {
+            return emit_call_i64_1arg(cg, "json_array_len", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "json_object_len") {
+            return emit_call_i64_1arg(cg, "json_object_len", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "json_as_i64") {
+            return emit_call_i64_1arg(cg, "json_as_i64", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "json_get_index") {
+            return emit_call_i64_2args(cg, "json_get_index", vec_get(arg_values, 0), vec_get(arg_values, 1));
+        }
+        if string_eq(callee_name, "json_is_null") {
+            return emit_call_i64_1arg(cg, "json_is_null", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "json_object") {
+            return emit_intrinsic_i64_void(cg, "json_object_new");
+        }
+        if string_eq(callee_name, "json_object_key_at") {
+            return emit_call_i64_2args(cg, "json_object_key_at", vec_get(arg_values, 0), vec_get(arg_values, 1));
+        }
+        if string_eq(callee_name, "json_object_value_at") {
+            return emit_call_i64_2args(cg, "json_object_value_at", vec_get(arg_values, 0), vec_get(arg_values, 1));
+        }
+        if string_eq(callee_name, "json_object_set_sx") {
+            emit_call_void_3args(cg, "json_object_set_sx", vec_get(arg_values, 0), vec_get(arg_values, 1), vec_get(arg_values, 2));
+            return string_from("0");
+        }
 
         // Check if this is a generic function call
         let emit_callee: i64 = callee_name;
@@ -2448,7 +2483,8 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
             emit_line(cg, val);
         }
         if op == OP_NOT() {
-            emit(cg, " = xor i1 ");
+            // Bool is represented as i64, so use i64 for xor
+            emit(cg, " = xor i64 ");
             emit(cg, val);
             emit_line(cg, ", 1");
         }
@@ -4810,6 +4846,7 @@ fn gen_header(cg: i64) -> i64 {
     emit_line(cg, "declare void @free(ptr)");
     emit_line(cg, "declare void @intrinsic_println(ptr)");
     emit_line(cg, "declare void @intrinsic_print(ptr)");
+    emit_line(cg, "declare void @\"print_i64\"(i64)");
     emit_line(cg, "declare ptr @intrinsic_int_to_string(i64)");
     emit_line(cg, "declare ptr @intrinsic_string_new(ptr)");
     emit_line(cg, "declare ptr @intrinsic_string_from_char(i64)");
@@ -4893,6 +4930,11 @@ fn gen_header(cg: i64) -> i64 {
     emit_line(cg, "declare i64 @intrinsic_string_compare(ptr, ptr)");
     emit_line(cg, "declare i64 @intrinsic_copy_file(ptr, ptr)");
     emit_line(cg, "declare ptr @intrinsic_get_home_dir()");
+    // CLI/Environment intrinsics
+    emit_line(cg, "declare i64 @cli_getenv(i64)");
+    emit_line(cg, "declare i64 @file_read(i64)");
+    emit_line(cg, "declare void @file_write(i64, i64)");
+    emit_line(cg, "declare i64 @remove_path(i64)");
     // Float parsing
     emit_line(cg, "declare i64 @f64_parse(ptr)");
 
@@ -5125,6 +5167,15 @@ fn gen_header(cg: i64) -> i64 {
     emit_line(cg, "declare void @\"json_object_set\"(i64, i64, i64)");
     emit_line(cg, "declare void @\"json_array_push\"(i64, i64)");
     emit_line(cg, "declare i64 @\"json_string\"(i64)");
+    emit_line(cg, "declare i64 @\"json_string_sx\"(i64)");
+    emit_line(cg, "declare i64 @\"json_array_len\"(i64)");
+    emit_line(cg, "declare i64 @\"json_object_len\"(i64)");
+    emit_line(cg, "declare i64 @\"json_as_i64\"(i64)");
+    emit_line(cg, "declare i64 @\"json_get_index\"(i64, i64)");
+    emit_line(cg, "declare i8 @\"json_is_null\"(i64)");
+    emit_line(cg, "declare i64 @\"json_object_key_at\"(i64, i64)");
+    emit_line(cg, "declare i64 @\"json_object_value_at\"(i64, i64)");
+    emit_line(cg, "declare void @\"json_object_set_sx\"(i64, i64, i64)");
 
     emit_line(cg, "");
     0

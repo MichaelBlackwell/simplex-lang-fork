@@ -6,7 +6,7 @@
 // - struct literals with lookahead disambiguation
 //
 // Copyright (c) 2025-2026 Rod Higgins
-// Licensed under MIT License - see LICENSE file
+// Licensed under AGPL-3.0 - see LICENSE file
 // https://github.com/senuamedia/simplex-lang
 
 // Token types enum - duplicated from lexer.sx for standalone compilation
@@ -1444,15 +1444,20 @@ fn parse_block(parser: i64) -> i64 {
         } else {
         if parser_check(parser, TokenKind::KwBreak) {
             parser_advance(parser);
-            parser_expect(parser, TokenKind::Semi);
+            parser_match(parser, TokenKind::Semi);  // Semicolon optional
             let stmt: i64 = ast_break();
             vec_push(stmts, stmt);
         } else {
         if parser_check(parser, TokenKind::KwContinue) {
             parser_advance(parser);
-            parser_expect(parser, TokenKind::Semi);
+            parser_match(parser, TokenKind::Semi);  // Semicolon optional
             let stmt: i64 = ast_continue();
             vec_push(stmts, stmt);
+        } else {
+        if parser_check(parser, TokenKind::KwUse) {
+            // Use statement inside block (for local imports)
+            let use_item: i64 = parse_use(parser);
+            vec_push(stmts, ast_expr_stmt(use_item));
         } else {
             // Expression - could be statement, assignment, or result
             let expr: i64 = parse_expr(parser);
@@ -1493,6 +1498,7 @@ fn parse_block(parser: i64) -> i64 {
         }
         }
         }
+        }
     }
 
     ast_block(stmts, result)
@@ -1514,7 +1520,8 @@ fn parse_var(parser: i64) -> i64 {
         init_expr = parse_expr(parser);
     }
 
-    parser_expect(parser, TokenKind::Semi);
+    // Semicolon is optional
+    parser_match(parser, TokenKind::Semi);
     ast_let(name, ty, init_expr)
 }
 
@@ -1626,7 +1633,8 @@ fn parse_let(parser: i64) -> i64 {
         init_expr = parse_expr(parser);
     }
 
-    parser_expect(parser, TokenKind::Semi);
+    // Semicolon is optional (allows more concise single-line syntax)
+    parser_match(parser, TokenKind::Semi);
     ast_let(name, ty, init_expr)
 }
 
@@ -1635,13 +1643,20 @@ fn parse_return(parser: i64) -> i64 {
     parser_expect(parser, TokenKind::KwReturn);
     let expr: i64 = 0;
 
+    // Check if there's an expression to return
+    // Return without value if we see semicolon, closing brace, or end
     if parser_check(parser, TokenKind::Semi) {
         // return;
     } else {
-        expr = parse_expr(parser);
+        if parser_check(parser, TokenKind::RBrace) {
+            // return } - no value
+        } else {
+            expr = parse_expr(parser);
+        }
     }
 
-    parser_expect(parser, TokenKind::Semi);
+    // Semicolon is optional
+    parser_match(parser, TokenKind::Semi);
     ast_return(expr)
 }
 
@@ -1718,9 +1733,33 @@ fn parse_params(parser: i64) -> i64 {
         return params;
     }
 
-    // First param - accept either Ident or 'self' keyword
+    // First param - accept Ident, 'self', '&self', or '&mut self'
     let name: i64 = 0;
     let ty: i64 = 0;
+    if parser_check(parser, TokenKind::Amp) {
+        // &self or &mut self
+        parser_advance(parser);  // consume &
+        // Check for 'mut' identifier before self
+        if parser_check(parser, TokenKind::Ident) {
+            let tok: i64 = parser_current(parser);
+            if string_eq(token_text(tok), "mut") {
+                parser_advance(parser);  // consume mut
+                parser_expect(parser, TokenKind::KwSelf);
+                name = string_from("self");
+                ty = string_from("&mut Self");
+            } else {
+                // Not mut, should not happen in normal code
+                // Try to recover
+                parser_expect(parser, TokenKind::KwSelf);
+                name = string_from("self");
+                ty = string_from("&Self");
+            }
+        } else {
+            parser_expect(parser, TokenKind::KwSelf);
+            name = string_from("self");
+            ty = string_from("&Self");
+        }
+    } else {
     if parser_check(parser, TokenKind::KwSelf) {
         parser_advance(parser);
         name = string_from("self");
@@ -1738,13 +1777,36 @@ fn parse_params(parser: i64) -> i64 {
         parser_expect(parser, TokenKind::Colon);
         ty = parse_type(parser);
     }
+    }
     vec_push(params, ast_param(name, ty));
 
     // More params
     while parser_match(parser, TokenKind::Comma) {
         let pname: i64 = 0;
         let pty: i64 = 0;
-        if parser_check(parser, TokenKind::KwSelf) {
+        if parser_check(parser, TokenKind::Amp) {
+            // &self or &mut self
+            parser_advance(parser);  // consume &
+            // Check for 'mut' identifier before self
+            if parser_check(parser, TokenKind::Ident) {
+                let tok: i64 = parser_current(parser);
+                if string_eq(token_text(tok), "mut") {
+                    parser_advance(parser);  // consume mut
+                    parser_expect(parser, TokenKind::KwSelf);
+                    pname = string_from("self");
+                    pty = string_from("&mut Self");
+                } else {
+                    // Not mut, should not happen in normal code
+                    parser_expect(parser, TokenKind::KwSelf);
+                    pname = string_from("self");
+                    pty = string_from("&Self");
+                }
+            } else {
+                parser_expect(parser, TokenKind::KwSelf);
+                pname = string_from("self");
+                pty = string_from("&Self");
+            }
+        } else if parser_check(parser, TokenKind::KwSelf) {
             parser_advance(parser);
             pname = string_from("self");
             if parser_check(parser, TokenKind::Colon) {
