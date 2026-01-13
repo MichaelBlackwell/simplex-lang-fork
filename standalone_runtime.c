@@ -2,7 +2,7 @@
 // Minimal C runtime for bootstrap compiler - self-contained with no external dependencies
 //
 // Copyright (c) 2025-2026 Rod Higgins
-// Licensed under MIT License - see LICENSE file
+// Licensed under AGPL-3.0 - see LICENSE file
 // https://github.com/senuamedia/simplex
 
 #include <stdio.h>
@@ -6196,6 +6196,12 @@ void intrinsic_print(SxString* str) {
         printf("%s", str->data);
         fflush(stdout);
     }
+}
+
+// Print an integer (convenience function)
+void print_i64(int64_t n) {
+    printf("%lld", (long long)n);
+    fflush(stdout);
 }
 
 // Check if stdin has data (non-blocking check)
@@ -14250,6 +14256,27 @@ int64_t cli_setenv(int64_t name_ptr, int64_t value_ptr) {
     if (!name || !name->data || !value || !value->data) return -1;
 
     return setenv(name->data, value->data, 1);
+}
+
+// Read file contents (wrapper for intrinsic_read_file with i64 signature)
+int64_t file_read(int64_t path_ptr) {
+    SxString* path = (SxString*)path_ptr;
+    SxString* result = intrinsic_read_file(path);
+    return (int64_t)result;
+}
+
+// Write file contents (wrapper for intrinsic_write_file with i64 signature)
+void file_write(int64_t path_ptr, int64_t content_ptr) {
+    SxString* path = (SxString*)path_ptr;
+    SxString* content = (SxString*)content_ptr;
+    intrinsic_write_file(path, content);
+}
+
+// Remove path (file or directory)
+int64_t remove_path(int64_t path_ptr) {
+    SxString* path = (SxString*)path_ptr;
+    if (!path || !path->data) return -1;
+    return remove(path->data);
 }
 
 // Get current working directory
