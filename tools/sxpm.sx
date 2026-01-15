@@ -111,108 +111,15 @@ fn template_test_sx(name: i64) -> i64 {
 }
 
 // ============================================================================
-// Cross-Platform Support
+// Cross-Platform Support (from tools/platform.sx)
 // ============================================================================
-
-/// Detect the operating system
-/// Returns: "windows", "linux", or "macos"
-fn get_os_name() -> i64 {
-    // Check for Windows via WINDIR environment variable
-    let windir: i64 = cli_getenv("WINDIR");
-    if windir != 0 {
-        if string_len(windir) > 0 {
-            return "windows";
-        }
-    }
-    // Check for macOS via OSTYPE or uname
-    let ostype: i64 = cli_getenv("OSTYPE");
-    if ostype != 0 {
-        if string_starts_with(ostype, "darwin") {
-            return "macos";
-        }
-    }
-    // Default to linux (covers most Unix-like systems)
-    "linux"
-}
-
-/// Get the path separator for the current platform
-/// Returns "/" for Unix or "\" for Windows
-fn get_path_separator() -> i64 {
-    let os: i64 = get_os_name();
-    if string_eq(os, "windows") {
-        return "\\";
-    }
-    "/"
-}
-
-/// Get the path separator character code for the current platform
-/// Returns 47 ('/') for Unix or 92 ('\') for Windows
-fn get_path_separator_char() -> i64 {
-    let os: i64 = get_os_name();
-    if string_eq(os, "windows") {
-        return 92;  // '\'
-    }
-    47  // '/'
-}
-
-/// Get the user's home directory
-fn get_home_dir() -> i64 {
-    let os: i64 = get_os_name();
-    if string_eq(os, "windows") {
-        let userprofile: i64 = cli_getenv("USERPROFILE");
-        if userprofile != 0 && string_len(userprofile) > 0 {
-            return userprofile;
-        }
-        // Fallback to HOMEDRIVE + HOMEPATH
-        let homedrive: i64 = cli_getenv("HOMEDRIVE");
-        let homepath: i64 = cli_getenv("HOMEPATH");
-        if homedrive != 0 && homepath != 0 {
-            return string_concat(homedrive, homepath);
-        }
-        return "C:\\Users\\Default";
-    }
-    // Unix: use HOME
-    let home: i64 = cli_getenv("HOME");
-    if home != 0 && string_len(home) > 0 {
-        return home;
-    }
-    "/tmp"
-}
-
-/// Get the command to delete a directory recursively
-fn get_rmdir_command(path: i64) -> i64 {
-    let os: i64 = get_os_name();
-    if string_eq(os, "windows") {
-        return string_concat("rmdir /s /q ", path);
-    }
-    string_concat("rm -rf ", path)
-}
-
-/// Get the command to delete a single file
-fn get_rm_command(path: i64) -> i64 {
-    let os: i64 = get_os_name();
-    if string_eq(os, "windows") {
-        return string_concat("del /q ", path);
-    }
-    string_concat("rm -f ", path)
-}
+// NOTE: get_os_name(), get_path_separator(), get_path_separator_char(),
+// get_home_dir(), get_rmdir_command(), get_rm_command(), and path_join()
+// are in tools/platform.sx. Include that file when compiling.
 
 // ============================================================================
 // File System Helpers
 // ============================================================================
-
-fn path_join(dir: i64, name: i64) -> i64 {
-    let sb: i64 = sb_new();
-    sb_append(sb, dir);
-    let sep_char: i64 = get_path_separator_char();
-    if string_char_at(dir, string_len(dir) - 1) != sep_char {
-        sb_append_char(sb, sep_char);
-    }
-    sb_append(sb, name);
-    let result: i64 = sb_to_string(sb);
-    sb_free(sb);
-    result
-}
 
 fn mkdir_p(path: i64) -> i64 {
     // Use mkdir intrinsic (calls intrinsic_mkdir_p which handles -p behavior)
