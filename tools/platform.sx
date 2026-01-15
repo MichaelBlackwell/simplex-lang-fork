@@ -1,0 +1,207 @@
+// tools/platform.sx - Cross-platform utilities
+// Shared module for platform detection and path handling
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under MIT License - see LICENSE file
+
+// ============================================================================
+// Platform Detection
+// ============================================================================
+
+/// Detect the operating system
+/// Returns: "windows", "linux", or "macos"
+fn get_os_name() -> i64 {
+    // Check for Windows via WINDIR environment variable
+    let windir: i64 = cli_getenv("WINDIR");
+    if windir != 0 {
+        if string_len(windir) > 0 {
+            return "windows";
+        }
+    }
+    // Check for macOS via OSTYPE
+    let ostype: i64 = cli_getenv("OSTYPE");
+    if ostype != 0 {
+        if string_starts_with(ostype, "darwin") {
+            return "macos";
+        }
+    }
+    // File-based fallback for reliable detection
+    if file_exists("/proc/version") != 0 {
+        return "linux";
+    }
+    if file_exists("/System/Library") != 0 {
+        return "macos";
+    }
+    // Default to linux for other Unix-like systems
+    "linux"
+}
+
+/// Get default target triple for current platform
+fn get_default_target() -> i64 {
+    let os: i64 = get_os_name();
+
+    // Detect architecture (simplified - assumes x86_64)
+    let arch: i64 = "x86_64";
+
+    if string_eq(os, "windows") {
+        return string_concat(arch, "-pc-windows-msvc");
+    }
+    if string_eq(os, "macos") {
+        return string_concat(arch, "-apple-darwin");
+    }
+    if string_eq(os, "linux") {
+        return string_concat(arch, "-unknown-linux-gnu");
+    }
+
+    // Unknown - return generic
+    string_concat(arch, "-unknown-unknown")
+}
+
+// ============================================================================
+// Path Utilities
+// ============================================================================
+
+/// Get the path separator for the current platform
+/// Returns "/" for Unix or "\" for Windows
+fn get_path_separator() -> i64 {
+    let os: i64 = get_os_name();
+    if string_eq(os, "windows") {
+        return "\\";
+    }
+    "/"
+}
+
+/// Get the path separator character code for the current platform
+/// Returns 47 ('/') for Unix or 92 ('\') for Windows
+fn get_path_separator_char() -> i64 {
+    let os: i64 = get_os_name();
+    if string_eq(os, "windows") {
+        return 92;  // '\'
+    }
+    47  // '/'
+}
+
+/// Check if a character is a path separator (handles both / and \)
+fn is_path_separator(c: i64) -> i64 {
+    if c == 47 { return 1; }  // '/'
+    if c == 92 { return 1; }  // '\'
+    0
+}
+
+/// Join two path components with platform-appropriate separator
+fn path_join(dir: i64, name: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, dir);
+    let sep_char: i64 = get_path_separator_char();
+    if string_char_at(dir, string_len(dir) - 1) != sep_char {
+        sb_append_char(sb, sep_char);
+    }
+    sb_append(sb, name);
+    let result: i64 = sb_to_string(sb);
+    sb_free(sb);
+    result
+}
+
+// ============================================================================
+// Directory Utilities
+// ============================================================================
+
+/// Get platform-appropriate temporary directory
+fn get_temp_dir() -> i64 {
+    let os: i64 = get_os_name();
+
+    if string_eq(os, "windows") {
+        // Windows: use TEMP or TMP environment variable
+        let temp: i64 = cli_getenv("TEMP");
+        if temp != 0 {
+            if string_len(temp) > 0 {
+                return temp;
+            }
+        }
+        let tmp: i64 = cli_getenv("TMP");
+        if tmp != 0 {
+            if string_len(tmp) > 0 {
+                return tmp;
+            }
+        }
+        // Fallback to C:\Temp
+        return "C:\\Temp";
+    }
+
+    // Unix-like (Linux, macOS): use TMPDIR or /tmp
+    let tmpdir: i64 = cli_getenv("TMPDIR");
+    if tmpdir != 0 {
+        if string_len(tmpdir) > 0 {
+            return tmpdir;
+        }
+    }
+
+    "/tmp"
+}
+
+/// Get the user's home directory
+fn get_home_dir() -> i64 {
+    let os: i64 = get_os_name();
+    if string_eq(os, "windows") {
+        let userprofile: i64 = cli_getenv("USERPROFILE");
+        if userprofile != 0 && string_len(userprofile) > 0 {
+            return userprofile;
+        }
+        // Fallback to HOMEDRIVE + HOMEPATH
+        let homedrive: i64 = cli_getenv("HOMEDRIVE");
+        let homepath: i64 = cli_getenv("HOMEPATH");
+        if homedrive != 0 && homepath != 0 {
+            return string_concat(homedrive, homepath);
+        }
+        return "C:\\Users\\Default";
+    }
+    // Unix: use HOME
+    let home: i64 = cli_getenv("HOME");
+    if home != 0 && string_len(home) > 0 {
+        return home;
+    }
+    "/tmp"
+}
+
+// ============================================================================
+// Executable Utilities
+// ============================================================================
+
+/// Get platform-appropriate executable extension
+fn get_exe_extension() -> i64 {
+    let os: i64 = get_os_name();
+    if string_eq(os, "windows") {
+        return ".exe";
+    }
+    ""
+}
+
+/// Build platform-appropriate temp file path
+fn get_temp_file(name: i64) -> i64 {
+    let temp_dir: i64 = get_temp_dir();
+    let sep: i64 = get_path_separator();
+    let ext: i64 = get_exe_extension();
+    string_concat(temp_dir, string_concat(sep, string_concat(name, ext)))
+}
+
+// ============================================================================
+// Shell Command Utilities
+// ============================================================================
+
+/// Get the command to delete a directory recursively
+fn get_rmdir_command(path: i64) -> i64 {
+    let os: i64 = get_os_name();
+    if string_eq(os, "windows") {
+        return string_concat("rmdir /s /q ", path);
+    }
+    string_concat("rm -rf ", path)
+}
+
+/// Get the command to delete a single file
+fn get_rm_command(path: i64) -> i64 {
+    let os: i64 = get_os_name();
+    if string_eq(os, "windows") {
+        return string_concat("del /q ", path);
+    }
+    string_concat("rm -f ", path)
+}
