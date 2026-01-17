@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>neural - Simplex API Reference</title>
+  <meta name="description" content="API documentation for the Simplex programming language">
+  <link rel="stylesheet" href="../assets/docs.css">
+  <script src="../assets/nav.js" defer></script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "neural - Simplex API Reference",
+  "description": "API documentation for the Simplex programming language",
+  "programmingLanguage": {
+    "@type": "ComputerLanguage",
+    "name": "Simplex",
+    "url": "https://github.com/senuamedia/simplex"
+  },
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "Simplex Documentation",
+    "url": "https://simplex.senuamedia.com/api/"
+  },
+  "articleSection": "nexus"
+}
+</script>
+</head>
+<body>
+<div class="doc-wrapper">
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-header"><a href="../index.html">Simplex API</a></div>
+    <div class="search-box">
+      <input type="text" id="search" placeholder="Search...">
+    </div>
+    <div id="nav-content">Loading...</div>
+  </nav>
+  <main class="content">
+    <nav class="breadcrumb">
+      <a href="../index.html">API Reference</a> &raquo;       <span class="current-category">nexus</span> &raquo; neural
+    </nav>
+    <h1>Module: neural</h1>
+<div class="toc">
+<strong>Contents</strong>
+<ul>
+<li><a href="#codebook_ref_new">fn codebook_ref_new</a></li>
+<li><a href="#codebook_ref_codebook_id">fn codebook_ref_codebook_id</a></li>
+<li><a href="#codebook_ref_entry_index">fn codebook_ref_entry_index</a></li>
+<li><a href="#codebook_ref_version">fn codebook_ref_version</a></li>
+<li><a href="#codebook_ref_encode">fn codebook_ref_encode</a></li>
+<li><a href="#codebook_ref_decode">fn codebook_ref_decode</a></li>
+<li><a href="#nex_codebook_new">fn nex_codebook_new</a></li>
+<li><a href="#nex_codebook_id">fn nex_codebook_id</a></li>
+<li><a href="#nex_codebook_version">fn nex_codebook_version</a></li>
+<li><a href="#nex_codebook_entries">fn nex_codebook_entries</a></li>
+<li><a href="#nex_codebook_hashes">fn nex_codebook_hashes</a></li>
+<li><a href="#nex_codebook_add_entry">fn nex_codebook_add_entry</a></li>
+<li><a href="#nex_codebook_get_entry">fn nex_codebook_get_entry</a></li>
+<li><a href="#nex_codebook_size">fn nex_codebook_size</a></li>
+<li><a href="#nex_codebook_increment_version">fn nex_codebook_increment_version</a></li>
+<li><a href="#nex_codebook_compute_hash">fn nex_codebook_compute_hash</a></li>
+<li><a href="#nex_codebook_find_by_hash">fn nex_codebook_find_by_hash</a></li>
+<li><a href="#EMB_FLAG_FLOAT32">fn EMB_FLAG_FLOAT32</a></li>
+<li><a href="#EMB_FLAG_INT16">fn EMB_FLAG_INT16</a></li>
+<li><a href="#EMB_FLAG_INT8">fn EMB_FLAG_INT8</a></li>
+<li><a href="#EMB_FLAG_BINARY">fn EMB_FLAG_BINARY</a></li>
+<li><a href="#EMB_FLAG_NORMALIZED">fn EMB_FLAG_NORMALIZED</a></li>
+<li><a href="#neural_emb_new">fn neural_emb_new</a></li>
+<li><a href="#neural_emb_dimensions">fn neural_emb_dimensions</a></li>
+<li><a href="#neural_emb_flags">fn neural_emb_flags</a></li>
+<li><a href="#neural_emb_scale">fn neural_emb_scale</a></li>
+<li><a href="#neural_emb_offset">fn neural_emb_offset</a></li>
+<li><a href="#neural_emb_data">fn neural_emb_data</a></li>
+<li><a href="#neural_emb_set_scale">fn neural_emb_set_scale</a></li>
+<li><a href="#neural_emb_set_data">fn neural_emb_set_data</a></li>
+<li><a href="#neural_emb_set_dim">fn neural_emb_set_dim</a></li>
+<li><a href="#neural_emb_get_dim">fn neural_emb_get_dim</a></li>
+<li><a href="#neural_emb_encode">fn neural_emb_encode</a></li>
+<li><a href="#neural_emb_decode">fn neural_emb_decode</a></li>
+<li><a href="#neural_emb_dot">fn neural_emb_dot</a></li>
+<li><a href="#neural_emb_cosine_similarity">fn neural_emb_cosine_similarity</a></li>
+<li><a href="#nex_int_sqrt">fn nex_int_sqrt</a></li>
+<li><a href="#pattern_inst_new">fn pattern_inst_new</a></li>
+<li><a href="#pattern_inst_pattern_id">fn pattern_inst_pattern_id</a></li>
+<li><a href="#pattern_inst_slot_ids">fn pattern_inst_slot_ids</a></li>
+<li><a href="#pattern_inst_values">fn pattern_inst_values</a></li>
+<li><a href="#pattern_inst_binding_count">fn pattern_inst_binding_count</a></li>
+<li><a href="#pattern_inst_add_binding">fn pattern_inst_add_binding</a></li>
+<li><a href="#pattern_inst_get_binding_slot">fn pattern_inst_get_binding_slot</a></li>
+<li><a href="#pattern_inst_get_binding_value">fn pattern_inst_get_binding_value</a></li>
+<li><a href="#pattern_inst_get_value_by_slot">fn pattern_inst_get_value_by_slot</a></li>
+<li><a href="#pattern_inst_encode">fn pattern_inst_encode</a></li>
+<li><a href="#pattern_inst_decode">fn pattern_inst_decode</a></li>
+<li><a href="#pattern_template_new">fn pattern_template_new</a></li>
+<li><a href="#pattern_template_id">fn pattern_template_id</a></li>
+<li><a href="#pattern_template_name_hash">fn pattern_template_name_hash</a></li>
+<li><a href="#pattern_template_slots">fn pattern_template_slots</a></li>
+<li><a href="#pattern_template_body">fn pattern_template_body</a></li>
+<li><a href="#pattern_template_add_slot">fn pattern_template_add_slot</a></li>
+<li><a href="#pattern_template_set_body">fn pattern_template_set_body</a></li>
+<li><a href="#pattern_template_slot_count">fn pattern_template_slot_count</a></li>
+<li><a href="#pattern_registry_new">fn pattern_registry_new</a></li>
+<li><a href="#pattern_registry_templates">fn pattern_registry_templates</a></li>
+<li><a href="#pattern_registry_lookup">fn pattern_registry_lookup</a></li>
+<li><a href="#pattern_registry_add">fn pattern_registry_add</a></li>
+<li><a href="#pattern_registry_get">fn pattern_registry_get</a></li>
+<li><a href="#pattern_registry_find_by_hash">fn pattern_registry_find_by_hash</a></li>
+<li><a href="#neural_cache_new">fn neural_cache_new</a></li>
+<li><a href="#neural_cache_max_size">fn neural_cache_max_size</a></li>
+<li><a href="#neural_cache_keys">fn neural_cache_keys</a></li>
+<li><a href="#neural_cache_values">fn neural_cache_values</a></li>
+<li><a href="#neural_cache_access_counts">fn neural_cache_access_counts</a></li>
+<li><a href="#neural_cache_size">fn neural_cache_size</a></li>
+<li><a href="#neural_cache_put">fn neural_cache_put</a></li>
+<li><a href="#neural_cache_get">fn neural_cache_get</a></li>
+<li><a href="#neural_cache_contains">fn neural_cache_contains</a></li>
+<li><a href="#neural_cache_clear">fn neural_cache_clear</a></li>
+<li><a href="#codebook_ref_print">fn codebook_ref_print</a></li>
+<li><a href="#neural_emb_print">fn neural_emb_print</a></li>
+<li><a href="#pattern_inst_print">fn pattern_inst_print</a></li>
+</ul>
+</div>
+<h2 id="codebook_ref_new">fn codebook_ref_new</h2>
+<pre class="signature">fn codebook_ref_new(codebook_id: i64, entry_index: i64, version: i64) -&gt; i64 {</pre>
+<h2 id="codebook_ref_codebook_id">fn codebook_ref_codebook_id</h2>
+<pre class="signature">fn codebook_ref_codebook_id(ref: i64) -&gt; i64 { vec_get(ref, 0) }</pre>
+<h2 id="codebook_ref_entry_index">fn codebook_ref_entry_index</h2>
+<pre class="signature">fn codebook_ref_entry_index(ref: i64) -&gt; i64 { vec_get(ref, 1) }</pre>
+<h2 id="codebook_ref_version">fn codebook_ref_version</h2>
+<pre class="signature">fn codebook_ref_version(ref: i64) -&gt; i64 { vec_get(ref, 2) }</pre>
+<h2 id="codebook_ref_encode">fn codebook_ref_encode</h2>
+<pre class="signature">fn codebook_ref_encode(ref: i64) -&gt; i64 {</pre>
+<h2 id="codebook_ref_decode">fn codebook_ref_decode</h2>
+<pre class="signature">fn codebook_ref_decode(bytes: i64, offset: i64) -&gt; i64 {</pre>
+<h2 id="nex_codebook_new">fn nex_codebook_new</h2>
+<pre class="signature">fn nex_codebook_new(codebook_id: i64) -&gt; i64 {</pre>
+<h2 id="nex_codebook_id">fn nex_codebook_id</h2>
+<pre class="signature">fn nex_codebook_id(cb: i64) -&gt; i64 { vec_get(cb, 0) }</pre>
+<h2 id="nex_codebook_version">fn nex_codebook_version</h2>
+<pre class="signature">fn nex_codebook_version(cb: i64) -&gt; i64 { vec_get(cb, 1) }</pre>
+<h2 id="nex_codebook_entries">fn nex_codebook_entries</h2>
+<pre class="signature">fn nex_codebook_entries(cb: i64) -&gt; i64 { vec_get(cb, 2) }</pre>
+<h2 id="nex_codebook_hashes">fn nex_codebook_hashes</h2>
+<pre class="signature">fn nex_codebook_hashes(cb: i64) -&gt; i64 { vec_get(cb, 3) }</pre>
+<h2 id="nex_codebook_add_entry">fn nex_codebook_add_entry</h2>
+<pre class="signature">fn nex_codebook_add_entry(cb: i64, entry: i64) -&gt; i64 {</pre>
+<h2 id="nex_codebook_get_entry">fn nex_codebook_get_entry</h2>
+<pre class="signature">fn nex_codebook_get_entry(cb: i64, index: i64) -&gt; i64 {</pre>
+<h2 id="nex_codebook_size">fn nex_codebook_size</h2>
+<pre class="signature">fn nex_codebook_size(cb: i64) -&gt; i64 {</pre>
+<h2 id="nex_codebook_increment_version">fn nex_codebook_increment_version</h2>
+<pre class="signature">fn nex_codebook_increment_version(cb: i64) -&gt; i64 {</pre>
+<h2 id="nex_codebook_compute_hash">fn nex_codebook_compute_hash</h2>
+<pre class="signature">fn nex_codebook_compute_hash(entry: i64) -&gt; i64 {</pre>
+<h2 id="nex_codebook_find_by_hash">fn nex_codebook_find_by_hash</h2>
+<pre class="signature">fn nex_codebook_find_by_hash(cb: i64, hash: i64) -&gt; i64 {</pre>
+<h2 id="EMB_FLAG_FLOAT32">fn EMB_FLAG_FLOAT32</h2>
+<pre class="signature">fn EMB_FLAG_FLOAT32() -&gt; i64 { 0 }    // Full precision (4 bytes per dim)</pre>
+<h2 id="EMB_FLAG_INT16">fn EMB_FLAG_INT16</h2>
+<pre class="signature">fn EMB_FLAG_INT16() -&gt; i64 { 1 }      // 16-bit quantized (2 bytes per dim)</pre>
+<h2 id="EMB_FLAG_INT8">fn EMB_FLAG_INT8</h2>
+<pre class="signature">fn EMB_FLAG_INT8() -&gt; i64 { 2 }       // 8-bit quantized (1 byte per dim)</pre>
+<h2 id="EMB_FLAG_BINARY">fn EMB_FLAG_BINARY</h2>
+<pre class="signature">fn EMB_FLAG_BINARY() -&gt; i64 { 3 }     // Binary (1 bit per dim)</pre>
+<h2 id="EMB_FLAG_NORMALIZED">fn EMB_FLAG_NORMALIZED</h2>
+<pre class="signature">fn EMB_FLAG_NORMALIZED() -&gt; i64 { 16 } // Vector is L2-normalized</pre>
+<h2 id="neural_emb_new">fn neural_emb_new</h2>
+<pre class="signature">fn neural_emb_new(dimensions: i64, flags: i64) -&gt; i64 {</pre>
+<h2 id="neural_emb_dimensions">fn neural_emb_dimensions</h2>
+<pre class="signature">fn neural_emb_dimensions(emb: i64) -&gt; i64 { vec_get(emb, 0) }</pre>
+<h2 id="neural_emb_flags">fn neural_emb_flags</h2>
+<pre class="signature">fn neural_emb_flags(emb: i64) -&gt; i64 { vec_get(emb, 1) }</pre>
+<h2 id="neural_emb_scale">fn neural_emb_scale</h2>
+<pre class="signature">fn neural_emb_scale(emb: i64) -&gt; i64 { vec_get(emb, 2) }</pre>
+<h2 id="neural_emb_offset">fn neural_emb_offset</h2>
+<pre class="signature">fn neural_emb_offset(emb: i64) -&gt; i64 { vec_get(emb, 3) }</pre>
+<h2 id="neural_emb_data">fn neural_emb_data</h2>
+<pre class="signature">fn neural_emb_data(emb: i64) -&gt; i64 { vec_get(emb, 4) }</pre>
+<h2 id="neural_emb_set_scale">fn neural_emb_set_scale</h2>
+<pre class="signature">fn neural_emb_set_scale(emb: i64, scale: i64, offset_val: i64) -&gt; i64 {</pre>
+<h2 id="neural_emb_set_data">fn neural_emb_set_data</h2>
+<pre class="signature">fn neural_emb_set_data(emb: i64, data: i64) -&gt; i64 {</pre>
+<h2 id="neural_emb_set_dim">fn neural_emb_set_dim</h2>
+<pre class="signature">fn neural_emb_set_dim(emb: i64, dim: i64, value: i64) -&gt; i64 {</pre>
+<h2 id="neural_emb_get_dim">fn neural_emb_get_dim</h2>
+<pre class="signature">fn neural_emb_get_dim(emb: i64, dim: i64) -&gt; i64 {</pre>
+<h2 id="neural_emb_encode">fn neural_emb_encode</h2>
+<pre class="signature">fn neural_emb_encode(emb: i64) -&gt; i64 {</pre>
+<h2 id="neural_emb_decode">fn neural_emb_decode</h2>
+<pre class="signature">fn neural_emb_decode(bytes: i64, offset: i64) -&gt; i64 {</pre>
+<h2 id="neural_emb_dot">fn neural_emb_dot</h2>
+<pre class="signature">fn neural_emb_dot(a: i64, b: i64) -&gt; i64 {</pre>
+<h2 id="neural_emb_cosine_similarity">fn neural_emb_cosine_similarity</h2>
+<pre class="signature">fn neural_emb_cosine_similarity(a: i64, b: i64) -&gt; i64 {</pre>
+<h2 id="nex_int_sqrt">fn nex_int_sqrt</h2>
+<pre class="signature">fn nex_int_sqrt(n: i64) -&gt; i64 {</pre>
+<h2 id="pattern_inst_new">fn pattern_inst_new</h2>
+<pre class="signature">fn pattern_inst_new(pattern_id: i64) -&gt; i64 {</pre>
+<h2 id="pattern_inst_pattern_id">fn pattern_inst_pattern_id</h2>
+<pre class="signature">fn pattern_inst_pattern_id(inst: i64) -&gt; i64 { vec_get(inst, 0) }</pre>
+<h2 id="pattern_inst_slot_ids">fn pattern_inst_slot_ids</h2>
+<pre class="signature">fn pattern_inst_slot_ids(inst: i64) -&gt; i64 { vec_get(inst, 1) }</pre>
+<h2 id="pattern_inst_values">fn pattern_inst_values</h2>
+<pre class="signature">fn pattern_inst_values(inst: i64) -&gt; i64 { vec_get(inst, 2) }</pre>
+<h2 id="pattern_inst_binding_count">fn pattern_inst_binding_count</h2>
+<pre class="signature">fn pattern_inst_binding_count(inst: i64) -&gt; i64 {</pre>
+<h2 id="pattern_inst_add_binding">fn pattern_inst_add_binding</h2>
+<pre class="signature">fn pattern_inst_add_binding(inst: i64, slot_id: i64, value: i64) -&gt; i64 {</pre>
+<h2 id="pattern_inst_get_binding_slot">fn pattern_inst_get_binding_slot</h2>
+<pre class="signature">fn pattern_inst_get_binding_slot(inst: i64, index: i64) -&gt; i64 {</pre>
+<h2 id="pattern_inst_get_binding_value">fn pattern_inst_get_binding_value</h2>
+<pre class="signature">fn pattern_inst_get_binding_value(inst: i64, index: i64) -&gt; i64 {</pre>
+<h2 id="pattern_inst_get_value_by_slot">fn pattern_inst_get_value_by_slot</h2>
+<pre class="signature">fn pattern_inst_get_value_by_slot(inst: i64, slot_id: i64) -&gt; i64 {</pre>
+<h2 id="pattern_inst_encode">fn pattern_inst_encode</h2>
+<pre class="signature">fn pattern_inst_encode(inst: i64) -&gt; i64 {</pre>
+<h2 id="pattern_inst_decode">fn pattern_inst_decode</h2>
+<pre class="signature">fn pattern_inst_decode(bytes: i64, offset: i64) -&gt; i64 {</pre>
+<h2 id="pattern_template_new">fn pattern_template_new</h2>
+<pre class="signature">fn pattern_template_new(pattern_id: i64, name_hash: i64) -&gt; i64 {</pre>
+<h2 id="pattern_template_id">fn pattern_template_id</h2>
+<pre class="signature">fn pattern_template_id(tmpl: i64) -&gt; i64 { vec_get(tmpl, 0) }</pre>
+<h2 id="pattern_template_name_hash">fn pattern_template_name_hash</h2>
+<pre class="signature">fn pattern_template_name_hash(tmpl: i64) -&gt; i64 { vec_get(tmpl, 1) }</pre>
+<h2 id="pattern_template_slots">fn pattern_template_slots</h2>
+<pre class="signature">fn pattern_template_slots(tmpl: i64) -&gt; i64 { vec_get(tmpl, 2) }</pre>
+<h2 id="pattern_template_body">fn pattern_template_body</h2>
+<pre class="signature">fn pattern_template_body(tmpl: i64) -&gt; i64 { vec_get(tmpl, 3) }</pre>
+<h2 id="pattern_template_add_slot">fn pattern_template_add_slot</h2>
+<pre class="signature">fn pattern_template_add_slot(tmpl: i64, slot_id: i64, slot_type: i64) -&gt; i64 {</pre>
+<h2 id="pattern_template_set_body">fn pattern_template_set_body</h2>
+<pre class="signature">fn pattern_template_set_body(tmpl: i64, body: i64) -&gt; i64 {</pre>
+<h2 id="pattern_template_slot_count">fn pattern_template_slot_count</h2>
+<pre class="signature">fn pattern_template_slot_count(tmpl: i64) -&gt; i64 {</pre>
+<h2 id="pattern_registry_new">fn pattern_registry_new</h2>
+<pre class="signature">fn pattern_registry_new() -&gt; i64 {</pre>
+<h2 id="pattern_registry_templates">fn pattern_registry_templates</h2>
+<pre class="signature">fn pattern_registry_templates(reg: i64) -&gt; i64 { vec_get(reg, 0) }</pre>
+<h2 id="pattern_registry_lookup">fn pattern_registry_lookup</h2>
+<pre class="signature">fn pattern_registry_lookup(reg: i64) -&gt; i64 { vec_get(reg, 1) }</pre>
+<h2 id="pattern_registry_add">fn pattern_registry_add</h2>
+<pre class="signature">fn pattern_registry_add(reg: i64, tmpl: i64) -&gt; i64 {</pre>
+<h2 id="pattern_registry_get">fn pattern_registry_get</h2>
+<pre class="signature">fn pattern_registry_get(reg: i64, pattern_id: i64) -&gt; i64 {</pre>
+<h2 id="pattern_registry_find_by_hash">fn pattern_registry_find_by_hash</h2>
+<pre class="signature">fn pattern_registry_find_by_hash(reg: i64, hash: i64) -&gt; i64 {</pre>
+<h2 id="neural_cache_new">fn neural_cache_new</h2>
+<pre class="signature">fn neural_cache_new(max_size: i64) -&gt; i64 {</pre>
+<h2 id="neural_cache_max_size">fn neural_cache_max_size</h2>
+<pre class="signature">fn neural_cache_max_size(cache: i64) -&gt; i64 { vec_get(cache, 0) }</pre>
+<h2 id="neural_cache_keys">fn neural_cache_keys</h2>
+<pre class="signature">fn neural_cache_keys(cache: i64) -&gt; i64 { vec_get(cache, 1) }</pre>
+<h2 id="neural_cache_values">fn neural_cache_values</h2>
+<pre class="signature">fn neural_cache_values(cache: i64) -&gt; i64 { vec_get(cache, 2) }</pre>
+<h2 id="neural_cache_access_counts">fn neural_cache_access_counts</h2>
+<pre class="signature">fn neural_cache_access_counts(cache: i64) -&gt; i64 { vec_get(cache, 3) }</pre>
+<h2 id="neural_cache_size">fn neural_cache_size</h2>
+<pre class="signature">fn neural_cache_size(cache: i64) -&gt; i64 {</pre>
+<h2 id="neural_cache_put">fn neural_cache_put</h2>
+<pre class="signature">fn neural_cache_put(cache: i64, key: i64, embedding: i64) -&gt; i64 {</pre>
+<h2 id="neural_cache_get">fn neural_cache_get</h2>
+<pre class="signature">fn neural_cache_get(cache: i64, key: i64) -&gt; i64 {</pre>
+<h2 id="neural_cache_contains">fn neural_cache_contains</h2>
+<pre class="signature">fn neural_cache_contains(cache: i64, key: i64) -&gt; i64 {</pre>
+<h2 id="neural_cache_clear">fn neural_cache_clear</h2>
+<pre class="signature">fn neural_cache_clear(cache: i64) -&gt; i64 {</pre>
+<h2 id="codebook_ref_print">fn codebook_ref_print</h2>
+<pre class="signature">fn codebook_ref_print(ref: i64) -&gt; i64 {</pre>
+<h2 id="neural_emb_print">fn neural_emb_print</h2>
+<pre class="signature">fn neural_emb_print(emb: i64) -&gt; i64 {</pre>
+<h2 id="pattern_inst_print">fn pattern_inst_print</h2>
+<pre class="signature">fn pattern_inst_print(inst: i64) -&gt; i64 {</pre>
+
+    <hr>
+    <p><em>Generated by sxdoc</em></p>
+  </main>
+</div>
+</body>
+</html>

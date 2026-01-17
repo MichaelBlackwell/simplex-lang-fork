@@ -5,7 +5,7 @@
 // Licensed under AGPL-3.0 - see LICENSE file
 // https://github.com/senuamedia/simplex
 
-fn VERSION() -> i64 { string_from("0.9.5") }
+fn VERSION() -> i64 { string_from("0.9.9") }
 
 fn show_help() -> i64 {
     println("sxdoc - Simplex Documentation Generator");
@@ -17,8 +17,14 @@ fn show_help() -> i64 {
     println("    --html          Generate HTML output (default)");
     println("    --markdown      Generate Markdown output");
     println("    -o <dir>        Output directory (default: ./docs)");
+    println("    --category <c>  Set module category for navigation");
+    println("    --manifest      Generate manifest.json for tooling");
     println("    -h, --help      Show this help");
     println("    --version       Show version");
+    println("");
+    println("EXAMPLES:");
+    println("    sxdoc --category std -o docs/std lib/*.sx");
+    println("    sxdoc --manifest --category json -o docs/json json/lib.sx");
     0
 }
 
@@ -379,32 +385,63 @@ fn extract_trait_doc(line: i64, doc_comment: i64, lines: i64, start_line: i64) -
 // ========================================
 
 // Generate HTML documentation
-fn generate_html(docs: i64, module_name: i64) -> i64 {
+fn generate_html(docs: i64, module_name: i64, category: i64) -> i64 {
     let sb: i64 = sb_new();
+
+    // Get module description from first doc item
+    let description: i64 = string_from("API documentation for the Simplex programming language");
+    if vec_len(docs) > 0 {
+        let first_doc: i64 = doc_item_doc(vec_get(docs, 0));
+        if string_len(first_doc) > 0 {
+            description = first_doc;
+        }
+    }
 
     // HTML header
     sb_append(sb, string_from("<!DOCTYPE html>\n"));
-    sb_append(sb, string_from("<html>\n<head>\n"));
+    sb_append(sb, string_from("<html lang=\"en\">\n<head>\n"));
     sb_append(sb, string_from("  <meta charset=\"utf-8\">\n"));
+    sb_append(sb, string_from("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"));
     sb_append(sb, string_from("  <title>"));
     sb_append(sb, module_name);
-    sb_append(sb, string_from(" - Simplex Documentation</title>\n"));
-    sb_append(sb, string_from("  <style>\n"));
-    sb_append(sb, string_from("    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; }\n"));
-    sb_append(sb, string_from("    h1 { color: #333; border-bottom: 2px solid #5c6bc0; padding-bottom: 10px; }\n"));
-    sb_append(sb, string_from("    h2 { color: #5c6bc0; margin-top: 30px; }\n"));
-    sb_append(sb, string_from("    h3 { color: #666; }\n"));
-    sb_append(sb, string_from("    .signature { background: #f5f5f5; padding: 10px; border-radius: 4px; font-family: 'Consolas', monospace; overflow-x: auto; }\n"));
-    sb_append(sb, string_from("    .doc { color: #444; margin: 10px 0; }\n"));
-    sb_append(sb, string_from("    .field { margin-left: 20px; color: #666; }\n"));
-    sb_append(sb, string_from("    .toc { background: #f9f9f9; padding: 15px; border-radius: 4px; margin-bottom: 30px; }\n"));
-    sb_append(sb, string_from("    .toc a { color: #5c6bc0; text-decoration: none; }\n"));
-    sb_append(sb, string_from("    .toc a:hover { text-decoration: underline; }\n"));
-    sb_append(sb, string_from("  </style>\n"));
+    sb_append(sb, string_from(" - Simplex API Reference</title>\n"));
+    sb_append(sb, string_from("  <meta name=\"description\" content=\""));
+    sb_append(sb, html_escape(description));
+    sb_append(sb, string_from("\">\n"));
+    sb_append(sb, string_from("  <link rel=\"stylesheet\" href=\"../assets/docs.css\">\n"));
+    sb_append(sb, string_from("  <script src=\"../assets/nav.js\" defer></script>\n"));
+
+    // Add JSON-LD structured data
+    sb_append(sb, generate_jsonld(module_name, category, description));
+
     sb_append(sb, string_from("</head>\n<body>\n"));
 
+    // Wrapper with sidebar
+    sb_append(sb, string_from("<div class=\"doc-wrapper\">\n"));
+
+    // Sidebar (populated by nav.js)
+    sb_append(sb, string_from("  <nav class=\"sidebar\" id=\"sidebar\">\n"));
+    sb_append(sb, string_from("    <div class=\"sidebar-header\"><a href=\"../index.html\">Simplex API</a></div>\n"));
+    sb_append(sb, string_from("    <div class=\"search-box\">\n"));
+    sb_append(sb, string_from("      <input type=\"text\" id=\"search\" placeholder=\"Search...\">\n"));
+    sb_append(sb, string_from("    </div>\n"));
+    sb_append(sb, string_from("    <div id=\"nav-content\">Loading...</div>\n"));
+    sb_append(sb, string_from("  </nav>\n"));
+
+    // Main content
+    sb_append(sb, string_from("  <main class=\"content\">\n"));
+
+    // Breadcrumb navigation
+    sb_append(sb, string_from("    <nav class=\"breadcrumb\">\n"));
+    sb_append(sb, string_from("      <a href=\"../index.html\">API Reference</a> &raquo; "));
+    sb_append(sb, string_from("      <span class=\"current-category\">"));
+    sb_append(sb, category);
+    sb_append(sb, string_from("</span> &raquo; "));
+    sb_append(sb, module_name);
+    sb_append(sb, string_from("\n    </nav>\n"));
+
     // Title
-    sb_append(sb, string_from("<h1>Module: "));
+    sb_append(sb, string_from("    <h1>Module: "));
     sb_append(sb, module_name);
     sb_append(sb, string_from("</h1>\n"));
 
@@ -439,7 +476,9 @@ fn generate_html(docs: i64, module_name: i64) -> i64 {
     }
 
     // Footer
-    sb_append(sb, string_from("\n<hr>\n<p><em>Generated by sxdoc</em></p>\n"));
+    sb_append(sb, string_from("\n    <hr>\n    <p><em>Generated by sxdoc</em></p>\n"));
+    sb_append(sb, string_from("  </main>\n"));  // Close main content
+    sb_append(sb, string_from("</div>\n"));     // Close doc-wrapper
     sb_append(sb, string_from("</body>\n</html>\n"));
 
     sb_to_string(sb)
@@ -517,6 +556,117 @@ fn html_escape(s: i64) -> i64 {
     result = string_replace(result, string_from("<"), string_from("&lt;"));
     result = string_replace(result, string_from(">"), string_from("&gt;"));
     result
+}
+
+fn json_escape(s: i64) -> i64 {
+    let result: i64 = s;
+    result = string_replace(result, string_from("\\"), string_from("\\\\"));
+    result = string_replace(result, string_from("\""), string_from("\\\""));
+    result = string_replace(result, string_from("\n"), string_from("\\n"));
+    result = string_replace(result, string_from("\t"), string_from("\\t"));
+    result
+}
+
+// Generate JSON-LD structured data for SEO and AI
+fn generate_jsonld(module_name: i64, category: i64, description: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, string_from("<script type=\"application/ld+json\">\n"));
+    sb_append(sb, string_from("{\n"));
+    sb_append(sb, string_from("  \"@context\": \"https://schema.org\",\n"));
+    sb_append(sb, string_from("  \"@type\": \"TechArticle\",\n"));
+    sb_append(sb, string_from("  \"headline\": \""));
+    sb_append(sb, json_escape(module_name));
+    sb_append(sb, string_from(" - Simplex API Reference\",\n"));
+    sb_append(sb, string_from("  \"description\": \""));
+    sb_append(sb, json_escape(description));
+    sb_append(sb, string_from("\",\n"));
+    sb_append(sb, string_from("  \"programmingLanguage\": {\n"));
+    sb_append(sb, string_from("    \"@type\": \"ComputerLanguage\",\n"));
+    sb_append(sb, string_from("    \"name\": \"Simplex\",\n"));
+    sb_append(sb, string_from("    \"url\": \"https://github.com/senuamedia/simplex\"\n"));
+    sb_append(sb, string_from("  },\n"));
+    sb_append(sb, string_from("  \"isPartOf\": {\n"));
+    sb_append(sb, string_from("    \"@type\": \"WebSite\",\n"));
+    sb_append(sb, string_from("    \"name\": \"Simplex Documentation\",\n"));
+    sb_append(sb, string_from("    \"url\": \"https://simplex.senuamedia.com/api/\"\n"));
+    sb_append(sb, string_from("  },\n"));
+    sb_append(sb, string_from("  \"articleSection\": \""));
+    sb_append(sb, json_escape(category));
+    sb_append(sb, string_from("\"\n"));
+    sb_append(sb, string_from("}\n"));
+    sb_append(sb, string_from("</script>\n"));
+    sb_to_string(sb)
+}
+
+// Generate manifest JSON for a module
+fn generate_module_manifest(docs: i64, module_name: i64, filename: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, string_from("    {\n"));
+    sb_append(sb, string_from("      \"name\": \""));
+    sb_append(sb, json_escape(module_name));
+    sb_append(sb, string_from("\",\n"));
+    sb_append(sb, string_from("      \"file\": \""));
+    sb_append(sb, json_escape(filename));
+    sb_append(sb, string_from("\",\n"));
+    sb_append(sb, string_from("      \"items\": [\n"));
+
+    let n: i64 = vec_len(docs);
+    let i: i64 = 0;
+    while i < n {
+        let item: i64 = vec_get(docs, i);
+        let kind: i64 = doc_item_kind(item);
+        let name: i64 = doc_item_name(item);
+        let sig: i64 = doc_item_sig(item);
+        let doc: i64 = doc_item_doc(item);
+
+        sb_append(sb, string_from("        {\"kind\": \""));
+        sb_append(sb, get_kind_str(kind));
+        sb_append(sb, string_from("\", \"name\": \""));
+        sb_append(sb, json_escape(name));
+        sb_append(sb, string_from("\""));
+
+        if string_len(sig) > 0 {
+            sb_append(sb, string_from(", \"signature\": \""));
+            sb_append(sb, json_escape(sig));
+            sb_append(sb, string_from("\""));
+        }
+
+        if string_len(doc) > 0 {
+            // Truncate doc for manifest (first 100 chars)
+            let doc_preview: i64 = doc;
+            if string_len(doc) > 100 {
+                doc_preview = string_concat(string_slice(doc, 0, 100), string_from("..."));
+            }
+            sb_append(sb, string_from(", \"doc\": \""));
+            sb_append(sb, json_escape(doc_preview));
+            sb_append(sb, string_from("\""));
+        }
+
+        sb_append(sb, string_from("}"));
+        if i < n - 1 {
+            sb_append(sb, string_from(","));
+        }
+        sb_append(sb, string_from("\n"));
+        i = i + 1;
+    }
+
+    sb_append(sb, string_from("      ]\n"));
+    sb_append(sb, string_from("    }"));
+    sb_to_string(sb)
+}
+
+// Generate category manifest file
+fn generate_category_manifest(category: i64, modules: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, string_from("{\n"));
+    sb_append(sb, string_from("  \"category\": \""));
+    sb_append(sb, json_escape(category));
+    sb_append(sb, string_from("\",\n"));
+    sb_append(sb, string_from("  \"modules\": [\n"));
+    sb_append(sb, modules);
+    sb_append(sb, string_from("\n  ]\n"));
+    sb_append(sb, string_from("}\n"));
+    sb_to_string(sb)
 }
 
 // Generate Markdown documentation
@@ -631,6 +781,8 @@ fn main() -> i64 {
     // Parse arguments
     let output_dir: i64 = string_from("./docs");
     let use_markdown: i64 = 0;
+    let category: i64 = string_from("api");
+    let gen_manifest: i64 = 0;
     let files: i64 = vec_new();
     let i: i64 = 1;
 
@@ -656,6 +808,10 @@ fn main() -> i64 {
             use_markdown = 1;
             i = i + 1;
         } else {
+        if string_eq(arg, string_from("--manifest")) {
+            gen_manifest = 1;
+            i = i + 1;
+        } else {
         if string_eq(arg, string_from("-o")) {
             if i + 1 < argc {
                 i = i + 1;
@@ -663,8 +819,17 @@ fn main() -> i64 {
             }
             i = i + 1;
         } else {
+        if string_eq(arg, string_from("--category")) {
+            if i + 1 < argc {
+                i = i + 1;
+                category = vec_get(args, i);
+            }
+            i = i + 1;
+        } else {
             vec_push(files, arg);
             i = i + 1;
+        }
+        }
         }
         }
         }
@@ -677,6 +842,9 @@ fn main() -> i64 {
 
     // Ensure output directory exists
     mkdir(output_dir);
+
+    // Collect manifest entries
+    let manifest_entries: i64 = vec_new();
 
     // Process each file
     i = 0;
@@ -703,16 +871,40 @@ fn main() -> i64 {
             output = generate_markdown(docs, module_name);
             ext = string_from(".md");
         } else {
-            output = generate_html(docs, module_name);
+            output = generate_html(docs, module_name, category);
         }
 
         // Write output file
-        let output_file: i64 = path_join(output_dir, string_concat(module_name, ext));
+        let output_filename: i64 = string_concat(module_name, ext);
+        let output_file: i64 = path_join(output_dir, output_filename);
         write_file(output_file, output);
         println(string_concat(string_from("  -> "), output_file));
 
+        // Collect manifest entry if enabled
+        if gen_manifest == 1 {
+            let manifest_entry: i64 = generate_module_manifest(docs, module_name, output_filename);
+            vec_push(manifest_entries, manifest_entry);
+        }
+
         i = i + 1;
         }
+    }
+
+    // Generate manifest file if enabled
+    if gen_manifest == 1 {
+        let modules_json: i64 = string_from("");
+        i = 0;
+        while i < vec_len(manifest_entries) {
+            if i > 0 {
+                modules_json = string_concat(modules_json, string_from(",\n"));
+            }
+            modules_json = string_concat(modules_json, vec_get(manifest_entries, i));
+            i = i + 1;
+        }
+        let manifest_content: i64 = generate_category_manifest(category, modules_json);
+        let manifest_file: i64 = path_join(output_dir, string_from("manifest.json"));
+        write_file(manifest_file, manifest_content);
+        println(string_concat(string_from("  -> "), manifest_file));
     }
 
     println("Documentation generated successfully.");

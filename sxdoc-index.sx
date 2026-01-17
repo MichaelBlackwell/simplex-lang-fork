@@ -1,0 +1,792 @@
+// sxdoc-index - Documentation Index Generator
+// Generates index.html, search-index.json, and api-context.json from manifests
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0 - see LICENSE file
+// https://github.com/senuamedia/simplex-lang
+
+fn VERSION() -> i64 { string_from("0.9.9") }
+
+fn show_help() -> i64 {
+    println("sxdoc-index - Documentation Index Generator");
+    println("");
+    println("USAGE:");
+    println("    sxdoc-index <API_DIR>");
+    println("");
+    println("DESCRIPTION:");
+    println("    Scans API_DIR for manifest.json files and generates:");
+    println("    - index.html       Navigation wrapper with sidebar");
+    println("    - search-index.json  Client-side search data");
+    println("    - api-context.json   AI/LLM consumption context");
+    println("");
+    println("OPTIONS:");
+    println("    -h, --help      Show this help");
+    println("    --version       Show version");
+    println("");
+    println("EXAMPLE:");
+    println("    sxdoc-index simplex-docs/api");
+    0
+}
+
+fn show_version() -> i64 {
+    println(string_concat(string_from("sxdoc-index "), VERSION()));
+    0
+}
+
+// ========================================
+// JSON Utilities
+// ========================================
+
+fn json_escape(s: i64) -> i64 {
+    let result: i64 = s;
+    result = string_replace(result, string_from("\\"), string_from("\\\\"));
+    result = string_replace(result, string_from("\""), string_from("\\\""));
+    result = string_replace(result, string_from("\n"), string_from("\\n"));
+    result = string_replace(result, string_from("\t"), string_from("\\t"));
+    result
+}
+
+fn html_escape(s: i64) -> i64 {
+    let result: i64 = s;
+    result = string_replace(result, string_from("&"), string_from("&amp;"));
+    result = string_replace(result, string_from("<"), string_from("&lt;"));
+    result = string_replace(result, string_from(">"), string_from("&gt;"));
+    result
+}
+
+// ========================================
+// Category Entry Structure
+// ========================================
+// Layout: name(0), path(1), modules(2)
+// modules is a vec of module entries
+
+fn category_new(name: i64, path: i64) -> i64 {
+    let cat: i64 = malloc(24);
+    store_ptr(cat, 0, name);
+    store_ptr(cat, 1, path);
+    store_ptr(cat, 2, vec_new());  // modules
+    cat
+}
+
+fn category_name(cat: i64) -> i64 { load_ptr(cat, 0) }
+fn category_path(cat: i64) -> i64 { load_ptr(cat, 1) }
+fn category_modules(cat: i64) -> i64 { load_ptr(cat, 2) }
+
+// Module Entry Structure
+// Layout: name(0), file(1), items(2)
+// items is a vec of item entries
+
+fn module_new(name: i64, file: i64) -> i64 {
+    let modl: i64 = malloc(24);
+    store_ptr(modl, 0, name);
+    store_ptr(modl, 1, file);
+    store_ptr(modl, 2, vec_new());  // items
+    modl
+}
+
+fn module_name(m: i64) -> i64 { load_ptr(m, 0) }
+fn module_file(m: i64) -> i64 { load_ptr(m, 1) }
+fn module_items(m: i64) -> i64 { load_ptr(m, 2) }
+
+// Item Entry Structure
+// Layout: kind(0), name(1), signature(2), doc(3)
+
+fn item_new(kind: i64, name: i64, sig: i64, doc: i64) -> i64 {
+    let it: i64 = malloc(32);
+    store_ptr(it, 0, kind);
+    store_ptr(it, 1, name);
+    store_ptr(it, 2, sig);
+    store_ptr(it, 3, doc);
+    it
+}
+
+fn item_kind(it: i64) -> i64 { load_ptr(it, 0) }
+fn item_name(it: i64) -> i64 { load_ptr(it, 1) }
+fn item_sig(it: i64) -> i64 { load_ptr(it, 2) }
+fn item_doc(it: i64) -> i64 { load_ptr(it, 3) }
+
+// ========================================
+// Simple JSON Parser (for manifests)
+// ========================================
+
+// Parse a JSON string value (assumes cursor is at opening quote)
+fn parse_json_string(json: i64, start: i64) -> i64 {
+    let result: i64 = vec_new();  // [value, end_pos]
+    let len: i64 = string_len(json);
+    let i: i64 = start + 1;  // Skip opening quote
+    let sb: i64 = sb_new();
+
+    while i < len {
+        let c: i64 = string_char_at(json, i);
+        if c == 34 {
+            // End quote
+            vec_push(result, sb_to_string(sb));
+            vec_push(result, i + 1);
+            return result;
+        }
+        if c == 92 {
+            // Backslash escape
+            i = i + 1;
+            if i < len {
+                let nc: i64 = string_char_at(json, i);
+                if nc == 110 { sb_append(sb, string_from("\n")); }
+                else {
+                if nc == 116 { sb_append(sb, string_from("\t")); }
+                else {
+                if nc == 34 { sb_append(sb, string_from("\"")); }
+                else {
+                if nc == 92 { sb_append(sb, string_from("\\")); }
+                else { sb_append(sb, string_from_char(nc)); }
+                }
+                }
+                }
+            }
+        } else {
+            sb_append(sb, string_from_char(c));
+        }
+        i = i + 1;
+    }
+
+    vec_push(result, sb_to_string(sb));
+    vec_push(result, i);
+    result
+}
+
+// Skip whitespace and return new position
+fn skip_ws(json: i64, start: i64) -> i64 {
+    let len: i64 = string_len(json);
+    let i: i64 = start;
+    while i < len {
+        let c: i64 = string_char_at(json, i);
+        if c == 32 { i = i + 1; }
+        else {
+        if c == 10 { i = i + 1; }
+        else {
+        if c == 13 { i = i + 1; }
+        else {
+        if c == 9 { i = i + 1; }
+        else { return i; }
+        }
+        }
+        }
+    }
+    i
+}
+
+// Find matching closing brace, handling nested braces
+fn find_matching_brace(json: i64, start: i64) -> i64 {
+    let len: i64 = string_len(json);
+    let i: i64 = start + 1;  // Skip opening brace
+    let depth: i64 = 1;
+    let in_string: i64 = 0;
+
+    while i < len {
+        let c: i64 = string_char_at(json, i);
+
+        if in_string == 1 {
+            if c == 34 {
+                // End quote (check not escaped)
+                let prev: i64 = 0;
+                if i > 0 {
+                    prev = string_char_at(json, i - 1);
+                }
+                if prev != 92 {
+                    in_string = 0;
+                }
+            }
+        } else {
+            if c == 34 {
+                in_string = 1;
+            } else {
+            if c == 123 {
+                depth = depth + 1;
+            } else {
+            if c == 125 {
+                depth = depth - 1;
+                if depth == 0 {
+                    return i;
+                }
+            }
+            }
+            }
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+// Parse manifest.json and return category with modules
+fn parse_manifest(json: i64, cat_name: i64) -> i64 {
+    let cat: i64 = category_new(cat_name, cat_name);
+    let modules: i64 = category_modules(cat);
+    let len: i64 = string_len(json);
+    let i: i64 = 0;
+
+    // Find "modules" array
+    let modules_pos: i64 = string_find(json, string_from("\"modules\""), 0);
+    if modules_pos < 0 {
+        return cat;
+    }
+
+    // Find opening bracket of modules array
+    i = string_find(json, string_from("["), modules_pos);
+    if i < 0 {
+        return cat;
+    }
+    i = i + 1;
+
+    // Parse module objects
+    while i < len {
+        i = skip_ws(json, i);
+        let c: i64 = string_char_at(json, i);
+
+        if c == 93 {
+            // End of modules array
+            return cat;
+        }
+        if c == 44 {
+            // Comma between modules
+            i = i + 1;
+        } else {
+        if c == 123 {
+            // Start of module object - find matching closing brace
+            let mod_end: i64 = find_matching_brace(json, i);
+            if mod_end > 0 {
+                let mod_json: i64 = string_slice(json, i, mod_end + 1);
+                let m: i64 = parse_module_object(mod_json);
+                if m != 0 {
+                    vec_push(modules, m);
+                }
+                i = mod_end + 1;
+            } else {
+                return cat;
+            }
+        } else {
+            i = i + 1;
+        }
+        }
+    }
+
+    cat
+}
+
+// Parse a single module object from JSON
+fn parse_module_object(json: i64) -> i64 {
+    // Extract name
+    let name_pos: i64 = string_find(json, string_from("\"name\""), 0);
+    let name: i64 = string_from("");
+    if name_pos >= 0 {
+        let quote_pos: i64 = string_find(json, string_from("\""), name_pos + 7);
+        if quote_pos >= 0 {
+            let result: i64 = parse_json_string(json, quote_pos);
+            name = vec_get(result, 0);
+        }
+    }
+
+    // Extract file
+    let file_pos: i64 = string_find(json, string_from("\"file\""), 0);
+    let file: i64 = string_from("");
+    if file_pos >= 0 {
+        let quote_pos: i64 = string_find(json, string_from("\""), file_pos + 7);
+        if quote_pos >= 0 {
+            let result: i64 = parse_json_string(json, quote_pos);
+            file = vec_get(result, 0);
+        }
+    }
+
+    if string_len(name) == 0 {
+        return 0;
+    }
+
+    let m: i64 = module_new(name, file);
+
+    // Parse items array
+    let items_pos: i64 = string_find(json, string_from("\"items\""), 0);
+    if items_pos >= 0 {
+        let items: i64 = module_items(m);
+        let arr_start: i64 = string_find(json, string_from("["), items_pos);
+        if arr_start >= 0 {
+            let arr_end: i64 = find_matching_bracket(json, arr_start);
+            if arr_end >= 0 {
+                let arr_json: i64 = string_slice(json, arr_start, arr_end + 1);
+                parse_items_array(arr_json, items);
+            }
+        }
+    }
+
+    m
+}
+
+// Find matching closing bracket, handling nested structures
+fn find_matching_bracket(json: i64, start: i64) -> i64 {
+    let len: i64 = string_len(json);
+    let i: i64 = start + 1;
+    let depth: i64 = 1;
+    let in_string: i64 = 0;
+
+    while i < len {
+        let c: i64 = string_char_at(json, i);
+
+        if in_string == 1 {
+            if c == 34 {
+                let prev: i64 = 0;
+                if i > 0 {
+                    prev = string_char_at(json, i - 1);
+                }
+                if prev != 92 {
+                    in_string = 0;
+                }
+            }
+        } else {
+            if c == 34 {
+                in_string = 1;
+            } else {
+            if c == 91 {
+                depth = depth + 1;
+            } else {
+            if c == 93 {
+                depth = depth - 1;
+                if depth == 0 {
+                    return i;
+                }
+            }
+            }
+            }
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+// Parse items array and populate items vec
+fn parse_items_array(json: i64, items: i64) -> i64 {
+    let len: i64 = string_len(json);
+    let i: i64 = 1;  // Skip opening [
+
+    while i < len {
+        i = skip_ws(json, i);
+        let c: i64 = string_char_at(json, i);
+
+        if c == 93 {
+            // End of array
+            return 0;
+        }
+        if c == 44 {
+            // Comma
+            i = i + 1;
+        } else {
+        if c == 123 {
+            // Start of item object - use find_matching_brace
+            let obj_end: i64 = find_matching_brace(json, i);
+            if obj_end > 0 {
+                let obj_json: i64 = string_slice(json, i, obj_end + 1);
+                let it: i64 = parse_item_object(obj_json);
+                if it != 0 {
+                    vec_push(items, it);
+                }
+                i = obj_end + 1;
+            } else {
+                return 0;
+            }
+        } else {
+            i = i + 1;
+        }
+        }
+    }
+    0
+}
+
+// Parse a single item object
+fn parse_item_object(json: i64) -> i64 {
+    let kind: i64 = extract_json_field(json, string_from("kind"));
+    let name: i64 = extract_json_field(json, string_from("name"));
+    let sig: i64 = extract_json_field(json, string_from("signature"));
+    let doc: i64 = extract_json_field(json, string_from("doc"));
+
+    if string_len(name) == 0 {
+        return 0;
+    }
+
+    item_new(kind, name, sig, doc)
+}
+
+// Extract a string field from JSON object
+fn extract_json_field(json: i64, field: i64) -> i64 {
+    let search: i64 = string_concat(string_from("\""), string_concat(field, string_from("\"")));
+    let pos: i64 = string_find(json, search, 0);
+    if pos < 0 {
+        return string_from("");
+    }
+
+    // Find the colon
+    let colon: i64 = string_find(json, string_from(":"), pos);
+    if colon < 0 {
+        return string_from("");
+    }
+
+    // Find the opening quote
+    let quote: i64 = string_find(json, string_from("\""), colon + 1);
+    if quote < 0 {
+        return string_from("");
+    }
+
+    let result: i64 = parse_json_string(json, quote);
+    vec_get(result, 0)
+}
+
+// ========================================
+// Directory Scanning
+// ========================================
+
+// Scan for manifest.json files in subdirectories
+fn scan_manifests(api_dir: i64) -> i64 {
+    let categories: i64 = vec_new();
+
+    // Known categories to scan
+    let cat_names: i64 = vec_new();
+    vec_push(cat_names, string_from("std"));
+    vec_push(cat_names, string_from("json"));
+    vec_push(cat_names, string_from("sql"));
+    vec_push(cat_names, string_from("toml"));
+    vec_push(cat_names, string_from("uuid"));
+    vec_push(cat_names, string_from("s3"));
+    vec_push(cat_names, string_from("ses"));
+    vec_push(cat_names, string_from("inference"));
+    vec_push(cat_names, string_from("learning"));
+    vec_push(cat_names, string_from("edge-hive"));
+    vec_push(cat_names, string_from("nexus"));
+    vec_push(cat_names, string_from("lib"));
+    vec_push(cat_names, string_from("core"));
+    vec_push(cat_names, string_from("tools"));
+
+    let i: i64 = 0;
+    while i < vec_len(cat_names) {
+        let cat_name: i64 = vec_get(cat_names, i);
+        let manifest_path: i64 = path_join(api_dir, string_concat(cat_name, string_from("/manifest.json")));
+        let json: i64 = read_file(manifest_path);
+        if json != 0 {
+            let cat: i64 = parse_manifest(json, cat_name);
+            vec_push(categories, cat);
+            println(string_concat(string_from("  Found: "), manifest_path));
+        }
+        i = i + 1;
+    }
+
+    categories
+}
+
+// ========================================
+// Index HTML Generation
+// ========================================
+
+fn generate_index_html(api_dir: i64, categories: i64) -> i64 {
+    let sb: i64 = sb_new();
+
+    // HTML header
+    sb_append(sb, string_from("<!DOCTYPE html>\n"));
+    sb_append(sb, string_from("<html lang=\"en\">\n<head>\n"));
+    sb_append(sb, string_from("  <meta charset=\"utf-8\">\n"));
+    sb_append(sb, string_from("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"));
+    sb_append(sb, string_from("  <title>Simplex API Reference</title>\n"));
+    sb_append(sb, string_from("  <meta name=\"description\" content=\"API documentation for the Simplex programming language\">\n"));
+    sb_append(sb, string_from("  <link rel=\"stylesheet\" href=\"assets/docs.css\">\n"));
+    sb_append(sb, string_from("  <script src=\"assets/search.js\" defer></script>\n"));
+
+    // JSON-LD for the index page
+    sb_append(sb, string_from("  <script type=\"application/ld+json\">\n"));
+    sb_append(sb, string_from("  {\n"));
+    sb_append(sb, string_from("    \"@context\": \"https://schema.org\",\n"));
+    sb_append(sb, string_from("    \"@type\": \"WebSite\",\n"));
+    sb_append(sb, string_from("    \"name\": \"Simplex API Reference\",\n"));
+    sb_append(sb, string_from("    \"description\": \"API documentation for the Simplex programming language\",\n"));
+    sb_append(sb, string_from("    \"url\": \"https://simplex.senuamedia.com/api/\"\n"));
+    sb_append(sb, string_from("  }\n"));
+    sb_append(sb, string_from("  </script>\n"));
+
+    sb_append(sb, string_from("</head>\n<body>\n"));
+
+    // Main wrapper
+    sb_append(sb, string_from("<div class=\"doc-wrapper\">\n"));
+
+    // Sidebar
+    sb_append(sb, string_from("  <nav class=\"sidebar\">\n"));
+    sb_append(sb, string_from("    <div class=\"sidebar-header\">Simplex API</div>\n"));
+    sb_append(sb, string_from("    <div class=\"search-box\">\n"));
+    sb_append(sb, string_from("      <input type=\"text\" id=\"search\" placeholder=\"Search...\">\n"));
+    sb_append(sb, string_from("    </div>\n"));
+
+    // Navigation categories
+    let i: i64 = 0;
+    while i < vec_len(categories) {
+        let cat: i64 = vec_get(categories, i);
+        let cat_name: i64 = category_name(cat);
+        let modules: i64 = category_modules(cat);
+
+        sb_append(sb, string_from("    <div class=\"nav-category\">\n"));
+        sb_append(sb, string_from("      <div class=\"nav-category-header\">"));
+        sb_append(sb, html_escape(cat_name));
+        sb_append(sb, string_from("</div>\n"));
+        sb_append(sb, string_from("      <div class=\"nav-items\">\n"));
+
+        let j: i64 = 0;
+        while j < vec_len(modules) {
+            let m: i64 = vec_get(modules, j);
+            let mod_name: i64 = module_name(m);
+            let mod_file: i64 = module_file(m);
+
+            sb_append(sb, string_from("        <a href=\""));
+            sb_append(sb, cat_name);
+            sb_append(sb, string_from("/"));
+            sb_append(sb, mod_file);
+            sb_append(sb, string_from("\">"));
+            sb_append(sb, html_escape(mod_name));
+            sb_append(sb, string_from("</a>\n"));
+            j = j + 1;
+        }
+
+        sb_append(sb, string_from("      </div>\n"));
+        sb_append(sb, string_from("    </div>\n"));
+        i = i + 1;
+    }
+
+    sb_append(sb, string_from("  </nav>\n"));
+
+    // Main content
+    sb_append(sb, string_from("  <main class=\"content\">\n"));
+    sb_append(sb, string_from("    <h1>Simplex API Reference</h1>\n"));
+    sb_append(sb, string_from("    <p>Welcome to the Simplex API documentation. Select a module from the sidebar to browse.</p>\n"));
+    sb_append(sb, string_from("    <h2>Categories</h2>\n"));
+    sb_append(sb, string_from("    <ul>\n"));
+
+    i = 0;
+    while i < vec_len(categories) {
+        let cat: i64 = vec_get(categories, i);
+        let cat_name: i64 = category_name(cat);
+        let modules: i64 = category_modules(cat);
+
+        sb_append(sb, string_from("      <li><strong>"));
+        sb_append(sb, html_escape(cat_name));
+        sb_append(sb, string_from("</strong> - "));
+        sb_append(sb, int_to_string(vec_len(modules)));
+        sb_append(sb, string_from(" modules</li>\n"));
+        i = i + 1;
+    }
+
+    sb_append(sb, string_from("    </ul>\n"));
+    sb_append(sb, string_from("  </main>\n"));
+    sb_append(sb, string_from("</div>\n"));
+    sb_append(sb, string_from("</body>\n</html>\n"));
+
+    let output: i64 = sb_to_string(sb);
+    let index_file: i64 = path_join(api_dir, string_from("index.html"));
+    write_file(index_file, output);
+    println(string_concat(string_from("  -> "), index_file));
+
+    0
+}
+
+// ========================================
+// Search Index Generation
+// ========================================
+
+fn generate_search_index(api_dir: i64, categories: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, string_from("[\n"));
+
+    let first: i64 = 1;
+    let i: i64 = 0;
+    while i < vec_len(categories) {
+        let cat: i64 = vec_get(categories, i);
+        let cat_name: i64 = category_name(cat);
+        let modules: i64 = category_modules(cat);
+
+        let j: i64 = 0;
+        while j < vec_len(modules) {
+            let m: i64 = vec_get(modules, j);
+            let mod_name: i64 = module_name(m);
+            let mod_file: i64 = module_file(m);
+            let items: i64 = module_items(m);
+
+            let k: i64 = 0;
+            while k < vec_len(items) {
+                let it: i64 = vec_get(items, k);
+
+                if first == 0 {
+                    sb_append(sb, string_from(",\n"));
+                }
+                first = 0;
+
+                sb_append(sb, string_from("  {\"name\": \""));
+                sb_append(sb, json_escape(item_name(it)));
+                sb_append(sb, string_from("\", \"kind\": \""));
+                sb_append(sb, json_escape(item_kind(it)));
+                sb_append(sb, string_from("\", \"category\": \""));
+                sb_append(sb, json_escape(cat_name));
+                sb_append(sb, string_from("\", \"module\": \""));
+                sb_append(sb, json_escape(mod_name));
+                sb_append(sb, string_from("\", \"url\": \""));
+                sb_append(sb, json_escape(cat_name));
+                sb_append(sb, string_from("/"));
+                sb_append(sb, json_escape(mod_file));
+                sb_append(sb, string_from("#"));
+                sb_append(sb, json_escape(item_name(it)));
+                sb_append(sb, string_from("\""));
+
+                let doc: i64 = item_doc(it);
+                if string_len(doc) > 0 {
+                    sb_append(sb, string_from(", \"doc\": \""));
+                    sb_append(sb, json_escape(doc));
+                    sb_append(sb, string_from("\""));
+                }
+
+                sb_append(sb, string_from("}"));
+                k = k + 1;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    sb_append(sb, string_from("\n]\n"));
+
+    let output: i64 = sb_to_string(sb);
+    let search_file: i64 = path_join(api_dir, string_from("search-index.json"));
+    write_file(search_file, output);
+    println(string_concat(string_from("  -> "), search_file));
+
+    0
+}
+
+// ========================================
+// API Context Generation (for AI/LLM)
+// ========================================
+
+fn generate_api_context(api_dir: i64, categories: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, string_from("{\n"));
+    sb_append(sb, string_from("  \"name\": \"Simplex API\",\n"));
+    sb_append(sb, string_from("  \"version\": \""));
+    sb_append(sb, VERSION());
+    sb_append(sb, string_from("\",\n"));
+    sb_append(sb, string_from("  \"description\": \"API documentation for the Simplex programming language\",\n"));
+    sb_append(sb, string_from("  \"baseUrl\": \"https://simplex.senuamedia.com/api/\",\n"));
+    sb_append(sb, string_from("  \"categories\": {\n"));
+
+    let total_funcs: i64 = 0;
+    let total_structs: i64 = 0;
+
+    let i: i64 = 0;
+    while i < vec_len(categories) {
+        let cat: i64 = vec_get(categories, i);
+        let cat_name: i64 = category_name(cat);
+        let modules: i64 = category_modules(cat);
+
+        if i > 0 {
+            sb_append(sb, string_from(",\n"));
+        }
+
+        sb_append(sb, string_from("    \""));
+        sb_append(sb, json_escape(cat_name));
+        sb_append(sb, string_from("\": {\n"));
+        sb_append(sb, string_from("      \"modules\": ["));
+
+        let j: i64 = 0;
+        while j < vec_len(modules) {
+            let m: i64 = vec_get(modules, j);
+            if j > 0 {
+                sb_append(sb, string_from(", "));
+            }
+            sb_append(sb, string_from("\""));
+            sb_append(sb, json_escape(module_name(m)));
+            sb_append(sb, string_from("\""));
+
+            // Count items
+            let items: i64 = module_items(m);
+            let k: i64 = 0;
+            while k < vec_len(items) {
+                let it: i64 = vec_get(items, k);
+                let kind: i64 = item_kind(it);
+                if string_eq(kind, string_from("fn")) {
+                    total_funcs = total_funcs + 1;
+                }
+                if string_eq(kind, string_from("struct")) {
+                    total_structs = total_structs + 1;
+                }
+                k = k + 1;
+            }
+            j = j + 1;
+        }
+
+        sb_append(sb, string_from("]\n"));
+        sb_append(sb, string_from("    }"));
+        i = i + 1;
+    }
+
+    sb_append(sb, string_from("\n  },\n"));
+    sb_append(sb, string_from("  \"totalFunctions\": "));
+    sb_append(sb, int_to_string(total_funcs));
+    sb_append(sb, string_from(",\n"));
+    sb_append(sb, string_from("  \"totalStructs\": "));
+    sb_append(sb, int_to_string(total_structs));
+    sb_append(sb, string_from("\n}\n"));
+
+    let output: i64 = sb_to_string(sb);
+    let context_file: i64 = path_join(api_dir, string_from("api-context.json"));
+    write_file(context_file, output);
+    println(string_concat(string_from("  -> "), context_file));
+
+    0
+}
+
+// ========================================
+// Main Entry Point
+// ========================================
+
+fn main() -> i64 {
+    let args: i64 = get_args();
+    let argc: i64 = vec_len(args);
+
+    if argc < 2 {
+        show_help();
+        return 1;
+    }
+
+    let arg: i64 = vec_get(args, 1);
+
+    if string_eq(arg, string_from("-h")) {
+        show_help();
+        return 0;
+    }
+    if string_eq(arg, string_from("--help")) {
+        show_help();
+        return 0;
+    }
+    if string_eq(arg, string_from("--version")) {
+        show_version();
+        return 0;
+    }
+
+    let api_dir: i64 = arg;
+
+    println("sxdoc-index: Scanning for manifests...");
+    let categories: i64 = scan_manifests(api_dir);
+
+    if vec_len(categories) == 0 {
+        println("No manifest.json files found. Run sxdoc with --manifest first.");
+        return 1;
+    }
+
+    println(string_concat(string_from("Found "), string_concat(int_to_string(vec_len(categories)), string_from(" categories"))));
+
+    println("Generating index.html...");
+    generate_index_html(api_dir, categories);
+
+    println("Generating search-index.json...");
+    generate_search_index(api_dir, categories);
+
+    println("Generating api-context.json...");
+    generate_api_context(api_dir, categories);
+
+    println("Documentation index generated successfully.");
+    0
+}
