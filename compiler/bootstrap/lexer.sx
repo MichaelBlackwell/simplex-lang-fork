@@ -88,14 +88,18 @@ enum TokenKind {
     KwAnima,
     // Mutable binding
     KwVar,
+    // Mutable reference keyword
+    KwMut,
     // Spawn expression
     KwSpawn,
     // Where clause
     KwWhere,
-    // Belief guard tokens (TASK-013-A)
+    // Belief guard tokens
     At,              // @ symbol for belief guards
     KwConfidence,    // confidence(belief_id)
-    KwDerivative     // .derivative accessor
+    KwDerivative,    // .derivative accessor
+    // Attribute tokens
+    Hash             // # for #[attr] syntax
 }
 
 // Lexer state - we pass this to all functions instead of using self
@@ -300,11 +304,13 @@ fn check_keyword(text: i64) -> i64 {
     if string_eq(text, "anima") { return TokenKind::KwAnima; }
     // Mutable binding
     if string_eq(text, "var") { return TokenKind::KwVar; }
+    // Mutable reference keyword
+    if string_eq(text, "mut") { return TokenKind::KwMut; }
     // Spawn expression
     if string_eq(text, "spawn") { return TokenKind::KwSpawn; }
     // Where clause
     if string_eq(text, "where") { return TokenKind::KwWhere; }
-    // Belief guard keywords (TASK-013-A)
+    // Belief guard keywords
     if string_eq(text, "confidence") { return TokenKind::KwConfidence; }
     if string_eq(text, "derivative") { return TokenKind::KwDerivative; }
     if string_eq(text, "_") { return TokenKind::Underscore; }
@@ -575,9 +581,14 @@ fn lexer_next_token(lexer: i64) -> i64 {
         return token_new_loc(TokenKind::String, text, start, start_line, start_col);
     }
 
-    // @ symbol for belief guards (TASK-013-A)
+    // @ symbol for belief guards
     if c == 64 {
         return token_new_loc(TokenKind::At, string_from("@"), start, start_line, start_col);
+    }
+
+    // # symbol for attributes
+    if c == 35 {
+        return token_new_loc(TokenKind::Hash, string_from("#"), start, start_line, start_col);
     }
 
     // Unknown character - return EOF for now

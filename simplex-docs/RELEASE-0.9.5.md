@@ -333,7 +333,7 @@ All tools updated to version 0.9.5:
 
 ## Credits
 
-Edge Hive, Nexus Protocol, and Research Module developed by Rod Higgins ([@senuamedia](https://github.com/senuamedia)) with assistance from Claude Code (Anthropic).
+Edge Hive, Nexus Protocol, and Research Module developed by Rod Higgins ([@senuamedia](https://github.com/senuamedia)).
 
 ---
 

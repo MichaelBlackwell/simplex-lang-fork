@@ -69,7 +69,7 @@ fn EXPR_CAST() -> i64 { 32 }
 fn EXPR_METHOD() -> i64 { 33 }
 fn EXPR_STRUCT() -> i64 { 34 }
 
-// Belief guard expressions (TASK-013-A)
+// Belief guard expressions
 fn EXPR_CONFIDENCE() -> i64 { 35 }    // confidence(belief_id)
 fn EXPR_DERIVATIVE() -> i64 { 36 }    // expr.derivative
 fn EXPR_BELIEF_GUARD() -> i64 { 37 }  // belief_expr cmp value
@@ -2148,11 +2148,12 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
                     callee_name = method_part;
                 }
                 // Check if type_part is a user-defined enum
+                // Store enum name for later inline construction
                 if callee_name == 0 {
                     let enum_variant_idx: i64 = lookup_variant(cg, type_part, method_part);
                     if enum_variant_idx >= 0 {
-                        // Use just the variant name for lookup
-                        callee_name = method_part;
+                        // Mark this as an enum variant call by prefixing with "enum:"
+                        callee_name = string_concat("enum:", string_concat(type_part, string_concat(":", method_part)));
                     }
                 }
                 // Default: join with underscore for static method calls
@@ -2284,6 +2285,62 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
             // Store tag
             emit(cg, "  store i64 ");
             emit(cg, int_to_string(result_variant_idx));
+            emit(cg, ", ptr %t");
+            emit_line(cg, int_to_string(malloc_t));
+
+            // Store payloads
+            let pi: i64 = 0;
+            while pi < num_payloads {
+                let offset: i64 = 8 + pi * 8;
+                let gep_t: i64 = cg_next_temp(cg);
+                emit(cg, "  %t");
+                emit(cg, int_to_string(gep_t));
+                emit(cg, " = getelementptr i8, ptr %t");
+                emit(cg, int_to_string(malloc_t));
+                emit(cg, ", i64 ");
+                emit_line(cg, int_to_string(offset));
+                emit(cg, "  store i64 ");
+                emit(cg, vec_get(arg_values, pi));
+                emit(cg, ", ptr %t");
+                emit_line(cg, int_to_string(gep_t));
+                pi = pi + 1;
+            }
+
+            // Return ptr as i64
+            let result_t: i64 = cg_next_temp(cg);
+            emit(cg, "  %t");
+            emit(cg, int_to_string(result_t));
+            emit(cg, " = ptrtoint ptr %t");
+            emit(cg, int_to_string(malloc_t));
+            emit_line(cg, " to i64");
+            return string_concat("%t", int_to_string(result_t));
+        }
+
+        // Handle user-defined enum variants (marked as "enum:EnumName:VariantName")
+        if string_starts_with(callee_name, string_from("enum:")) {
+            // Parse enum:EnumName:VariantName
+            let rest: i64 = string_slice(callee_name, 5, string_len(callee_name));
+            let colon_pos: i64 = string_find(rest, string_from(":"), 0);
+            let enum_name: i64 = string_slice(rest, 0, colon_pos);
+            let variant_name: i64 = string_slice(rest, colon_pos + 1, string_len(rest));
+
+            // Look up the variant index
+            let user_variant_idx: i64 = lookup_variant(cg, enum_name, variant_name);
+
+            // Generate enum construction inline (same as Option/Result)
+            let num_payloads: i64 = vec_len(arg_values);
+            let size: i64 = 8 + num_payloads * 8;
+
+            let malloc_t: i64 = cg_next_temp(cg);
+            emit(cg, "  %t");
+            emit(cg, int_to_string(malloc_t));
+            emit(cg, " = call ptr @malloc(i64 ");
+            emit(cg, int_to_string(size));
+            emit_line(cg, ")");
+
+            // Store tag
+            emit(cg, "  store i64 ");
+            emit(cg, int_to_string(user_variant_idx));
             emit(cg, ", ptr %t");
             emit_line(cg, int_to_string(malloc_t));
 
@@ -4855,15 +4912,34 @@ fn gen_match(cg: i64, expr: i64) -> i64 {
                             // EnumName::Variant - get the variant name from segments
                             let segments: i64 = load_ptr(callee, 1);
                             let num_segs: i64 = vec_len(segments);
-                            if num_segs > 0 {
-                                enum_variant_name = vec_get(segments, num_segs - 1);
+                            if num_segs == 2 {
+                                // Use specific enum lookup for qualified path like Status::Ok
+                                let enum_name: i64 = vec_get(segments, 0);
+                                enum_variant_name = vec_get(segments, 1);
+                                enum_bindings = load_ptr(pattern, 2);
+                                expected_tag = lookup_variant(cg, enum_name, enum_variant_name);
+                                if expected_tag < 0 {
+                                    expected_tag = 0;
+                                }
+                            } else {
+                                if num_segs > 0 {
+                                    enum_variant_name = vec_get(segments, num_segs - 1);
+                                }
+                                enum_bindings = load_ptr(pattern, 2);
+                                expected_tag = lookup_variant_any(cg, enum_variant_name);
+                                if expected_tag < 0 {
+                                    expected_tag = 0;
+                                }
                             }
                         }
                     }
-                    enum_bindings = load_ptr(pattern, 2);
-                    expected_tag = lookup_variant_any(cg, enum_variant_name);
-                    if expected_tag < 0 {
-                        expected_tag = 0;
+                    // Only set bindings and tag if not already set by EXPR_PATH branch
+                    if callee_tag == EXPR_IDENT() {
+                        enum_bindings = load_ptr(pattern, 2);
+                        expected_tag = lookup_variant_any(cg, enum_variant_name);
+                        if expected_tag < 0 {
+                            expected_tag = 0;
+                        }
                     }
                 } else {
                     if pat_tag == EXPR_PATH() {
@@ -4873,10 +4949,17 @@ fn gen_match(cg: i64, expr: i64) -> i64 {
                         is_enum_pattern = 1;
                         let segments: i64 = load_ptr(pattern, 1);
                         let num_segs: i64 = vec_len(segments);
-                        if num_segs > 0 {
-                            enum_variant_name = vec_get(segments, num_segs - 1);
+                        if num_segs == 2 {
+                            // Use specific enum lookup for qualified path
+                            let enum_name: i64 = vec_get(segments, 0);
+                            enum_variant_name = vec_get(segments, 1);
+                            expected_tag = lookup_variant(cg, enum_name, enum_variant_name);
+                        } else {
+                            if num_segs > 0 {
+                                enum_variant_name = vec_get(segments, num_segs - 1);
+                            }
+                            expected_tag = lookup_variant_any(cg, enum_variant_name);
                         }
-                        expected_tag = lookup_variant_any(cg, enum_variant_name);
                         if expected_tag < 0 {
                             expected_tag = 0;
                         }
@@ -6291,6 +6374,7 @@ fn gen_actor(cg: i64, item: i64) -> i64 {
     emit_line(cg, "");
 
     // Generate message handler functions
+    // Issue 1 fix: Wire up handler body execution
     if handlers != 0 {
         let n: i64 = vec_len(handlers);
         let i: i64 = 0;
@@ -6305,9 +6389,78 @@ fn gen_actor(cg: i64, item: i64) -> i64 {
             emit(cg, name);
             emit(cg, "_handle_");
             emit(cg, msg_name);
-            emit_line(cg, "\"(i64 %self) {");
+            emit(cg, "\"(i64 %self");
+
+            // Add message parameters
+            if params != 0 {
+                let pn: i64 = vec_len(params);
+                let pi: i64 = 0;
+                while pi < pn {
+                    let param: i64 = vec_get(params, pi);
+                    let pname: i64 = load_ptr(param, 0);
+                    emit(cg, ", i64 %");
+                    emit(cg, pname);
+                    pi = pi + 1;
+                }
+            }
+            emit_line(cg, ") {");
             emit_line(cg, "entry:");
-            emit_line(cg, "  ret i64 0");
+
+            // Set up local for self
+            cg_clear_locals(cg);
+            add_local(cg, string_from("self"), string_from("self_param"));
+            emit_line(cg, "  %local.self_param = alloca i64");
+            emit_line(cg, "  store i64 %self, ptr %local.self_param");
+
+            // Set up locals for parameters
+            if params != 0 {
+                let pn: i64 = vec_len(params);
+                let pi: i64 = 0;
+                while pi < pn {
+                    let param: i64 = vec_get(params, pi);
+                    let pname: i64 = load_ptr(param, 0);
+                    add_local(cg, pname, pname);
+                    emit(cg, "  %local.");
+                    emit(cg, pname);
+                    emit_line(cg, " = alloca i64");
+                    emit(cg, "  store i64 %");
+                    emit(cg, pname);
+                    emit(cg, ", ptr %local.");
+                    emit_line(cg, pname);
+                    pi = pi + 1;
+                }
+            }
+
+            // Pre-allocate locals from body
+            if body != 0 {
+                cg_clear_alloca_queue(cg);
+                let all_locals: i64 = collect_locals_from_block(body);
+                let num_locals: i64 = vec_len(all_locals);
+                let j: i64 = 0;
+                while j < num_locals {
+                    let local_name: i64 = vec_get(all_locals, j);
+                    let local_id: i64 = cg_next_temp(cg);
+                    let unique_name: i64 = string_concat(local_name, string_concat(".", int_to_string(local_id)));
+                    emit(cg, "  %local.");
+                    emit(cg, unique_name);
+                    emit_line(cg, " = alloca i64");
+                    cg_push_alloca(cg, unique_name);
+                    j = j + 1;
+                }
+
+                // Generate handler body
+                cg_set_terminated(cg, false);
+                let result: i64 = gen_block(cg, body);
+
+                // Return result if not already terminated
+                if cg_is_terminated(cg) == false {
+                    emit(cg, "  ret i64 ");
+                    emit_line(cg, result);
+                }
+            } else {
+                emit_line(cg, "  ret i64 0");
+            }
+
             emit_line(cg, "}");
             emit_line(cg, "");
 
@@ -6329,6 +6482,18 @@ fn gen_specialist(cg: i64, item: i64) -> i64 {
     emit(cg, "; Specialist: ");
     emit_line(cg, name);
 
+    // Issue 15 fix: Extract config values for use in specialist
+    // Config layout: capabilities(0), model(1), context_window(2)
+    let model_name: i64 = 0;
+    let context_window: i64 = 4096;  // default
+    if config != 0 {
+        model_name = load_ptr(config, 1);
+        context_window = load_i64(config, 2);
+        if context_window == 0 {
+            context_window = 4096;
+        }
+    }
+
     // Register state fields as struct
     if state_fields != 0 {
         let n: i64 = vec_len(state_fields);
@@ -6343,41 +6508,140 @@ fn gen_specialist(cg: i64, item: i64) -> i64 {
     }
 
     // Generate specialist_new function
+    // Issue 15 fix: Initialize specialist with config
     emit(cg, "define i64 @\"");
     emit(cg, name);
     emit_line(cg, "_new\"() {");
     emit_line(cg, "entry:");
-    emit_line(cg, "  %spec = call ptr @malloc(i64 64)");
+    // Allocate: model_ptr(0), context(8), context_window(16), state fields(24+)
+    emit_line(cg, "  %spec = call ptr @malloc(i64 128)");
+    // Store context window size
+    emit_line(cg, "  %ctx_ptr = getelementptr i8, ptr %spec, i64 16");
+    emit(cg, "  store i64 ");
+    emit(cg, int_to_string(context_window));
+    emit_line(cg, ", ptr %ctx_ptr");
+    // Initialize context vector
+    emit_line(cg, "  %ctx = call ptr @intrinsic_vec_new()");
+    emit_line(cg, "  %ctx_slot = getelementptr i8, ptr %spec, i64 8");
+    emit_line(cg, "  store ptr %ctx, ptr %ctx_slot");
     emit_line(cg, "  %ret = ptrtoint ptr %spec to i64");
     emit_line(cg, "  ret i64 %ret");
     emit_line(cg, "}");
     emit_line(cg, "");
 
-    // Generate infer function
+    // Issue 3 fix: Generate actual infer function using specialist_query runtime
     emit(cg, "define i64 @\"");
     emit(cg, name);
     emit_line(cg, "_infer\"(i64 %self, i64 %query) {");
     emit_line(cg, "entry:");
-    emit_line(cg, "  ret i64 0");
+    // Get context from specialist
+    emit_line(cg, "  %spec = inttoptr i64 %self to ptr");
+    emit_line(cg, "  %ctx_slot = getelementptr i8, ptr %spec, i64 8");
+    emit_line(cg, "  %ctx = load ptr, ptr %ctx_slot");
+    // Add query to context
+    emit_line(cg, "  %query_ptr = inttoptr i64 %query to ptr");
+    emit_line(cg, "  call void @intrinsic_vec_push(ptr %ctx, ptr %query_ptr)");
+    // Call specialist_query runtime for inference
+    emit_line(cg, "  %result = call i64 @specialist_query(i64 %self, i64 %query)");
+    emit_line(cg, "  ret i64 %result");
     emit_line(cg, "}");
     emit_line(cg, "");
 
-    // Generate message handlers (like actor receive)
+    // Generate set_context function for specialists
+    emit(cg, "define void @\"");
+    emit(cg, name);
+    emit_line(cg, "_set_context\"(i64 %self, i64 %context) {");
+    emit_line(cg, "entry:");
+    emit_line(cg, "  call void @specialist_set_context(i64 %self, i64 %context)");
+    emit_line(cg, "  ret void");
+    emit_line(cg, "}");
+    emit_line(cg, "");
+
+    // Issue 2 fix: Generate message handlers with body execution
     if handlers != 0 {
         let n: i64 = vec_len(handlers);
         let i: i64 = 0;
         while i < n {
             let handler: i64 = vec_get(handlers, i);
             let msg_name: i64 = load_ptr(handler, 0);
+            let params: i64 = load_ptr(handler, 1);
+            let body: i64 = load_ptr(handler, 2);
 
             // Generate handler function
             emit(cg, "define i64 @\"");
             emit(cg, name);
             emit(cg, "_handle_");
             emit(cg, msg_name);
-            emit_line(cg, "\"(i64 %self) {");
+            emit(cg, "\"(i64 %self");
+
+            // Add handler parameters
+            if params != 0 {
+                let pn: i64 = vec_len(params);
+                let pi: i64 = 0;
+                while pi < pn {
+                    let param: i64 = vec_get(params, pi);
+                    let pname: i64 = load_ptr(param, 0);
+                    emit(cg, ", i64 %");
+                    emit(cg, pname);
+                    pi = pi + 1;
+                }
+            }
+            emit_line(cg, ") {");
             emit_line(cg, "entry:");
-            emit_line(cg, "  ret i64 0");
+
+            // Set up local for self
+            cg_clear_locals(cg);
+            add_local(cg, string_from("self"), string_from("self_param"));
+            emit_line(cg, "  %local.self_param = alloca i64");
+            emit_line(cg, "  store i64 %self, ptr %local.self_param");
+
+            // Set up locals for parameters
+            if params != 0 {
+                let pn: i64 = vec_len(params);
+                let pi: i64 = 0;
+                while pi < pn {
+                    let param: i64 = vec_get(params, pi);
+                    let pname: i64 = load_ptr(param, 0);
+                    add_local(cg, pname, pname);
+                    emit(cg, "  %local.");
+                    emit(cg, pname);
+                    emit_line(cg, " = alloca i64");
+                    emit(cg, "  store i64 %");
+                    emit(cg, pname);
+                    emit(cg, ", ptr %local.");
+                    emit_line(cg, pname);
+                    pi = pi + 1;
+                }
+            }
+
+            // Generate handler body if present
+            if body != 0 {
+                cg_clear_alloca_queue(cg);
+                let all_locals: i64 = collect_locals_from_block(body);
+                let num_locals: i64 = vec_len(all_locals);
+                let j: i64 = 0;
+                while j < num_locals {
+                    let local_name: i64 = vec_get(all_locals, j);
+                    let local_id: i64 = cg_next_temp(cg);
+                    let unique_name: i64 = string_concat(local_name, string_concat(".", int_to_string(local_id)));
+                    emit(cg, "  %local.");
+                    emit(cg, unique_name);
+                    emit_line(cg, " = alloca i64");
+                    cg_push_alloca(cg, unique_name);
+                    j = j + 1;
+                }
+
+                cg_set_terminated(cg, false);
+                let result: i64 = gen_block(cg, body);
+
+                if cg_is_terminated(cg) == false {
+                    emit(cg, "  ret i64 ");
+                    emit_line(cg, result);
+                }
+            } else {
+                emit_line(cg, "  ret i64 0");
+            }
+
             emit_line(cg, "}");
             emit_line(cg, "");
 
@@ -6398,23 +6662,101 @@ fn gen_hive(cg: i64, item: i64) -> i64 {
     emit(cg, "; Hive: ");
     emit_line(cg, name);
 
+    // Issue 5 fix: Count specialists for allocation
+    let num_specialists: i64 = 0;
+    if specialists != 0 {
+        num_specialists = vec_len(specialists);
+    }
+
     // Generate hive_new function
+    // Issue 5 fix: Initialize hive with specialists
     emit(cg, "define i64 @\"");
     emit(cg, name);
     emit_line(cg, "_new\"() {");
     emit_line(cg, "entry:");
+    // Allocate: specialist_vec(0), routing_table(8), count(16)
     emit_line(cg, "  %hive = call ptr @malloc(i64 128)");
+    // Initialize specialist vector
+    emit_line(cg, "  %spec_vec = call ptr @intrinsic_vec_new()");
+    emit_line(cg, "  store ptr %spec_vec, ptr %hive");
+
+    // Issue 5 fix: Create and add each specialist
+    if specialists != 0 {
+        let i: i64 = 0;
+        while i < num_specialists {
+            let spec_name: i64 = vec_get(specialists, i);
+            // Generate call to create specialist
+            emit(cg, "  %spec_");
+            emit(cg, int_to_string(i));
+            emit(cg, " = call i64 @\"");
+            emit(cg, spec_name);
+            emit_line(cg, "_new\"()");
+            // Add to hive
+            emit(cg, "  %spec_ptr_");
+            emit(cg, int_to_string(i));
+            emit(cg, " = inttoptr i64 %spec_");
+            emit(cg, int_to_string(i));
+            emit_line(cg, " to ptr");
+            emit(cg, "  call void @intrinsic_vec_push(ptr %spec_vec, ptr %spec_ptr_");
+            emit(cg, int_to_string(i));
+            emit_line(cg, ")");
+            // Also call hive_add_specialist runtime
+            emit(cg, "  %hive_i64_");
+            emit(cg, int_to_string(i));
+            emit_line(cg, " = ptrtoint ptr %hive to i64");
+            emit(cg, "  call void @hive_add_specialist(i64 %hive_i64_");
+            emit(cg, int_to_string(i));
+            emit(cg, ", i64 %spec_");
+            emit(cg, int_to_string(i));
+            emit_line(cg, ")");
+            i = i + 1;
+        }
+    }
+
+    // Issue 11 fix: Store routing configuration
+    if routing != 0 {
+        emit_line(cg, "  %route_ptr = getelementptr i8, ptr %hive, i64 8");
+        emit_line(cg, "  %route_vec = call ptr @intrinsic_vec_new()");
+        emit_line(cg, "  store ptr %route_vec, ptr %route_ptr");
+    }
+
     emit_line(cg, "  %ret = ptrtoint ptr %hive to i64");
     emit_line(cg, "  ret i64 %ret");
     emit_line(cg, "}");
     emit_line(cg, "");
 
-    // Generate dispatch function
+    // Issue 4 fix: Generate dispatch function with actual routing
     emit(cg, "define i64 @\"");
     emit(cg, name);
     emit_line(cg, "_dispatch\"(i64 %self, i64 %query) {");
     emit_line(cg, "entry:");
-    emit_line(cg, "  ret i64 0");
+    // Use hive_route runtime to find appropriate specialist
+    emit_line(cg, "  %specialist = call i64 @hive_route(i64 %self, i64 %query)");
+    // Check if we got a valid specialist
+    emit_line(cg, "  %has_spec = icmp ne i64 %specialist, 0");
+    emit_line(cg, "  br i1 %has_spec, label %do_query, label %no_spec");
+    emit_line(cg, "do_query:");
+    // Call specialist_query on the routed specialist
+    emit_line(cg, "  %result = call i64 @specialist_query(i64 %specialist, i64 %query)");
+    emit_line(cg, "  ret i64 %result");
+    emit_line(cg, "no_spec:");
+    // No specialist found - try consensus if multiple specialists
+    if num_specialists > 1 {
+        emit_line(cg, "  %consensus = call i64 @hive_consensus(i64 %self, i64 %query)");
+        emit_line(cg, "  ret i64 %consensus");
+    } else {
+        emit_line(cg, "  ret i64 0");
+    }
+    emit_line(cg, "}");
+    emit_line(cg, "");
+
+    // Generate add_specialist function
+    emit(cg, "define void @\"");
+    emit(cg, name);
+    emit_line(cg, "_add_specialist\"(i64 %self, i64 %specialist) {");
+    emit_line(cg, "entry:");
+    emit_line(cg, "  call void @hive_add_specialist(i64 %self, i64 %specialist)");
+    emit_line(cg, "  ret void");
     emit_line(cg, "}");
     emit_line(cg, "");
 
@@ -6422,7 +6764,7 @@ fn gen_hive(cg: i64, item: i64) -> i64 {
 }
 
 // Generate anima (cognitive soul)
-// Layout: tag(0), name(1), identity(2), memory(3), beliefs(4), slm(5), persistence(6)
+// Layout: episodic(0), semantic(1), procedural(2), working(3), beliefs(4), identity(5), slm(6), persistence(7)
 fn gen_anima(cg: i64, item: i64) -> i64 {
     let name: i64 = load_ptr(item, 1);
     let identity: i64 = load_ptr(item, 2);
@@ -6434,12 +6776,28 @@ fn gen_anima(cg: i64, item: i64) -> i64 {
     emit(cg, "; Anima: ");
     emit_line(cg, name);
 
+    // Issue 14 fix: Extract identity string for storage
+    let identity_str: i64 = name;  // default to name
+    if identity != 0 {
+        identity_str = identity;
+    }
+
+    // Issue 12, 13 fix: Extract SLM and persistence config
+    let slm_model: i64 = 0;
+    let persistence_path: i64 = 0;
+    if slm != 0 {
+        slm_model = slm;  // SLM model name/path
+    }
+    if persistence != 0 {
+        persistence_path = persistence;  // persistence file path
+    }
+
     // Generate anima_new function - creates a new anima instance
     emit(cg, "define i64 @\"");
     emit(cg, name);
     emit_line(cg, "_new\"() {");
     emit_line(cg, "entry:");
-    // Allocate anima struct: identity, memory stores, beliefs, slm, persistence
+    // Allocate anima struct: memory stores + identity + slm + persistence
     emit_line(cg, "  %anima = call ptr @malloc(i64 256)");
     // Initialize memory stores
     emit_line(cg, "  %episodic = call ptr @intrinsic_vec_new()");
@@ -6458,10 +6816,69 @@ fn gen_anima(cg: i64, item: i64) -> i64 {
     emit_line(cg, "  store ptr %working, ptr %work_ptr");
     emit_line(cg, "  %bel_ptr = getelementptr ptr, ptr %anima, i64 4");
     emit_line(cg, "  store ptr %beliefs_store, ptr %bel_ptr");
+
+    // Issue 14 fix: Store identity string
+    emit(cg, "  %identity_str = call i64 @intrinsic_string_new(ptr @.str.anima.id.");
+    emit(cg, name);
+    emit_line(cg, ")");
+    emit_line(cg, "  %id_ptr = getelementptr ptr, ptr %anima, i64 5");
+    emit_line(cg, "  %id_as_ptr = inttoptr i64 %identity_str to ptr");
+    emit_line(cg, "  store ptr %id_as_ptr, ptr %id_ptr");
+
+    // Issue 12 fix: Initialize SLM integration if configured
+    if slm_model != 0 {
+        emit(cg, "  %slm_name = call i64 @intrinsic_string_new(ptr @.str.anima.slm.");
+        emit(cg, name);
+        emit_line(cg, ")");
+        emit_line(cg, "  %slm_handle = call i64 @model_load(i64 %slm_name)");
+        emit_line(cg, "  %slm_ptr = getelementptr ptr, ptr %anima, i64 6");
+        emit_line(cg, "  %slm_as_ptr = inttoptr i64 %slm_handle to ptr");
+        emit_line(cg, "  store ptr %slm_as_ptr, ptr %slm_ptr");
+    }
+
+    // Issue 13 fix: Store persistence path if configured
+    if persistence_path != 0 {
+        emit(cg, "  %persist_str = call i64 @intrinsic_string_new(ptr @.str.anima.persist.");
+        emit(cg, name);
+        emit_line(cg, ")");
+        emit_line(cg, "  %persist_ptr = getelementptr ptr, ptr %anima, i64 7");
+        emit_line(cg, "  %persist_as_ptr = inttoptr i64 %persist_str to ptr");
+        emit_line(cg, "  store ptr %persist_as_ptr, ptr %persist_ptr");
+    }
+
     emit_line(cg, "  %ret = ptrtoint ptr %anima to i64");
     emit_line(cg, "  ret i64 %ret");
     emit_line(cg, "}");
     emit_line(cg, "");
+
+    // Emit string constants for identity, slm, persistence
+    emit(cg, "@.str.anima.id.");
+    emit(cg, name);
+    emit(cg, " = private unnamed_addr constant [");
+    emit(cg, int_to_string(string_len(identity_str) + 1));
+    emit(cg, " x i8] c\"");
+    emit(cg, identity_str);
+    emit_line(cg, "\\00\"");
+
+    if slm_model != 0 {
+        emit(cg, "@.str.anima.slm.");
+        emit(cg, name);
+        emit(cg, " = private unnamed_addr constant [");
+        emit(cg, int_to_string(string_len(slm_model) + 1));
+        emit(cg, " x i8] c\"");
+        emit(cg, slm_model);
+        emit_line(cg, "\\00\"");
+    }
+
+    if persistence_path != 0 {
+        emit(cg, "@.str.anima.persist.");
+        emit(cg, name);
+        emit(cg, " = private unnamed_addr constant [");
+        emit(cg, int_to_string(string_len(persistence_path) + 1));
+        emit(cg, " x i8] c\"");
+        emit(cg, persistence_path);
+        emit_line(cg, "\\00\"");
+    }
 
     // Generate remember function - stores experience in episodic memory
     emit(cg, "define void @\"");
@@ -6505,48 +6922,295 @@ fn gen_anima(cg: i64, item: i64) -> i64 {
     emit_line(cg, "}");
     emit_line(cg, "");
 
-    // Generate recall_for function - goal-directed recall
+    // Issue 6 fix: Generate recall_for function with goal-directed recall
     emit(cg, "define i64 @\"");
     emit(cg, name);
     emit_line(cg, "_recall_for\"(i64 %self, i64 %goal, i64 %context) {");
     emit_line(cg, "entry:");
-    // For now, return empty vec - will be enhanced with SLM integration
+    // Create results vector
     emit_line(cg, "  %results = call ptr @intrinsic_vec_new()");
+    emit_line(cg, "  %anima = inttoptr i64 %self to ptr");
+
+    // Search episodic memory for goal-relevant memories
+    emit_line(cg, "  %ep_ptr = getelementptr ptr, ptr %anima, i64 0");
+    emit_line(cg, "  %episodic = load ptr, ptr %ep_ptr");
+    emit_line(cg, "  %ep_len = call i64 @intrinsic_vec_len(ptr %episodic)");
+    emit_line(cg, "  br label %ep_search");
+    emit_line(cg, "ep_search:");
+    emit_line(cg, "  %ep_i = phi i64 [ 0, %entry ], [ %ep_next, %ep_check ]");
+    emit_line(cg, "  %ep_done = icmp sge i64 %ep_i, %ep_len");
+    emit_line(cg, "  br i1 %ep_done, label %search_semantic, label %ep_check");
+    emit_line(cg, "ep_check:");
+    emit_line(cg, "  %ep_item = call ptr @intrinsic_vec_get(ptr %episodic, i64 %ep_i)");
+    emit_line(cg, "  %ep_val = ptrtoint ptr %ep_item to i64");
+    // Check if memory contains goal (simple string contains check)
+    emit_line(cg, "  %goal_ptr = inttoptr i64 %goal to ptr");
+    emit_line(cg, "  %ep_contains = call i64 @intrinsic_string_contains(ptr %ep_item, ptr %goal_ptr)");
+    emit_line(cg, "  %ep_relevant = icmp ne i64 %ep_contains, 0");
+    emit_line(cg, "  br i1 %ep_relevant, label %ep_add, label %ep_skip");
+    emit_line(cg, "ep_add:");
+    emit_line(cg, "  call void @intrinsic_vec_push(ptr %results, ptr %ep_item)");
+    emit_line(cg, "  br label %ep_skip");
+    emit_line(cg, "ep_skip:");
+    emit_line(cg, "  %ep_next = add i64 %ep_i, 1");
+    emit_line(cg, "  br label %ep_search");
+
+    // Search semantic memory
+    emit_line(cg, "search_semantic:");
+    emit_line(cg, "  %sem_ptr = getelementptr ptr, ptr %anima, i64 1");
+    emit_line(cg, "  %semantic = load ptr, ptr %sem_ptr");
+    emit_line(cg, "  %sem_len = call i64 @intrinsic_vec_len(ptr %semantic)");
+    emit_line(cg, "  br label %sem_search");
+    emit_line(cg, "sem_search:");
+    emit_line(cg, "  %sem_i = phi i64 [ 0, %search_semantic ], [ %sem_next, %sem_check ]");
+    emit_line(cg, "  %sem_done = icmp sge i64 %sem_i, %sem_len");
+    emit_line(cg, "  br i1 %sem_done, label %recall_done, label %sem_check");
+    emit_line(cg, "sem_check:");
+    emit_line(cg, "  %sem_item = call ptr @intrinsic_vec_get(ptr %semantic, i64 %sem_i)");
+    emit_line(cg, "  %sem_contains = call i64 @intrinsic_string_contains(ptr %sem_item, ptr %goal_ptr)");
+    emit_line(cg, "  %sem_relevant = icmp ne i64 %sem_contains, 0");
+    emit_line(cg, "  br i1 %sem_relevant, label %sem_add, label %sem_skip");
+    emit_line(cg, "sem_add:");
+    emit_line(cg, "  call void @intrinsic_vec_push(ptr %results, ptr %sem_item)");
+    emit_line(cg, "  br label %sem_skip");
+    emit_line(cg, "sem_skip:");
+    emit_line(cg, "  %sem_next = add i64 %sem_i, 1");
+    emit_line(cg, "  br label %sem_search");
+
+    emit_line(cg, "recall_done:");
     emit_line(cg, "  %ret = ptrtoint ptr %results to i64");
     emit_line(cg, "  ret i64 %ret");
     emit_line(cg, "}");
     emit_line(cg, "");
 
-    // Generate think function - SLM reasoning
+    // Issue 12 fix: Generate think function with actual SLM integration
     emit(cg, "define i64 @\"");
     emit(cg, name);
     emit_line(cg, "_think\"(i64 %self, i64 %question) {");
     emit_line(cg, "entry:");
-    // For now, return the question - will be enhanced with SLM integration
+    emit_line(cg, "  %anima = inttoptr i64 %self to ptr");
+    // Get SLM handle from slot 6
+    emit_line(cg, "  %slm_ptr = getelementptr ptr, ptr %anima, i64 6");
+    emit_line(cg, "  %slm_handle_ptr = load ptr, ptr %slm_ptr");
+    emit_line(cg, "  %slm_handle = ptrtoint ptr %slm_handle_ptr to i64");
+    // Check if SLM is loaded
+    emit_line(cg, "  %has_slm = icmp ne i64 %slm_handle, 0");
+    emit_line(cg, "  br i1 %has_slm, label %do_infer, label %no_slm");
+    emit_line(cg, "do_infer:");
+    // Call model_infer with the question
+    emit_line(cg, "  %result = call i64 @model_infer(i64 %question)");
+    emit_line(cg, "  ret i64 %result");
+    emit_line(cg, "no_slm:");
+    // No SLM loaded - return the question as-is
     emit_line(cg, "  ret i64 %question");
     emit_line(cg, "}");
     emit_line(cg, "");
 
     // Generate save function - persist anima to file
+    // Bug 30 fix: Implement actual JSON serialization
     emit(cg, "define i64 @\"");
     emit(cg, name);
     emit_line(cg, "_save\"(i64 %self, i64 %path) {");
     emit_line(cg, "entry:");
-    // TODO: Implement serialization
+    // Create JSON object for anima state
+    emit_line(cg, "  %json = call i64 @\"json_object_new\"()");
+
+    // Store anima name/identity as string
+    emit(cg, "  %name_str = call i64 @intrinsic_string_new(ptr @.str.anima.");
+    emit(cg, name);
+    emit_line(cg, ")");
+    emit_line(cg, "  %name_json = call i64 @\"json_string_sx\"(i64 %name_str)");
+    emit_line(cg, "  %key_identity = call i64 @intrinsic_string_new(ptr @.str.identity)");
+    emit_line(cg, "  call void @\"json_object_set_sx\"(i64 %json, i64 %key_identity, i64 %name_json)");
+
+    // Get anima struct pointer
+    emit_line(cg, "  %anima = inttoptr i64 %self to ptr");
+
+    // Serialize episodic memory (slot 0)
+    emit_line(cg, "  %ep_ptr = getelementptr ptr, ptr %anima, i64 0");
+    emit_line(cg, "  %episodic = load ptr, ptr %ep_ptr");
+    emit_line(cg, "  %ep_len = call i64 @intrinsic_vec_len(ptr %episodic)");
+    emit_line(cg, "  %ep_arr = call i64 @\"json_array_new\"()");
+    emit_line(cg, "  br label %ep_loop");
+    emit_line(cg, "ep_loop:");
+    emit_line(cg, "  %ep_i = phi i64 [ 0, %entry ], [ %ep_next, %ep_body ]");
+    emit_line(cg, "  %ep_done = icmp sge i64 %ep_i, %ep_len");
+    emit_line(cg, "  br i1 %ep_done, label %ep_end, label %ep_body");
+    emit_line(cg, "ep_body:");
+    emit_line(cg, "  %ep_item = call ptr @intrinsic_vec_get(ptr %episodic, i64 %ep_i)");
+    emit_line(cg, "  %ep_val = ptrtoint ptr %ep_item to i64");
+    emit_line(cg, "  %ep_json_item = call i64 @\"json_string_sx\"(i64 %ep_val)");
+    emit_line(cg, "  call void @\"json_array_push\"(i64 %ep_arr, i64 %ep_json_item)");
+    emit_line(cg, "  %ep_next = add i64 %ep_i, 1");
+    emit_line(cg, "  br label %ep_loop");
+    emit_line(cg, "ep_end:");
+    emit_line(cg, "  %key_episodic = call i64 @intrinsic_string_new(ptr @.str.episodic)");
+    emit_line(cg, "  call void @\"json_object_set_sx\"(i64 %json, i64 %key_episodic, i64 %ep_arr)");
+
+    // Serialize semantic memory (slot 1)
+    emit_line(cg, "  %sem_ptr = getelementptr ptr, ptr %anima, i64 1");
+    emit_line(cg, "  %semantic = load ptr, ptr %sem_ptr");
+    emit_line(cg, "  %sem_len = call i64 @intrinsic_vec_len(ptr %semantic)");
+    emit_line(cg, "  %sem_arr = call i64 @\"json_array_new\"()");
+    emit_line(cg, "  br label %sem_loop");
+    emit_line(cg, "sem_loop:");
+    emit_line(cg, "  %sem_i = phi i64 [ 0, %ep_end ], [ %sem_next, %sem_body ]");
+    emit_line(cg, "  %sem_done = icmp sge i64 %sem_i, %sem_len");
+    emit_line(cg, "  br i1 %sem_done, label %sem_end, label %sem_body");
+    emit_line(cg, "sem_body:");
+    emit_line(cg, "  %sem_item = call ptr @intrinsic_vec_get(ptr %semantic, i64 %sem_i)");
+    emit_line(cg, "  %sem_val = ptrtoint ptr %sem_item to i64");
+    emit_line(cg, "  %sem_json_item = call i64 @\"json_string_sx\"(i64 %sem_val)");
+    emit_line(cg, "  call void @\"json_array_push\"(i64 %sem_arr, i64 %sem_json_item)");
+    emit_line(cg, "  %sem_next = add i64 %sem_i, 1");
+    emit_line(cg, "  br label %sem_loop");
+    emit_line(cg, "sem_end:");
+    emit_line(cg, "  %key_semantic = call i64 @intrinsic_string_new(ptr @.str.semantic)");
+    emit_line(cg, "  call void @\"json_object_set_sx\"(i64 %json, i64 %key_semantic, i64 %sem_arr)");
+
+    // Serialize beliefs (slot 4)
+    emit_line(cg, "  %bel_ptr = getelementptr ptr, ptr %anima, i64 4");
+    emit_line(cg, "  %beliefs = load ptr, ptr %bel_ptr");
+    emit_line(cg, "  %bel_len = call i64 @intrinsic_vec_len(ptr %beliefs)");
+    emit_line(cg, "  %bel_arr = call i64 @\"json_array_new\"()");
+    emit_line(cg, "  br label %bel_loop");
+    emit_line(cg, "bel_loop:");
+    emit_line(cg, "  %bel_i = phi i64 [ 0, %sem_end ], [ %bel_next, %bel_body ]");
+    emit_line(cg, "  %bel_done = icmp sge i64 %bel_i, %bel_len");
+    emit_line(cg, "  br i1 %bel_done, label %bel_end, label %bel_body");
+    emit_line(cg, "bel_body:");
+    emit_line(cg, "  %bel_item = call ptr @intrinsic_vec_get(ptr %beliefs, i64 %bel_i)");
+    emit_line(cg, "  %bel_val = ptrtoint ptr %bel_item to i64");
+    emit_line(cg, "  %bel_json_item = call i64 @\"json_string_sx\"(i64 %bel_val)");
+    emit_line(cg, "  call void @\"json_array_push\"(i64 %bel_arr, i64 %bel_json_item)");
+    emit_line(cg, "  %bel_next = add i64 %bel_i, 1");
+    emit_line(cg, "  br label %bel_loop");
+    emit_line(cg, "bel_end:");
+    emit_line(cg, "  %key_beliefs = call i64 @intrinsic_string_new(ptr @.str.beliefs)");
+    emit_line(cg, "  call void @\"json_object_set_sx\"(i64 %json, i64 %key_beliefs, i64 %bel_arr)");
+
+    // Stringify and write to file
+    emit_line(cg, "  %json_str = call i64 @\"json_stringify\"(i64 %json)");
+    emit_line(cg, "  %path_ptr = inttoptr i64 %path to ptr");
+    emit_line(cg, "  %json_ptr = inttoptr i64 %json_str to ptr");
+    emit_line(cg, "  call void @intrinsic_write_file(ptr %path_ptr, ptr %json_ptr)");
     emit_line(cg, "  ret i64 1");
     emit_line(cg, "}");
     emit_line(cg, "");
 
+    // Emit string constants for JSON keys
+    emit(cg, "@.str.anima.");
+    emit(cg, name);
+    emit(cg, " = private unnamed_addr constant [");
+    emit(cg, int_to_string(string_len(name) + 1));
+    emit(cg, " x i8] c\"");
+    emit(cg, name);
+    emit_line(cg, "\\00\"");
+    emit_line(cg, "@.str.identity = private unnamed_addr constant [9 x i8] c\"identity\\00\"");
+    emit_line(cg, "@.str.episodic = private unnamed_addr constant [9 x i8] c\"episodic\\00\"");
+    emit_line(cg, "@.str.semantic = private unnamed_addr constant [9 x i8] c\"semantic\\00\"");
+    emit_line(cg, "@.str.beliefs = private unnamed_addr constant [8 x i8] c\"beliefs\\00\"");
+
     // Generate load function - load anima from file
+    // Bug 30 fix: Implement actual JSON deserialization
     emit(cg, "define i64 @\"");
     emit(cg, name);
     emit_line(cg, "_load\"(i64 %path) {");
     emit_line(cg, "entry:");
-    // For now, create new anima - will be enhanced with deserialization
-    emit(cg, "  %anima = call i64 @\"");
+
+    // Create new anima instance first
+    emit(cg, "  %anima_i64 = call i64 @\"");
     emit(cg, name);
     emit_line(cg, "_new\"()");
-    emit_line(cg, "  ret i64 %anima");
+    emit_line(cg, "  %anima = inttoptr i64 %anima_i64 to ptr");
+
+    // Read file content
+    emit_line(cg, "  %path_ptr = inttoptr i64 %path to ptr");
+    emit_line(cg, "  %content = call ptr @intrinsic_read_file(ptr %path_ptr)");
+    emit_line(cg, "  %content_i64 = ptrtoint ptr %content to i64");
+
+    // Parse JSON
+    emit_line(cg, "  %json = call i64 @\"json_parse_simple\"(i64 %content_i64)");
+    emit_line(cg, "  %is_null = call i8 @\"json_is_null\"(i64 %json)");
+    emit_line(cg, "  %is_null_i1 = trunc i8 %is_null to i1");
+    emit_line(cg, "  br i1 %is_null_i1, label %parse_fail, label %parse_ok");
+    emit_line(cg, "parse_fail:");
+    emit_line(cg, "  ret i64 %anima_i64");
+    emit_line(cg, "parse_ok:");
+
+    // Load episodic memory
+    emit_line(cg, "  %key_ep = call i64 @intrinsic_string_new(ptr @.str.episodic)");
+    emit_line(cg, "  %ep_json = call i64 @\"json_get_sx\"(i64 %json, i64 %key_ep)");
+    emit_line(cg, "  %ep_is_arr = call i8 @\"json_is_array\"(i64 %ep_json)");
+    emit_line(cg, "  %ep_is_arr_i1 = trunc i8 %ep_is_arr to i1");
+    emit_line(cg, "  br i1 %ep_is_arr_i1, label %load_ep, label %skip_ep");
+    emit_line(cg, "load_ep:");
+    emit_line(cg, "  %ep_ptr = getelementptr ptr, ptr %anima, i64 0");
+    emit_line(cg, "  %episodic = load ptr, ptr %ep_ptr");
+    emit_line(cg, "  %ep_len = call i64 @\"json_array_len\"(i64 %ep_json)");
+    emit_line(cg, "  br label %ep_load_loop");
+    emit_line(cg, "ep_load_loop:");
+    emit_line(cg, "  %ep_li = phi i64 [ 0, %load_ep ], [ %ep_lnext, %ep_load_body ]");
+    emit_line(cg, "  %ep_ldone = icmp sge i64 %ep_li, %ep_len");
+    emit_line(cg, "  br i1 %ep_ldone, label %skip_ep, label %ep_load_body");
+    emit_line(cg, "ep_load_body:");
+    emit_line(cg, "  %ep_item_json = call i64 @\"json_get_index\"(i64 %ep_json, i64 %ep_li)");
+    emit_line(cg, "  %ep_item_str = call i64 @\"json_as_string\"(i64 %ep_item_json)");
+    emit_line(cg, "  %ep_item_ptr = inttoptr i64 %ep_item_str to ptr");
+    emit_line(cg, "  call void @intrinsic_vec_push(ptr %episodic, ptr %ep_item_ptr)");
+    emit_line(cg, "  %ep_lnext = add i64 %ep_li, 1");
+    emit_line(cg, "  br label %ep_load_loop");
+    emit_line(cg, "skip_ep:");
+
+    // Load semantic memory
+    emit_line(cg, "  %key_sem = call i64 @intrinsic_string_new(ptr @.str.semantic)");
+    emit_line(cg, "  %sem_json = call i64 @\"json_get_sx\"(i64 %json, i64 %key_sem)");
+    emit_line(cg, "  %sem_is_arr = call i8 @\"json_is_array\"(i64 %sem_json)");
+    emit_line(cg, "  %sem_is_arr_i1 = trunc i8 %sem_is_arr to i1");
+    emit_line(cg, "  br i1 %sem_is_arr_i1, label %load_sem, label %skip_sem");
+    emit_line(cg, "load_sem:");
+    emit_line(cg, "  %sem_ptr = getelementptr ptr, ptr %anima, i64 1");
+    emit_line(cg, "  %semantic = load ptr, ptr %sem_ptr");
+    emit_line(cg, "  %sem_len = call i64 @\"json_array_len\"(i64 %sem_json)");
+    emit_line(cg, "  br label %sem_load_loop");
+    emit_line(cg, "sem_load_loop:");
+    emit_line(cg, "  %sem_li = phi i64 [ 0, %load_sem ], [ %sem_lnext, %sem_load_body ]");
+    emit_line(cg, "  %sem_ldone = icmp sge i64 %sem_li, %sem_len");
+    emit_line(cg, "  br i1 %sem_ldone, label %skip_sem, label %sem_load_body");
+    emit_line(cg, "sem_load_body:");
+    emit_line(cg, "  %sem_item_json = call i64 @\"json_get_index\"(i64 %sem_json, i64 %sem_li)");
+    emit_line(cg, "  %sem_item_str = call i64 @\"json_as_string\"(i64 %sem_item_json)");
+    emit_line(cg, "  %sem_item_ptr = inttoptr i64 %sem_item_str to ptr");
+    emit_line(cg, "  call void @intrinsic_vec_push(ptr %semantic, ptr %sem_item_ptr)");
+    emit_line(cg, "  %sem_lnext = add i64 %sem_li, 1");
+    emit_line(cg, "  br label %sem_load_loop");
+    emit_line(cg, "skip_sem:");
+
+    // Load beliefs
+    emit_line(cg, "  %key_bel = call i64 @intrinsic_string_new(ptr @.str.beliefs)");
+    emit_line(cg, "  %bel_json = call i64 @\"json_get_sx\"(i64 %json, i64 %key_bel)");
+    emit_line(cg, "  %bel_is_arr = call i8 @\"json_is_array\"(i64 %bel_json)");
+    emit_line(cg, "  %bel_is_arr_i1 = trunc i8 %bel_is_arr to i1");
+    emit_line(cg, "  br i1 %bel_is_arr_i1, label %load_bel, label %load_done");
+    emit_line(cg, "load_bel:");
+    emit_line(cg, "  %bel_ptr = getelementptr ptr, ptr %anima, i64 4");
+    emit_line(cg, "  %beliefs = load ptr, ptr %bel_ptr");
+    emit_line(cg, "  %bel_len = call i64 @\"json_array_len\"(i64 %bel_json)");
+    emit_line(cg, "  br label %bel_load_loop");
+    emit_line(cg, "bel_load_loop:");
+    emit_line(cg, "  %bel_li = phi i64 [ 0, %load_bel ], [ %bel_lnext, %bel_load_body ]");
+    emit_line(cg, "  %bel_ldone = icmp sge i64 %bel_li, %bel_len");
+    emit_line(cg, "  br i1 %bel_ldone, label %load_done, label %bel_load_body");
+    emit_line(cg, "bel_load_body:");
+    emit_line(cg, "  %bel_item_json = call i64 @\"json_get_index\"(i64 %bel_json, i64 %bel_li)");
+    emit_line(cg, "  %bel_item_str = call i64 @\"json_as_string\"(i64 %bel_item_json)");
+    emit_line(cg, "  %bel_item_ptr = inttoptr i64 %bel_item_str to ptr");
+    emit_line(cg, "  call void @intrinsic_vec_push(ptr %beliefs, ptr %bel_item_ptr)");
+    emit_line(cg, "  %bel_lnext = add i64 %bel_li, 1");
+    emit_line(cg, "  br label %bel_load_loop");
+    emit_line(cg, "load_done:");
+
+    emit_line(cg, "  ret i64 %anima_i64");
     emit_line(cg, "}");
     emit_line(cg, "");
 
@@ -6712,6 +7376,21 @@ fn gen_header(cg: i64) -> i64 {
     emit_line(cg, "declare i64 @remove_path(i64)");
     // Float parsing
     emit_line(cg, "declare i64 @f64_parse(ptr)");
+
+    // Issue 7 fix: Generator intrinsics
+    emit_line(cg, "; Generator intrinsics");
+    emit_line(cg, "declare i64 @generator_yield(i64)");
+    emit_line(cg, "declare i64 @generator_new(i64)");
+    emit_line(cg, "declare i64 @generator_next(i64)");
+    emit_line(cg, "declare i64 @generator_done(i64)");
+
+    // Issue 8, 9 fix: Belief guard intrinsics
+    emit_line(cg, "; Belief guard intrinsics");
+    emit_line(cg, "declare i64 @belief_guard_get_confidence(i64)");
+    emit_line(cg, "declare i64 @belief_guard_get_derivative(i64)");
+    emit_line(cg, "declare i64 @belief_register(i64, double)");
+    emit_line(cg, "declare void @belief_update(i64, double)");
+    emit_line(cg, "declare double @belief_get_value(i64)");
 
     // Async runtime
     emit_line(cg, "declare i64 @future_poll(i64)");
