@@ -1,0 +1,268 @@
+// simplex-training::trainer::meta - Meta-Learning Trainer
+//
+// Implements meta-optimization for hyperparameters:
+// - Learns optimal schedule parameters
+// - Uses gradient descent on validation loss
+// - Supports nested optimization (inner train, outer tune)
+
+use simplex_std::dual::dual;
+use simplex_std::{Clone, Default, Vec};
+use crate::schedules::{LearnedSchedules, SchedulesGradient};
+use super::{StepResult, TrainingHistory, Checkpoint, EarlyStopping};
+
+/// Configuration for meta-trainer
+#[derive(Clone)]
+pub struct MetaConfig {
+    /// Meta learning rate
+    pub meta_lr: f64,
+    /// Inner loop steps per meta step
+    pub inner_steps: u64,
+    /// Outer loop (meta) steps
+    pub meta_steps: u64,
+    /// Validation frequency
+    pub val_every: u64,
+    /// Gradient clipping threshold
+    pub grad_clip: f64,
+    /// L2 regularization on schedules
+    pub schedule_reg: f64,
+    /// Early stopping patience
+    pub patience: u64,
+}
+
+impl MetaConfig {
+    pub fn new() -> MetaConfig {
+        MetaConfig {
+            meta_lr: 0.001,
+            inner_steps: 100,
+            meta_steps: 50,
+            val_every: 10,
+            grad_clip: 1.0,
+            schedule_reg: 1e-5,
+            patience: 10,
+        }
+    }
+}
+
+impl Default for MetaConfig {
+    fn default() -> MetaConfig {
+        MetaConfig::new()
+    }
+}
+
+/// Meta-loss components for analysis
+#[derive(Clone)]
+pub struct MetaLoss {
+    /// Primary validation loss
+    pub val_loss: dual,
+    /// Schedule regularization
+    pub reg_loss: dual,
+    /// Total meta loss
+    pub total: dual,
+}
+
+impl MetaLoss {
+    pub fn new(val_loss: dual, schedules: &LearnedSchedules, reg_weight: f64) -> MetaLoss {
+        let reg_loss = schedules.l2_norm() * dual::constant(reg_weight);
+        MetaLoss {
+            val_loss,
+            reg_loss,
+            total: val_loss + reg_loss,
+        }
+    }
+}
+
+/// Meta-trainer state
+#[derive(Clone)]
+pub struct MetaState {
+    /// Current meta step
+    pub meta_step: u64,
+    /// Current inner step
+    pub inner_step: u64,
+    /// Inner training history
+    pub inner_history: TrainingHistory,
+    /// Meta (outer) loss history
+    pub meta_losses: Vec<f64>,
+    /// Best schedules found
+    pub best_schedules: LearnedSchedules,
+    /// Best meta loss
+    pub best_meta_loss: f64,
+}
+
+impl MetaState {
+    pub fn new() -> MetaState {
+        MetaState {
+            meta_step: 0,
+            inner_step: 0,
+            inner_history: TrainingHistory::new(),
+            meta_losses: Vec::new(),
+            best_schedules: LearnedSchedules::new(),
+            best_meta_loss: f64::MAX,
+        }
+    }
+
+    pub fn update_best(&mut self, loss: f64, schedules: &LearnedSchedules) -> bool {
+        if loss < self.best_meta_loss {
+            self.best_meta_loss = loss;
+            self.best_schedules = schedules.clone();
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl Default for MetaState {
+    fn default() -> MetaState {
+        MetaState::new()
+    }
+}
+
+/// Meta-trainer for learning optimal schedules
+pub struct MetaTrainer {
+    /// Configuration
+    pub config: MetaConfig,
+    /// Learnable schedules
+    pub schedules: LearnedSchedules,
+    /// Training state
+    pub state: MetaState,
+    /// Early stopping
+    pub early_stopping: EarlyStopping,
+}
+
+impl MetaTrainer {
+    /// Create new meta trainer
+    pub fn new(config: MetaConfig) -> MetaTrainer {
+        let patience = config.patience;
+        MetaTrainer {
+            config,
+            schedules: LearnedSchedules::new(),
+            state: MetaState::new(),
+            early_stopping: EarlyStopping::new(patience, 1e-5),
+        }
+    }
+
+    /// Run inner training loop, returns validation loss
+    ///
+    /// This simulates training with current schedules
+    /// In practice, this would call the actual model training
+    pub fn inner_loop<F>(&mut self, mut train_step: F) -> dual
+    where
+        F: FnMut(u64, f64) -> dual,  // (step, lr) -> loss
+    {
+        // Reset inner history
+        self.state.inner_history = TrainingHistory::new();
+
+        for i in 0..self.config.inner_steps {
+            // Get current learning rate from schedule
+            let step = dual::constant(i as f64);
+            let lr = self.schedules.learning_rate(step,
+                self.state.inner_history.losses.as_slice());
+
+            // Perform training step
+            let loss = train_step(i, lr.val);
+
+            // Record
+            let result = StepResult::new(loss, i, lr.val);
+            self.state.inner_history.record(&result);
+            self.state.inner_step = self.state.inner_step + 1;
+        }
+
+        // Return final loss as validation proxy
+        // In practice, we'd compute actual validation loss here
+        let final_loss = if self.state.inner_history.losses.len() > 0 {
+            self.state.inner_history.moving_average(10)
+        } else {
+            0.0
+        };
+
+        dual::variable(final_loss)
+    }
+
+    /// Compute meta loss from validation result
+    pub fn meta_loss(&self, val_loss: dual) -> MetaLoss {
+        MetaLoss::new(val_loss, &self.schedules, self.config.schedule_reg)
+    }
+
+    /// Meta gradient step
+    pub fn meta_step(&mut self, grad: &SchedulesGradient) {
+        // Clip gradient
+        var clipped = grad.clone();
+        let norm = clipped.norm();
+        if norm > self.config.grad_clip {
+            clipped.scale(self.config.grad_clip / norm);
+        }
+
+        // Update schedules
+        self.schedules.update(&clipped, self.config.meta_lr);
+        self.state.meta_step = self.state.meta_step + 1;
+    }
+
+    /// Run full meta-optimization
+    ///
+    /// train_step: closure that performs one inner training step
+    /// val_fn: closure that computes validation loss
+    pub fn optimize<F, V>(&mut self, mut train_step: F, mut val_fn: V) -> LearnedSchedules
+    where
+        F: FnMut(u64, f64) -> dual,  // (step, lr) -> train_loss
+        V: FnMut(&LearnedSchedules) -> f64,  // schedules -> val_loss
+    {
+        for m in 0..self.config.meta_steps {
+            // Inner loop: train with current schedules
+            let inner_loss = self.inner_loop(&mut train_step);
+
+            // Compute validation loss
+            let val_loss_val = val_fn(&self.schedules);
+            let val_loss = dual::variable(val_loss_val);
+
+            // Compute meta loss
+            let meta_loss = self.meta_loss(val_loss);
+            self.state.meta_losses.push(meta_loss.total.val);
+
+            // Update best
+            self.state.update_best(meta_loss.total.val, &self.schedules);
+
+            // Extract gradient and update
+            let grad = self.schedules.gradient();
+            self.meta_step(&grad);
+
+            // Early stopping check
+            if self.early_stopping.check(meta_loss.total.val) {
+                break;
+            }
+        }
+
+        // Return best schedules found
+        self.state.best_schedules.clone()
+    }
+
+    /// Get current learning rate
+    pub fn current_lr(&self, step: u64) -> f64 {
+        let s = dual::constant(step as f64);
+        self.schedules.learning_rate(s,
+            self.state.inner_history.losses.as_slice()).val
+    }
+
+    /// Get current temperature for distillation
+    pub fn current_temperature(&self, step: u64) -> f64 {
+        let s = dual::constant(step as f64);
+        self.schedules.distill_temperature(s).val
+    }
+
+    /// Get current sparsity target
+    pub fn current_sparsity(&self, step: u64) -> f64 {
+        let s = dual::constant(step as f64);
+        self.schedules.sparsity(s).val
+    }
+
+    /// Get current quantization bits
+    pub fn current_bits(&self, step: u64) -> f64 {
+        let s = dual::constant(step as f64);
+        self.schedules.bits(s).val
+    }
+}
+
+impl Default for MetaTrainer {
+    fn default() -> MetaTrainer {
+        MetaTrainer::new(MetaConfig::default())
+    }
+}

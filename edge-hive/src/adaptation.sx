@@ -1,0 +1,841 @@
+// Edge Hive - Device Adaptation
+// Battery-aware scheduling, platform-specific adapters, and dynamic scaling
+//
+// Phase 3: Device Adaptation
+// - Device-specific specialist configurations
+// - Resource-aware model loading
+// - Battery-aware scheduling
+// - Platform-specific UI adapters
+// - Sensor integration framework
+
+// =============================================================================
+// Power States
+// =============================================================================
+
+fn POWER_CRITICAL() -> i64 { 0 }     // <10% - Minimal operations only
+fn POWER_LOW() -> i64 { 1 }          // 10-20% - Reduce sync, prefer cloud
+fn POWER_MODERATE() -> i64 { 2 }     // 20-50% - Normal but conservative
+fn POWER_GOOD() -> i64 { 3 }         // 50-80% - Full local operations
+fn POWER_FULL() -> i64 { 4 }         // >80% or plugged in - Maximum local
+
+// Thermal states
+fn THERMAL_NORMAL() -> i64 { 0 }
+fn THERMAL_WARM() -> i64 { 1 }
+fn THERMAL_HOT() -> i64 { 2 }
+fn THERMAL_THROTTLED() -> i64 { 3 }
+
+// =============================================================================
+// BatteryAwareScheduler Structure
+// =============================================================================
+// Slot 0: power_state
+// Slot 1: thermal_state
+// Slot 2: is_charging
+// Slot 3: sync_interval_ms (dynamic)
+// Slot 4: max_local_ops_per_min
+// Slot 5: model_allowed (1 = can use local model)
+// Slot 6: background_tasks_allowed
+// Slot 7: last_check_time
+// Slot 8: check_interval_ms
+
+fn battery_scheduler_new() -> i64 {
+    let s: i64 = vec_new();
+    vec_push(s, POWER_GOOD());       // Slot 0: assume good power
+    vec_push(s, THERMAL_NORMAL());   // Slot 1: normal temp
+    vec_push(s, 0);                  // Slot 2: not charging
+    vec_push(s, 300000);             // Slot 3: 5 min sync (default)
+    vec_push(s, 60);                 // Slot 4: 60 ops/min
+    vec_push(s, 1);                  // Slot 5: model allowed
+    vec_push(s, 1);                  // Slot 6: background allowed
+    vec_push(s, 0);                  // Slot 7: last check
+    vec_push(s, 60000);              // Slot 8: check every minute
+    s
+}
+
+// Accessors
+fn scheduler_power_state(s: i64) -> i64 { vec_get(s, 0) }
+fn scheduler_thermal_state(s: i64) -> i64 { vec_get(s, 1) }
+fn scheduler_is_charging(s: i64) -> i64 { vec_get(s, 2) }
+fn scheduler_sync_interval(s: i64) -> i64 { vec_get(s, 3) }
+fn scheduler_max_ops(s: i64) -> i64 { vec_get(s, 4) }
+fn scheduler_model_allowed(s: i64) -> i64 { vec_get(s, 5) }
+fn scheduler_background_allowed(s: i64) -> i64 { vec_get(s, 6) }
+
+fn scheduler_set_power_state(s: i64, state: i64) -> i64 {
+    vec_set(s, 0, state);
+    scheduler_recalculate_limits(s)
+}
+
+fn scheduler_set_thermal_state(s: i64, state: i64) -> i64 {
+    vec_set(s, 1, state);
+    scheduler_recalculate_limits(s)
+}
+
+fn scheduler_set_charging(s: i64, charging: i64) -> i64 {
+    vec_set(s, 2, charging);
+    scheduler_recalculate_limits(s)
+}
+
+fn scheduler_recalculate_limits(s: i64) -> i64 {
+    let power: i64 = scheduler_power_state(s);
+    let thermal: i64 = scheduler_thermal_state(s);
+    let charging: i64 = scheduler_is_charging(s);
+
+    // Base values
+    let sync_interval: i64 = 300000;  // 5 min
+    let max_ops: i64 = 60;
+    let model_allowed: i64 = 1;
+    let background_allowed: i64 = 1;
+
+    // Power adjustments
+    if power == POWER_CRITICAL() {
+        sync_interval = 1800000;      // 30 min
+        max_ops = 5;
+        model_allowed = 0;
+        background_allowed = 0;
+    } else if power == POWER_LOW() {
+        sync_interval = 900000;       // 15 min
+        max_ops = 15;
+        model_allowed = 0;            // No local model
+        background_allowed = 0;
+    } else if power == POWER_MODERATE() {
+        sync_interval = 600000;       // 10 min
+        max_ops = 30;
+        model_allowed = 1;            // Allow model but be careful
+    }
+
+    // Thermal adjustments (override if throttled)
+    if thermal == THERMAL_HOT() {
+        max_ops = max_ops / 2;
+        model_allowed = 0;
+    } else if thermal == THERMAL_THROTTLED() {
+        max_ops = 5;
+        model_allowed = 0;
+        background_allowed = 0;
+    }
+
+    // Charging overrides (more permissive)
+    if charging == 1 {
+        sync_interval = 300000;       // Reset to 5 min
+        model_allowed = 1;
+        background_allowed = 1;
+        if power != POWER_CRITICAL() {
+            max_ops = 60;
+        }
+    }
+
+    vec_set(s, 3, sync_interval);
+    vec_set(s, 4, max_ops);
+    vec_set(s, 5, model_allowed);
+    vec_set(s, 6, background_allowed);
+    0
+}
+
+fn scheduler_update(s: i64, device_profile: i64) -> i64 {
+    let last_check: i64 = vec_get(s, 7);
+    let check_interval: i64 = vec_get(s, 8);
+    let now: i64 = time_now_ms();
+
+    if now - last_check < check_interval {
+        return 0;  // No update needed
+    }
+
+    vec_set(s, 7, now);
+
+    // Query device state
+    let battery_pct: i64 = device_get_battery(device_profile);
+    let is_charging: i64 = sys_is_charging();
+    let thermal: i64 = sys_get_thermal_state();
+
+    // Map battery to power state
+    let power_state: i64 = POWER_FULL();
+    if battery_pct < 10 {
+        power_state = POWER_CRITICAL();
+    } else if battery_pct < 20 {
+        power_state = POWER_LOW();
+    } else if battery_pct < 50 {
+        power_state = POWER_MODERATE();
+    } else if battery_pct < 80 {
+        power_state = POWER_GOOD();
+    }
+
+    // Plugged in = always POWER_FULL (except critical)
+    if is_charging == 1 && power_state != POWER_CRITICAL() {
+        power_state = POWER_FULL();
+    }
+
+    scheduler_set_power_state(s, power_state);
+    scheduler_set_thermal_state(s, thermal);
+    scheduler_set_charging(s, is_charging);
+
+    1  // Updated
+}
+
+fn scheduler_can_run_model(s: i64) -> i64 {
+    scheduler_model_allowed(s)
+}
+
+fn scheduler_can_run_background(s: i64) -> i64 {
+    scheduler_background_allowed(s)
+}
+
+fn scheduler_get_sync_interval(s: i64) -> i64 {
+    scheduler_sync_interval(s)
+}
+
+// =============================================================================
+// SpecialistScaler - Dynamic specialist allocation
+// =============================================================================
+// Slot 0: device_class
+// Slot 1: available_memory_mb
+// Slot 2: active_specialists (vec of specialist refs)
+// Slot 3: dormant_specialists (vec of specialist refs)
+// Slot 4: memory_budget_mb
+
+fn specialist_scaler_new(device_class: i64) -> i64 {
+    let scaler: i64 = vec_new();
+    vec_push(scaler, device_class);          // Slot 0
+    vec_push(scaler, detect_available_memory()); // Slot 1
+    vec_push(scaler, vec_new());             // Slot 2: active
+    vec_push(scaler, vec_new());             // Slot 3: dormant
+    vec_push(scaler, memory_budget_for_class(device_class)); // Slot 4
+    scaler
+}
+
+fn memory_budget_for_class(device_class: i64) -> i64 {
+    // Memory budget in MB for specialists
+    if device_class == DEVICE_WATCH() { return 32; }
+    if device_class == DEVICE_WEARABLE() { return 16; }
+    if device_class == DEVICE_PHONE() { return 256; }
+    if device_class == DEVICE_TABLET() { return 512; }
+    if device_class == DEVICE_LAPTOP() { return 1024; }
+    if device_class == DEVICE_DESKTOP() { return 2048; }
+    128  // Default
+}
+
+fn scaler_active_count(scaler: i64) -> i64 {
+    let active: i64 = vec_get(scaler, 2);
+    vec_len(active)
+}
+
+fn scaler_dormant_count(scaler: i64) -> i64 {
+    let dormant: i64 = vec_get(scaler, 3);
+    vec_len(dormant)
+}
+
+fn scaler_add_specialist(scaler: i64, specialist: i64, memory_mb: i64) -> i64 {
+    let available: i64 = vec_get(scaler, 1);
+    let budget: i64 = vec_get(scaler, 4);
+    let active: i64 = vec_get(scaler, 2);
+    let dormant: i64 = vec_get(scaler, 3);
+
+    // Check if we have memory budget
+    let used: i64 = scaler_memory_used(scaler);
+    if used + memory_mb > budget {
+        // Not enough memory - add as dormant
+        vec_push(dormant, specialist);
+        return 0;  // Added as dormant
+    }
+
+    vec_push(active, specialist);
+    1  // Added as active
+}
+
+fn scaler_memory_used(scaler: i64) -> i64 {
+    let active: i64 = vec_get(scaler, 2);
+    let len: i64 = vec_len(active);
+    let used: i64 = 0;
+
+    let i: i64 = 0;
+    while i < len {
+        let spec: i64 = vec_get(active, i);
+        used = used + specialist_memory_usage(spec);
+        i = i + 1;
+    }
+    used
+}
+
+fn scaler_activate_specialist(scaler: i64, specialist_type: i64) -> i64 {
+    let dormant: i64 = vec_get(scaler, 3);
+    let active: i64 = vec_get(scaler, 2);
+    let budget: i64 = vec_get(scaler, 4);
+
+    // Find specialist in dormant list
+    let len: i64 = vec_len(dormant);
+    let i: i64 = 0;
+    while i < len {
+        let spec: i64 = vec_get(dormant, i);
+        if specialist_get_type(spec) == specialist_type {
+            let mem: i64 = specialist_memory_usage(spec);
+            let used: i64 = scaler_memory_used(scaler);
+
+            if used + mem <= budget {
+                // Move from dormant to active
+                scaler_remove_from_vec(dormant, i);
+                vec_push(active, spec);
+                return 1;  // Activated
+            }
+
+            // Need to deactivate something first
+            return 0 - 1;  // Need memory
+        }
+        i = i + 1;
+    }
+    0  // Not found
+}
+
+fn scaler_deactivate_specialist(scaler: i64, specialist_type: i64) -> i64 {
+    let active: i64 = vec_get(scaler, 2);
+    let dormant: i64 = vec_get(scaler, 3);
+
+    let len: i64 = vec_len(active);
+    let i: i64 = 0;
+    while i < len {
+        let spec: i64 = vec_get(active, i);
+        if specialist_get_type(spec) == specialist_type {
+            // Move from active to dormant
+            scaler_remove_from_vec(active, i);
+            vec_push(dormant, spec);
+            return 1;
+        }
+        i = i + 1;
+    }
+    0  // Not found
+}
+
+fn scaler_remove_from_vec(v: i64, idx: i64) -> i64 {
+    // Remove element at idx by swapping with last and popping
+    let len: i64 = vec_len(v);
+    if idx >= len { return 0; }
+
+    let last_idx: i64 = len - 1;
+    if idx != last_idx {
+        let last: i64 = vec_get(v, last_idx);
+        vec_set(v, idx, last);
+    }
+    vec_pop(v);
+    1
+}
+
+fn scaler_adapt_to_memory_pressure(scaler: i64) -> i64 {
+    let available: i64 = detect_available_memory();
+    vec_set(scaler, 1, available);
+
+    let budget: i64 = vec_get(scaler, 4);
+    let used: i64 = scaler_memory_used(scaler);
+
+    // If we're over budget, deactivate least important specialists
+    if used > budget {
+        let active: i64 = vec_get(scaler, 2);
+        let to_deactivate: i64 = used - budget;
+
+        // Find lowest priority specialist to deactivate
+        let len: i64 = vec_len(active);
+        let lowest_priority: i64 = 1000;
+        let lowest_idx: i64 = 0 - 1;
+
+        let i: i64 = 0;
+        while i < len {
+            let spec: i64 = vec_get(active, i);
+            let priority: i64 = specialist_priority(spec);
+            if priority < lowest_priority {
+                lowest_priority = priority;
+                lowest_idx = i;
+            }
+            i = i + 1;
+        }
+
+        if lowest_idx >= 0 {
+            let spec: i64 = vec_get(active, lowest_idx);
+            let spec_type: i64 = specialist_get_type(spec);
+            scaler_deactivate_specialist(scaler, spec_type);
+            return 1;  // Deactivated one
+        }
+    }
+    0
+}
+
+// =============================================================================
+// PlatformAdapter - Platform-specific UI and behavior
+// =============================================================================
+// Slot 0: platform
+// Slot 1: ui_style (minimal, conversational, rich)
+// Slot 2: input_method (voice, text, both)
+// Slot 3: notification_style
+// Slot 4: haptic_available
+// Slot 5: accessibility_mode
+
+fn UI_MINIMAL() -> i64 { 0 }
+fn UI_CONVERSATIONAL() -> i64 { 1 }
+fn UI_RICH() -> i64 { 2 }
+
+fn INPUT_VOICE() -> i64 { 0 }
+fn INPUT_TEXT() -> i64 { 1 }
+fn INPUT_BOTH() -> i64 { 2 }
+
+fn NOTIF_SILENT() -> i64 { 0 }
+fn NOTIF_VIBRATE() -> i64 { 1 }
+fn NOTIF_SOUND() -> i64 { 2 }
+fn NOTIF_BANNER() -> i64 { 3 }
+
+fn platform_adapter_new(device_profile: i64) -> i64 {
+    let adapter: i64 = vec_new();
+    let platform: i64 = get_platform();
+    let device_class: i64 = device_get_class(device_profile);
+
+    vec_push(adapter, platform);             // Slot 0
+
+    // Set UI style based on device
+    let ui_style: i64 = UI_CONVERSATIONAL();
+    if device_class == DEVICE_WATCH() || device_class == DEVICE_WEARABLE() {
+        ui_style = UI_MINIMAL();
+    } else if device_class == DEVICE_LAPTOP() || device_class == DEVICE_DESKTOP() {
+        ui_style = UI_RICH();
+    }
+    vec_push(adapter, ui_style);             // Slot 1
+
+    // Set input method based on device
+    let input: i64 = INPUT_BOTH();
+    if device_class == DEVICE_WATCH() {
+        input = INPUT_VOICE();
+    } else if device_class == DEVICE_DESKTOP() {
+        input = INPUT_TEXT();
+    }
+    vec_push(adapter, input);                // Slot 2
+
+    // Notification style
+    let notif: i64 = NOTIF_BANNER();
+    if device_class == DEVICE_WATCH() {
+        notif = NOTIF_VIBRATE();
+    }
+    vec_push(adapter, notif);                // Slot 3
+
+    // Haptic feedback
+    let haptic: i64 = 0;
+    if platform == PLATFORM_IOS() || platform == PLATFORM_WATCHOS() {
+        haptic = 1;
+    } else if platform == PLATFORM_ANDROID() {
+        haptic = 1;
+    }
+    vec_push(adapter, haptic);               // Slot 4
+
+    // Accessibility mode (default off)
+    vec_push(adapter, 0);                    // Slot 5
+
+    adapter
+}
+
+fn adapter_platform(a: i64) -> i64 { vec_get(a, 0) }
+fn adapter_ui_style(a: i64) -> i64 { vec_get(a, 1) }
+fn adapter_input_method(a: i64) -> i64 { vec_get(a, 2) }
+fn adapter_notif_style(a: i64) -> i64 { vec_get(a, 3) }
+fn adapter_has_haptic(a: i64) -> i64 { vec_get(a, 4) }
+fn adapter_accessibility(a: i64) -> i64 { vec_get(a, 5) }
+
+fn adapter_set_accessibility(a: i64, mode: i64) -> i64 {
+    vec_set(a, 5, mode);
+    0
+}
+
+fn adapter_format_response(a: i64, response: i64) -> i64 {
+    let style: i64 = adapter_ui_style(a);
+
+    if style == UI_MINIMAL() {
+        return format_response_minimal(response);
+    } else if style == UI_RICH() {
+        return format_response_rich(response);
+    }
+    // UI_CONVERSATIONAL
+    format_response_conversational(response)
+}
+
+fn format_response_minimal(response: i64) -> i64 {
+    // Strip to essential content only
+    let formatted: i64 = vec_new();
+    vec_push(formatted, get_response_summary(response));
+    vec_push(formatted, 0);  // No additional context
+    formatted
+}
+
+fn format_response_conversational(response: i64) -> i64 {
+    // Standard conversational format
+    let formatted: i64 = vec_new();
+    vec_push(formatted, get_response_text(response));
+    vec_push(formatted, get_response_context(response));
+    formatted
+}
+
+fn format_response_rich(response: i64) -> i64 {
+    // Full rich content with metadata
+    let formatted: i64 = vec_new();
+    vec_push(formatted, get_response_text(response));
+    vec_push(formatted, get_response_context(response));
+    vec_push(formatted, get_response_sources(response));
+    vec_push(formatted, get_response_actions(response));
+    formatted
+}
+
+fn adapter_should_use_voice(a: i64) -> i64 {
+    let input: i64 = adapter_input_method(a);
+    if input == INPUT_VOICE() || input == INPUT_BOTH() {
+        return 1;
+    }
+    0
+}
+
+fn adapter_send_notification(a: i64, title: i64, body: i64) -> i64 {
+    let style: i64 = adapter_notif_style(a);
+    let platform: i64 = adapter_platform(a);
+
+    // Platform-specific notification handling
+    if platform == PLATFORM_IOS() {
+        return ios_send_notification(title, body, style);
+    } else if platform == PLATFORM_ANDROID() {
+        return android_send_notification(title, body, style);
+    } else if platform == PLATFORM_MACOS() {
+        return macos_send_notification(title, body, style);
+    } else if platform == PLATFORM_WINDOWS() {
+        return windows_send_notification(title, body, style);
+    } else if platform == PLATFORM_LINUX() {
+        return linux_send_notification(title, body, style);
+    }
+
+    0  // Unsupported platform
+}
+
+fn adapter_haptic_feedback(a: i64, intensity: i64) -> i64 {
+    if adapter_has_haptic(a) != 1 {
+        return 0;
+    }
+
+    let platform: i64 = adapter_platform(a);
+    if platform == PLATFORM_IOS() || platform == PLATFORM_WATCHOS() {
+        return ios_haptic(intensity);
+    } else if platform == PLATFORM_ANDROID() {
+        return android_haptic(intensity);
+    }
+    0
+}
+
+// =============================================================================
+// SensorManager - Unified sensor access
+// =============================================================================
+// Slot 0: available_sensors (bitfield)
+// Slot 1: active_sensors (bitfield)
+// Slot 2: last_readings (vec of [sensor_type, value, timestamp])
+// Slot 3: update_interval_ms
+// Slot 4: callbacks (vec of [sensor_type, callback_fn])
+
+fn sensor_manager_new(device_profile: i64) -> i64 {
+    let mgr: i64 = vec_new();
+    let available: i64 = vec_get(device_profile, 2);  // Sensor flags from profile
+
+    vec_push(mgr, available);           // Slot 0
+    vec_push(mgr, 0);                   // Slot 1: none active yet
+    vec_push(mgr, vec_new());           // Slot 2: readings
+    vec_push(mgr, 1000);                // Slot 3: 1 second default
+    vec_push(mgr, vec_new());           // Slot 4: callbacks
+    mgr
+}
+
+fn sensor_available(mgr: i64, sensor_type: i64) -> i64 {
+    let available: i64 = vec_get(mgr, 0);
+    if (available / sensor_type) % 2 == 1 { 1 } else { 0 }
+}
+
+fn sensor_activate(mgr: i64, sensor_type: i64) -> i64 {
+    if sensor_available(mgr, sensor_type) != 1 {
+        return 0;  // Not available
+    }
+
+    let active: i64 = vec_get(mgr, 1);
+    if (active / sensor_type) % 2 == 1 {
+        return 1;  // Already active
+    }
+
+    // Activate via platform
+    if sys_activate_sensor(sensor_type) == 1 {
+        vec_set(mgr, 1, active + sensor_type);
+        return 1;
+    }
+    0
+}
+
+fn sensor_deactivate(mgr: i64, sensor_type: i64) -> i64 {
+    let active: i64 = vec_get(mgr, 1);
+    if (active / sensor_type) % 2 != 1 {
+        return 0;  // Not active
+    }
+
+    sys_deactivate_sensor(sensor_type);
+    vec_set(mgr, 1, active - sensor_type);
+    1
+}
+
+fn sensor_read(mgr: i64, sensor_type: i64) -> i64 {
+    if sensor_available(mgr, sensor_type) != 1 {
+        return 0 - 1;  // Not available
+    }
+
+    // Check cache first
+    let readings: i64 = vec_get(mgr, 2);
+    let len: i64 = vec_len(readings);
+    let interval: i64 = vec_get(mgr, 3);
+    let now: i64 = time_now_ms();
+
+    let i: i64 = 0;
+    while i < len {
+        let reading: i64 = vec_get(readings, i);
+        if vec_get(reading, 0) == sensor_type {
+            let timestamp: i64 = vec_get(reading, 2);
+            if now - timestamp < interval {
+                return vec_get(reading, 1);  // Cached value
+            }
+            // Stale - update it
+            let value: i64 = sys_read_sensor(sensor_type);
+            vec_set(reading, 1, value);
+            vec_set(reading, 2, now);
+            return value;
+        }
+        i = i + 1;
+    }
+
+    // No cached reading - create one
+    let value: i64 = sys_read_sensor(sensor_type);
+    let reading: i64 = vec_new();
+    vec_push(reading, sensor_type);
+    vec_push(reading, value);
+    vec_push(reading, now);
+    vec_push(readings, reading);
+    value
+}
+
+fn sensor_register_callback(mgr: i64, sensor_type: i64, callback: i64) -> i64 {
+    let callbacks: i64 = vec_get(mgr, 4);
+    let entry: i64 = vec_new();
+    vec_push(entry, sensor_type);
+    vec_push(entry, callback);
+    vec_push(callbacks, entry);
+    1
+}
+
+fn sensor_update_all(mgr: i64) -> i64 {
+    let active: i64 = vec_get(mgr, 1);
+    let updated: i64 = 0;
+
+    // Update each active sensor
+    if (active / SENSOR_GPS()) % 2 == 1 {
+        sensor_read(mgr, SENSOR_GPS());
+        updated = updated + 1;
+    }
+    if (active / SENSOR_ACCELEROMETER()) % 2 == 1 {
+        sensor_read(mgr, SENSOR_ACCELEROMETER());
+        updated = updated + 1;
+    }
+    if (active / SENSOR_HEART_RATE()) % 2 == 1 {
+        sensor_read(mgr, SENSOR_HEART_RATE());
+        updated = updated + 1;
+    }
+    // Add more as needed...
+
+    updated
+}
+
+// =============================================================================
+// AdaptiveConfig - Runtime configuration adaptation
+// =============================================================================
+
+fn create_adaptive_config(device_profile: i64, scheduler: i64) -> i64 {
+    let config: i64 = vec_new();
+    let device_class: i64 = device_get_class(device_profile);
+
+    // Sync interval from scheduler
+    vec_push(config, scheduler_get_sync_interval(scheduler) / 1000);
+
+    // Model config
+    let model_allowed: i64 = scheduler_can_run_model(scheduler);
+    let max_model_params: i64 = 0;
+    if model_allowed == 1 {
+        max_model_params = max_model_params_for_class(device_class);
+    }
+    vec_push(config, max_model_params);
+
+    // Cache config
+    vec_push(config, max_cache_size_kb_for_class(device_class));
+
+    // Belief store config
+    vec_push(config, max_belief_store_entries_for_class(device_class));
+
+    // Learning rate (from power state)
+    let power: i64 = scheduler_power_state(scheduler);
+    let learning_rate: i64 = 1000;  // Full
+    if power == POWER_CRITICAL() {
+        learning_rate = 0;
+    } else if power == POWER_LOW() {
+        learning_rate = 200;
+    } else if power == POWER_MODERATE() {
+        learning_rate = 500;
+    }
+    vec_push(config, learning_rate);
+
+    config
+}
+
+fn max_model_params_for_class(device_class: i64) -> i64 {
+    if device_class == DEVICE_WATCH() { return 0; }
+    if device_class == DEVICE_WEARABLE() { return 0; }
+    if device_class == DEVICE_PHONE() { return 500000000; }   // 500M
+    if device_class == DEVICE_TABLET() { return 1000000000; }  // 1B
+    if device_class == DEVICE_LAPTOP() { return 7000000000; }  // 7B
+    if device_class == DEVICE_DESKTOP() { return 70000000000; } // 70B
+    0
+}
+
+fn max_cache_size_kb_for_class(device_class: i64) -> i64 {
+    if device_class == DEVICE_WATCH() { return 1024; }        // 1MB
+    if device_class == DEVICE_WEARABLE() { return 512; }      // 512KB
+    if device_class == DEVICE_PHONE() { return 10240; }       // 10MB
+    if device_class == DEVICE_TABLET() { return 20480; }      // 20MB
+    if device_class == DEVICE_LAPTOP() { return 102400; }     // 100MB
+    if device_class == DEVICE_DESKTOP() { return 204800; }    // 200MB
+    5120  // 5MB default
+}
+
+fn max_belief_store_entries_for_class(device_class: i64) -> i64 {
+    if device_class == DEVICE_WATCH() { return 1000; }
+    if device_class == DEVICE_WEARABLE() { return 500; }
+    if device_class == DEVICE_PHONE() { return 100000; }
+    if device_class == DEVICE_TABLET() { return 500000; }
+    if device_class == DEVICE_LAPTOP() { return 1000000; }
+    if device_class == DEVICE_DESKTOP() { return 10000000; }
+    10000
+}
+
+// =============================================================================
+// Print Stats
+// =============================================================================
+
+fn adaptation_print_stats(scheduler: i64, adapter: i64, sensor_mgr: i64) -> i64 {
+    println(string_from(""));
+    println(string_from("── Device Adaptation ──"));
+
+    print(string_from("  Power state: "));
+    let power: i64 = scheduler_power_state(scheduler);
+    if power == POWER_CRITICAL() { println(string_from("CRITICAL")); }
+    else if power == POWER_LOW() { println(string_from("low")); }
+    else if power == POWER_MODERATE() { println(string_from("moderate")); }
+    else if power == POWER_GOOD() { println(string_from("good")); }
+    else { println(string_from("full")); }
+
+    print(string_from("  Thermal: "));
+    let thermal: i64 = scheduler_thermal_state(scheduler);
+    if thermal == THERMAL_NORMAL() { println(string_from("normal")); }
+    else if thermal == THERMAL_WARM() { println(string_from("warm")); }
+    else if thermal == THERMAL_HOT() { println(string_from("hot")); }
+    else { println(string_from("THROTTLED")); }
+
+    print(string_from("  Charging: "));
+    if scheduler_is_charging(scheduler) == 1 {
+        println(string_from("yes"));
+    } else {
+        println(string_from("no"));
+    }
+
+    print(string_from("  Sync interval: "));
+    print_i64(scheduler_sync_interval(scheduler) / 1000);
+    println(string_from(" sec"));
+
+    print(string_from("  Local model: "));
+    if scheduler_can_run_model(scheduler) == 1 {
+        println(string_from("allowed"));
+    } else {
+        println(string_from("disabled"));
+    }
+
+    print(string_from("  Background tasks: "));
+    if scheduler_can_run_background(scheduler) == 1 {
+        println(string_from("allowed"));
+    } else {
+        println(string_from("disabled"));
+    }
+
+    println(string_from(""));
+    print(string_from("  UI style: "));
+    let ui: i64 = adapter_ui_style(adapter);
+    if ui == UI_MINIMAL() { println(string_from("minimal")); }
+    else if ui == UI_RICH() { println(string_from("rich")); }
+    else { println(string_from("conversational")); }
+
+    print(string_from("  Input method: "));
+    let input: i64 = adapter_input_method(adapter);
+    if input == INPUT_VOICE() { println(string_from("voice")); }
+    else if input == INPUT_TEXT() { println(string_from("text")); }
+    else { println(string_from("voice+text")); }
+
+    0
+}
+
+// =============================================================================
+// Extern Declarations
+// =============================================================================
+
+// From device.sx
+extern fn device_get_class(profile: i64) -> i64;
+extern fn device_get_battery(profile: i64) -> i64;
+extern fn get_platform() -> i64;
+extern fn DEVICE_WATCH() -> i64;
+extern fn DEVICE_WEARABLE() -> i64;
+extern fn DEVICE_PHONE() -> i64;
+extern fn DEVICE_TABLET() -> i64;
+extern fn DEVICE_LAPTOP() -> i64;
+extern fn DEVICE_DESKTOP() -> i64;
+extern fn PLATFORM_IOS() -> i64;
+extern fn PLATFORM_ANDROID() -> i64;
+extern fn PLATFORM_MACOS() -> i64;
+extern fn PLATFORM_WINDOWS() -> i64;
+extern fn PLATFORM_LINUX() -> i64;
+extern fn PLATFORM_WATCHOS() -> i64;
+extern fn SENSOR_GPS() -> i64;
+extern fn SENSOR_ACCELEROMETER() -> i64;
+extern fn SENSOR_HEART_RATE() -> i64;
+
+// System intrinsics
+extern fn sys_is_charging() -> i64;
+extern fn sys_get_thermal_state() -> i64;
+extern fn sys_activate_sensor(sensor_type: i64) -> i64;
+extern fn sys_deactivate_sensor(sensor_type: i64) -> i64;
+extern fn sys_read_sensor(sensor_type: i64) -> i64;
+extern fn detect_available_memory() -> i64;
+
+// Platform notifications
+extern fn ios_send_notification(title: i64, body: i64, style: i64) -> i64;
+extern fn android_send_notification(title: i64, body: i64, style: i64) -> i64;
+extern fn macos_send_notification(title: i64, body: i64, style: i64) -> i64;
+extern fn windows_send_notification(title: i64, body: i64, style: i64) -> i64;
+extern fn linux_send_notification(title: i64, body: i64, style: i64) -> i64;
+extern fn ios_haptic(intensity: i64) -> i64;
+extern fn android_haptic(intensity: i64) -> i64;
+
+// Specialist operations
+extern fn specialist_memory_usage(spec: i64) -> i64;
+extern fn specialist_get_type(spec: i64) -> i64;
+extern fn specialist_priority(spec: i64) -> i64;
+
+// Response formatting
+extern fn get_response_summary(response: i64) -> i64;
+extern fn get_response_text(response: i64) -> i64;
+extern fn get_response_context(response: i64) -> i64;
+extern fn get_response_sources(response: i64) -> i64;
+extern fn get_response_actions(response: i64) -> i64;
+
+// From runtime
+extern fn vec_new() -> i64;
+extern fn vec_push(v: i64, val: i64) -> i64;
+extern fn vec_get(v: i64, idx: i64) -> i64;
+extern fn vec_set(v: i64, idx: i64, val: i64) -> i64;
+extern fn vec_len(v: i64) -> i64;
+extern fn vec_pop(v: i64) -> i64;
+extern fn string_from(s: &str) -> i64;
+extern fn print(s: i64) -> i64;
+extern fn println(s: i64) -> i64;
+extern fn print_i64(n: i64) -> i64;
+extern fn time_now_ms() -> i64;

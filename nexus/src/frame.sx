@@ -1,0 +1,350 @@
+// Nexus Protocol - Frame Encoding/Decoding
+//
+// Handles the frame-level wire format for Nexus messages.
+//
+// Frame Header (8 bytes minimum):
+//   Magic (2 bytes): 0x53 0x58 ("SX")
+//   Flags (1 byte): Fragment, Compressed, etc.
+//   Frame Type (1 byte): SYNC, HELLO, etc.
+//   Length (2 bytes): Payload length (big-endian)
+//   Tick (2 bytes): Tick number for SYNC frames
+//
+// Frame Structure:
+// Slot 0: frame_type
+// Slot 1: flags
+// Slot 2: tick
+// Slot 3: payload_length
+// Slot 4: correlation_id (0 if not present)
+// Slot 5: stream_id (0 if not present)
+// Slot 6: payload (vec of bytes)
+
+// =============================================================================
+// Frame Constructor
+// =============================================================================
+
+fn frame_new(frame_type: i64, flags: i64) -> i64 {
+    let frame = vec_new();
+    vec_push(frame, frame_type);    // Slot 0
+    vec_push(frame, flags);         // Slot 1
+    vec_push(frame, 0);             // Slot 2: tick
+    vec_push(frame, 0);             // Slot 3: payload_length
+    vec_push(frame, 0);             // Slot 4: correlation_id
+    vec_push(frame, 0);             // Slot 5: stream_id
+    vec_push(frame, vec_new());     // Slot 6: payload
+    frame
+}
+
+fn frame_new_sync(tick: i64) -> i64 {
+    let frame = frame_new(FRAME_SYNC(), FLAG_NONE());
+    vec_set(frame, 2, tick);
+    frame
+}
+
+fn frame_new_hello() -> i64 {
+    frame_new(FRAME_HELLO(), FLAG_NONE())
+}
+
+fn frame_new_welcome() -> i64 {
+    frame_new(FRAME_WELCOME(), FLAG_NONE())
+}
+
+fn frame_new_catalog() -> i64 {
+    frame_new(FRAME_CATALOG(), FLAG_NONE())
+}
+
+fn frame_new_baseline() -> i64 {
+    frame_new(FRAME_BASELINE(), FLAG_NONE())
+}
+
+fn frame_new_checksum(tick: i64) -> i64 {
+    let frame = frame_new(FRAME_CHECKSUM(), FLAG_NONE());
+    vec_set(frame, 2, tick);
+    frame
+}
+
+// =============================================================================
+// Frame Accessors
+// =============================================================================
+
+fn frame_type(frame: i64) -> i64 { vec_get(frame, 0) }
+fn frame_flags(frame: i64) -> i64 { vec_get(frame, 1) }
+fn frame_tick(frame: i64) -> i64 { vec_get(frame, 2) }
+fn frame_payload_length(frame: i64) -> i64 { vec_get(frame, 3) }
+fn frame_correlation_id(frame: i64) -> i64 { vec_get(frame, 4) }
+fn frame_stream_id(frame: i64) -> i64 { vec_get(frame, 5) }
+fn frame_payload(frame: i64) -> i64 { vec_get(frame, 6) }
+
+fn frame_set_tick(frame: i64, tick: i64) -> i64 {
+    vec_set(frame, 2, tick);
+    0
+}
+
+fn frame_set_payload(frame: i64, payload: i64) -> i64 {
+    vec_set(frame, 6, payload);
+    vec_set(frame, 3, vec_len(payload));
+    0
+}
+
+fn frame_set_correlation_id(frame: i64, id: i64) -> i64 {
+    vec_set(frame, 4, id);
+    let flags = frame_flags(frame) | FLAG_HAS_CORRELATION();
+    vec_set(frame, 1, flags);
+    0
+}
+
+fn frame_set_stream_id(frame: i64, id: i64) -> i64 {
+    vec_set(frame, 5, id);
+    let flags = frame_flags(frame) | FLAG_HAS_STREAM();
+    vec_set(frame, 1, flags);
+    0
+}
+
+fn frame_has_correlation(frame: i64) -> i64 {
+    if (frame_flags(frame) & FLAG_HAS_CORRELATION()) != 0 { 1 } else { 0 }
+}
+
+fn frame_has_stream(frame: i64) -> i64 {
+    if (frame_flags(frame) & FLAG_HAS_STREAM()) != 0 { 1 } else { 0 }
+}
+
+fn frame_is_compressed(frame: i64) -> i64 {
+    if (frame_flags(frame) & FLAG_COMPRESSED()) != 0 { 1 } else { 0 }
+}
+
+// =============================================================================
+// Frame Header Size Calculation
+// =============================================================================
+
+fn frame_header_size(frame: i64) -> i64 {
+    var size = 8;  // Base header
+
+    if frame_has_correlation(frame) == 1 {
+        size = size + 4;
+    }
+    if frame_has_stream(frame) == 1 {
+        size = size + 4;
+    }
+
+    size
+}
+
+fn frame_total_size(frame: i64) -> i64 {
+    frame_header_size(frame) + frame_payload_length(frame)
+}
+
+// =============================================================================
+// Frame Encoding
+// =============================================================================
+
+fn frame_encode(frame: i64) -> i64 {
+    let payload = frame_payload(frame);
+    let payload_len = vec_len(payload);
+
+    // Create output buffer
+    let buffer = vec_new();
+
+    // Write magic bytes (0x53 = 83, 0x58 = 88)
+    vec_push(buffer, NEXUS_MAGIC_BYTE_0());
+    vec_push(buffer, NEXUS_MAGIC_BYTE_1());
+
+    // Write flags
+    vec_push(buffer, frame_flags(frame) & 255);
+
+    // Write frame type
+    vec_push(buffer, frame_type(frame) & 255);
+
+    // Write payload length (big-endian u16)
+    vec_push(buffer, (payload_len >> 8) & 255);
+    vec_push(buffer, payload_len & 255);
+
+    // Write tick (big-endian u16)
+    let tick = frame_tick(frame);
+    vec_push(buffer, (tick >> 8) & 255);
+    vec_push(buffer, tick & 255);
+
+    // Write optional correlation ID
+    if frame_has_correlation(frame) == 1 {
+        let corr = frame_correlation_id(frame);
+        vec_push(buffer, (corr >> 24) & 255);
+        vec_push(buffer, (corr >> 16) & 255);
+        vec_push(buffer, (corr >> 8) & 255);
+        vec_push(buffer, corr & 255);
+    }
+
+    // Write optional stream ID
+    if frame_has_stream(frame) == 1 {
+        let stream = frame_stream_id(frame);
+        vec_push(buffer, (stream >> 24) & 255);
+        vec_push(buffer, (stream >> 16) & 255);
+        vec_push(buffer, (stream >> 8) & 255);
+        vec_push(buffer, stream & 255);
+    }
+
+    // Write payload
+    var i = 0;
+    while i < payload_len {
+        vec_push(buffer, vec_get(payload, i));
+        i = i + 1;
+    }
+
+    buffer
+}
+
+// =============================================================================
+// Frame Decoding
+// =============================================================================
+
+fn frame_decode(buffer: i64) -> i64 {
+    let len = vec_len(buffer);
+
+    // Minimum header size is 8 bytes
+    if len < 8 {
+        return 0;  // Error: buffer too small
+    }
+
+    // Check magic bytes
+    if vec_get(buffer, 0) != NEXUS_MAGIC_BYTE_0() {
+        return 0;  // Error: invalid magic
+    }
+    if vec_get(buffer, 1) != NEXUS_MAGIC_BYTE_1() {
+        return 0;  // Error: invalid magic
+    }
+
+    // Read flags and type
+    let flags = vec_get(buffer, 2);
+    let ftype = vec_get(buffer, 3);
+
+    // Validate frame type
+    if is_valid_frame_type(ftype) == 0 {
+        return 0;  // Error: invalid frame type
+    }
+
+    // Read payload length (big-endian u16)
+    let payload_len = (vec_get(buffer, 4) << 8) | vec_get(buffer, 5);
+
+    // Read tick (big-endian u16)
+    let tick = (vec_get(buffer, 6) << 8) | vec_get(buffer, 7);
+
+    // Create frame
+    let frame = frame_new(ftype, flags);
+    vec_set(frame, 2, tick);
+    vec_set(frame, 3, payload_len);
+
+    // Calculate header size based on flags
+    var pos = 8;
+
+    // Read optional correlation ID
+    if (flags & FLAG_HAS_CORRELATION()) != 0 {
+        if len < pos + 4 {
+            return 0;  // Error: buffer too small for correlation ID
+        }
+        let corr = (vec_get(buffer, pos) << 24) |
+                   (vec_get(buffer, pos + 1) << 16) |
+                   (vec_get(buffer, pos + 2) << 8) |
+                   vec_get(buffer, pos + 3);
+        vec_set(frame, 4, corr);
+        pos = pos + 4;
+    }
+
+    // Read optional stream ID
+    if (flags & FLAG_HAS_STREAM()) != 0 {
+        if len < pos + 4 {
+            return 0;  // Error: buffer too small for stream ID
+        }
+        let stream = (vec_get(buffer, pos) << 24) |
+                     (vec_get(buffer, pos + 1) << 16) |
+                     (vec_get(buffer, pos + 2) << 8) |
+                     vec_get(buffer, pos + 3);
+        vec_set(frame, 5, stream);
+        pos = pos + 4;
+    }
+
+    // Validate we have enough data for payload
+    if len < pos + payload_len {
+        return 0;  // Error: buffer too small for payload
+    }
+
+    // Read payload
+    let payload = vec_new();
+    var i = 0;
+    while i < payload_len {
+        vec_push(payload, vec_get(buffer, pos + i));
+        i = i + 1;
+    }
+    vec_set(frame, 6, payload);
+
+    frame
+}
+
+// Peek at frame type without full decode
+fn frame_peek_type(buffer: i64) -> i64 {
+    if vec_len(buffer) < 4 {
+        return -1;
+    }
+    if vec_get(buffer, 0) != NEXUS_MAGIC_BYTE_0() {
+        return -1;
+    }
+    if vec_get(buffer, 1) != NEXUS_MAGIC_BYTE_1() {
+        return -1;
+    }
+    vec_get(buffer, 3)
+}
+
+// Peek at payload length without full decode
+fn frame_peek_length(buffer: i64) -> i64 {
+    if vec_len(buffer) < 6 {
+        return -1;
+    }
+    (vec_get(buffer, 4) << 8) | vec_get(buffer, 5)
+}
+
+// =============================================================================
+// Frame Validation
+// =============================================================================
+
+fn frame_validate(frame: i64) -> i64 {
+    if frame == 0 { return ERR_DECODE_ERROR(); }
+
+    let ftype = frame_type(frame);
+    if is_valid_frame_type(ftype) == 0 {
+        return ERR_INVALID_FRAME_TYPE();
+    }
+
+    let payload_len = frame_payload_length(frame);
+    if payload_len > MAX_PAYLOAD_SIZE() {
+        return ERR_INVALID_LENGTH();
+    }
+
+    ERR_NONE()
+}
+
+// =============================================================================
+// Debug Output
+// =============================================================================
+
+fn frame_print(frame: i64) -> i64 {
+    print("Frame:\n");
+    print("  Type: ");
+    print_i64(frame_type(frame));
+    print("\n  Flags: ");
+    print_i64(frame_flags(frame));
+    print("\n  Tick: ");
+    print_i64(frame_tick(frame));
+    print("\n  Payload Length: ");
+    print_i64(frame_payload_length(frame));
+    print(" bytes\n");
+
+    if frame_has_correlation(frame) == 1 {
+        print("  Correlation ID: ");
+        print_i64(frame_correlation_id(frame));
+        print("\n");
+    }
+
+    if frame_has_stream(frame) == 1 {
+        print("  Stream ID: ");
+        print_i64(frame_stream_id(frame));
+        print("\n");
+    }
+
+    0
+}

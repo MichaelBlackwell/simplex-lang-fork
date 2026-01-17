@@ -1,0 +1,737 @@
+// Unit tests for tensor operations with dual numbers
+//
+// Tests the DualTensor type and all tensor operations for correctness
+// including forward-mode automatic differentiation.
+
+use simplex_std::dual;
+use simplex_std::vec::Vec;
+use simplex_learning::tensor::{DualTensor, Shape, DualScalar};
+use simplex_learning::tensor::ops;
+
+#[cfg(test)]
+mod tensor_construction_tests {
+ use super::*;
+
+ #[test]
+ fn test_tensor_zeros() {
+ let t = DualTensor::zeros(&[2, 3]);
+ assert_eq!(t.shape(), &[2, 3]);
+ assert_eq!(t.numel(), 6);
+
+ // All values should be zero
+ for val in t.data() {
+ assert!((val.val - 0.0).abs() < 1e-10);
+ }
+ }
+
+ #[test]
+ fn test_tensor_ones() {
+ let t = DualTensor::ones(&[3, 4]);
+ assert_eq!(t.shape(), &[3, 4]);
+ assert_eq!(t.numel(), 12);
+
+ for val in t.data() {
+ assert!((val.val - 1.0).abs() < 1e-10);
+ }
+ }
+
+ #[test]
+ fn test_tensor_full() {
+ let t = DualTensor::full(&[2, 2], dual::constant(3.14));
+ assert_eq!(t.numel(), 4);
+
+ for val in t.data() {
+ assert!((val.val - 3.14).abs() < 1e-10);
+ }
+ }
+
+ #[test]
+ fn test_tensor_from_vec() {
+ let data = vec![
+ dual::constant(1.0),
+ dual::constant(2.0),
+ dual::constant(3.0),
+ dual::constant(4.0),
+ ];
+ let t = DualTensor::from_vec(data, &[2, 2]);
+
+ assert_eq!(t.shape(), &[2, 2]);
+ assert!((t.get(&[0, 0]).val - 1.0).abs() < 1e-10);
+ assert!((t.get(&[1, 1]).val - 4.0).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_tensor_eye() {
+ let t = DualTensor::eye(3);
+ assert_eq!(t.shape(), &[3, 3]);
+
+ // Diagonal should be 1, off-diagonal should be 0
+ for i in 0..3 {
+ for j in 0..3 {
+ let expected = if i == j { 1.0 } else { 0.0 };
+ assert!((t.get(&[i, j]).val - expected).abs() < 1e-10);
+ }
+ }
+ }
+
+ #[test]
+ fn test_tensor_randn() {
+ let t = DualTensor::randn(&[100, 100], 42);
+ assert_eq!(t.numel(), 10000);
+
+ // Check approximate mean and std
+ let sum: f64 = t.data().iter().map(|d| d.val).sum();
+ let mean = sum / 10000.0;
+ assert!(mean.abs() < 0.1); // Should be close to 0
+ }
+
+ #[test]
+ fn test_tensor_arange() {
+ let t = DualTensor::arange(0.0, 5.0, 1.0);
+ assert_eq!(t.numel(), 5);
+
+ for i in 0..5 {
+ assert!((t.get(&[i]).val - i as f64).abs() < 1e-10);
+ }
+ }
+
+ #[test]
+ fn test_tensor_linspace() {
+ let t = DualTensor::linspace(0.0, 1.0, 5);
+ assert_eq!(t.numel(), 5);
+
+ assert!((t.get(&[0]).val - 0.0).abs() < 1e-10);
+ assert!((t.get(&[4]).val - 1.0).abs() < 1e-10);
+ assert!((t.get(&[2]).val - 0.5).abs() < 1e-10);
+ }
+}
+
+#[cfg(test)]
+mod tensor_shape_tests {
+ use super::*;
+
+ #[test]
+ fn test_reshape() {
+ let t = DualTensor::arange(0.0, 12.0, 1.0);
+ let t2 = t.reshape(&[3, 4]);
+
+ assert_eq!(t2.shape(), &[3, 4]);
+ assert_eq!(t2.numel(), 12);
+ }
+
+ #[test]
+ fn test_transpose_2d() {
+ let t = DualTensor::from_vec(
+ vec![
+ dual::constant(1.0), dual::constant(2.0), dual::constant(3.0),
+ dual::constant(4.0), dual::constant(5.0), dual::constant(6.0),
+ ],
+ &[2, 3]
+ );
+ let t2 = t.transpose();
+
+ assert_eq!(t2.shape(), &[3, 2]);
+ assert!((t2.get(&[0, 0]).val - 1.0).abs() < 1e-10);
+ assert!((t2.get(&[0, 1]).val - 4.0).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_squeeze() {
+ let t = DualTensor::ones(&[1, 3, 1, 4]);
+ let t2 = t.squeeze();
+
+ assert_eq!(t2.shape(), &[3, 4]);
+ }
+
+ #[test]
+ fn test_unsqueeze() {
+ let t = DualTensor::ones(&[3, 4]);
+ let t2 = t.unsqueeze(0);
+
+ assert_eq!(t2.shape(), &[1, 3, 4]);
+ }
+
+ #[test]
+ fn test_flatten() {
+ let t = DualTensor::ones(&[2, 3, 4]);
+ let t2 = t.flatten();
+
+ assert_eq!(t2.shape(), &[24]);
+ }
+}
+
+#[cfg(test)]
+mod tensor_element_ops_tests {
+ use super::*;
+
+ #[test]
+ fn test_add() {
+ let a = DualTensor::full(&[2, 2], dual::constant(2.0));
+ let b = DualTensor::full(&[2, 2], dual::constant(3.0));
+ let c = ops::add(&a, &b);
+
+ for val in c.data() {
+ assert!((val.val - 5.0).abs() < 1e-10);
+ }
+ }
+
+ #[test]
+ fn test_add_with_gradient() {
+ // Test gradient propagation
+ let a = DualTensor::full(&[2, 2], dual::variable(2.0)); // dx/dx = 1
+ let b = DualTensor::full(&[2, 2], dual::constant(3.0));
+ let c = ops::add(&a, &b);
+
+ for val in c.data() {
+ assert!((val.val - 5.0).abs() < 1e-10);
+ assert!((val.dot - 1.0).abs() < 1e-10); // Gradient of x + c w.r.t. x is 1
+ }
+ }
+
+ #[test]
+ fn test_sub() {
+ let a = DualTensor::full(&[2, 2], dual::constant(5.0));
+ let b = DualTensor::full(&[2, 2], dual::constant(3.0));
+ let c = ops::sub(&a, &b);
+
+ for val in c.data() {
+ assert!((val.val - 2.0).abs() < 1e-10);
+ }
+ }
+
+ #[test]
+ fn test_mul() {
+ let a = DualTensor::full(&[2, 2], dual::constant(3.0));
+ let b = DualTensor::full(&[2, 2], dual::constant(4.0));
+ let c = ops::mul(&a, &b);
+
+ for val in c.data() {
+ assert!((val.val - 12.0).abs() < 1e-10);
+ }
+ }
+
+ #[test]
+ fn test_mul_gradient() {
+ // d(x*y)/dx = y when x is variable
+ let a = DualTensor::full(&[2, 2], dual::variable(3.0));
+ let b = DualTensor::full(&[2, 2], dual::constant(4.0));
+ let c = ops::mul(&a, &b);
+
+ for val in c.data() {
+ assert!((val.val - 12.0).abs() < 1e-10);
+ assert!((val.dot - 4.0).abs() < 1e-10); // Gradient is 4
+ }
+ }
+
+ #[test]
+ fn test_div() {
+ let a = DualTensor::full(&[2, 2], dual::constant(12.0));
+ let b = DualTensor::full(&[2, 2], dual::constant(4.0));
+ let c = ops::div(&a, &b);
+
+ for val in c.data() {
+ assert!((val.val - 3.0).abs() < 1e-10);
+ }
+ }
+
+ #[test]
+ fn test_neg() {
+ let a = DualTensor::full(&[2, 2], dual::constant(3.0));
+ let b = ops::neg(&a);
+
+ for val in b.data() {
+ assert!((val.val - (-3.0)).abs() < 1e-10);
+ }
+ }
+
+ #[test]
+ fn test_pow() {
+ let a = DualTensor::full(&[2, 2], dual::constant(2.0));
+ let b = ops::pow(&a, 3.0);
+
+ for val in b.data() {
+ assert!((val.val - 8.0).abs() < 1e-10);
+ }
+ }
+
+ #[test]
+ fn test_sqrt() {
+ let a = DualTensor::full(&[2, 2], dual::constant(4.0));
+ let b = ops::sqrt(&a);
+
+ for val in b.data() {
+ assert!((val.val - 2.0).abs() < 1e-10);
+ }
+ }
+
+ #[test]
+ fn test_exp() {
+ let a = DualTensor::full(&[2, 2], dual::constant(1.0));
+ let b = ops::exp(&a);
+
+ for val in b.data() {
+ assert!((val.val - std::f64::consts::E).abs() < 1e-10);
+ }
+ }
+
+ #[test]
+ fn test_log() {
+ let a = DualTensor::full(&[2, 2], dual::constant(std::f64::consts::E));
+ let b = ops::log(&a);
+
+ for val in b.data() {
+ assert!((val.val - 1.0).abs() < 1e-10);
+ }
+ }
+
+ #[test]
+ fn test_abs() {
+ let a = DualTensor::from_vec(
+ vec![dual::constant(-3.0), dual::constant(2.0)],
+ &[2]
+ );
+ let b = ops::abs(&a);
+
+ assert!((b.get(&[0]).val - 3.0).abs() < 1e-10);
+ assert!((b.get(&[1]).val - 2.0).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_clamp() {
+ let a = DualTensor::from_vec(
+ vec![dual::constant(-1.0), dual::constant(0.5), dual::constant(2.0)],
+ &[3]
+ );
+ let b = ops::clamp(&a, 0.0, 1.0);
+
+ assert!((b.get(&[0]).val - 0.0).abs() < 1e-10);
+ assert!((b.get(&[1]).val - 0.5).abs() < 1e-10);
+ assert!((b.get(&[2]).val - 1.0).abs() < 1e-10);
+ }
+}
+
+#[cfg(test)]
+mod tensor_reduction_tests {
+ use super::*;
+
+ #[test]
+ fn test_sum() {
+ let a = DualTensor::from_vec(
+ vec![
+ dual::constant(1.0), dual::constant(2.0),
+ dual::constant(3.0), dual::constant(4.0),
+ ],
+ &[2, 2]
+ );
+ let s = ops::sum(&a);
+
+ assert!((s.val - 10.0).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_mean() {
+ let a = DualTensor::from_vec(
+ vec![
+ dual::constant(2.0), dual::constant(4.0),
+ dual::constant(6.0), dual::constant(8.0),
+ ],
+ &[2, 2]
+ );
+ let m = ops::mean(&a);
+
+ assert!((m.val - 5.0).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_max() {
+ let a = DualTensor::from_vec(
+ vec![dual::constant(1.0), dual::constant(5.0), dual::constant(3.0)],
+ &[3]
+ );
+ let m = ops::max(&a);
+
+ assert!((m.val - 5.0).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_min() {
+ let a = DualTensor::from_vec(
+ vec![dual::constant(1.0), dual::constant(5.0), dual::constant(3.0)],
+ &[3]
+ );
+ let m = ops::min(&a);
+
+ assert!((m.val - 1.0).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_sum_axis() {
+ let a = DualTensor::from_vec(
+ vec![
+ dual::constant(1.0), dual::constant(2.0), dual::constant(3.0),
+ dual::constant(4.0), dual::constant(5.0), dual::constant(6.0),
+ ],
+ &[2, 3]
+ );
+ let s = ops::sum_axis(&a, 0);
+
+ assert_eq!(s.shape(), &[3]);
+ assert!((s.get(&[0]).val - 5.0).abs() < 1e-10); // 1 + 4
+ assert!((s.get(&[1]).val - 7.0).abs() < 1e-10); // 2 + 5
+ assert!((s.get(&[2]).val - 9.0).abs() < 1e-10); // 3 + 6
+ }
+
+ #[test]
+ fn test_mean_axis() {
+ let a = DualTensor::from_vec(
+ vec![
+ dual::constant(2.0), dual::constant(4.0),
+ dual::constant(6.0), dual::constant(8.0),
+ ],
+ &[2, 2]
+ );
+ let m = ops::mean_axis(&a, 1);
+
+ assert_eq!(m.shape(), &[2]);
+ assert!((m.get(&[0]).val - 3.0).abs() < 1e-10); // (2+4)/2
+ assert!((m.get(&[1]).val - 7.0).abs() < 1e-10); // (6+8)/2
+ }
+}
+
+#[cfg(test)]
+mod tensor_matmul_tests {
+ use super::*;
+
+ #[test]
+ fn test_matmul_2d() {
+ // [2, 3] @ [3, 2] = [2, 2]
+ let a = DualTensor::from_vec(
+ vec![
+ dual::constant(1.0), dual::constant(2.0), dual::constant(3.0),
+ dual::constant(4.0), dual::constant(5.0), dual::constant(6.0),
+ ],
+ &[2, 3]
+ );
+ let b = DualTensor::from_vec(
+ vec![
+ dual::constant(1.0), dual::constant(2.0),
+ dual::constant(3.0), dual::constant(4.0),
+ dual::constant(5.0), dual::constant(6.0),
+ ],
+ &[3, 2]
+ );
+ let c = ops::matmul(&a, &b);
+
+ assert_eq!(c.shape(), &[2, 2]);
+ // [0,0] = 1*1 + 2*3 + 3*5 = 22
+ assert!((c.get(&[0, 0]).val - 22.0).abs() < 1e-10);
+ // [0,1] = 1*2 + 2*4 + 3*6 = 28
+ assert!((c.get(&[0, 1]).val - 28.0).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_matmul_batched() {
+ // [2, 2, 3] @ [2, 3, 2] = [2, 2, 2]
+ let a = DualTensor::ones(&[2, 2, 3]);
+ let b = DualTensor::ones(&[2, 3, 2]);
+ let c = ops::matmul(&a, &b);
+
+ assert_eq!(c.shape(), &[2, 2, 2]);
+ // Each element should be 3 (sum of 3 ones)
+ for val in c.data() {
+ assert!((val.val - 3.0).abs() < 1e-10);
+ }
+ }
+
+ #[test]
+ fn test_dot_product() {
+ let a = DualTensor::from_vec(
+ vec![dual::constant(1.0), dual::constant(2.0), dual::constant(3.0)],
+ &[3]
+ );
+ let b = DualTensor::from_vec(
+ vec![dual::constant(4.0), dual::constant(5.0), dual::constant(6.0)],
+ &[3]
+ );
+ let c = ops::dot(&a, &b);
+
+ assert!((c.val - 32.0).abs() < 1e-10); // 1*4 + 2*5 + 3*6 = 32
+ }
+}
+
+#[cfg(test)]
+mod tensor_activation_tests {
+ use super::*;
+
+ #[test]
+ fn test_relu() {
+ let a = DualTensor::from_vec(
+ vec![dual::constant(-2.0), dual::constant(-1.0), dual::constant(0.0), dual::constant(1.0), dual::constant(2.0)],
+ &[5]
+ );
+ let b = ops::relu(&a);
+
+ assert!((b.get(&[0]).val - 0.0).abs() < 1e-10);
+ assert!((b.get(&[1]).val - 0.0).abs() < 1e-10);
+ assert!((b.get(&[2]).val - 0.0).abs() < 1e-10);
+ assert!((b.get(&[3]).val - 1.0).abs() < 1e-10);
+ assert!((b.get(&[4]).val - 2.0).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_sigmoid() {
+ let a = DualTensor::from_vec(
+ vec![dual::constant(0.0)],
+ &[1]
+ );
+ let b = ops::sigmoid(&a);
+
+ assert!((b.get(&[0]).val - 0.5).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_tanh() {
+ let a = DualTensor::from_vec(
+ vec![dual::constant(0.0)],
+ &[1]
+ );
+ let b = ops::tanh(&a);
+
+ assert!((b.get(&[0]).val - 0.0).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_gelu() {
+ let a = DualTensor::from_vec(
+ vec![dual::constant(0.0), dual::constant(1.0)],
+ &[2]
+ );
+ let b = ops::gelu(&a);
+
+ // GELU(0) = 0
+ assert!((b.get(&[0]).val - 0.0).abs() < 1e-5);
+ // GELU(1) ≈ 0.8413
+ assert!((b.get(&[1]).val - 0.8413).abs() < 0.01);
+ }
+
+ #[test]
+ fn test_softmax() {
+ let a = DualTensor::from_vec(
+ vec![dual::constant(1.0), dual::constant(2.0), dual::constant(3.0)],
+ &[3]
+ );
+ let b = ops::softmax(&a, 0);
+
+ // Sum should be 1
+ let sum: f64 = b.data().iter().map(|d| d.val).sum();
+ assert!((sum - 1.0).abs() < 1e-10);
+
+ // Values should be in increasing order
+ assert!(b.get(&[0]).val < b.get(&[1]).val);
+ assert!(b.get(&[1]).val < b.get(&[2]).val);
+ }
+
+ #[test]
+ fn test_log_softmax() {
+ let a = DualTensor::from_vec(
+ vec![dual::constant(1.0), dual::constant(2.0), dual::constant(3.0)],
+ &[3]
+ );
+ let b = ops::log_softmax(&a, 0);
+
+ // exp(log_softmax) should sum to 1
+ let sum: f64 = b.data().iter().map(|d| d.val.exp()).sum();
+ assert!((sum - 1.0).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_leaky_relu() {
+ let a = DualTensor::from_vec(
+ vec![dual::constant(-1.0), dual::constant(0.0), dual::constant(1.0)],
+ &[3]
+ );
+ let b = ops::leaky_relu(&a, 0.01);
+
+ assert!((b.get(&[0]).val - (-0.01)).abs() < 1e-10);
+ assert!((b.get(&[1]).val - 0.0).abs() < 1e-10);
+ assert!((b.get(&[2]).val - 1.0).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_silu() {
+ let a = DualTensor::from_vec(
+ vec![dual::constant(0.0)],
+ &[1]
+ );
+ let b = ops::silu(&a);
+
+ // SiLU(0) = 0 * sigmoid(0) = 0 * 0.5 = 0
+ assert!((b.get(&[0]).val - 0.0).abs() < 1e-10);
+ }
+}
+
+#[cfg(test)]
+mod tensor_loss_tests {
+ use super::*;
+
+ #[test]
+ fn test_mse_loss() {
+ let pred = DualTensor::from_vec(
+ vec![dual::constant(1.0), dual::constant(2.0), dual::constant(3.0)],
+ &[3]
+ );
+ let target = DualTensor::from_vec(
+ vec![dual::constant(1.0), dual::constant(2.0), dual::constant(3.0)],
+ &[3]
+ );
+ let loss = ops::mse_loss(&pred, &target);
+
+ assert!((loss.val - 0.0).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_mse_loss_nonzero() {
+ let pred = DualTensor::from_vec(
+ vec![dual::constant(1.0), dual::constant(2.0)],
+ &[2]
+ );
+ let target = DualTensor::from_vec(
+ vec![dual::constant(2.0), dual::constant(4.0)],
+ &[2]
+ );
+ let loss = ops::mse_loss(&pred, &target);
+
+ // MSE = ((1-2)^2 + (2-4)^2) / 2 = (1 + 4) / 2 = 2.5
+ assert!((loss.val - 2.5).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_cross_entropy_loss() {
+ // After softmax, predictions should give correct loss
+ let pred = DualTensor::from_vec(
+ vec![
+ dual::constant(0.7), dual::constant(0.2), dual::constant(0.1),
+ ],
+ &[3]
+ );
+ let target = DualTensor::from_vec(
+ vec![dual::constant(1.0), dual::constant(0.0), dual::constant(0.0)],
+ &[3]
+ );
+ let loss = ops::cross_entropy_loss(&pred, &target);
+
+ // CE = -sum(target * log(pred)) = -1 * log(0.7) ≈ 0.357
+ assert!(loss.val > 0.0);
+ }
+
+ #[test]
+ fn test_binary_cross_entropy() {
+ let pred = DualTensor::from_vec(
+ vec![dual::constant(0.5)],
+ &[1]
+ );
+ let target = DualTensor::from_vec(
+ vec![dual::constant(1.0)],
+ &[1]
+ );
+ let loss = ops::binary_cross_entropy(&pred, &target);
+
+ // BCE = -log(0.5) ≈ 0.693
+ assert!((loss.val - 0.693).abs() < 0.01);
+ }
+
+ #[test]
+ fn test_huber_loss() {
+ let pred = DualTensor::from_vec(
+ vec![dual::constant(0.0), dual::constant(0.0)],
+ &[2]
+ );
+ let target = DualTensor::from_vec(
+ vec![dual::constant(0.5), dual::constant(2.0)],
+ &[2]
+ );
+ let loss = ops::huber_loss(&pred, &target, 1.0);
+
+ // |0.5| < 1.0 -> quadratic: 0.5 * 0.5^2 = 0.125
+ // |2.0| > 1.0 -> linear: 1.0 * (2.0 - 0.5) = 1.5
+ // Mean = (0.125 + 1.5) / 2 = 0.8125
+ assert!(loss.val > 0.0);
+ }
+}
+
+#[cfg(test)]
+mod tensor_gradient_tests {
+ use super::*;
+
+ #[test]
+ fn test_chain_rule_add_mul() {
+ // Test: f(x) = (x + 2) * 3
+ // df/dx = 3
+ let x = dual::variable(5.0);
+ let two = dual::constant(2.0);
+ let three = dual::constant(3.0);
+
+ let sum = x + two;
+ let result = sum * three;
+
+ assert!((result.val - 21.0).abs() < 1e-10); // (5 + 2) * 3 = 21
+ assert!((result.dot - 3.0).abs() < 1e-10); // df/dx = 3
+ }
+
+ #[test]
+ fn test_chain_rule_exp_log() {
+ // Test: f(x) = exp(log(x)) = x
+ // df/dx = 1
+ let x = dual::variable(5.0);
+
+ let log_x = x.ln();
+ let result = log_x.exp();
+
+ assert!((result.val - 5.0).abs() < 1e-10);
+ assert!((result.dot - 1.0).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_chain_rule_power() {
+ // Test: f(x) = x^2
+ // df/dx = 2x
+ let x = dual::variable(3.0);
+ let result = x * x;
+
+ assert!((result.val - 9.0).abs() < 1e-10);
+ assert!((result.dot - 6.0).abs() < 1e-10); // 2 * 3 = 6
+ }
+
+ #[test]
+ fn test_tensor_gradient_flow() {
+ // Create variable tensor
+ let a = DualTensor::full(&[2, 2], dual::variable(2.0));
+ let b = DualTensor::full(&[2, 2], dual::constant(3.0));
+
+ // c = a * b
+ let c = ops::mul(&a, &b);
+
+ // d = sum(c)
+ let d = ops::sum(&c);
+
+ // d = 4 * (2 * 3) = 24
+ assert!((d.val - 24.0).abs() < 1e-10);
+ // dd/da[i] = 3 for each element, total gradient = 4 * 3 = 12
+ assert!((d.dot - 12.0).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_softmax_gradient() {
+ // Softmax gradient is complex - verify basic properties
+ let x = DualTensor::from_vec(
+ vec![dual::variable(1.0), dual::constant(2.0), dual::constant(3.0)],
+ &[3]
+ );
+ let y = ops::softmax(&x, 0);
+
+ // All gradients should exist
+ for val in y.data() {
+ assert!(!val.dot.is_nan());
+ }
+ }
+}

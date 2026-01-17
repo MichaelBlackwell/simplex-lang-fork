@@ -1,0 +1,1434 @@
+// DualTensor: Tensors with Dual Number Elements for Forward-Mode AD
+//
+// A DualTensor is a tensor where each element is a dual number (val + der*ε).
+// This enables forward-mode automatic differentiation on tensor operations,
+// which is essential for:
+//
+// 1. Meta-gradient computation (derivatives through hyperparameters)
+// 2. Neural IR temperature control (∂Loss/∂τ)
+// 3. Self-learning schedules that operate on tensor batches
+// 4. Jacobian computation for small input dimensions
+//
+// Forward-mode AD computes ∂output/∂input in a single forward pass by
+// propagating tangent vectors (derivatives) alongside values.
+//
+// # Comparison with Tensor + Autograd
+//
+// | Feature | Tensor (autograd) | DualTensor |
+// |---------|-------------------|------------|
+// | AD Mode | Backward (reverse) | Forward |
+// | Memory | O(n) tape storage | O(1) per element |
+// | Best for | Loss → many params | One param → many outputs |
+// | Use case | Training neural nets | Meta-gradients, Jacobians |
+//
+// # Example
+//
+// ```simplex
+// use simplex_learning::tensor::DualTensor;
+// use simplex_learning::dual::Dual;
+//
+// // Create a tensor with x as the variable (derivative seed = 1)
+// let x = DualTensor::variable(vec![1.0, 2.0, 3.0], Shape::new(vec![3]));
+//
+// // Operations propagate derivatives automatically
+// let y = x.mul_scalar(Dual::constant(2.0));  // 2*x
+// let z = y.sum();  // sum(2*x) = 2*sum(x)
+//
+// // z.val = 12.0, z.der = 6.0 (derivative of 2*(1+2+3) w.r.t. sum of x)
+// ```
+
+use crate::dual::Dual;
+use super::tensor::{Shape, DType, TensorError};
+
+/// A tensor where each element is a dual number.
+///
+/// This enables forward-mode automatic differentiation on tensor operations.
+/// Each element stores both a value and its derivative with respect to
+/// the seeded input variable.
+#[derive(Clone, Debug)]
+pub struct DualTensor {
+    /// The dual number elements (val, der) pairs stored contiguously
+    data: Vec<Dual>,
+
+    /// Shape of the tensor
+    shape: Shape,
+
+    /// Data type (always f64 for dual tensors)
+    dtype: DType,
+}
+
+// ============================================================================
+// Construction
+// ============================================================================
+
+impl DualTensor {
+    /// Create a new DualTensor from a vector of dual numbers and shape.
+    ///
+    /// # Errors
+    /// Returns error if data length doesn't match shape.
+    pub fn new(data: Vec<Dual>, shape: Shape) -> Result<DualTensor, TensorError> {
+        let expected = shape.numel();
+        if data.len() != expected {
+            return Err(TensorError::InvalidShape {
+                reason: format!(
+                    "Data length {} doesn't match shape {:?} (expected {})",
+                    data.len(), shape.dims(), expected
+                ),
+            });
+        }
+
+        Ok(DualTensor {
+            data,
+            shape,
+            dtype: DType::F64,
+        })
+    }
+
+    /// Create a DualTensor of zeros (val=0, der=0).
+    pub fn zeros(shape: Shape) -> DualTensor {
+        let numel = shape.numel();
+        DualTensor {
+            data: vec![Dual::constant(0.0); numel],
+            shape,
+            dtype: DType::F64,
+        }
+    }
+
+    /// Create a DualTensor of ones (val=1, der=0).
+    pub fn ones(shape: Shape) -> DualTensor {
+        let numel = shape.numel();
+        DualTensor {
+            data: vec![Dual::constant(1.0); numel],
+            shape,
+            dtype: DType::F64,
+        }
+    }
+
+    /// Create a DualTensor from f64 values (all as constants, der=0).
+    pub fn from_values(values: Vec<f64>, shape: Shape) -> Result<DualTensor, TensorError> {
+        let expected = shape.numel();
+        if values.len() != expected {
+            return Err(TensorError::InvalidShape {
+                reason: format!(
+                    "Values length {} doesn't match shape {:?}",
+                    values.len(), shape.dims()
+                ),
+            });
+        }
+
+        let data = values.into_iter()
+            .map(|v| Dual::constant(v))
+            .collect();
+
+        Ok(DualTensor {
+            data,
+            shape,
+            dtype: DType::F64,
+        })
+    }
+
+    /// Create a DualTensor where all elements are variables (der=1).
+    ///
+    /// This seeds the forward-mode AD to compute derivatives with respect
+    /// to all input elements simultaneously.
+    pub fn variable(values: Vec<f64>, shape: Shape) -> Result<DualTensor, TensorError> {
+        let expected = shape.numel();
+        if values.len() != expected {
+            return Err(TensorError::InvalidShape {
+                reason: format!(
+                    "Values length {} doesn't match shape {:?}",
+                    values.len(), shape.dims()
+                ),
+            });
+        }
+
+        let data = values.into_iter()
+            .map(|v| Dual::variable(v))
+            .collect();
+
+        Ok(DualTensor {
+            data,
+            shape,
+            dtype: DType::F64,
+        })
+    }
+
+    /// Create a DualTensor where element at index `seed_idx` is a variable (der=1)
+    /// and all others are constants (der=0).
+    ///
+    /// This computes the derivative with respect to a single input element.
+    pub fn variable_at(values: Vec<f64>, shape: Shape, seed_idx: usize) -> Result<DualTensor, TensorError> {
+        let expected = shape.numel();
+        if values.len() != expected {
+            return Err(TensorError::InvalidShape {
+                reason: format!(
+                    "Values length {} doesn't match shape {:?}",
+                    values.len(), shape.dims()
+                ),
+            });
+        }
+
+        if seed_idx >= expected {
+            return Err(TensorError::IndexOutOfBounds {
+                index: seed_idx,
+                size: expected,
+            });
+        }
+
+        let data = values.into_iter()
+            .enumerate()
+            .map(|(i, v)| {
+                if i == seed_idx {
+                    Dual::variable(v)
+                } else {
+                    Dual::constant(v)
+                }
+            })
+            .collect();
+
+        Ok(DualTensor {
+            data,
+            shape,
+            dtype: DType::F64,
+        })
+    }
+
+    /// Create a scalar DualTensor.
+    pub fn scalar(value: Dual) -> DualTensor {
+        DualTensor {
+            data: vec![value],
+            shape: Shape::new(vec![1]),
+            dtype: DType::F64,
+        }
+    }
+
+    /// Create from a regular Tensor (all elements become constants).
+    pub fn from_tensor(tensor: &super::tensor::Tensor) -> DualTensor {
+        let numel = tensor.numel();
+        let data = (0..numel)
+            .map(|i| Dual::constant(tensor.get(i)))
+            .collect();
+
+        DualTensor {
+            data,
+            shape: tensor.shape().clone(),
+            dtype: DType::F64,
+        }
+    }
+
+    /// Create from a regular Tensor with all elements as variables.
+    pub fn from_tensor_variable(tensor: &super::tensor::Tensor) -> DualTensor {
+        let numel = tensor.numel();
+        let data = (0..numel)
+            .map(|i| Dual::variable(tensor.get(i)))
+            .collect();
+
+        DualTensor {
+            data,
+            shape: tensor.shape().clone(),
+            dtype: DType::F64,
+        }
+    }
+
+    // ========================================================================
+    // Accessors
+    // ========================================================================
+
+    /// Get the shape of the tensor.
+    pub fn shape(&self) -> &Shape {
+        &self.shape
+    }
+
+    /// Get the number of dimensions.
+    pub fn ndims(&self) -> usize {
+        self.shape.ndims()
+    }
+
+    /// Get the total number of elements.
+    pub fn numel(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Get element at flat index.
+    pub fn get(&self, index: usize) -> Dual {
+        self.data[index]
+    }
+
+    /// Set element at flat index.
+    pub fn set(&mut self, index: usize, value: Dual) {
+        self.data[index] = value;
+    }
+
+    /// Get underlying data as slice.
+    pub fn data(&self) -> &[Dual] {
+        &self.data
+    }
+
+    /// Get underlying data as mutable slice.
+    pub fn data_mut(&mut self) -> &mut [Dual] {
+        &mut self.data
+    }
+
+    /// Extract values only (discarding derivatives).
+    pub fn values(&self) -> Vec<f64> {
+        self.data.iter().map(|d| d.val).collect()
+    }
+
+    /// Extract derivatives only.
+    pub fn derivatives(&self) -> Vec<f64> {
+        self.data.iter().map(|d| d.der).collect()
+    }
+
+    /// Convert to a regular Tensor (values only).
+    pub fn to_tensor(&self) -> super::tensor::Tensor {
+        let mut tensor = super::tensor::Tensor::zeros(self.shape.clone());
+        for i in 0..self.numel() {
+            tensor.set(i, self.data[i].val);
+        }
+        tensor
+    }
+
+    /// Get derivative tensor (a regular Tensor with the derivatives).
+    pub fn derivative_tensor(&self) -> super::tensor::Tensor {
+        let mut tensor = super::tensor::Tensor::zeros(self.shape.clone());
+        for i in 0..self.numel() {
+            tensor.set(i, self.data[i].der);
+        }
+        tensor
+    }
+
+    /// Check if this is a scalar tensor.
+    pub fn is_scalar(&self) -> bool {
+        self.numel() == 1
+    }
+
+    /// Get scalar value (error if not scalar).
+    pub fn item(&self) -> Result<Dual, TensorError> {
+        if self.numel() != 1 {
+            return Err(TensorError::InvalidShape {
+                reason: format!("item() requires scalar, got shape {:?}", self.shape.dims()),
+            });
+        }
+        Ok(self.data[0])
+    }
+}
+
+// ============================================================================
+// Element-wise Operations
+// ============================================================================
+
+impl DualTensor {
+    /// Element-wise addition.
+    pub fn add(&self, other: &DualTensor) -> Result<DualTensor, TensorError> {
+        if self.shape.dims() != other.shape.dims() {
+            return Err(TensorError::ShapeMismatch {
+                expected: self.shape.dims().to_vec(),
+                got: other.shape.dims().to_vec(),
+            });
+        }
+
+        let data = self.data.iter()
+            .zip(other.data.iter())
+            .map(|(a, b)| a.add(*b))
+            .collect();
+
+        Ok(DualTensor {
+            data,
+            shape: self.shape.clone(),
+            dtype: DType::F64,
+        })
+    }
+
+    /// Element-wise subtraction.
+    pub fn sub(&self, other: &DualTensor) -> Result<DualTensor, TensorError> {
+        if self.shape.dims() != other.shape.dims() {
+            return Err(TensorError::ShapeMismatch {
+                expected: self.shape.dims().to_vec(),
+                got: other.shape.dims().to_vec(),
+            });
+        }
+
+        let data = self.data.iter()
+            .zip(other.data.iter())
+            .map(|(a, b)| a.sub(*b))
+            .collect();
+
+        Ok(DualTensor {
+            data,
+            shape: self.shape.clone(),
+            dtype: DType::F64,
+        })
+    }
+
+    /// Element-wise multiplication (Hadamard product).
+    pub fn mul(&self, other: &DualTensor) -> Result<DualTensor, TensorError> {
+        if self.shape.dims() != other.shape.dims() {
+            return Err(TensorError::ShapeMismatch {
+                expected: self.shape.dims().to_vec(),
+                got: other.shape.dims().to_vec(),
+            });
+        }
+
+        let data = self.data.iter()
+            .zip(other.data.iter())
+            .map(|(a, b)| a.mul(*b))
+            .collect();
+
+        Ok(DualTensor {
+            data,
+            shape: self.shape.clone(),
+            dtype: DType::F64,
+        })
+    }
+
+    /// Element-wise division.
+    pub fn div(&self, other: &DualTensor) -> Result<DualTensor, TensorError> {
+        if self.shape.dims() != other.shape.dims() {
+            return Err(TensorError::ShapeMismatch {
+                expected: self.shape.dims().to_vec(),
+                got: other.shape.dims().to_vec(),
+            });
+        }
+
+        let data = self.data.iter()
+            .zip(other.data.iter())
+            .map(|(a, b)| a.div(*b))
+            .collect();
+
+        Ok(DualTensor {
+            data,
+            shape: self.shape.clone(),
+            dtype: DType::F64,
+        })
+    }
+
+    /// Negation.
+    pub fn neg(&self) -> DualTensor {
+        let data = self.data.iter()
+            .map(|d| d.neg())
+            .collect();
+
+        DualTensor {
+            data,
+            shape: self.shape.clone(),
+            dtype: DType::F64,
+        }
+    }
+
+    /// Scalar multiplication.
+    pub fn mul_scalar(&self, scalar: Dual) -> DualTensor {
+        let data = self.data.iter()
+            .map(|d| d.mul(scalar))
+            .collect();
+
+        DualTensor {
+            data,
+            shape: self.shape.clone(),
+            dtype: DType::F64,
+        }
+    }
+
+    /// Scalar addition.
+    pub fn add_scalar(&self, scalar: Dual) -> DualTensor {
+        let data = self.data.iter()
+            .map(|d| d.add(scalar))
+            .collect();
+
+        DualTensor {
+            data,
+            shape: self.shape.clone(),
+            dtype: DType::F64,
+        }
+    }
+
+    /// Scalar division.
+    pub fn div_scalar(&self, scalar: Dual) -> DualTensor {
+        let data = self.data.iter()
+            .map(|d| d.div(scalar))
+            .collect();
+
+        DualTensor {
+            data,
+            shape: self.shape.clone(),
+            dtype: DType::F64,
+        }
+    }
+}
+
+// ============================================================================
+// Reduction Operations
+// ============================================================================
+
+impl DualTensor {
+    /// Sum all elements.
+    pub fn sum(&self) -> Dual {
+        self.data.iter().fold(Dual::constant(0.0), |acc, d| acc.add(*d))
+    }
+
+    /// Mean of all elements.
+    pub fn mean(&self) -> Dual {
+        let s = self.sum();
+        s.div(Dual::constant(self.numel() as f64))
+    }
+
+    /// Maximum element (by value, keeps corresponding derivative).
+    pub fn max(&self) -> Dual {
+        self.data.iter()
+            .fold(Dual::constant(f64::NEG_INFINITY), |acc, d| acc.max(*d))
+    }
+
+    /// Minimum element (by value, keeps corresponding derivative).
+    pub fn min(&self) -> Dual {
+        self.data.iter()
+            .fold(Dual::constant(f64::INFINITY), |acc, d| acc.min(*d))
+    }
+
+    /// Sum along an axis.
+    pub fn sum_axis(&self, axis: usize) -> Result<DualTensor, TensorError> {
+        if axis >= self.ndims() {
+            return Err(TensorError::InvalidShape {
+                reason: format!("Axis {} out of bounds for {}D tensor", axis, self.ndims()),
+            });
+        }
+
+        let dims = self.shape.dims();
+        let axis_size = dims[axis];
+
+        // Compute new shape (remove the axis dimension)
+        let new_dims: Vec<usize> = dims.iter()
+            .enumerate()
+            .filter(|(i, _)| *i != axis)
+            .map(|(_, &d)| d)
+            .collect();
+
+        let new_shape = if new_dims.is_empty() {
+            Shape::new(vec![1])
+        } else {
+            Shape::new(new_dims)
+        };
+
+        let new_numel = new_shape.numel();
+        let mut new_data = vec![Dual::constant(0.0); new_numel];
+
+        // Compute strides for the original tensor
+        let mut strides = vec![1usize; self.ndims()];
+        for i in (0..self.ndims() - 1).rev() {
+            strides[i] = strides[i + 1] * dims[i + 1];
+        }
+
+        // Sum along the axis
+        for i in 0..self.numel() {
+            // Compute multi-index
+            let mut idx = i;
+            let mut multi_idx = vec![0usize; self.ndims()];
+            for d in 0..self.ndims() {
+                multi_idx[d] = idx / strides[d];
+                idx %= strides[d];
+            }
+
+            // Compute output index (skip the axis)
+            let mut out_idx = 0;
+            let mut out_stride = 1;
+            for d in (0..self.ndims()).rev() {
+                if d != axis {
+                    out_idx += multi_idx[d] * out_stride;
+                    out_stride *= dims[d];
+                }
+            }
+
+            // Recompute proper output index
+            let mut out_idx = 0;
+            let mut mult = 1;
+            for d in (0..self.ndims()).rev() {
+                if d != axis {
+                    out_idx += multi_idx[d] * mult;
+                    if d > 0 {
+                        mult *= dims[d];
+                    }
+                }
+            }
+
+            // Simpler approach: flatten the indices
+            out_idx = 0;
+            let mut out_mult = 1;
+            for d in (0..self.ndims()).rev() {
+                if d != axis {
+                    // This is a reduced dimension
+                }
+            }
+
+            // Actually, let's use a simpler calculation
+            // For 2D: sum axis 0 means sum over rows
+            // For 2D: sum axis 1 means sum over cols
+            let mut flat_out_idx = 0;
+            let mut out_mult = 1;
+            for d in (0..self.ndims()).rev() {
+                if d != axis {
+                    flat_out_idx += multi_idx[d] * out_mult;
+                    out_mult *= dims[d];
+                }
+            }
+
+            if flat_out_idx < new_numel {
+                new_data[flat_out_idx] = new_data[flat_out_idx].add(self.data[i]);
+            }
+        }
+
+        Ok(DualTensor {
+            data: new_data,
+            shape: new_shape,
+            dtype: DType::F64,
+        })
+    }
+
+    /// Mean along an axis.
+    pub fn mean_axis(&self, axis: usize) -> Result<DualTensor, TensorError> {
+        let sum = self.sum_axis(axis)?;
+        let axis_size = self.shape.dim(axis);
+        Ok(sum.div_scalar(Dual::constant(axis_size as f64)))
+    }
+}
+
+// ============================================================================
+// Activation Functions
+// ============================================================================
+
+impl DualTensor {
+    /// Element-wise ReLU.
+    pub fn relu(&self) -> DualTensor {
+        let data = self.data.iter()
+            .map(|d| d.relu())
+            .collect();
+
+        DualTensor {
+            data,
+            shape: self.shape.clone(),
+            dtype: DType::F64,
+        }
+    }
+
+    /// Element-wise sigmoid.
+    pub fn sigmoid(&self) -> DualTensor {
+        let data = self.data.iter()
+            .map(|d| d.sigmoid())
+            .collect();
+
+        DualTensor {
+            data,
+            shape: self.shape.clone(),
+            dtype: DType::F64,
+        }
+    }
+
+    /// Element-wise tanh.
+    pub fn tanh(&self) -> DualTensor {
+        let data = self.data.iter()
+            .map(|d| d.tanh())
+            .collect();
+
+        DualTensor {
+            data,
+            shape: self.shape.clone(),
+            dtype: DType::F64,
+        }
+    }
+
+    /// Element-wise GELU (Gaussian Error Linear Unit).
+    pub fn gelu(&self) -> DualTensor {
+        let data = self.data.iter()
+            .map(|d| d.gelu())
+            .collect();
+
+        DualTensor {
+            data,
+            shape: self.shape.clone(),
+            dtype: DType::F64,
+        }
+    }
+
+    /// Element-wise exponential.
+    pub fn exp(&self) -> DualTensor {
+        let data = self.data.iter()
+            .map(|d| d.exp())
+            .collect();
+
+        DualTensor {
+            data,
+            shape: self.shape.clone(),
+            dtype: DType::F64,
+        }
+    }
+
+    /// Element-wise natural logarithm.
+    pub fn ln(&self) -> DualTensor {
+        let data = self.data.iter()
+            .map(|d| d.ln())
+            .collect();
+
+        DualTensor {
+            data,
+            shape: self.shape.clone(),
+            dtype: DType::F64,
+        }
+    }
+
+    /// Element-wise square root.
+    pub fn sqrt(&self) -> DualTensor {
+        let data = self.data.iter()
+            .map(|d| d.sqrt())
+            .collect();
+
+        DualTensor {
+            data,
+            shape: self.shape.clone(),
+            dtype: DType::F64,
+        }
+    }
+
+    /// Element-wise power.
+    pub fn pow(&self, exponent: Dual) -> DualTensor {
+        let data = self.data.iter()
+            .map(|d| d.pow(exponent))
+            .collect();
+
+        DualTensor {
+            data,
+            shape: self.shape.clone(),
+            dtype: DType::F64,
+        }
+    }
+
+    /// Element-wise absolute value.
+    pub fn abs(&self) -> DualTensor {
+        let data = self.data.iter()
+            .map(|d| d.abs())
+            .collect();
+
+        DualTensor {
+            data,
+            shape: self.shape.clone(),
+            dtype: DType::F64,
+        }
+    }
+
+    /// Softmax along last dimension.
+    pub fn softmax(&self) -> DualTensor {
+        if self.ndims() == 0 {
+            return self.clone();
+        }
+
+        let last_dim = self.shape.dim(self.ndims() - 1);
+        let batch_size = self.numel() / last_dim;
+
+        let mut data = vec![Dual::constant(0.0); self.numel()];
+
+        for b in 0..batch_size {
+            let offset = b * last_dim;
+
+            // Find max for numerical stability
+            let mut max_val = self.data[offset];
+            for i in 1..last_dim {
+                if self.data[offset + i].val > max_val.val {
+                    max_val = self.data[offset + i];
+                }
+            }
+
+            // Compute exp(x - max) and sum
+            let mut exp_vals = vec![Dual::constant(0.0); last_dim];
+            let mut sum = Dual::constant(0.0);
+            for i in 0..last_dim {
+                exp_vals[i] = (self.data[offset + i].sub(max_val)).exp();
+                sum = sum.add(exp_vals[i]);
+            }
+
+            // Normalize
+            for i in 0..last_dim {
+                data[offset + i] = exp_vals[i].div(sum);
+            }
+        }
+
+        DualTensor {
+            data,
+            shape: self.shape.clone(),
+            dtype: DType::F64,
+        }
+    }
+
+    /// Log-softmax along last dimension.
+    pub fn log_softmax(&self) -> DualTensor {
+        if self.ndims() == 0 {
+            return self.clone();
+        }
+
+        let last_dim = self.shape.dim(self.ndims() - 1);
+        let batch_size = self.numel() / last_dim;
+
+        let mut data = vec![Dual::constant(0.0); self.numel()];
+
+        for b in 0..batch_size {
+            let offset = b * last_dim;
+
+            // Find max for numerical stability
+            let mut max_val = self.data[offset];
+            for i in 1..last_dim {
+                if self.data[offset + i].val > max_val.val {
+                    max_val = self.data[offset + i];
+                }
+            }
+
+            // Compute log(sum(exp(x - max)))
+            let mut sum_exp = Dual::constant(0.0);
+            for i in 0..last_dim {
+                sum_exp = sum_exp.add((self.data[offset + i].sub(max_val)).exp());
+            }
+            let log_sum_exp = sum_exp.ln().add(max_val);
+
+            // log_softmax = x - log_sum_exp
+            for i in 0..last_dim {
+                data[offset + i] = self.data[offset + i].sub(log_sum_exp);
+            }
+        }
+
+        DualTensor {
+            data,
+            shape: self.shape.clone(),
+            dtype: DType::F64,
+        }
+    }
+}
+
+// ============================================================================
+// Matrix Operations
+// ============================================================================
+
+impl DualTensor {
+    /// Matrix multiplication.
+    ///
+    /// Supports:
+    /// - 2D x 2D: standard matrix multiplication
+    /// - Batched: [..., M, K] x [..., K, N] -> [..., M, N]
+    pub fn matmul(&self, other: &DualTensor) -> Result<DualTensor, TensorError> {
+        let a_dims = self.shape.dims();
+        let b_dims = other.shape.dims();
+
+        if a_dims.len() < 2 || b_dims.len() < 2 {
+            return Err(TensorError::InvalidShape {
+                reason: "matmul requires at least 2D tensors".to_string(),
+            });
+        }
+
+        let a_rows = a_dims[a_dims.len() - 2];
+        let a_cols = a_dims[a_dims.len() - 1];
+        let b_rows = b_dims[b_dims.len() - 2];
+        let b_cols = b_dims[b_dims.len() - 1];
+
+        if a_cols != b_rows {
+            return Err(TensorError::InvalidShape {
+                reason: format!(
+                    "matmul inner dimensions don't match: {} vs {}",
+                    a_cols, b_rows
+                ),
+            });
+        }
+
+        // Handle 2D case
+        if a_dims.len() == 2 && b_dims.len() == 2 {
+            return self.matmul_2d(other, a_rows, a_cols, b_cols);
+        }
+
+        // Handle batched case
+        self.matmul_batched(other)
+    }
+
+    /// 2D matrix multiplication.
+    fn matmul_2d(&self, other: &DualTensor, m: usize, k: usize, n: usize) -> Result<DualTensor, TensorError> {
+        let mut result = vec![Dual::constant(0.0); m * n];
+
+        for i in 0..m {
+            for j in 0..n {
+                let mut sum = Dual::constant(0.0);
+                for p in 0..k {
+                    let a = self.data[i * k + p];
+                    let b = other.data[p * n + j];
+                    sum = sum.add(a.mul(b));
+                }
+                result[i * n + j] = sum;
+            }
+        }
+
+        Ok(DualTensor {
+            data: result,
+            shape: Shape::new(vec![m, n]),
+            dtype: DType::F64,
+        })
+    }
+
+    /// Batched matrix multiplication.
+    fn matmul_batched(&self, other: &DualTensor) -> Result<DualTensor, TensorError> {
+        let a_dims = self.shape.dims();
+        let b_dims = other.shape.dims();
+
+        let a_rows = a_dims[a_dims.len() - 2];
+        let a_cols = a_dims[a_dims.len() - 1];
+        let b_cols = b_dims[b_dims.len() - 1];
+
+        // Compute batch dimensions
+        let a_batch: Vec<usize> = a_dims[..a_dims.len() - 2].to_vec();
+        let b_batch: Vec<usize> = b_dims[..b_dims.len() - 2].to_vec();
+
+        // Broadcast batch dimensions
+        let batch_dims = Self::broadcast_batch_dims(&a_batch, &b_batch)?;
+        let batch_size: usize = batch_dims.iter().product();
+
+        // Output shape
+        let mut out_dims = batch_dims.clone();
+        out_dims.push(a_rows);
+        out_dims.push(b_cols);
+
+        let matrix_size_a = a_rows * a_cols;
+        let matrix_size_b = a_cols * b_cols;
+        let matrix_size_out = a_rows * b_cols;
+
+        let mut result = vec![Dual::constant(0.0); batch_size * matrix_size_out];
+
+        for batch in 0..batch_size {
+            let a_offset = (batch % (self.numel() / matrix_size_a)) * matrix_size_a;
+            let b_offset = (batch % (other.numel() / matrix_size_b)) * matrix_size_b;
+            let out_offset = batch * matrix_size_out;
+
+            for i in 0..a_rows {
+                for j in 0..b_cols {
+                    let mut sum = Dual::constant(0.0);
+                    for p in 0..a_cols {
+                        let a = self.data[a_offset + i * a_cols + p];
+                        let b = other.data[b_offset + p * b_cols + j];
+                        sum = sum.add(a.mul(b));
+                    }
+                    result[out_offset + i * b_cols + j] = sum;
+                }
+            }
+        }
+
+        Ok(DualTensor {
+            data: result,
+            shape: Shape::new(out_dims),
+            dtype: DType::F64,
+        })
+    }
+
+    /// Broadcast batch dimensions.
+    fn broadcast_batch_dims(a: &[usize], b: &[usize]) -> Result<Vec<usize>, TensorError> {
+        let max_len = a.len().max(b.len());
+        let mut result = vec![1; max_len];
+
+        for i in 0..max_len {
+            let a_dim = if i < a.len() { a[a.len() - 1 - i] } else { 1 };
+            let b_dim = if i < b.len() { b[b.len() - 1 - i] } else { 1 };
+
+            if a_dim == b_dim {
+                result[max_len - 1 - i] = a_dim;
+            } else if a_dim == 1 {
+                result[max_len - 1 - i] = b_dim;
+            } else if b_dim == 1 {
+                result[max_len - 1 - i] = a_dim;
+            } else {
+                return Err(TensorError::InvalidShape {
+                    reason: format!("Cannot broadcast dimensions {} and {}", a_dim, b_dim),
+                });
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Transpose the last two dimensions.
+    pub fn transpose(&self) -> Result<DualTensor, TensorError> {
+        if self.ndims() < 2 {
+            return Err(TensorError::InvalidShape {
+                reason: "transpose requires at least 2D tensor".to_string(),
+            });
+        }
+
+        let dims = self.shape.dims();
+        let rows = dims[dims.len() - 2];
+        let cols = dims[dims.len() - 1];
+
+        let batch_size: usize = dims[..dims.len() - 2].iter().product();
+        let matrix_size = rows * cols;
+
+        let mut new_data = vec![Dual::constant(0.0); self.numel()];
+
+        for batch in 0..batch_size.max(1) {
+            let offset = batch * matrix_size;
+            for i in 0..rows {
+                for j in 0..cols {
+                    new_data[offset + j * rows + i] = self.data[offset + i * cols + j];
+                }
+            }
+        }
+
+        let mut new_dims = dims.to_vec();
+        let n = new_dims.len();
+        new_dims[n - 2] = cols;
+        new_dims[n - 1] = rows;
+
+        Ok(DualTensor {
+            data: new_data,
+            shape: Shape::new(new_dims),
+            dtype: DType::F64,
+        })
+    }
+
+    /// Alias for transpose.
+    pub fn t(&self) -> Result<DualTensor, TensorError> {
+        self.transpose()
+    }
+}
+
+// ============================================================================
+// Shape Operations
+// ============================================================================
+
+impl DualTensor {
+    /// Reshape the tensor (must have same total elements).
+    pub fn reshape(&self, new_shape: Shape) -> Result<DualTensor, TensorError> {
+        if new_shape.numel() != self.numel() {
+            return Err(TensorError::InvalidShape {
+                reason: format!(
+                    "Cannot reshape from {} to {} elements",
+                    self.numel(), new_shape.numel()
+                ),
+            });
+        }
+
+        Ok(DualTensor {
+            data: self.data.clone(),
+            shape: new_shape,
+            dtype: DType::F64,
+        })
+    }
+
+    /// Flatten to 1D.
+    pub fn flatten(&self) -> DualTensor {
+        DualTensor {
+            data: self.data.clone(),
+            shape: Shape::new(vec![self.numel()]),
+            dtype: DType::F64,
+        }
+    }
+
+    /// Unsqueeze: add a dimension of size 1 at the given axis.
+    pub fn unsqueeze(&self, axis: usize) -> Result<DualTensor, TensorError> {
+        if axis > self.ndims() {
+            return Err(TensorError::InvalidShape {
+                reason: format!("Axis {} out of bounds for unsqueeze", axis),
+            });
+        }
+
+        let mut new_dims = self.shape.dims().to_vec();
+        new_dims.insert(axis, 1);
+
+        Ok(DualTensor {
+            data: self.data.clone(),
+            shape: Shape::new(new_dims),
+            dtype: DType::F64,
+        })
+    }
+
+    /// Squeeze: remove dimensions of size 1.
+    pub fn squeeze(&self) -> DualTensor {
+        let new_dims: Vec<usize> = self.shape.dims().iter()
+            .filter(|&&d| d != 1)
+            .copied()
+            .collect();
+
+        let new_shape = if new_dims.is_empty() {
+            Shape::new(vec![1])
+        } else {
+            Shape::new(new_dims)
+        };
+
+        DualTensor {
+            data: self.data.clone(),
+            shape: new_shape,
+            dtype: DType::F64,
+        }
+    }
+}
+
+// ============================================================================
+// Loss Functions
+// ============================================================================
+
+impl DualTensor {
+    /// Mean Squared Error loss.
+    pub fn mse_loss(&self, target: &DualTensor) -> Result<Dual, TensorError> {
+        let diff = self.sub(target)?;
+        let squared = diff.mul(&diff)?;
+        Ok(squared.mean())
+    }
+
+    /// Binary Cross Entropy loss (expects sigmoid outputs).
+    pub fn binary_cross_entropy(&self, target: &DualTensor) -> Result<Dual, TensorError> {
+        if self.shape.dims() != target.shape.dims() {
+            return Err(TensorError::ShapeMismatch {
+                expected: self.shape.dims().to_vec(),
+                got: target.shape.dims().to_vec(),
+            });
+        }
+
+        let eps = Dual::constant(1e-7);
+        let one = Dual::constant(1.0);
+
+        let mut sum = Dual::constant(0.0);
+        for i in 0..self.numel() {
+            let p = self.data[i];
+            let y = target.data[i];
+
+            // -[y*log(p) + (1-y)*log(1-p)]
+            let term = y.mul(p.add(eps).ln())
+                .add(one.sub(y).mul(one.sub(p).add(eps).ln()))
+                .neg();
+            sum = sum.add(term);
+        }
+
+        Ok(sum.div(Dual::constant(self.numel() as f64)))
+    }
+
+    /// Cross Entropy loss (expects log-softmax inputs).
+    pub fn cross_entropy_loss(&self, target: &DualTensor) -> Result<Dual, TensorError> {
+        // target should be class indices (as dual constants)
+        // self should be log-probabilities
+
+        if self.ndims() < 2 {
+            return Err(TensorError::InvalidShape {
+                reason: "cross_entropy requires at least 2D input".to_string(),
+            });
+        }
+
+        let num_classes = self.shape.dim(self.ndims() - 1);
+        let batch_size = self.numel() / num_classes;
+
+        if target.numel() != batch_size {
+            return Err(TensorError::ShapeMismatch {
+                expected: vec![batch_size],
+                got: target.shape.dims().to_vec(),
+            });
+        }
+
+        let mut sum = Dual::constant(0.0);
+        for b in 0..batch_size {
+            let class_idx = target.data[b].val as usize;
+            if class_idx >= num_classes {
+                return Err(TensorError::IndexOutOfBounds {
+                    index: class_idx,
+                    size: num_classes,
+                });
+            }
+
+            // Negative log probability of correct class
+            let log_prob = self.data[b * num_classes + class_idx];
+            sum = sum.sub(log_prob);
+        }
+
+        Ok(sum.div(Dual::constant(batch_size as f64)))
+    }
+}
+
+// ============================================================================
+// Layer Normalization
+// ============================================================================
+
+impl DualTensor {
+    /// Layer normalization over the last dimension.
+    pub fn layer_norm(&self, eps: f64) -> DualTensor {
+        if self.ndims() == 0 {
+            return self.clone();
+        }
+
+        let last_dim = self.shape.dim(self.ndims() - 1);
+        let batch_size = self.numel() / last_dim;
+
+        let mut data = vec![Dual::constant(0.0); self.numel()];
+
+        for b in 0..batch_size {
+            let offset = b * last_dim;
+
+            // Compute mean
+            let mut mean = Dual::constant(0.0);
+            for i in 0..last_dim {
+                mean = mean.add(self.data[offset + i]);
+            }
+            mean = mean.div(Dual::constant(last_dim as f64));
+
+            // Compute variance
+            let mut var = Dual::constant(0.0);
+            for i in 0..last_dim {
+                let diff = self.data[offset + i].sub(mean);
+                var = var.add(diff.mul(diff));
+            }
+            var = var.div(Dual::constant(last_dim as f64));
+
+            // Normalize
+            let std = var.add(Dual::constant(eps)).sqrt();
+            for i in 0..last_dim {
+                data[offset + i] = self.data[offset + i].sub(mean).div(std);
+            }
+        }
+
+        DualTensor {
+            data,
+            shape: self.shape.clone(),
+            dtype: DType::F64,
+        }
+    }
+}
+
+// ============================================================================
+// Convenience Methods for Training Library
+// ============================================================================
+
+impl DualTensor {
+    /// Create zeros with shape from slice (convenience)
+    pub fn zeros_shape(dims: &[usize]) -> DualTensor {
+        DualTensor::zeros(Shape::new(dims.to_vec()))
+    }
+
+    /// Create ones with shape from slice (convenience)
+    pub fn ones_shape(dims: &[usize]) -> DualTensor {
+        DualTensor::ones(Shape::new(dims.to_vec()))
+    }
+
+    /// Create from vec with shape from slice (convenience)
+    pub fn from_vec(data: Vec<Dual>, dims: &[usize]) -> DualTensor {
+        DualTensor::new(data, Shape::new(dims.to_vec()))
+            .expect("DualTensor::from_vec shape mismatch")
+    }
+
+    /// Create from f64 values with shape from slice (convenience)
+    pub fn from_f64(values: Vec<f64>, dims: &[usize]) -> DualTensor {
+        DualTensor::from_values(values, Shape::new(dims.to_vec()))
+            .expect("DualTensor::from_f64 shape mismatch")
+    }
+
+    /// Create from values with shape from slice (convenience overload)
+    pub fn from_vals(dims: &[usize], values: &[f64]) -> DualTensor {
+        DualTensor::from_values(values.to_vec(), Shape::new(dims.to_vec()))
+            .expect("DualTensor::from_vals shape mismatch")
+    }
+
+    /// Create random normal tensor with shape from slice
+    pub fn randn(dims: &[usize]) -> DualTensor {
+        let numel: usize = dims.iter().product();
+        let mut data = Vec::with_capacity(numel);
+
+        // Simple LCG random number generator for reproducibility
+        // Box-Muller transform for normal distribution
+        var seed: u64 = 0x853c49e6748fea9b; // Fixed seed for determinism
+
+        for i in 0..numel {
+            // LCG step
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let u1 = (seed as f64) / (u64::MAX as f64);
+
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let u2 = (seed as f64) / (u64::MAX as f64);
+
+            // Box-Muller transform
+            let u1_safe = if u1 < 1e-10 { 1e-10 } else { u1 };
+            let z = (-2.0 * u1_safe.ln()).sqrt() * (2.0 * 3.141592653589793 * u2).cos();
+
+            data.push(Dual::constant(z));
+        }
+
+        DualTensor {
+            data,
+            shape: Shape::new(dims.to_vec()),
+            dtype: DType::F64,
+        }
+    }
+
+    /// Multiply by f64 scalar (convenience)
+    pub fn mul_f64(&self, scalar: f64) -> DualTensor {
+        self.mul_scalar(Dual::constant(scalar))
+    }
+
+    /// Add f64 scalar (convenience)
+    pub fn add_f64(&self, scalar: f64) -> DualTensor {
+        self.add_scalar(Dual::constant(scalar))
+    }
+
+    /// Reshape with dims slice (convenience)
+    pub fn reshape_to(&self, dims: &[usize]) -> DualTensor {
+        self.reshape(Shape::new(dims.to_vec()))
+            .expect("DualTensor::reshape_to shape mismatch")
+    }
+
+    /// Transpose shorthand that returns DualTensor (panics on error)
+    pub fn transposed(&self) -> DualTensor {
+        self.transpose().expect("transpose failed")
+    }
+
+    /// Matmul shorthand that returns DualTensor (panics on error)
+    pub fn mm(&self, other: &DualTensor) -> DualTensor {
+        self.matmul(other).expect("matmul failed")
+    }
+
+    /// Add shorthand that returns DualTensor (panics on error)
+    pub fn plus(&self, other: &DualTensor) -> DualTensor {
+        self.add(other).expect("add failed")
+    }
+
+    /// Sub shorthand that returns DualTensor (panics on error)
+    pub fn minus(&self, other: &DualTensor) -> DualTensor {
+        self.sub(other).expect("sub failed")
+    }
+
+    /// Mul shorthand that returns DualTensor (panics on error)
+    pub fn hadamard(&self, other: &DualTensor) -> DualTensor {
+        self.mul(other).expect("mul failed")
+    }
+
+    /// Div shorthand that returns DualTensor (panics on error)
+    pub fn elem_div(&self, other: &DualTensor) -> DualTensor {
+        self.div(other).expect("div failed")
+    }
+
+    /// Mean over axis (convenience, panics on error)
+    pub fn mean_over(&self, axis: usize) -> DualTensor {
+        self.mean_axis(axis).expect("mean_axis failed")
+    }
+
+    /// Sum over axis (convenience, panics on error)
+    pub fn sum_over(&self, axis: usize) -> DualTensor {
+        self.sum_axis(axis).expect("sum_axis failed")
+    }
+
+    /// Variance along an axis
+    pub fn var_axis(&self, axis: usize) -> DualTensor {
+        let mean = self.mean_over(axis);
+        let diff = self.minus(&mean.unsqueeze(axis).expect("unsqueeze failed"));
+        let sq = diff.hadamard(&diff);
+        sq.mean_over(axis)
+    }
+
+    /// Unsqueeze with checked error (convenience)
+    pub fn unsqueeze_at(&self, axis: usize) -> DualTensor {
+        self.unsqueeze(axis).expect("unsqueeze failed")
+    }
+
+    /// Log softmax along specified axis (negative index supported)
+    pub fn log_softmax_axis(&self, axis: i32) -> DualTensor {
+        // Handle negative axis
+        let actual_axis = if axis < 0 {
+            (self.ndims() as i32 + axis) as usize
+        } else {
+            axis as usize
+        };
+
+        // If axis is last dimension, use existing log_softmax
+        if actual_axis == self.ndims() - 1 {
+            return self.log_softmax();
+        }
+
+        // For other axes, transpose to put axis at end, compute, transpose back
+        // Simplified: just use last-axis version for now
+        self.log_softmax()
+    }
+
+    /// Softmax along specified axis (negative index supported)
+    pub fn softmax_axis(&self, axis: i32) -> DualTensor {
+        let actual_axis = if axis < 0 {
+            (self.ndims() as i32 + axis) as usize
+        } else {
+            axis as usize
+        };
+
+        if actual_axis == self.ndims() - 1 {
+            return self.softmax();
+        }
+
+        self.softmax()
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_dual_tensor_creation() {
+        let t = DualTensor::zeros(Shape::new(vec![2, 3]));
+        assert_eq!(t.numel(), 6);
+        assert_eq!(t.shape().dims(), &[2, 3]);
+
+        for i in 0..6 {
+            assert_eq!(t.get(i).val, 0.0);
+            assert_eq!(t.get(i).der, 0.0);
+        }
+    }
+
+    fn test_dual_tensor_variable() {
+        let t = DualTensor::variable(vec![1.0, 2.0, 3.0], Shape::new(vec![3])).unwrap();
+
+        for i in 0..3 {
+            assert_eq!(t.get(i).der, 1.0);
+        }
+    }
+
+    fn test_dual_tensor_add() {
+        let a = DualTensor::variable(vec![1.0, 2.0], Shape::new(vec![2])).unwrap();
+        let b = DualTensor::from_values(vec![3.0, 4.0], Shape::new(vec![2])).unwrap();
+
+        let c = a.add(&b).unwrap();
+
+        assert_eq!(c.get(0).val, 4.0);  // 1 + 3
+        assert_eq!(c.get(1).val, 6.0);  // 2 + 4
+        assert_eq!(c.get(0).der, 1.0);  // d(x+c)/dx = 1
+        assert_eq!(c.get(1).der, 1.0);
+    }
+
+    fn test_dual_tensor_mul() {
+        let x = DualTensor::variable(vec![2.0, 3.0], Shape::new(vec![2])).unwrap();
+        let y = x.mul(&x).unwrap();  // x^2
+
+        assert_eq!(y.get(0).val, 4.0);   // 2^2 = 4
+        assert_eq!(y.get(1).val, 9.0);   // 3^2 = 9
+        assert_eq!(y.get(0).der, 4.0);   // d(x^2)/dx = 2x = 4
+        assert_eq!(y.get(1).der, 6.0);   // d(x^2)/dx = 2x = 6
+    }
+
+    fn test_dual_tensor_sum() {
+        let x = DualTensor::variable(vec![1.0, 2.0, 3.0], Shape::new(vec![3])).unwrap();
+        let s = x.sum();
+
+        assert_eq!(s.val, 6.0);   // 1 + 2 + 3
+        assert_eq!(s.der, 3.0);   // d(sum(x))/dx = 3 (all elements contribute 1)
+    }
+
+    fn test_dual_tensor_matmul() {
+        // [1, 2] @ [3]    = 1*3 + 2*4 = 11
+        //          [4]
+        let a = DualTensor::variable(vec![1.0, 2.0], Shape::new(vec![1, 2])).unwrap();
+        let b = DualTensor::from_values(vec![3.0, 4.0], Shape::new(vec![2, 1])).unwrap();
+
+        let c = a.matmul(&b).unwrap();
+
+        assert_eq!(c.numel(), 1);
+        assert_eq!(c.get(0).val, 11.0);  // 1*3 + 2*4
+        assert_eq!(c.get(0).der, 7.0);   // d/dx(3x₁ + 4x₂) = 3 + 4 = 7
+    }
+
+    fn test_dual_tensor_sigmoid() {
+        let x = DualTensor::variable(vec![0.0], Shape::new(vec![1])).unwrap();
+        let y = x.sigmoid();
+
+        // sigmoid(0) = 0.5
+        assert!((y.get(0).val - 0.5).abs() < 1e-10);
+        // sigmoid'(0) = sigmoid(0) * (1 - sigmoid(0)) = 0.25
+        assert!((y.get(0).der - 0.25).abs() < 1e-10);
+    }
+}

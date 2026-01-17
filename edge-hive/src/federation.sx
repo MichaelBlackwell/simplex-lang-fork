@@ -1,0 +1,585 @@
+// Edge Hive - Federation Manager (Secure)
+// Handles synchronization with cloud hives and peer devices
+//
+// This module requires:
+// - runtime.sx (extern runtime functions)
+// - types.sx (federation states, sync strategies)
+// - device.sx (device profile for adaptive sync)
+// - beliefs.sx (belief store for sync operations)
+// - security.sx (user identity for authenticated connections)
+// - network.sx (secure WebSocket connections)
+//
+// FederationManager Structure:
+// Slot 0: state (FED_DISCONNECTED, FED_CONNECTING, etc.)
+// Slot 1: cloud_endpoint (string reference)
+// Slot 2: device_id (unique identifier)
+// Slot 3: last_sync_time
+// Slot 4: pending_requests (vec of requests awaiting cloud response)
+// Slot 5: peer_devices (vec of known peer device ids)
+// Slot 6: sync_strategy
+// Slot 7: stats vec [requests_sent, responses_received, sync_count, errors]
+// Slot 8: user_identity (for authenticated connections)
+// Slot 9: ws_connection (WebSocket connection handle)
+
+// =============================================================================
+// FederationManager Constructor
+// =============================================================================
+
+fn federation_new(device_id: i64, cloud_endpoint: i64) -> i64 {
+    // Legacy constructor (no user identity - connections are unauthenticated)
+    let fed: i64 = vec_new();
+    vec_push(fed, FED_DISCONNECTED());  // Slot 0: state
+    vec_push(fed, cloud_endpoint);       // Slot 1: cloud endpoint
+    vec_push(fed, device_id);            // Slot 2: device id
+    vec_push(fed, 0);                    // Slot 3: last sync time
+    vec_push(fed, vec_new());            // Slot 4: pending requests
+    vec_push(fed, vec_new());            // Slot 5: peer devices
+    vec_push(fed, SYNC_BALANCED());      // Slot 6: sync strategy
+    // Slot 7: stats
+    let stats: i64 = vec_new();
+    vec_push(stats, 0);  // requests_sent
+    vec_push(stats, 0);  // responses_received
+    vec_push(stats, 0);  // sync_count
+    vec_push(stats, 0);  // errors
+    vec_push(fed, stats);
+    vec_push(fed, 0);  // Slot 8: no identity
+    vec_push(fed, 0);  // Slot 9: no ws connection
+    fed
+}
+
+fn federation_new_secure(identity: i64, device_id: i64, cloud_endpoint: i64) -> i64 {
+    // Secure constructor with user identity for authenticated connections
+    if identity == 0 {
+        return 0;  // Must have valid identity
+    }
+
+    let fed: i64 = vec_new();
+    vec_push(fed, FED_DISCONNECTED());  // Slot 0: state
+    vec_push(fed, cloud_endpoint);       // Slot 1: cloud endpoint
+    vec_push(fed, device_id);            // Slot 2: device id
+    vec_push(fed, 0);                    // Slot 3: last sync time
+    vec_push(fed, vec_new());            // Slot 4: pending requests
+    vec_push(fed, vec_new());            // Slot 5: peer devices
+    vec_push(fed, SYNC_BALANCED());      // Slot 6: sync strategy
+
+    // Slot 7: stats
+    let stats: i64 = vec_new();
+    vec_push(stats, 0);  // requests_sent
+    vec_push(stats, 0);  // responses_received
+    vec_push(stats, 0);  // sync_count
+    vec_push(stats, 0);  // errors
+    vec_push(fed, stats);
+
+    vec_push(fed, identity);  // Slot 8: user identity
+    vec_push(fed, 0);         // Slot 9: ws connection (created on connect)
+
+    fed
+}
+
+// =============================================================================
+// State Accessors
+// =============================================================================
+
+fn federation_state(fed: i64) -> i64 {
+    vec_get(fed, 0)
+}
+
+fn federation_cloud_endpoint(fed: i64) -> i64 {
+    vec_get(fed, 1)
+}
+
+fn federation_device_id(fed: i64) -> i64 {
+    vec_get(fed, 2)
+}
+
+fn federation_last_sync(fed: i64) -> i64 {
+    vec_get(fed, 3)
+}
+
+fn federation_pending_requests(fed: i64) -> i64 {
+    vec_get(fed, 4)
+}
+
+fn federation_peer_devices(fed: i64) -> i64 {
+    vec_get(fed, 5)
+}
+
+fn federation_sync_strategy(fed: i64) -> i64 {
+    vec_get(fed, 6)
+}
+
+fn federation_stats(fed: i64) -> i64 {
+    vec_get(fed, 7)
+}
+
+fn federation_identity(fed: i64) -> i64 {
+    vec_get(fed, 8)
+}
+
+fn federation_ws_connection(fed: i64) -> i64 {
+    vec_get(fed, 9)
+}
+
+fn federation_has_identity(fed: i64) -> i64 {
+    if federation_identity(fed) != 0 { 1 } else { 0 }
+}
+
+fn federation_set_state(fed: i64, state: i64) -> i64 {
+    vec_set(fed, 0, state);
+    0
+}
+
+fn federation_set_ws_connection(fed: i64, conn: i64) -> i64 {
+    vec_set(fed, 9, conn);
+    0
+}
+
+fn federation_set_sync_strategy(fed: i64, strategy: i64) -> i64 {
+    vec_set(fed, 6, strategy);
+    0
+}
+
+// =============================================================================
+// Connection Management
+// =============================================================================
+
+fn federation_connect(fed: i64) -> i64 {
+    let state: i64 = federation_state(fed);
+    if state == FED_CONNECTED() {
+        return 1;  // Already connected
+    }
+    if state == FED_CONNECTING() {
+        return 0;  // In progress
+    }
+
+    federation_set_state(fed, FED_CONNECTING());
+
+    let endpoint: i64 = federation_cloud_endpoint(fed);
+    let device_id: i64 = federation_device_id(fed);
+    let identity: i64 = federation_identity(fed);
+
+    // Create WebSocket connection
+    let conn: i64 = 0;
+    if identity != 0 {
+        // Secure connection with authentication
+        conn = ws_connection_new(endpoint, device_id, identity);
+        if conn == 0 {
+            federation_set_state(fed, FED_ERROR());
+            return 0;  // Connection creation failed (probably non-TLS endpoint)
+        }
+    } else {
+        // Legacy connection (no authentication)
+        conn = ws_connection_new_legacy(endpoint, device_id);
+    }
+
+    // Attempt to connect
+    let result: i64 = ws_connect(conn);
+
+    if result == 1 {
+        federation_set_ws_connection(fed, conn);
+        federation_set_state(fed, FED_CONNECTED());
+        return 1;
+    }
+
+    federation_set_state(fed, FED_ERROR());
+    0
+}
+
+fn federation_disconnect(fed: i64) -> i64 {
+    let conn: i64 = federation_ws_connection(fed);
+    if conn != 0 {
+        ws_disconnect(conn);
+        federation_set_ws_connection(fed, 0);
+    }
+    federation_set_state(fed, FED_DISCONNECTED());
+    0
+}
+
+fn federation_is_connected(fed: i64) -> i64 {
+    let state: i64 = federation_state(fed);
+    if state == FED_CONNECTED() { 1 }
+    else if state == FED_SYNCING() { 1 }
+    else { 0 }
+}
+
+// =============================================================================
+// Request Delegation to Cloud
+// =============================================================================
+
+fn federation_delegate_request(fed: i64, request: i64) -> i64 {
+    if federation_is_connected(fed) == 0 {
+        // Queue for later
+        let pending: i64 = federation_pending_requests(fed);
+        let queued: i64 = vec_new();
+        vec_push(queued, request);
+        vec_push(queued, time_now());  // Timestamp
+        vec_push(pending, queued);
+        return RESPONSE_QUEUED();
+    }
+
+    // Create delegation message
+    let msg: i64 = federation_create_delegate_msg(fed, request);
+
+    // Send to cloud (stub)
+    let result: i64 = federation_send_to_cloud(fed, msg);
+
+    if result == 1 {
+        // Track stats
+        let stats: i64 = federation_stats(fed);
+        let sent: i64 = vec_get(stats, 0);
+        vec_set(stats, 0, sent + 1);
+        return RESPONSE_SUCCESS();
+    }
+
+    // Track error
+    let stats: i64 = federation_stats(fed);
+    let errors: i64 = vec_get(stats, 3);
+    vec_set(stats, 3, errors + 1);
+    RESPONSE_ERROR()
+}
+
+fn federation_create_delegate_msg(fed: i64, request: i64) -> i64 {
+    let msg: i64 = vec_new();
+    vec_push(msg, 1);  // Message type: delegate
+    vec_push(msg, federation_device_id(fed));
+    vec_push(msg, time_now());
+    vec_push(msg, request);
+    msg
+}
+
+fn federation_send_to_cloud(fed: i64, msg: i64) -> i64 {
+    let conn: i64 = federation_ws_connection(fed);
+    if conn == 0 {
+        return 0;  // No connection
+    }
+
+    // Use authenticated send if available
+    if federation_has_identity(fed) == 1 {
+        // Message will be signed and authenticated
+        return ws_send_authenticated(conn, msg);
+    }
+
+    // Legacy send (unsiged)
+    ws_send(conn, msg)
+}
+
+// =============================================================================
+// Peer Device Management
+// =============================================================================
+
+fn federation_add_peer(fed: i64, peer_id: i64) -> i64 {
+    let peers: i64 = federation_peer_devices(fed);
+
+    // Check if already known
+    let len: i64 = vec_len(peers);
+    let i: i64 = 0;
+    while i < len {
+        if vec_get(peers, i) == peer_id {
+            return 0;  // Already known
+        }
+        i = i + 1;
+    }
+
+    vec_push(peers, peer_id);
+    1
+}
+
+fn federation_remove_peer(fed: i64, peer_id: i64) -> i64 {
+    let peers: i64 = federation_peer_devices(fed);
+    let len: i64 = vec_len(peers);
+
+    let i: i64 = 0;
+    while i < len {
+        if vec_get(peers, i) == peer_id {
+            // Swap with last and pop
+            let last_idx: i64 = len - 1;
+            if i != last_idx {
+                let last: i64 = vec_get(peers, last_idx);
+                vec_set(peers, i, last);
+            }
+            vec_pop(peers);
+            return 1;
+        }
+        i = i + 1;
+    }
+    0  // Not found
+}
+
+fn federation_peer_count(fed: i64) -> i64 {
+    let peers: i64 = federation_peer_devices(fed);
+    vec_len(peers)
+}
+
+// =============================================================================
+// Belief Synchronization
+// =============================================================================
+
+fn federation_sync_beliefs(fed: i64, belief_store: i64) -> i64 {
+    if federation_is_connected(fed) == 0 {
+        return RESPONSE_OFFLINE();
+    }
+
+    if belief_store_is_dirty(belief_store) == 0 {
+        return RESPONSE_SUCCESS();  // Nothing to sync
+    }
+
+    federation_set_state(fed, FED_SYNCING());
+
+    // Serialize beliefs for sync
+    let serialized: i64 = belief_store_serialize(belief_store);
+
+    // Create sync message
+    let msg: i64 = federation_create_sync_msg(fed, serialized);
+
+    // Send to cloud
+    let result: i64 = federation_send_to_cloud(fed, msg);
+
+    if result == 1 {
+        // Update sync time and stats
+        vec_set(fed, 3, time_now());
+        let stats: i64 = federation_stats(fed);
+        let sync_count: i64 = vec_get(stats, 2);
+        vec_set(stats, 2, sync_count + 1);
+
+        // Mark beliefs as clean
+        belief_store_mark_clean(belief_store);
+
+        federation_set_state(fed, FED_CONNECTED());
+        return RESPONSE_SUCCESS();
+    }
+
+    federation_set_state(fed, FED_ERROR());
+    RESPONSE_ERROR()
+}
+
+fn federation_create_sync_msg(fed: i64, beliefs: i64) -> i64 {
+    let msg: i64 = vec_new();
+    vec_push(msg, 2);  // Message type: sync
+    vec_push(msg, federation_device_id(fed));
+    vec_push(msg, time_now());
+    vec_push(msg, beliefs);
+    msg
+}
+
+fn federation_receive_sync(fed: i64, belief_store: i64, incoming: i64) -> i64 {
+    // Merge incoming beliefs using CRDT semantics
+    let merged: i64 = belief_store_merge(belief_store, incoming);
+
+    // Track stats
+    let stats: i64 = federation_stats(fed);
+    let received: i64 = vec_get(stats, 1);
+    vec_set(stats, 1, received + 1);
+
+    merged
+}
+
+// =============================================================================
+// Request Queue Processing
+// =============================================================================
+
+fn federation_process_pending(fed: i64) -> i64 {
+    if federation_is_connected(fed) == 0 {
+        return 0;  // Can't process while disconnected
+    }
+
+    let pending: i64 = federation_pending_requests(fed);
+    let len: i64 = vec_len(pending);
+    let processed: i64 = 0;
+
+    // Process from oldest to newest
+    while vec_len(pending) > 0 {
+        let queued: i64 = vec_get(pending, 0);
+        let request: i64 = vec_get(queued, 0);
+
+        // Remove from queue (shift all elements)
+        // Note: inefficient, but simple for now
+        let new_pending: i64 = vec_new();
+        let i: i64 = 1;
+        while i < vec_len(pending) {
+            vec_push(new_pending, vec_get(pending, i));
+            i = i + 1;
+        }
+        vec_set(fed, 4, new_pending);
+
+        // Process the request
+        let msg: i64 = federation_create_delegate_msg(fed, request);
+        if federation_send_to_cloud(fed, msg) == 1 {
+            processed = processed + 1;
+        } else {
+            // Put back in queue on failure
+            vec_push(new_pending, queued);
+            return processed;  // Stop processing on error
+        }
+    }
+
+    processed
+}
+
+fn federation_pending_count(fed: i64) -> i64 {
+    let pending: i64 = federation_pending_requests(fed);
+    vec_len(pending)
+}
+
+// =============================================================================
+// Health Check
+// =============================================================================
+
+fn federation_health_check(fed: i64) -> i64 {
+    // Returns 1 if healthy, 0 if needs attention
+    let state: i64 = federation_state(fed);
+
+    if state == FED_ERROR() {
+        return 0;
+    }
+
+    // Check for stale connection
+    if state == FED_CONNECTED() {
+        let last_sync: i64 = federation_last_sync(fed);
+        let now: i64 = time_now();
+        let stale_threshold: i64 = 3600;  // 1 hour
+
+        if now - last_sync > stale_threshold {
+            // Connection is stale
+            return 0;
+        }
+    }
+
+    // Check pending queue size
+    let pending: i64 = federation_pending_count(fed);
+    if pending > 100 {
+        return 0;  // Queue backlog
+    }
+
+    1  // Healthy
+}
+
+// =============================================================================
+// Statistics and Debugging
+// =============================================================================
+
+fn federation_print_stats(fed: i64) -> i64 {
+    println(string_from("Federation Stats:"));
+
+    print(string_from("  State: "));
+    let state: i64 = federation_state(fed);
+    if state == FED_DISCONNECTED() { println(string_from("disconnected")); }
+    else if state == FED_CONNECTING() { println(string_from("connecting")); }
+    else if state == FED_CONNECTED() { println(string_from("connected")); }
+    else if state == FED_SYNCING() { println(string_from("syncing")); }
+    else if state == FED_ERROR() { println(string_from("error")); }
+    else { println(string_from("unknown")); }
+
+    print(string_from("  Peers: "));
+    print_i64(federation_peer_count(fed));
+    println(string_from(""));
+
+    print(string_from("  Pending requests: "));
+    print_i64(federation_pending_count(fed));
+    println(string_from(""));
+
+    let stats: i64 = federation_stats(fed);
+    print(string_from("  Requests sent: "));
+    print_i64(vec_get(stats, 0));
+    println(string_from(""));
+
+    print(string_from("  Responses received: "));
+    print_i64(vec_get(stats, 1));
+    println(string_from(""));
+
+    print(string_from("  Sync count: "));
+    print_i64(vec_get(stats, 2));
+    println(string_from(""));
+
+    print(string_from("  Errors: "));
+    print_i64(vec_get(stats, 3));
+    println(string_from(""));
+
+    print(string_from("  Health: "));
+    if federation_health_check(fed) == 1 {
+        println(string_from("OK"));
+    } else {
+        println(string_from("NEEDS ATTENTION"));
+    }
+
+    0
+}
+
+// =============================================================================
+// Adaptive Sync Strategy
+// =============================================================================
+
+fn federation_adapt_strategy(fed: i64, device_profile: i64) -> i64 {
+    // Adjust sync strategy based on device state
+    let battery: i64 = device_get_battery(device_profile);
+    let network: i64 = device_get_network(device_profile);
+
+    if battery < 20 {
+        // Low battery: be aggressive about delegation
+        federation_set_sync_strategy(fed, SYNC_AGGRESSIVE());
+        return SYNC_AGGRESSIVE();
+    }
+
+    if is_high_bandwidth(network) == 0 {
+        // Poor network: prefer local processing
+        federation_set_sync_strategy(fed, SYNC_LOCAL_FIRST());
+        return SYNC_LOCAL_FIRST();
+    }
+
+    // Default: use device class default
+    let device_class: i64 = device_get_class(device_profile);
+    let default_strategy: i64 = default_sync_strategy(device_class);
+    federation_set_sync_strategy(fed, default_strategy);
+    default_strategy
+}
+
+// =============================================================================
+// Extern Declarations
+// =============================================================================
+
+// From network.sx
+extern fn ws_connection_new(endpoint: i64, device_id: i64, identity: i64) -> i64;
+extern fn ws_connection_new_legacy(endpoint: i64, device_id: i64) -> i64;
+extern fn ws_connect(conn: i64) -> i64;
+extern fn ws_disconnect(conn: i64) -> i64;
+extern fn ws_send(conn: i64, msg: i64) -> i64;
+extern fn ws_send_authenticated(conn: i64, msg: i64) -> i64;
+
+// From types.sx
+extern fn FED_DISCONNECTED() -> i64;
+extern fn FED_CONNECTING() -> i64;
+extern fn FED_CONNECTED() -> i64;
+extern fn FED_SYNCING() -> i64;
+extern fn FED_ERROR() -> i64;
+extern fn SYNC_BALANCED() -> i64;
+extern fn SYNC_AGGRESSIVE() -> i64;
+extern fn SYNC_LOCAL_FIRST() -> i64;
+extern fn RESPONSE_QUEUED() -> i64;
+extern fn RESPONSE_SUCCESS() -> i64;
+extern fn RESPONSE_ERROR() -> i64;
+extern fn RESPONSE_OFFLINE() -> i64;
+
+// From device.sx
+extern fn device_get_battery(profile: i64) -> i64;
+extern fn device_get_network(profile: i64) -> i64;
+extern fn device_get_class(profile: i64) -> i64;
+extern fn is_high_bandwidth(network: i64) -> i64;
+extern fn default_sync_strategy(device_class: i64) -> i64;
+
+// From beliefs.sx
+extern fn belief_store_is_dirty(store: i64) -> i64;
+extern fn belief_store_serialize(store: i64) -> i64;
+extern fn belief_store_mark_clean(store: i64) -> i64;
+extern fn belief_store_merge(store: i64, incoming: i64) -> i64;
+
+// From runtime
+extern fn vec_new() -> i64;
+extern fn vec_push(v: i64, val: i64) -> i64;
+extern fn vec_get(v: i64, idx: i64) -> i64;
+extern fn vec_set(v: i64, idx: i64, val: i64) -> i64;
+extern fn vec_len(v: i64) -> i64;
+extern fn vec_pop(v: i64) -> i64;
+extern fn string_from(s: &str) -> i64;
+extern fn print(s: i64) -> i64;
+extern fn println(s: i64) -> i64;
+extern fn print_i64(n: i64) -> i64;
+extern fn time_now() -> i64;

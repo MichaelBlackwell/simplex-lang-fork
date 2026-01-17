@@ -1,0 +1,784 @@
+// Nexus Protocol - Secure Frame Transmission
+//
+// Phase 8: Integrates security primitives into frame transmission layer
+//
+// This module provides:
+// - Encrypted frame wrapper with AEAD protection
+// - Signed frame support with HMAC authentication
+// - Nonce management for replay protection
+// - Frame security context for connection-level state
+// - Key rotation and session management integration
+
+// =============================================================================
+// Secure Frame Header
+// =============================================================================
+
+// Secure frame adds security metadata to standard frames
+// Layout:
+// - Magic (2 bytes): 0x5358 "SX"
+// - Version (1 byte): Protocol version
+// - Security flags (1 byte): Encryption/signing options
+// - Nonce (12 bytes): Unique per-frame nonce for AEAD
+// - Sequence (4 bytes): Monotonic counter for replay protection
+// - Encrypted length (2 bytes): Length of encrypted payload
+// - Encrypted payload (variable): The encrypted frame
+// - Auth tag (16 bytes): AEAD authentication tag
+
+fn SECURE_FRAME_HEADER_SIZE() -> i64 { 22 }  // Without payload and tag
+fn SECURE_FRAME_MIN_SIZE() -> i64 { 38 }     // Header + min payload + tag
+
+// Security flags
+fn SEC_FLAG_ENCRYPTED() -> i64 { 1 }     // Payload is encrypted
+fn SEC_FLAG_SIGNED() -> i64 { 2 }        // Frame has HMAC signature
+fn SEC_FLAG_COMPRESSED() -> i64 { 4 }    // Payload was compressed before encryption
+fn SEC_FLAG_REKEY() -> i64 { 8 }         // Key rotation requested
+fn SEC_FLAG_FINAL() -> i64 { 16 }        // Final frame in session
+
+// =============================================================================
+// Frame Security Context
+// =============================================================================
+
+// Maintains security state for a connection
+fn frame_sec_ctx_new(session: i64) -> i64 {
+    let ctx = vec_new();
+    vec_push(ctx, session);              // Slot 0: secure session
+    vec_push(ctx, 0);                    // Slot 1: send sequence counter
+    vec_push(ctx, 0);                    // Slot 2: recv sequence counter
+    vec_push(ctx, 0);                    // Slot 3: frames encrypted count
+    vec_push(ctx, 0);                    // Slot 4: frames decrypted count
+    vec_push(ctx, 0);                    // Slot 5: bytes encrypted
+    vec_push(ctx, 0);                    // Slot 6: bytes decrypted
+    vec_push(ctx, 0);                    // Slot 7: encryption errors
+    vec_push(ctx, 0);                    // Slot 8: rekey interval (frames)
+    vec_push(ctx, 1000);                 // Slot 9: default rekey after 1000 frames
+    vec_push(ctx, 1);                    // Slot 10: encryption enabled
+    vec_push(ctx, 1);                    // Slot 11: signing enabled
+    vec_push(ctx, vec_new());            // Slot 12: pending rekey data
+    ctx
+}
+
+fn frame_sec_ctx_session(ctx: i64) -> i64 { vec_get(ctx, 0) }
+fn frame_sec_ctx_send_seq(ctx: i64) -> i64 { vec_get(ctx, 1) }
+fn frame_sec_ctx_recv_seq(ctx: i64) -> i64 { vec_get(ctx, 2) }
+fn frame_sec_ctx_frames_enc(ctx: i64) -> i64 { vec_get(ctx, 3) }
+fn frame_sec_ctx_frames_dec(ctx: i64) -> i64 { vec_get(ctx, 4) }
+fn frame_sec_ctx_bytes_enc(ctx: i64) -> i64 { vec_get(ctx, 5) }
+fn frame_sec_ctx_bytes_dec(ctx: i64) -> i64 { vec_get(ctx, 6) }
+fn frame_sec_ctx_errors(ctx: i64) -> i64 { vec_get(ctx, 7) }
+fn frame_sec_ctx_rekey_interval(ctx: i64) -> i64 { vec_get(ctx, 9) }
+fn frame_sec_ctx_encryption_enabled(ctx: i64) -> i64 { vec_get(ctx, 10) }
+fn frame_sec_ctx_signing_enabled(ctx: i64) -> i64 { vec_get(ctx, 11) }
+
+fn frame_sec_ctx_set_encryption(ctx: i64, enabled: i64) -> i64 {
+    vec_set(ctx, 10, enabled);
+    0
+}
+
+fn frame_sec_ctx_set_signing(ctx: i64, enabled: i64) -> i64 {
+    vec_set(ctx, 11, enabled);
+    0
+}
+
+fn frame_sec_ctx_set_rekey_interval(ctx: i64, interval: i64) -> i64 {
+    vec_set(ctx, 9, interval);
+    0
+}
+
+fn frame_sec_ctx_next_send_seq(ctx: i64) -> i64 {
+    let seq = vec_get(ctx, 1);
+    vec_set(ctx, 1, seq + 1);
+    seq
+}
+
+fn frame_sec_ctx_check_recv_seq(ctx: i64, seq: i64) -> i64 {
+    let expected = vec_get(ctx, 2);
+
+    // Allow some out-of-order tolerance (window of 32)
+    if seq < expected {
+        if expected - seq > 32 {
+            return 0;  // Too old - reject
+        }
+        // Within window - accept but don't update
+        return 1;
+    }
+
+    // Update expected sequence
+    vec_set(ctx, 2, seq + 1);
+    1
+}
+
+fn frame_sec_ctx_add_enc_stats(ctx: i64, bytes: i64) -> i64 {
+    let frames = vec_get(ctx, 3);
+    let total_bytes = vec_get(ctx, 5);
+    vec_set(ctx, 3, frames + 1);
+    vec_set(ctx, 5, total_bytes + bytes);
+    0
+}
+
+fn frame_sec_ctx_add_dec_stats(ctx: i64, bytes: i64) -> i64 {
+    let frames = vec_get(ctx, 4);
+    let total_bytes = vec_get(ctx, 6);
+    vec_set(ctx, 4, frames + 1);
+    vec_set(ctx, 6, total_bytes + bytes);
+    0
+}
+
+fn frame_sec_ctx_add_error(ctx: i64) -> i64 {
+    let errors = vec_get(ctx, 7);
+    vec_set(ctx, 7, errors + 1);
+    errors + 1
+}
+
+fn frame_sec_ctx_needs_rekey(ctx: i64) -> i64 {
+    let frames_enc = frame_sec_ctx_frames_enc(ctx);
+    let interval = frame_sec_ctx_rekey_interval(ctx);
+    if interval > 0 && frames_enc >= interval {
+        return 1;
+    }
+    0
+}
+
+// Alias for test compatibility
+fn frame_sec_ctx_seq_send(ctx: i64) -> i64 { frame_sec_ctx_send_seq(ctx) }
+fn frame_sec_ctx_seq_recv(ctx: i64) -> i64 { frame_sec_ctx_recv_seq(ctx) }
+
+// Rekey counter - tracks number of key rotations
+fn frame_sec_ctx_rekey_count(ctx: i64) -> i64 { vec_get(ctx, 8) }
+
+fn frame_sec_ctx_inc_rekey_count(ctx: i64) -> i64 {
+    let count = vec_get(ctx, 8);
+    vec_set(ctx, 8, count + 1);
+    count + 1
+}
+
+// Convenience function to get next nonce
+fn frame_sec_ctx_next_nonce(ctx: i64) -> i64 {
+    let seq = frame_sec_ctx_next_send_seq(ctx);
+    frame_sec_ctx_make_nonce(ctx, seq)
+}
+
+// Generate nonce from sequence number and context
+fn frame_sec_ctx_make_nonce(ctx: i64, seq: i64) -> i64 {
+    let nonce = vec_new();
+
+    // First 4 bytes: sequence number (little-endian)
+    vec_push(nonce, seq & 255);
+    vec_push(nonce, (seq >> 8) & 255);
+    vec_push(nonce, (seq >> 16) & 255);
+    vec_push(nonce, (seq >> 24) & 255);
+
+    // Next 8 bytes: derived from session (for uniqueness across sessions)
+    let session = frame_sec_ctx_session(ctx);
+    let nonce_counter = secure_session_nonce_counter(session);
+
+    vec_push(nonce, nonce_counter & 255);
+    vec_push(nonce, (nonce_counter >> 8) & 255);
+    vec_push(nonce, (nonce_counter >> 16) & 255);
+    vec_push(nonce, (nonce_counter >> 24) & 255);
+
+    // Last 4 bytes: zeros (could be connection ID in future)
+    vec_push(nonce, 0);
+    vec_push(nonce, 0);
+    vec_push(nonce, 0);
+    vec_push(nonce, 0);
+
+    nonce
+}
+
+// =============================================================================
+// Encrypted Frame Encoding
+// =============================================================================
+
+// Encrypt a frame for transmission
+fn secure_frame_encrypt(frame_bytes: i64, ctx: i64) -> i64 {
+    let session = frame_sec_ctx_session(ctx);
+    let secret = secure_session_shared_secret(session);
+
+    if vec_len(secret) == 0 {
+        // No shared secret - session not established
+        return 0;
+    }
+
+    // Get sequence number and create nonce
+    let seq = frame_sec_ctx_next_send_seq(ctx);
+    let nonce = frame_sec_ctx_make_nonce(ctx, seq);
+
+    // Build AAD (Additional Authenticated Data): magic + version + flags + seq
+    let aad = vec_new();
+    vec_push(aad, NEXUS_MAGIC_BYTE_0());
+    vec_push(aad, NEXUS_MAGIC_BYTE_1());
+    vec_push(aad, NEXUS_VERSION_MAJOR());
+    vec_push(aad, SEC_FLAG_ENCRYPTED());
+    vec_push(aad, (seq >> 24) & 255);
+    vec_push(aad, (seq >> 16) & 255);
+    vec_push(aad, (seq >> 8) & 255);
+    vec_push(aad, seq & 255);
+
+    // Encrypt the frame payload
+    let encrypted = crypto_aead_encrypt(frame_bytes, aad, secret, nonce);
+
+    if vec_len(encrypted) == 0 {
+        frame_sec_ctx_add_error(ctx);
+        return 0;
+    }
+
+    // Build secure frame
+    let secure_frame = vec_new();
+
+    // Magic bytes
+    vec_push(secure_frame, NEXUS_MAGIC_BYTE_0());
+    vec_push(secure_frame, NEXUS_MAGIC_BYTE_1());
+
+    // Version
+    vec_push(secure_frame, NEXUS_VERSION_MAJOR());
+
+    // Security flags
+    let flags = SEC_FLAG_ENCRYPTED();
+    if frame_sec_ctx_needs_rekey(ctx) == 1 {
+        flags = flags | SEC_FLAG_REKEY();
+    }
+    vec_push(secure_frame, flags);
+
+    // Nonce (12 bytes)
+    let i = 0;
+    while i < 12 {
+        vec_push(secure_frame, vec_get(nonce, i));
+        i = i + 1;
+    }
+
+    // Sequence number (4 bytes, big-endian)
+    vec_push(secure_frame, (seq >> 24) & 255);
+    vec_push(secure_frame, (seq >> 16) & 255);
+    vec_push(secure_frame, (seq >> 8) & 255);
+    vec_push(secure_frame, seq & 255);
+
+    // Encrypted payload length (2 bytes)
+    let enc_len = vec_len(encrypted);
+    vec_push(secure_frame, (enc_len >> 8) & 255);
+    vec_push(secure_frame, enc_len & 255);
+
+    // Encrypted payload (includes auth tag from AEAD)
+    i = 0;
+    while i < enc_len {
+        vec_push(secure_frame, vec_get(encrypted, i));
+        i = i + 1;
+    }
+
+    // Update stats
+    frame_sec_ctx_add_enc_stats(ctx, vec_len(frame_bytes));
+
+    secure_frame
+}
+
+// Decrypt a received secure frame
+fn secure_frame_decrypt(secure_frame: i64, ctx: i64) -> i64 {
+    let len = vec_len(secure_frame);
+
+    if len < SECURE_FRAME_MIN_SIZE() {
+        frame_sec_ctx_add_error(ctx);
+        return 0;
+    }
+
+    // Verify magic
+    if vec_get(secure_frame, 0) != NEXUS_MAGIC_BYTE_0() ||
+       vec_get(secure_frame, 1) != NEXUS_MAGIC_BYTE_1() {
+        frame_sec_ctx_add_error(ctx);
+        return 0;
+    }
+
+    // Check version
+    let version = vec_get(secure_frame, 2);
+    if version != NEXUS_VERSION_MAJOR() {
+        frame_sec_ctx_add_error(ctx);
+        return 0;
+    }
+
+    // Get flags
+    let flags = vec_get(secure_frame, 3);
+    if (flags & SEC_FLAG_ENCRYPTED()) == 0 {
+        // Not encrypted - return as-is (shouldn't happen)
+        frame_sec_ctx_add_error(ctx);
+        return 0;
+    }
+
+    // Extract nonce (12 bytes)
+    let nonce = vec_new();
+    let i = 4;
+    while i < 16 {
+        vec_push(nonce, vec_get(secure_frame, i));
+        i = i + 1;
+    }
+
+    // Extract sequence number
+    let seq = (vec_get(secure_frame, 16) << 24) |
+              (vec_get(secure_frame, 17) << 16) |
+              (vec_get(secure_frame, 18) << 8) |
+              vec_get(secure_frame, 19);
+
+    // Check sequence number for replay protection
+    if frame_sec_ctx_check_recv_seq(ctx, seq) == 0 {
+        frame_sec_ctx_add_error(ctx);
+        return 0;  // Replay detected
+    }
+
+    // Get encrypted payload length
+    let enc_len = (vec_get(secure_frame, 20) << 8) | vec_get(secure_frame, 21);
+
+    if len < 22 + enc_len {
+        frame_sec_ctx_add_error(ctx);
+        return 0;
+    }
+
+    // Extract encrypted payload
+    let encrypted = vec_new();
+    i = 22;
+    while i < 22 + enc_len {
+        vec_push(encrypted, vec_get(secure_frame, i));
+        i = i + 1;
+    }
+
+    // Rebuild AAD
+    let aad = vec_new();
+    vec_push(aad, NEXUS_MAGIC_BYTE_0());
+    vec_push(aad, NEXUS_MAGIC_BYTE_1());
+    vec_push(aad, NEXUS_VERSION_MAJOR());
+    vec_push(aad, SEC_FLAG_ENCRYPTED());
+    vec_push(aad, (seq >> 24) & 255);
+    vec_push(aad, (seq >> 16) & 255);
+    vec_push(aad, (seq >> 8) & 255);
+    vec_push(aad, seq & 255);
+
+    // Decrypt
+    let session = frame_sec_ctx_session(ctx);
+    let secret = secure_session_shared_secret(session);
+
+    let decrypted = crypto_aead_decrypt(encrypted, aad, secret, nonce);
+
+    if decrypted == 0 {
+        frame_sec_ctx_add_error(ctx);
+        return 0;  // Decryption failed (tampered or wrong key)
+    }
+
+    // Update stats
+    frame_sec_ctx_add_dec_stats(ctx, vec_len(decrypted));
+
+    // Check for rekey flag
+    if (flags & SEC_FLAG_REKEY()) != 0 {
+        // Peer wants to rekey - store in pending
+        let pending = vec_get(ctx, 12);
+        vec_push(pending, seq);
+    }
+
+    decrypted
+}
+
+// =============================================================================
+// Signed Frame Support
+// =============================================================================
+
+// Sign a frame (without encryption)
+fn secure_frame_sign(frame_bytes: i64, ctx: i64) -> i64 {
+    let session = frame_sec_ctx_session(ctx);
+    let secret = secure_session_shared_secret(session);
+
+    if vec_len(secret) == 0 {
+        return 0;
+    }
+
+    // Get sequence number
+    let seq = frame_sec_ctx_next_send_seq(ctx);
+
+    // Build data to sign: frame + sequence
+    let sign_data = vec_new();
+    let i = 0;
+    while i < vec_len(frame_bytes) {
+        vec_push(sign_data, vec_get(frame_bytes, i));
+        i = i + 1;
+    }
+    vec_push(sign_data, (seq >> 24) & 255);
+    vec_push(sign_data, (seq >> 16) & 255);
+    vec_push(sign_data, (seq >> 8) & 255);
+    vec_push(sign_data, seq & 255);
+
+    // Compute HMAC signature
+    let signature = crypto_hmac(sign_data, secret);
+
+    // Build signed frame
+    let signed_frame = vec_new();
+
+    // Magic bytes
+    vec_push(signed_frame, NEXUS_MAGIC_BYTE_0());
+    vec_push(signed_frame, NEXUS_MAGIC_BYTE_1());
+
+    // Version
+    vec_push(signed_frame, NEXUS_VERSION_MAJOR());
+
+    // Security flags
+    vec_push(signed_frame, SEC_FLAG_SIGNED());
+
+    // Sequence number (4 bytes)
+    vec_push(signed_frame, (seq >> 24) & 255);
+    vec_push(signed_frame, (seq >> 16) & 255);
+    vec_push(signed_frame, (seq >> 8) & 255);
+    vec_push(signed_frame, seq & 255);
+
+    // Payload length (2 bytes)
+    let payload_len = vec_len(frame_bytes);
+    vec_push(signed_frame, (payload_len >> 8) & 255);
+    vec_push(signed_frame, payload_len & 255);
+
+    // Payload
+    i = 0;
+    while i < payload_len {
+        vec_push(signed_frame, vec_get(frame_bytes, i));
+        i = i + 1;
+    }
+
+    // Signature (32 bytes)
+    i = 0;
+    while i < 32 {
+        vec_push(signed_frame, vec_get(signature, i));
+        i = i + 1;
+    }
+
+    signed_frame
+}
+
+// Verify and extract a signed frame
+fn secure_frame_verify(signed_frame: i64, ctx: i64) -> i64 {
+    let len = vec_len(signed_frame);
+
+    // Minimum: magic(2) + ver(1) + flags(1) + seq(4) + len(2) + sig(32) = 42
+    if len < 42 {
+        frame_sec_ctx_add_error(ctx);
+        return 0;
+    }
+
+    // Verify magic
+    if vec_get(signed_frame, 0) != NEXUS_MAGIC_BYTE_0() ||
+       vec_get(signed_frame, 1) != NEXUS_MAGIC_BYTE_1() {
+        frame_sec_ctx_add_error(ctx);
+        return 0;
+    }
+
+    // Check flags
+    let flags = vec_get(signed_frame, 3);
+    if (flags & SEC_FLAG_SIGNED()) == 0 {
+        frame_sec_ctx_add_error(ctx);
+        return 0;
+    }
+
+    // Extract sequence
+    let seq = (vec_get(signed_frame, 4) << 24) |
+              (vec_get(signed_frame, 5) << 16) |
+              (vec_get(signed_frame, 6) << 8) |
+              vec_get(signed_frame, 7);
+
+    // Check replay
+    if frame_sec_ctx_check_recv_seq(ctx, seq) == 0 {
+        frame_sec_ctx_add_error(ctx);
+        return 0;
+    }
+
+    // Get payload length
+    let payload_len = (vec_get(signed_frame, 8) << 8) | vec_get(signed_frame, 9);
+
+    if len < 10 + payload_len + 32 {
+        frame_sec_ctx_add_error(ctx);
+        return 0;
+    }
+
+    // Extract payload
+    let payload = vec_new();
+    let i = 10;
+    while i < 10 + payload_len {
+        vec_push(payload, vec_get(signed_frame, i));
+        i = i + 1;
+    }
+
+    // Extract signature
+    let received_sig = vec_new();
+    i = 10 + payload_len;
+    while i < 10 + payload_len + 32 {
+        vec_push(received_sig, vec_get(signed_frame, i));
+        i = i + 1;
+    }
+
+    // Rebuild sign data
+    let sign_data = vec_new();
+    i = 0;
+    while i < payload_len {
+        vec_push(sign_data, vec_get(payload, i));
+        i = i + 1;
+    }
+    vec_push(sign_data, (seq >> 24) & 255);
+    vec_push(sign_data, (seq >> 16) & 255);
+    vec_push(sign_data, (seq >> 8) & 255);
+    vec_push(sign_data, seq & 255);
+
+    // Verify signature
+    let session = frame_sec_ctx_session(ctx);
+    let secret = secure_session_shared_secret(session);
+    let expected_sig = crypto_hmac(sign_data, secret);
+
+    i = 0;
+    while i < 32 {
+        if vec_get(received_sig, i) != vec_get(expected_sig, i) {
+            frame_sec_ctx_add_error(ctx);
+            return 0;  // Invalid signature
+        }
+        i = i + 1;
+    }
+
+    payload
+}
+
+// =============================================================================
+// Combined Encrypt and Sign
+// =============================================================================
+
+// Encrypt and sign a frame (maximum security)
+fn secure_frame_encrypt_and_sign(frame_bytes: i64, ctx: i64, signing_key: i64) -> i64 {
+    // First encrypt
+    let encrypted = secure_frame_encrypt(frame_bytes, ctx);
+    if encrypted == 0 {
+        return 0;
+    }
+
+    // Then sign the encrypted frame
+    let session = frame_sec_ctx_session(ctx);
+    let kp = secure_session_local_kp(session);
+    let priv_key = hive_keypair_private(kp);
+
+    let signature = crypto_sign(encrypted, priv_key);
+
+    // Append signature to encrypted frame
+    let result = vec_new();
+    let i = 0;
+    while i < vec_len(encrypted) {
+        vec_push(result, vec_get(encrypted, i));
+        i = i + 1;
+    }
+    i = 0;
+    while i < vec_len(signature) {
+        vec_push(result, vec_get(signature, i));
+        i = i + 1;
+    }
+
+    result
+}
+
+// Verify signature and decrypt
+fn secure_frame_verify_and_decrypt(frame_bytes: i64, ctx: i64, sender_public_key: i64) -> i64 {
+    let len = vec_len(frame_bytes);
+
+    if len < SECURE_FRAME_MIN_SIZE() + CRYPTO_SIG_SIZE() {
+        frame_sec_ctx_add_error(ctx);
+        return 0;
+    }
+
+    // Extract encrypted part and signature
+    let enc_len = len - CRYPTO_SIG_SIZE();
+    let encrypted = vec_new();
+    let signature = vec_new();
+
+    let i = 0;
+    while i < enc_len {
+        vec_push(encrypted, vec_get(frame_bytes, i));
+        i = i + 1;
+    }
+    while i < len {
+        vec_push(signature, vec_get(frame_bytes, i));
+        i = i + 1;
+    }
+
+    // Verify signature
+    if crypto_verify(encrypted, signature, sender_public_key) == 0 {
+        frame_sec_ctx_add_error(ctx);
+        return 0;  // Invalid signature
+    }
+
+    // Decrypt
+    secure_frame_decrypt(encrypted, ctx)
+}
+
+// =============================================================================
+// Frame Security Wrapper (High-Level API)
+// =============================================================================
+
+// Secure a frame based on context settings
+fn secure_frame_wrap(frame_bytes: i64, ctx: i64) -> i64 {
+    let enc_enabled = frame_sec_ctx_encryption_enabled(ctx);
+    let sign_enabled = frame_sec_ctx_signing_enabled(ctx);
+
+    if enc_enabled == 1 {
+        return secure_frame_encrypt(frame_bytes, ctx);
+    } else if sign_enabled == 1 {
+        return secure_frame_sign(frame_bytes, ctx);
+    } else {
+        // No security - return frame as-is
+        return frame_bytes;
+    }
+}
+
+// Unwrap a secured frame based on its flags
+fn secure_frame_unwrap(secure_bytes: i64, ctx: i64) -> i64 {
+    let len = vec_len(secure_bytes);
+
+    if len < 4 {
+        return 0;
+    }
+
+    // Check if this is a secure frame
+    if vec_get(secure_bytes, 0) != NEXUS_MAGIC_BYTE_0() ||
+       vec_get(secure_bytes, 1) != NEXUS_MAGIC_BYTE_1() {
+        // Not a secure frame - return as-is
+        return secure_bytes;
+    }
+
+    let flags = vec_get(secure_bytes, 3);
+
+    if (flags & SEC_FLAG_ENCRYPTED()) != 0 {
+        return secure_frame_decrypt(secure_bytes, ctx);
+    } else if (flags & SEC_FLAG_SIGNED()) != 0 {
+        return secure_frame_verify(secure_bytes, ctx);
+    } else {
+        // Unknown security mode
+        return secure_bytes;
+    }
+}
+
+// =============================================================================
+// Key Rotation
+// =============================================================================
+
+// Initiate key rotation
+fn secure_frame_initiate_rekey(ctx: i64) -> i64 {
+    // Reset frame counter to trigger rekey flag
+    vec_set(ctx, 3, frame_sec_ctx_rekey_interval(ctx));
+    // Increment rekey count
+    frame_sec_ctx_inc_rekey_count(ctx);
+    1  // Return success
+}
+
+// Complete key rotation with new secret
+fn secure_frame_complete_rekey(ctx: i64, new_secret: i64) -> i64 {
+    let session = frame_sec_ctx_session(ctx);
+    secure_session_set_shared_secret(session, new_secret);
+
+    // Reset counters
+    vec_set(ctx, 3, 0);  // frames_enc
+    vec_set(ctx, 4, 0);  // frames_dec
+
+    0
+}
+
+// Generate new session key for rotation
+fn secure_frame_generate_rekey(ctx: i64) -> i64 {
+    let session = frame_sec_ctx_session(ctx);
+    let old_secret = secure_session_shared_secret(session);
+
+    // Derive new key from old key + counter
+    let derive_input = vec_new();
+    let i = 0;
+    while i < vec_len(old_secret) {
+        vec_push(derive_input, vec_get(old_secret, i));
+        i = i + 1;
+    }
+
+    // Add frame count for uniqueness
+    let frames = frame_sec_ctx_frames_enc(ctx);
+    vec_push(derive_input, (frames >> 24) & 255);
+    vec_push(derive_input, (frames >> 16) & 255);
+    vec_push(derive_input, (frames >> 8) & 255);
+    vec_push(derive_input, frames & 255);
+
+    // Add "rekey" label
+    vec_push(derive_input, 114);  // 'r'
+    vec_push(derive_input, 101);  // 'e'
+    vec_push(derive_input, 107);  // 'k'
+    vec_push(derive_input, 101);  // 'e'
+    vec_push(derive_input, 121);  // 'y'
+
+    crypto_hash(derive_input)
+}
+
+// =============================================================================
+// Security Statistics
+// =============================================================================
+
+fn secure_frame_get_stats(ctx: i64) -> i64 {
+    let stats = vec_new();
+    vec_push(stats, frame_sec_ctx_frames_enc(ctx));    // 0: frames encrypted
+    vec_push(stats, frame_sec_ctx_frames_dec(ctx));    // 1: frames decrypted
+    vec_push(stats, frame_sec_ctx_bytes_enc(ctx));     // 2: bytes encrypted
+    vec_push(stats, frame_sec_ctx_bytes_dec(ctx));     // 3: bytes decrypted
+    vec_push(stats, frame_sec_ctx_errors(ctx));        // 4: errors
+    vec_push(stats, frame_sec_ctx_send_seq(ctx));      // 5: send sequence
+    vec_push(stats, frame_sec_ctx_recv_seq(ctx));      // 6: recv sequence
+    stats
+}
+
+// Calculate overhead percentage (x100)
+fn secure_frame_overhead_percent(ctx: i64) -> i64 {
+    let bytes_enc = frame_sec_ctx_bytes_enc(ctx);
+    let frames_enc = frame_sec_ctx_frames_enc(ctx);
+
+    if bytes_enc == 0 || frames_enc == 0 {
+        return 0;
+    }
+
+    // Overhead per frame: header (22) + tag (16) = 38 bytes
+    let overhead = frames_enc * 38;
+
+    // Overhead percentage * 100
+    (overhead * 10000) / bytes_enc
+}
+
+// =============================================================================
+// Debug/Print Helpers
+// =============================================================================
+
+fn frame_sec_ctx_print(ctx: i64) -> i64 {
+    print("FrameSecCtx(enc=");
+    print_i64(frame_sec_ctx_frames_enc(ctx));
+    print(", dec=");
+    print_i64(frame_sec_ctx_frames_dec(ctx));
+    print(", errors=");
+    print_i64(frame_sec_ctx_errors(ctx));
+    print(", send_seq=");
+    print_i64(frame_sec_ctx_send_seq(ctx));
+    print(", recv_seq=");
+    print_i64(frame_sec_ctx_recv_seq(ctx));
+    print(")");
+    0
+}
+
+fn secure_frame_print_header(frame: i64) -> i64 {
+    if vec_len(frame) < 4 {
+        print("SecureFrame(invalid)");
+        return 0;
+    }
+
+    print("SecureFrame(");
+
+    let flags = vec_get(frame, 3);
+    if (flags & SEC_FLAG_ENCRYPTED()) != 0 {
+        print("ENCRYPTED");
+    }
+    if (flags & SEC_FLAG_SIGNED()) != 0 {
+        if (flags & SEC_FLAG_ENCRYPTED()) != 0 {
+            print("+");
+        }
+        print("SIGNED");
+    }
+    if (flags & SEC_FLAG_REKEY()) != 0 {
+        print("+REKEY");
+    }
+
+    print(", len=");
+    print_i64(vec_len(frame));
+    print(")");
+    0
+}
+

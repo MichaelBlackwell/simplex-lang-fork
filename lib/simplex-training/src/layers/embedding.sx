@@ -1,0 +1,398 @@
+// Embedding layers for token and position encoding
+//
+// Provides various embedding types:
+// - Token embeddings: vocabulary -> dense vectors
+// - Positional embeddings: sinusoidal or learned
+// - Rotary embeddings (RoPE): relative position encoding
+
+use simplex_std::dual;
+use simplex_std::vec::Vec;
+use simplex_learning::tensor::DualTensor;
+use simplex_std::f64::consts::PI;
+
+/// Token embedding layer
+///
+/// Maps token IDs to dense vectors via learned lookup table.
+pub struct Embedding {
+    /// Embedding weight matrix [vocab_size, embed_dim]
+    weight: DualTensor,
+
+    /// Vocabulary size
+    vocab_size: usize,
+
+    /// Embedding dimension
+    embed_dim: usize,
+
+    /// Padding index (optional, embeddings set to zero)
+    padding_idx: Option<usize>,
+}
+
+impl Embedding {
+    /// Create new embedding layer
+    pub fn new(vocab_size: usize, embed_dim: usize) -> Self {
+        // Initialize with normal distribution scaled by 1/sqrt(embed_dim)
+        let scale = 1.0 / (embed_dim as f64).sqrt();
+        let weight = DualTensor::randn(&[vocab_size, embed_dim]).mul_scalar(scale);
+
+        Embedding {
+            weight,
+            vocab_size,
+            embed_dim,
+            padding_idx: None,
+        }
+    }
+
+    /// Create with specific padding index
+    pub fn with_padding(vocab_size: usize, embed_dim: usize, padding_idx: usize) -> Self {
+        let mut emb = Self::new(vocab_size, embed_dim);
+        emb.padding_idx = Some(padding_idx);
+        // Zero out padding embedding
+        emb.zero_padding();
+        emb
+    }
+
+    /// Zero out padding embeddings
+    fn zero_padding(&mut self) {
+        if let Some(idx) = self.padding_idx {
+            // Set embedding at padding_idx to zeros
+            // In full implementation, would modify weight tensor
+        }
+    }
+
+    /// Forward pass: lookup embeddings for token IDs
+    ///
+    /// Input: [batch, seq_len] of token IDs (as integers stored in f64)
+    /// Output: [batch, seq_len, embed_dim]
+    pub fn forward(&self, token_ids: &[usize]) -> DualTensor {
+        let seq_len = token_ids.len();
+        let mut data = Vec::with_capacity(seq_len * self.embed_dim);
+
+        for &id in token_ids {
+            if id < self.vocab_size {
+                // Copy embedding for this token
+                for j in 0..self.embed_dim {
+                    let idx = id * self.embed_dim + j;
+                    data.push(self.weight.get_value(idx));
+                }
+            } else {
+                // Out of vocabulary - use zeros
+                data.extend(vec![0.0; self.embed_dim]);
+            }
+        }
+
+        DualTensor::from_values(&[seq_len, self.embed_dim], &data)
+    }
+
+    /// Batch forward
+    pub fn forward_batch(&self, batch_ids: &[Vec<usize>]) -> DualTensor {
+        let batch_size = batch_ids.len();
+        let seq_len = batch_ids[0].len();
+        let mut data = Vec::with_capacity(batch_size * seq_len * self.embed_dim);
+
+        for ids in batch_ids {
+            for &id in ids {
+                if id < self.vocab_size {
+                    for j in 0..self.embed_dim {
+                        let idx = id * self.embed_dim + j;
+                        data.push(self.weight.get_value(idx));
+                    }
+                } else {
+                    data.extend(vec![0.0; self.embed_dim]);
+                }
+            }
+        }
+
+        DualTensor::from_values(&[batch_size, seq_len, self.embed_dim], &data)
+    }
+
+    /// Get embedding weight matrix
+    pub fn weight(&self) -> &DualTensor {
+        &self.weight
+    }
+
+    /// Number of parameters
+    pub fn num_parameters(&self) -> usize {
+        self.vocab_size * self.embed_dim
+    }
+}
+
+/// Sinusoidal positional embedding
+///
+/// Fixed positional encodings using sine and cosine functions.
+/// PE(pos, 2i) = sin(pos / 10000^(2i/d_model))
+/// PE(pos, 2i+1) = cos(pos / 10000^(2i/d_model))
+pub struct PositionalEmbedding {
+    /// Maximum sequence length
+    max_len: usize,
+
+    /// Embedding dimension
+    embed_dim: usize,
+
+    /// Precomputed positional encodings [max_len, embed_dim]
+    encodings: DualTensor,
+}
+
+impl PositionalEmbedding {
+    /// Create sinusoidal positional embeddings
+    pub fn sinusoidal(max_len: usize, embed_dim: usize) -> Self {
+        let mut data = Vec::with_capacity(max_len * embed_dim);
+
+        for pos in 0..max_len {
+            for i in 0..embed_dim {
+                let angle = (pos as f64) / 10000_f64.powf((2 * (i / 2)) as f64 / embed_dim as f64);
+                if i % 2 == 0 {
+                    data.push(angle.sin());
+                } else {
+                    data.push(angle.cos());
+                }
+            }
+        }
+
+        PositionalEmbedding {
+            max_len,
+            embed_dim,
+            encodings: DualTensor::from_values(&[max_len, embed_dim], &data),
+        }
+    }
+
+    /// Create learned positional embeddings
+    pub fn learned(max_len: usize, embed_dim: usize) -> Self {
+        let scale = 1.0 / (embed_dim as f64).sqrt();
+        let encodings = DualTensor::randn(&[max_len, embed_dim]).mul_scalar(scale);
+
+        PositionalEmbedding {
+            max_len,
+            embed_dim,
+            encodings,
+        }
+    }
+
+    /// Forward pass: add positional encoding to embeddings
+    ///
+    /// Input: [batch, seq_len, embed_dim]
+    /// Output: [batch, seq_len, embed_dim] with position info added
+    pub fn forward(&self, x: &DualTensor) -> DualTensor {
+        let seq_len = x.shape().dims()[1];
+        assert!(seq_len <= self.max_len, "Sequence length exceeds max_len");
+
+        // Slice encodings to match sequence length
+        // Add encodings to input
+        x.add(&self.encodings.slice(0, seq_len))
+    }
+
+    /// Get positional encodings for specific positions
+    pub fn get_positions(&self, positions: &[usize]) -> DualTensor {
+        let n = positions.len();
+        let mut data = Vec::with_capacity(n * self.embed_dim);
+
+        for &pos in positions {
+            if pos < self.max_len {
+                for j in 0..self.embed_dim {
+                    let idx = pos * self.embed_dim + j;
+                    data.push(self.encodings.get_value(idx));
+                }
+            } else {
+                data.extend(vec![0.0; self.embed_dim]);
+            }
+        }
+
+        DualTensor::from_values(&[n, self.embed_dim], &data)
+    }
+}
+
+/// Rotary Position Embedding (RoPE)
+///
+/// Encodes relative position information by rotating query/key vectors.
+/// Used in models like Llama and GPT-NeoX.
+///
+/// Reference: "RoFormer: Enhanced Transformer with Rotary Position Embedding"
+pub struct RotaryEmbedding {
+    /// Dimension of the embedding
+    dim: usize,
+
+    /// Maximum sequence length
+    max_seq_len: usize,
+
+    /// Base for frequency computation (default: 10000)
+    base: f64,
+
+    /// Precomputed cosine values [max_seq_len, dim/2]
+    cos_cache: DualTensor,
+
+    /// Precomputed sine values [max_seq_len, dim/2]
+    sin_cache: DualTensor,
+}
+
+impl RotaryEmbedding {
+    /// Create new RoPE layer
+    pub fn new(dim: usize, max_seq_len: usize) -> Self {
+        Self::with_base(dim, max_seq_len, 10000.0)
+    }
+
+    /// Create with custom base frequency
+    pub fn with_base(dim: usize, max_seq_len: usize, base: f64) -> Self {
+        let half_dim = dim / 2;
+        let mut cos_data = Vec::with_capacity(max_seq_len * half_dim);
+        let mut sin_data = Vec::with_capacity(max_seq_len * half_dim);
+
+        // Compute inverse frequencies
+        let mut inv_freq = Vec::with_capacity(half_dim);
+        for i in 0..half_dim {
+            inv_freq.push(1.0 / base.powf((2 * i) as f64 / dim as f64));
+        }
+
+        // Compute cos and sin for each position
+        for pos in 0..max_seq_len {
+            for &freq in &inv_freq {
+                let angle = pos as f64 * freq;
+                cos_data.push(angle.cos());
+                sin_data.push(angle.sin());
+            }
+        }
+
+        RotaryEmbedding {
+            dim,
+            max_seq_len,
+            base,
+            cos_cache: DualTensor::from_values(&[max_seq_len, half_dim], &cos_data),
+            sin_cache: DualTensor::from_values(&[max_seq_len, half_dim], &sin_data),
+        }
+    }
+
+    /// Apply rotary embedding to query/key tensors
+    ///
+    /// Input: [batch, seq_len, num_heads, head_dim]
+    /// Output: same shape with rotations applied
+    pub fn forward(&self, x: &DualTensor, seq_len: usize) -> DualTensor {
+        assert!(seq_len <= self.max_seq_len, "Sequence exceeds max length");
+
+        // Get cos/sin for this sequence length
+        let cos = self.cos_cache.slice(0, seq_len);
+        let sin = self.sin_cache.slice(0, seq_len);
+
+        // Apply rotation
+        // x_rotated = x * cos + rotate_half(x) * sin
+        self.apply_rotation(x, &cos, &sin)
+    }
+
+    /// Apply rotation to tensor
+    fn apply_rotation(&self, x: &DualTensor, cos: &DualTensor, sin: &DualTensor) -> DualTensor {
+        // Split x into two halves
+        let x1 = x.chunk_first_half();
+        let x2 = x.chunk_second_half();
+
+        // rotate_half swaps halves and negates first half
+        // result = [x1, x2] * cos + [-x2, x1] * sin
+
+        // Simplified implementation - full version would handle batching
+        let rotated_x1 = x1.mul(cos).sub(&x2.mul(sin));
+        let rotated_x2 = x2.mul(cos).add(&x1.mul(sin));
+
+        rotated_x1.concat(&rotated_x2)
+    }
+
+    /// Get dimension
+    pub fn dim(&self) -> usize {
+        self.dim
+    }
+}
+
+/// Alibi position bias
+///
+/// Attention with Linear Biases - adds linear position penalty to attention scores.
+/// Allows extrapolation to longer sequences than seen during training.
+pub struct AlibiEmbedding {
+    /// Number of attention heads
+    num_heads: usize,
+
+    /// Maximum sequence length
+    max_seq_len: usize,
+
+    /// Precomputed biases per head [num_heads]
+    slopes: Vec<f64>,
+}
+
+impl AlibiEmbedding {
+    /// Create Alibi embedding
+    pub fn new(num_heads: usize, max_seq_len: usize) -> Self {
+        // Compute slopes: 2^(-8/n), 2^(-8*2/n), ..., 2^(-8*n/n)
+        let mut slopes = Vec::with_capacity(num_heads);
+        let ratio = 8.0 / num_heads as f64;
+
+        for i in 1..=num_heads {
+            slopes.push(2_f64.powf(-ratio * i as f64));
+        }
+
+        AlibiEmbedding {
+            num_heads,
+            max_seq_len,
+            slopes,
+        }
+    }
+
+    /// Get attention bias for given sequence length
+    ///
+    /// Returns: [num_heads, seq_len, seq_len] bias tensor
+    pub fn get_bias(&self, seq_len: usize) -> DualTensor {
+        let mut data = Vec::with_capacity(self.num_heads * seq_len * seq_len);
+
+        for h in 0..self.num_heads {
+            let slope = self.slopes[h];
+            for i in 0..seq_len {
+                for j in 0..seq_len {
+                    // Bias = -slope * |i - j|
+                    let distance = (i as i64 - j as i64).abs() as f64;
+                    data.push(-slope * distance);
+                }
+            }
+        }
+
+        DualTensor::from_values(&[self.num_heads, seq_len, seq_len], &data)
+    }
+
+    /// Add bias to attention scores
+    pub fn forward(&self, scores: &DualTensor, seq_len: usize) -> DualTensor {
+        let bias = self.get_bias(seq_len);
+        scores.add(&bias)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_embedding() {
+        let emb = Embedding::new(1000, 64);
+
+        let ids = vec![0, 5, 10, 999];
+        let output = emb.forward(&ids);
+
+        assert_eq!(output.shape().dims(), &[4, 64]);
+    }
+
+    #[test]
+    fn test_positional_sinusoidal() {
+        let pos_emb = PositionalEmbedding::sinusoidal(512, 64);
+
+        let x = DualTensor::zeros(&[2, 100, 64]);
+        let output = pos_emb.forward(&x);
+
+        assert_eq!(output.shape().dims(), &[2, 100, 64]);
+    }
+
+    #[test]
+    fn test_rotary_embedding() {
+        let rope = RotaryEmbedding::new(64, 2048);
+
+        assert_eq!(rope.dim(), 64);
+    }
+
+    #[test]
+    fn test_alibi() {
+        let alibi = AlibiEmbedding::new(8, 2048);
+        let bias = alibi.get_bias(100);
+
+        assert_eq!(bias.shape().dims(), &[8, 100, 100]);
+    }
+}

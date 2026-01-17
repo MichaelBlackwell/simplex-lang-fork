@@ -1,0 +1,515 @@
+// TASK-014: Counterfactual Probing
+//
+// The system must actively test "what if the opposite were true?"
+// This module generates counterfactual scenarios for beliefs and
+// compares them against observations to detect when beliefs may be wrong.
+//
+// Counterfactual probing asks:
+// - What if this belief were false?
+// - What if confidence were lower?
+// - What observations would we expect if falsification conditions were met?
+
+use simplex_std::dual::dual;
+use crate::belief::{
+    GroundedBelief, BeliefId, CalibratedConfidence,
+    FalsificationCondition, FalsificationAction,
+};
+
+/// A counterfactual scenario for a belief
+#[derive(Clone)]
+pub struct CounterfactualScenario {
+    /// Name/type of this scenario
+    pub name: String,
+
+    /// Description of what this scenario tests
+    pub description: String,
+
+    /// The original belief's ID
+    pub original_belief_id: BeliefId,
+
+    /// Modified confidence for this scenario
+    pub modified_confidence: f64,
+
+    /// Is this a negation of the original?
+    pub is_negation: bool,
+
+    /// Expected observations if this scenario is true
+    pub expected_observations: Vec<ExpectedObservation>,
+
+    /// Actual observations (filled in when evaluated)
+    pub actual_observations: Vec<f64>,
+
+    /// Divergence score (negative = counterfactual fits better)
+    pub divergence: f64,
+
+    /// Has this scenario been evaluated?
+    pub evaluated: bool,
+}
+
+/// An expected observation under a counterfactual scenario
+#[derive(Clone)]
+pub struct ExpectedObservation {
+    /// Metric name
+    pub metric: String,
+
+    /// Expected value
+    pub expected: f64,
+
+    /// Tolerance for matching
+    pub tolerance: f64,
+
+    /// Weight in divergence calculation
+    pub weight: f64,
+}
+
+impl CounterfactualScenario {
+    /// Create a negation scenario
+    pub fn negation(belief_id: &str, original_confidence: f64) -> Self {
+        CounterfactualScenario {
+            name: "negation".to_string(),
+            description: format!("What if belief '{}' were false?", belief_id),
+            original_belief_id: belief_id.to_string(),
+            modified_confidence: 1.0 - original_confidence,
+            is_negation: true,
+            expected_observations: Vec::new(),
+            actual_observations: Vec::new(),
+            divergence: 0.0,
+            evaluated: false,
+        }
+    }
+
+    /// Create a reduced confidence scenario
+    pub fn reduced_confidence(belief_id: &str, original_confidence: f64, factor: f64) -> Self {
+        CounterfactualScenario {
+            name: "reduced_confidence".to_string(),
+            description: format!("What if confidence in '{}' were lower?", belief_id),
+            original_belief_id: belief_id.to_string(),
+            modified_confidence: original_confidence * factor,
+            is_negation: false,
+            expected_observations: Vec::new(),
+            actual_observations: Vec::new(),
+            divergence: 0.0,
+            evaluated: false,
+        }
+    }
+
+    /// Create a falsifier scenario
+    pub fn from_falsifier(belief_id: &str, falsifier: &FalsificationCondition) -> Self {
+        CounterfactualScenario {
+            name: format!("falsifier_{}", falsifier.condition),
+            description: format!("What if falsifier '{}' triggered?", falsifier.condition),
+            original_belief_id: belief_id.to_string(),
+            modified_confidence: 0.1,  // Low confidence if falsified
+            is_negation: false,
+            expected_observations: Vec::new(),
+            actual_observations: Vec::new(),
+            divergence: 0.0,
+            evaluated: false,
+        }
+    }
+
+    /// Add an expected observation
+    pub fn expect(mut self, metric: &str, expected: f64, tolerance: f64) -> Self {
+        self.expected_observations.push(ExpectedObservation {
+            metric: metric.to_string(),
+            expected,
+            tolerance,
+            weight: 1.0,
+        });
+        self
+    }
+
+    /// Add an expected observation with weight
+    pub fn expect_weighted(mut self, metric: &str, expected: f64, tolerance: f64, weight: f64) -> Self {
+        self.expected_observations.push(ExpectedObservation {
+            metric: metric.to_string(),
+            expected,
+            tolerance,
+            weight,
+        });
+        self
+    }
+
+    /// Evaluate scenario against actual observations
+    pub fn evaluate(&mut self, observations: &[(String, f64)]) {
+        self.actual_observations.clear();
+
+        let mut total_divergence = 0.0;
+        let mut total_weight = 0.0;
+
+        for expected in &self.expected_observations {
+            // Find matching observation
+            if let Some((_, actual)) = observations.iter().find(|(m, _)| m == &expected.metric) {
+                self.actual_observations.push(*actual);
+
+                // Compute normalized divergence
+                let error = (actual - expected.expected).abs();
+                let normalized_error = if expected.tolerance > 0.0 {
+                    error / expected.tolerance
+                } else {
+                    error
+                };
+
+                total_divergence += normalized_error * expected.weight;
+                total_weight += expected.weight;
+            }
+        }
+
+        self.divergence = if total_weight > 0.0 {
+            total_divergence / total_weight
+        } else {
+            0.0
+        };
+
+        self.evaluated = true;
+    }
+
+    /// Does the counterfactual fit observations better?
+    /// (Negative divergence from original belief's perspective means counterfactual wins)
+    pub fn counterfactual_fits_better(&self, original_divergence: f64) -> bool {
+        self.evaluated && self.divergence < original_divergence
+    }
+}
+
+/// Suggested revision to a belief based on counterfactual analysis
+#[derive(Clone)]
+pub struct BeliefRevision {
+    /// Belief ID to revise
+    pub belief_id: BeliefId,
+
+    /// Reason for revision
+    pub reason: String,
+
+    /// Suggested confidence adjustment (additive)
+    pub confidence_adjustment: f64,
+
+    /// Suggested new confidence (if applicable)
+    pub suggested_confidence: Option<f64>,
+
+    /// Priority of this revision (higher = more urgent)
+    pub priority: f64,
+
+    /// Which scenario triggered this revision
+    pub triggered_by: String,
+}
+
+impl BeliefRevision {
+    /// Create a revision to reduce confidence
+    pub fn reduce_confidence(belief_id: &str, amount: f64, reason: &str, triggered_by: &str) -> Self {
+        BeliefRevision {
+            belief_id: belief_id.to_string(),
+            reason: reason.to_string(),
+            confidence_adjustment: -amount.abs(),
+            suggested_confidence: None,
+            priority: amount.abs(),
+            triggered_by: triggered_by.to_string(),
+        }
+    }
+
+    /// Create a revision to set specific confidence
+    pub fn set_confidence(belief_id: &str, new_confidence: f64, reason: &str, triggered_by: &str) -> Self {
+        BeliefRevision {
+            belief_id: belief_id.to_string(),
+            reason: reason.to_string(),
+            confidence_adjustment: 0.0,
+            suggested_confidence: Some(new_confidence),
+            priority: 0.5,
+            triggered_by: triggered_by.to_string(),
+        }
+    }
+
+    /// Create a revision to invalidate belief
+    pub fn invalidate(belief_id: &str, reason: &str, triggered_by: &str) -> Self {
+        BeliefRevision {
+            belief_id: belief_id.to_string(),
+            reason: reason.to_string(),
+            confidence_adjustment: 0.0,
+            suggested_confidence: Some(0.0),
+            priority: 1.0,
+            triggered_by: triggered_by.to_string(),
+        }
+    }
+}
+
+/// Generates and evaluates counterfactual scenarios for beliefs
+pub struct CounterfactualProber {
+    /// How aggressively to probe (0.0 to 1.0)
+    pub probe_intensity: f64,
+
+    /// Minimum confidence to probe (don't waste time on low-confidence beliefs)
+    pub min_confidence_to_probe: f64,
+
+    /// Threshold for divergence to suggest revision
+    pub revision_threshold: f64,
+
+    /// Maximum scenarios to generate per belief
+    pub max_scenarios: usize,
+
+    /// Generated scenarios (by belief ID)
+    scenarios: std::collections::HashMap<BeliefId, Vec<CounterfactualScenario>>,
+
+    /// Pending revisions
+    pending_revisions: Vec<BeliefRevision>,
+}
+
+impl CounterfactualProber {
+    /// Create a new prober
+    pub fn new() -> Self {
+        CounterfactualProber {
+            probe_intensity: 0.5,
+            min_confidence_to_probe: 0.6,
+            revision_threshold: -0.1,  // Negative = counterfactual fits better
+            max_scenarios: 5,
+            scenarios: std::collections::HashMap::new(),
+            pending_revisions: Vec::new(),
+        }
+    }
+
+    /// Create with custom intensity
+    pub fn with_intensity(intensity: f64) -> Self {
+        let mut prober = CounterfactualProber::new();
+        prober.probe_intensity = intensity.max(0.0).min(1.0);
+        prober
+    }
+
+    /// Set minimum confidence to probe
+    pub fn min_confidence(mut self, min: f64) -> Self {
+        self.min_confidence_to_probe = min;
+        self
+    }
+
+    /// Set revision threshold
+    pub fn revision_threshold(mut self, threshold: f64) -> Self {
+        self.revision_threshold = threshold;
+        self
+    }
+
+    /// Generate counterfactual scenarios for a belief
+    pub fn probe<T: Clone>(&mut self, belief: &GroundedBelief<T>) -> Vec<CounterfactualScenario> {
+        let confidence = belief.confidence_value();
+
+        // Skip low-confidence beliefs
+        if confidence < self.min_confidence_to_probe {
+            return Vec::new();
+        }
+
+        let mut scenarios = Vec::new();
+
+        // Scenario 1: What if this belief were false?
+        scenarios.push(
+            CounterfactualScenario::negation(&belief.id, confidence)
+        );
+
+        // Scenario 2: What if confidence were lower?
+        scenarios.push(
+            CounterfactualScenario::reduced_confidence(&belief.id, confidence, 0.5)
+        );
+
+        // Scenario 3+: What if falsifiers triggered?
+        for falsifier in &belief.falsifiers {
+            if scenarios.len() >= self.max_scenarios {
+                break;
+            }
+            scenarios.push(
+                CounterfactualScenario::from_falsifier(&belief.id, falsifier)
+            );
+        }
+
+        // Store scenarios
+        self.scenarios.insert(belief.id.clone(), scenarios.clone());
+
+        scenarios
+    }
+
+    /// Evaluate scenarios against observations
+    pub fn evaluate(
+        &mut self,
+        belief_id: &str,
+        observations: &[(String, f64)],
+        original_divergence: f64,
+    ) {
+        if let Some(scenarios) = self.scenarios.get_mut(belief_id) {
+            for scenario in scenarios {
+                scenario.evaluate(observations);
+
+                // Check if revision is needed
+                if scenario.counterfactual_fits_better(original_divergence) {
+                    let adjustment = original_divergence - scenario.divergence;
+
+                    if adjustment < self.revision_threshold {
+                        self.pending_revisions.push(BeliefRevision::reduce_confidence(
+                            belief_id,
+                            adjustment.abs() * 0.5,
+                            &format!(
+                                "Counterfactual '{}' explains observations better (divergence: {:.3} vs {:.3})",
+                                scenario.name, scenario.divergence, original_divergence
+                            ),
+                            &scenario.name,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Recommend revision based on probes
+    pub fn recommend_revision<T: Clone>(
+        &self,
+        belief: &GroundedBelief<T>,
+        probes: &[CounterfactualScenario],
+    ) -> Option<BeliefRevision> {
+        // If counterfactual explains observations better, revise
+        for probe in probes {
+            if probe.evaluated && probe.divergence < self.revision_threshold {
+                return Some(BeliefRevision::reduce_confidence(
+                    &belief.id,
+                    probe.divergence.abs(),
+                    &format!("Counterfactual '{}' explains observations better", probe.name),
+                    &probe.name,
+                ));
+            }
+        }
+        None
+    }
+
+    /// Get pending revisions
+    pub fn get_pending_revisions(&self) -> &[BeliefRevision] {
+        &self.pending_revisions
+    }
+
+    /// Take pending revisions (clears the list)
+    pub fn take_pending_revisions(&mut self) -> Vec<BeliefRevision> {
+        std::mem::take(&mut self.pending_revisions)
+    }
+
+    /// Clear all state
+    pub fn clear(&mut self) {
+        self.scenarios.clear();
+        self.pending_revisions.clear();
+    }
+
+    /// Get scenarios for a belief
+    pub fn get_scenarios(&self, belief_id: &str) -> Option<&Vec<CounterfactualScenario>> {
+        self.scenarios.get(belief_id)
+    }
+
+    /// Get number of active probes
+    pub fn active_probe_count(&self) -> usize {
+        self.scenarios.values().map(|v| v.len()).sum()
+    }
+
+    /// Get summary of probing activity
+    pub fn summary(&self) -> String {
+        let total_scenarios: usize = self.scenarios.values().map(|v| v.len()).sum();
+        let evaluated: usize = self.scenarios.values()
+            .flat_map(|v| v.iter())
+            .filter(|s| s.evaluated)
+            .count();
+
+        format!(
+            "Counterfactual Prober: {} beliefs, {} scenarios ({} evaluated), {} pending revisions",
+            self.scenarios.len(),
+            total_scenarios,
+            evaluated,
+            self.pending_revisions.len()
+        )
+    }
+}
+
+impl Default for CounterfactualProber {
+    fn default() -> Self {
+        CounterfactualProber::new()
+    }
+}
+
+/// Utility to compute divergence between predicted and actual observations
+pub fn compute_divergence(predicted: &[f64], actual: &[f64]) -> f64 {
+    if predicted.len() != actual.len() || predicted.is_empty() {
+        return f64::INFINITY;
+    }
+
+    let mut total_error = 0.0;
+    for (p, a) in predicted.iter().zip(actual.iter()) {
+        total_error += (p - a).powi(2);
+    }
+
+    (total_error / predicted.len() as f64).sqrt()
+}
+
+/// Compute KL divergence between two distributions
+pub fn kl_divergence(p: &[f64], q: &[f64]) -> f64 {
+    if p.len() != q.len() || p.is_empty() {
+        return f64::INFINITY;
+    }
+
+    let mut kl = 0.0;
+    for (pi, qi) in p.iter().zip(q.iter()) {
+        let pi = pi.max(1e-10);
+        let qi = qi.max(1e-10);
+        kl += pi * (pi / qi).ln();
+    }
+
+    kl
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_counterfactual_scenario() {
+        let mut scenario = CounterfactualScenario::negation("test_belief", 0.9)
+            .expect("accuracy", 0.3, 0.1)
+            .expect("latency", 100.0, 10.0);
+
+        // Observations that match the counterfactual
+        let observations = vec![
+            ("accuracy".to_string(), 0.35),
+            ("latency".to_string(), 95.0),
+        ];
+
+        scenario.evaluate(&observations);
+
+        assert!(scenario.evaluated);
+        assert!(scenario.divergence < 1.0, "Should have low divergence when observations match");
+    }
+
+    #[test]
+    fn test_counterfactual_fits_better() {
+        let mut scenario = CounterfactualScenario::negation("test", 0.9)
+            .expect("metric", 0.5, 0.1);
+
+        // Observation closer to counterfactual prediction
+        scenario.evaluate(&[("metric".to_string(), 0.48)]);
+
+        // Original belief predicts metric = 0.9 (high confidence in belief)
+        // Counterfactual predicts metric = 0.5 (negation)
+        // Actual = 0.48, closer to counterfactual
+        let original_divergence = (0.9 - 0.48).abs() / 0.1;
+        let counterfactual_divergence = scenario.divergence;
+
+        assert!(
+            counterfactual_divergence < original_divergence,
+            "Counterfactual should fit better when actual is closer to its prediction"
+        );
+    }
+
+    #[test]
+    fn test_prober() {
+        let mut prober = CounterfactualProber::new()
+            .min_confidence(0.5);
+
+        // Create a high-confidence belief
+        let belief: GroundedBelief<String> = GroundedBelief::observed(
+            "confident_belief",
+            "Test claim".to_string(),
+            "test",
+            0.9,
+        );
+
+        let scenarios = prober.probe(&belief);
+
+        assert!(!scenarios.is_empty(), "Should generate scenarios for high-confidence belief");
+        assert!(scenarios.iter().any(|s| s.is_negation), "Should include negation scenario");
+    }
+}

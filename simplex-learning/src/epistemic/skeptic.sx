@@ -1,0 +1,714 @@
+// TASK-014: Skeptic Specialist
+//
+// The Skeptic is a core cognitive component that actively challenges beliefs
+// to prevent epistemic collapse. It runs during dissent windows and uses
+// counterfactual probing to identify beliefs that may be wrong.
+//
+// The Skeptic:
+// - Monitors dissent windows and activates during active dissent phases
+// - Selects high-confidence beliefs for challenge based on configurable criteria
+// - Generates counterfactual scenarios for selected beliefs
+// - Evaluates scenarios against observations
+// - Recommends belief revisions when counterfactuals fit better
+// - Tracks challenge history to avoid over-challenging the same beliefs
+//
+// This is NOT an edge-hive specialist - it's a core epistemic component that
+// runs wherever Simplex cognitive systems operate.
+
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+use crate::belief::{GroundedBelief, BeliefId, CalibratedConfidence};
+use super::monitors::EpistemicMonitors;
+use super::dissent::{DissentWindow, DissentConfig, DissentPhase};
+use super::counterfactual::{CounterfactualProber, CounterfactualScenario, BeliefRevision};
+
+/// Configuration for the Skeptic specialist
+#[derive(Clone)]
+pub struct SkepticConfig {
+    /// Minimum confidence to consider a belief for challenge
+    pub min_confidence_to_challenge: f64,
+
+    /// Maximum beliefs to challenge per dissent window
+    pub max_challenges_per_window: usize,
+
+    /// Cooldown between challenges to the same belief (in steps)
+    pub challenge_cooldown: u64,
+
+    /// Automatically apply low-priority revisions
+    pub auto_apply_revisions: bool,
+
+    /// Priority threshold for auto-apply (revisions above this need human review)
+    pub auto_apply_threshold: f64,
+
+    /// Enable verbose logging
+    pub verbose: bool,
+}
+
+impl Default for SkepticConfig {
+    fn default() -> Self {
+        SkepticConfig {
+            min_confidence_to_challenge: 0.7,
+            max_challenges_per_window: 10,
+            challenge_cooldown: 500,
+            auto_apply_revisions: false,
+            auto_apply_threshold: 0.3,
+            verbose: false,
+        }
+    }
+}
+
+impl SkepticConfig {
+    /// Create an aggressive skeptic (for testing)
+    pub fn aggressive() -> Self {
+        SkepticConfig {
+            min_confidence_to_challenge: 0.5,
+            max_challenges_per_window: 20,
+            challenge_cooldown: 100,
+            auto_apply_revisions: true,
+            auto_apply_threshold: 0.5,
+            verbose: true,
+        }
+    }
+
+    /// Create a conservative skeptic (for production)
+    pub fn conservative() -> Self {
+        SkepticConfig {
+            min_confidence_to_challenge: 0.85,
+            max_challenges_per_window: 5,
+            challenge_cooldown: 1000,
+            auto_apply_revisions: false,
+            auto_apply_threshold: 0.2,
+            verbose: false,
+        }
+    }
+}
+
+/// Record of a challenge to a belief
+#[derive(Clone)]
+pub struct ChallengeRecord {
+    /// When the challenge occurred (step number)
+    pub step: u64,
+
+    /// Scenarios generated
+    pub scenario_count: usize,
+
+    /// Whether any counterfactual fit better
+    pub counterfactual_won: bool,
+
+    /// Revision recommended (if any)
+    pub revision: Option<BeliefRevision>,
+
+    /// Was the revision applied?
+    pub revision_applied: bool,
+}
+
+/// Statistics about Skeptic operation
+#[derive(Clone, Default)]
+pub struct SkepticStats {
+    /// Total challenges issued
+    pub total_challenges: u64,
+
+    /// Challenges where counterfactual won
+    pub counterfactual_wins: u64,
+
+    /// Revisions recommended
+    pub revisions_recommended: u64,
+
+    /// Revisions auto-applied
+    pub revisions_auto_applied: u64,
+
+    /// Revisions pending human review
+    pub revisions_pending_review: u64,
+
+    /// Dissent windows completed
+    pub windows_completed: u64,
+}
+
+/// The Skeptic specialist - challenges beliefs to maintain epistemic health
+pub struct Skeptic {
+    /// Configuration
+    pub config: SkepticConfig,
+
+    /// Dissent window manager
+    pub dissent_window: DissentWindow,
+
+    /// Counterfactual prober
+    pub prober: CounterfactualProber,
+
+    /// Current step
+    step: u64,
+
+    /// Challenge history by belief ID
+    challenge_history: HashMap<BeliefId, Vec<ChallengeRecord>>,
+
+    /// Last challenge step by belief ID (for cooldown)
+    last_challenge: HashMap<BeliefId, u64>,
+
+    /// Pending revisions awaiting review
+    pending_revisions: Vec<BeliefRevision>,
+
+    /// Statistics
+    stats: SkepticStats,
+
+    /// Is the skeptic currently active?
+    active: bool,
+
+    /// Challenges issued this window
+    challenges_this_window: usize,
+}
+
+impl Skeptic {
+    /// Create a new Skeptic with default configuration
+    pub fn new() -> Self {
+        Skeptic::with_config(SkepticConfig::default(), DissentConfig::default())
+    }
+
+    /// Create a Skeptic with custom configuration
+    pub fn with_config(config: SkepticConfig, dissent_config: DissentConfig) -> Self {
+        let mut prober = CounterfactualProber::new();
+        prober.min_confidence_to_probe = config.min_confidence_to_challenge;
+
+        Skeptic {
+            config,
+            dissent_window: DissentWindow::new(dissent_config),
+            prober,
+            step: 0,
+            challenge_history: HashMap::new(),
+            last_challenge: HashMap::new(),
+            pending_revisions: Vec::new(),
+            stats: SkepticStats::default(),
+            active: false,
+            challenges_this_window: 0,
+        }
+    }
+
+    /// Step the Skeptic (call each optimization step)
+    pub fn step(&mut self) {
+        self.step += 1;
+
+        let was_active = self.active;
+        self.dissent_window.step();
+        self.active = self.dissent_window.is_active();
+
+        // Track window transitions
+        if was_active && !self.active {
+            // Window just ended
+            self.stats.windows_completed += 1;
+            self.challenges_this_window = 0;
+        }
+    }
+
+    /// Is the Skeptic currently in an active challenge phase?
+    pub fn is_active(&self) -> bool {
+        self.active && self.dissent_window.should_challenge()
+    }
+
+    /// Get current dissent phase
+    pub fn phase(&self) -> DissentPhase {
+        self.dissent_window.phase()
+    }
+
+    /// Get current heat level (for temperature modulation)
+    pub fn current_heat(&self) -> f64 {
+        self.dissent_window.current_heat()
+    }
+
+    /// Check if a belief can be challenged (respects cooldown)
+    pub fn can_challenge(&self, belief_id: &str) -> bool {
+        if !self.is_active() {
+            return false;
+        }
+
+        if self.challenges_this_window >= self.config.max_challenges_per_window {
+            return false;
+        }
+
+        // Check cooldown
+        if let Some(last) = self.last_challenge.get(belief_id) {
+            if self.step - last < self.config.challenge_cooldown {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Challenge a belief and return any recommended revision
+    pub fn challenge<T: Clone>(
+        &mut self,
+        belief: &GroundedBelief<T>,
+        observations: &[(String, f64)],
+    ) -> Option<BeliefRevision> {
+        if !self.can_challenge(&belief.id) {
+            return None;
+        }
+
+        let confidence = belief.confidence_value();
+        if confidence < self.config.min_confidence_to_challenge {
+            return None;
+        }
+
+        // Generate counterfactual scenarios
+        let scenarios = self.prober.probe(belief);
+        if scenarios.is_empty() {
+            return None;
+        }
+
+        // Record that we challenged this belief
+        self.last_challenge.insert(belief.id.clone(), self.step);
+        self.challenges_this_window += 1;
+        self.stats.total_challenges += 1;
+        self.dissent_window.record_challenge();
+
+        // Compute original belief's divergence from observations
+        let original_divergence = self.compute_belief_divergence(belief, observations);
+
+        // Evaluate scenarios
+        self.prober.evaluate(&belief.id, observations, original_divergence);
+
+        // Check for revision recommendation
+        let revision = self.prober.recommend_revision(belief, &scenarios);
+
+        // Record the challenge
+        let counterfactual_won = revision.is_some();
+        if counterfactual_won {
+            self.stats.counterfactual_wins += 1;
+        }
+
+        let record = ChallengeRecord {
+            step: self.step,
+            scenario_count: scenarios.len(),
+            counterfactual_won,
+            revision: revision.clone(),
+            revision_applied: false,
+        };
+
+        self.challenge_history
+            .entry(belief.id.clone())
+            .or_insert_with(Vec::new)
+            .push(record);
+
+        // Handle revision if recommended
+        if let Some(ref rev) = revision {
+            self.stats.revisions_recommended += 1;
+
+            if self.config.auto_apply_revisions && rev.priority <= self.config.auto_apply_threshold {
+                self.stats.revisions_auto_applied += 1;
+                // Mark as applied in history
+                if let Some(history) = self.challenge_history.get_mut(&belief.id) {
+                    if let Some(last) = history.last_mut() {
+                        last.revision_applied = true;
+                    }
+                }
+            } else {
+                self.pending_revisions.push(rev.clone());
+                self.stats.revisions_pending_review += 1;
+            }
+
+            if self.config.verbose {
+                println!(
+                    "[Skeptic] Belief '{}' challenged: counterfactual '{}' fits better (priority: {:.2})",
+                    belief.id, rev.triggered_by, rev.priority
+                );
+            }
+        }
+
+        revision
+    }
+
+    /// Challenge multiple beliefs and return all recommended revisions
+    pub fn challenge_batch<T: Clone>(
+        &mut self,
+        beliefs: &[GroundedBelief<T>],
+        observations: &[(String, f64)],
+    ) -> Vec<BeliefRevision> {
+        let mut revisions = Vec::new();
+
+        // Sort beliefs by confidence (highest first - most worth challenging)
+        let mut sorted: Vec<_> = beliefs.iter().collect();
+        sorted.sort_by(|a, b| {
+            b.confidence_value()
+                .partial_cmp(&a.confidence_value())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        for belief in sorted {
+            if !self.can_challenge(&belief.id) {
+                continue;
+            }
+
+            if let Some(revision) = self.challenge(belief, observations) {
+                revisions.push(revision);
+            }
+
+            if self.challenges_this_window >= self.config.max_challenges_per_window {
+                break;
+            }
+        }
+
+        revisions
+    }
+
+    /// Select beliefs to challenge based on criteria
+    pub fn select_beliefs_to_challenge<'a, T: Clone>(
+        &self,
+        beliefs: &'a [GroundedBelief<T>],
+    ) -> Vec<&'a GroundedBelief<T>> {
+        if !self.is_active() {
+            return Vec::new();
+        }
+
+        let max_to_select = self.config.max_challenges_per_window - self.challenges_this_window;
+        if max_to_select == 0 {
+            return Vec::new();
+        }
+
+        let threshold = self.dissent_window.challenge_threshold();
+
+        let mut candidates: Vec<_> = beliefs
+            .iter()
+            .filter(|b| {
+                let conf = b.confidence_value();
+                conf >= threshold && self.can_challenge(&b.id)
+            })
+            .collect();
+
+        // Sort by confidence descending
+        candidates.sort_by(|a, b| {
+            b.confidence_value()
+                .partial_cmp(&a.confidence_value())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        candidates.truncate(max_to_select);
+        candidates
+    }
+
+    /// Compute how well a belief's predictions match observations
+    fn compute_belief_divergence<T: Clone>(
+        &self,
+        belief: &GroundedBelief<T>,
+        observations: &[(String, f64)],
+    ) -> f64 {
+        // Use belief confidence as expected accuracy
+        // Higher confidence → expect observations to match predictions
+        let confidence = belief.confidence_value();
+
+        // Simple divergence: average absolute error weighted by confidence
+        // This is a placeholder - real implementation would use belief-specific predictions
+        if observations.is_empty() {
+            return 0.0;
+        }
+
+        // For now, return inverse of confidence as baseline divergence
+        // (high confidence → low expected divergence)
+        (1.0 - confidence) * 0.5
+    }
+
+    /// Get pending revisions awaiting review
+    pub fn pending_revisions(&self) -> &[BeliefRevision] {
+        &self.pending_revisions
+    }
+
+    /// Take pending revisions (clears the list)
+    pub fn take_pending_revisions(&mut self) -> Vec<BeliefRevision> {
+        self.stats.revisions_pending_review = 0;
+        std::mem::take(&mut self.pending_revisions)
+    }
+
+    /// Mark a revision as reviewed (removes from pending)
+    pub fn mark_revision_reviewed(&mut self, belief_id: &str, applied: bool) {
+        self.pending_revisions.retain(|r| r.belief_id != belief_id);
+
+        if applied {
+            if let Some(history) = self.challenge_history.get_mut(belief_id) {
+                if let Some(last) = history.last_mut() {
+                    last.revision_applied = true;
+                }
+            }
+        }
+    }
+
+    /// Get challenge history for a belief
+    pub fn get_challenge_history(&self, belief_id: &str) -> Option<&Vec<ChallengeRecord>> {
+        self.challenge_history.get(belief_id)
+    }
+
+    /// Get statistics
+    pub fn stats(&self) -> &SkepticStats {
+        &self.stats
+    }
+
+    /// Get dissent window statistics
+    pub fn dissent_stats(&self) -> super::dissent::DissentStats {
+        self.dissent_window.stats()
+    }
+
+    /// Clear all state (for testing)
+    pub fn clear(&mut self) {
+        self.step = 0;
+        self.challenge_history.clear();
+        self.last_challenge.clear();
+        self.pending_revisions.clear();
+        self.stats = SkepticStats::default();
+        self.active = false;
+        self.challenges_this_window = 0;
+        self.prober.clear();
+    }
+
+    /// Get a summary of Skeptic state
+    pub fn summary(&self) -> String {
+        format!(
+            "Skeptic: {} | Phase: {:?} | Heat: {:.2} | Challenges: {}/{} | \
+             Total: {} | CF wins: {} | Revisions: {} pending",
+            if self.active { "ACTIVE" } else { "idle" },
+            self.phase(),
+            self.current_heat(),
+            self.challenges_this_window,
+            self.config.max_challenges_per_window,
+            self.stats.total_challenges,
+            self.stats.counterfactual_wins,
+            self.pending_revisions.len()
+        )
+    }
+}
+
+impl Default for Skeptic {
+    fn default() -> Self {
+        Skeptic::new()
+    }
+}
+
+/// Integration point: Run Skeptic as part of the learning loop
+pub struct SkepticRunner {
+    /// The Skeptic instance
+    pub skeptic: Skeptic,
+
+    /// Epistemic monitors for health tracking
+    pub monitors: EpistemicMonitors,
+
+    /// Apply revisions callback (optional)
+    revision_callback: Option<Box<dyn Fn(&BeliefRevision) -> bool + Send + Sync>>,
+}
+
+impl SkepticRunner {
+    /// Create a new runner with default configuration
+    pub fn new() -> Self {
+        SkepticRunner {
+            skeptic: Skeptic::new(),
+            monitors: EpistemicMonitors::new(),
+            revision_callback: None,
+        }
+    }
+
+    /// Create with custom configuration
+    pub fn with_config(skeptic_config: SkepticConfig, dissent_config: DissentConfig) -> Self {
+        SkepticRunner {
+            skeptic: Skeptic::with_config(skeptic_config, dissent_config),
+            monitors: EpistemicMonitors::new(),
+            revision_callback: None,
+        }
+    }
+
+    /// Set a callback for applying revisions
+    pub fn on_revision<F>(&mut self, callback: F)
+    where
+        F: Fn(&BeliefRevision) -> bool + Send + Sync + 'static,
+    {
+        self.revision_callback = Some(Box::new(callback));
+    }
+
+    /// Run a single step of the Skeptic
+    pub fn step<T: Clone>(
+        &mut self,
+        beliefs: &[GroundedBelief<T>],
+        observations: &[(String, f64)],
+    ) -> Vec<BeliefRevision> {
+        self.skeptic.step();
+
+        // Select and challenge beliefs
+        let to_challenge = self.skeptic.select_beliefs_to_challenge(beliefs);
+        let mut revisions = Vec::new();
+
+        for belief in to_challenge {
+            if let Some(revision) = self.skeptic.challenge(belief, observations) {
+                // Try to apply via callback
+                if let Some(ref callback) = self.revision_callback {
+                    let applied = callback(&revision);
+                    self.skeptic.mark_revision_reviewed(&revision.belief_id, applied);
+                }
+                revisions.push(revision);
+            }
+        }
+
+        // Update monitors based on challenge results
+        if !revisions.is_empty() {
+            let win_rate = self.skeptic.stats.counterfactual_wins as f64
+                / self.skeptic.stats.total_challenges.max(1) as f64;
+
+            // High counterfactual win rate suggests poor epistemic health
+            self.monitors.update_source_agreement(1.0 - win_rate);
+        }
+
+        revisions
+    }
+
+    /// Get current heat for temperature modulation
+    pub fn current_heat(&self) -> f64 {
+        self.skeptic.current_heat()
+    }
+
+    /// Is the Skeptic currently challenging beliefs?
+    pub fn is_challenging(&self) -> bool {
+        self.skeptic.is_active()
+    }
+
+    /// Get summary
+    pub fn summary(&self) -> String {
+        format!(
+            "{}\n{}",
+            self.skeptic.summary(),
+            self.monitors.summary()
+        )
+    }
+}
+
+impl Default for SkepticRunner {
+    fn default() -> Self {
+        SkepticRunner::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_skeptic_activation() {
+        let dissent_config = DissentConfig::step_based(100, 20);
+        let mut skeptic = Skeptic::with_config(SkepticConfig::default(), dissent_config);
+
+        // Should start inactive
+        assert!(!skeptic.is_active());
+
+        // Step into dissent window (after ramp-up)
+        for _ in 0..15 {
+            skeptic.step();
+        }
+
+        // Should now be in active dissent
+        assert!(skeptic.is_active());
+        assert!(skeptic.current_heat() > 0.0);
+    }
+
+    #[test]
+    fn test_belief_challenge() {
+        let dissent_config = DissentConfig::step_based(10, 8); // Quick window
+        let skeptic_config = SkepticConfig {
+            min_confidence_to_challenge: 0.5,
+            challenge_cooldown: 0,
+            ..Default::default()
+        };
+        let mut skeptic = Skeptic::with_config(skeptic_config, dissent_config);
+
+        // Step into active phase
+        for _ in 0..5 {
+            skeptic.step();
+        }
+
+        // Create a high-confidence belief
+        let belief: GroundedBelief<String> = GroundedBelief::observed(
+            "test_belief",
+            "Test claim".to_string(),
+            "test",
+            0.9,
+        );
+
+        // Challenge with observations that don't match
+        let observations = vec![
+            ("accuracy".to_string(), 0.3),
+            ("latency".to_string(), 100.0),
+        ];
+
+        let revision = skeptic.challenge(&belief, &observations);
+
+        // Should have challenged
+        assert_eq!(skeptic.stats.total_challenges, 1);
+        assert!(skeptic.get_challenge_history("test_belief").is_some());
+    }
+
+    #[test]
+    fn test_cooldown_enforcement() {
+        let dissent_config = DissentConfig::step_based(100, 50);
+        let skeptic_config = SkepticConfig {
+            min_confidence_to_challenge: 0.5,
+            challenge_cooldown: 10,
+            ..Default::default()
+        };
+        let mut skeptic = Skeptic::with_config(skeptic_config, dissent_config);
+
+        // Step into active phase
+        for _ in 0..15 {
+            skeptic.step();
+        }
+
+        let belief: GroundedBelief<String> = GroundedBelief::observed(
+            "test",
+            "claim".to_string(),
+            "source",
+            0.9,
+        );
+
+        // First challenge should work
+        assert!(skeptic.can_challenge("test"));
+        skeptic.challenge(&belief, &[]);
+
+        // Immediate second challenge should be blocked by cooldown
+        assert!(!skeptic.can_challenge("test"));
+
+        // After cooldown, should be able to challenge again
+        for _ in 0..15 {
+            skeptic.step();
+        }
+        assert!(skeptic.can_challenge("test"));
+    }
+
+    #[test]
+    fn test_max_challenges_per_window() {
+        let dissent_config = DissentConfig::step_based(100, 50);
+        let skeptic_config = SkepticConfig {
+            min_confidence_to_challenge: 0.5,
+            max_challenges_per_window: 2,
+            challenge_cooldown: 0,
+            ..Default::default()
+        };
+        let mut skeptic = Skeptic::with_config(skeptic_config, dissent_config);
+
+        // Step into active phase
+        for _ in 0..15 {
+            skeptic.step();
+        }
+
+        // Create multiple beliefs
+        let beliefs: Vec<GroundedBelief<String>> = (0..5)
+            .map(|i| {
+                GroundedBelief::observed(
+                    &format!("belief_{}", i),
+                    format!("claim {}", i),
+                    "source",
+                    0.9,
+                )
+            })
+            .collect();
+
+        // Challenge all
+        for belief in &beliefs {
+            skeptic.challenge(belief, &[]);
+        }
+
+        // Should only have challenged max_challenges_per_window
+        assert_eq!(skeptic.challenges_this_window, 2);
+        assert_eq!(skeptic.stats.total_challenges, 2);
+    }
+}

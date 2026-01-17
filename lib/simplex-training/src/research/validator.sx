@@ -1,0 +1,433 @@
+// TASK-015: Data Validator
+//
+// Validates training examples against authoritative sources.
+//
+// Validation strategies:
+// 1. Direct lookup - Check if claim matches documentation
+// 2. Cross-reference - Compare multiple sources
+// 3. Specification check - Verify against language/protocol specs
+// 4. Contradiction detection - Find conflicting information
+// 5. Staleness check - Verify information is current
+
+use simplex_std::vec::Vec;
+use simplex_std::string::String;
+use simplex_std::option::Option;
+use super::sources::{SourceType, SourceCredibility, SourceRegistry};
+use super::researcher::SourceReference;
+
+/// Configuration for validation
+#[derive(Clone)]
+pub struct ValidationConfig {
+    /// Minimum confidence for validation to succeed
+    pub min_confidence: f64,
+
+    /// Require multiple sources
+    pub require_multiple_sources: bool,
+
+    /// Minimum number of agreeing sources
+    pub min_agreeing_sources: usize,
+
+    /// Weight for specification sources
+    pub spec_weight: f64,
+
+    /// Weight for documentation sources
+    pub doc_weight: f64,
+
+    /// Weight for academic sources
+    pub academic_weight: f64,
+
+    /// Weight for community sources
+    pub community_weight: f64,
+
+    /// Maximum staleness (days)
+    pub max_staleness_days: u64,
+}
+
+impl Default for ValidationConfig {
+    fn default() -> Self {
+        ValidationConfig {
+            min_confidence: 0.7,
+            require_multiple_sources: true,
+            min_agreeing_sources: 2,
+            spec_weight: 2.0,
+            doc_weight: 1.5,
+            academic_weight: 1.3,
+            community_weight: 0.8,
+            max_staleness_days: 365,
+        }
+    }
+}
+
+/// Result of validation
+#[derive(Clone)]
+pub struct ValidationResult {
+    /// Is the claim valid?
+    pub is_valid: bool,
+
+    /// Confidence in the validation
+    pub confidence: f64,
+
+    /// Sources that support the claim
+    pub supporting_sources: Vec<AuthoritativeSource>,
+
+    /// Sources that contradict the claim
+    pub contradicting_sources: Vec<AuthoritativeSource>,
+
+    /// Validation method used
+    pub method: ValidationMethod,
+
+    /// Any issues found
+    pub issues: Vec<ValidationIssue>,
+
+    /// Suggestions for improvement
+    pub suggestions: Vec<String>,
+}
+
+impl ValidationResult {
+    /// Create a valid result
+    pub fn valid(confidence: f64) -> Self {
+        ValidationResult {
+            is_valid: true,
+            confidence,
+            supporting_sources: Vec::new(),
+            contradicting_sources: Vec::new(),
+            method: ValidationMethod::CrossReference,
+            issues: Vec::new(),
+            suggestions: Vec::new(),
+        }
+    }
+
+    /// Create an invalid result
+    pub fn invalid(reason: &str) -> Self {
+        ValidationResult {
+            is_valid: false,
+            confidence: 0.0,
+            supporting_sources: Vec::new(),
+            contradicting_sources: Vec::new(),
+            method: ValidationMethod::CrossReference,
+            issues: vec![ValidationIssue {
+                severity: IssueSeverity::Error,
+                message: reason.to_string(),
+                source: None,
+            }],
+            suggestions: Vec::new(),
+        }
+    }
+
+    /// Create an inconclusive result
+    pub fn inconclusive() -> Self {
+        ValidationResult {
+            is_valid: false,
+            confidence: 0.5,
+            supporting_sources: Vec::new(),
+            contradicting_sources: Vec::new(),
+            method: ValidationMethod::None,
+            issues: vec![ValidationIssue {
+                severity: IssueSeverity::Warning,
+                message: "Could not validate - insufficient evidence".to_string(),
+                source: None,
+            }],
+            suggestions: Vec::new(),
+        }
+    }
+
+    /// Add supporting source
+    pub fn add_support(&mut self, source: AuthoritativeSource) {
+        self.supporting_sources.push(source);
+        self.recalculate_confidence();
+    }
+
+    /// Add contradicting source
+    pub fn add_contradiction(&mut self, source: AuthoritativeSource) {
+        self.contradicting_sources.push(source);
+        self.is_valid = false;
+        self.recalculate_confidence();
+    }
+
+    /// Recalculate confidence based on sources
+    fn recalculate_confidence(&mut self) {
+        let support_weight: f64 = self.supporting_sources.iter()
+            .map(|s| s.credibility * s.relevance)
+            .sum();
+
+        let contradict_weight: f64 = self.contradicting_sources.iter()
+            .map(|s| s.credibility * s.relevance)
+            .sum();
+
+        let total = support_weight + contradict_weight;
+        if total > 0.0 {
+            self.confidence = support_weight / total;
+        }
+    }
+
+    /// Has any issues?
+    pub fn has_issues(&self) -> bool {
+        !self.issues.is_empty()
+    }
+
+    /// Get error count
+    pub fn error_count(&self) -> usize {
+        self.issues.iter()
+            .filter(|i| matches!(i.severity, IssueSeverity::Error))
+            .count()
+    }
+
+    /// Get warning count
+    pub fn warning_count(&self) -> usize {
+        self.issues.iter()
+            .filter(|i| matches!(i.severity, IssueSeverity::Warning))
+            .count()
+    }
+}
+
+/// Validation method used
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ValidationMethod {
+    /// No validation performed
+    None,
+
+    /// Checked against specification
+    SpecificationCheck,
+
+    /// Cross-referenced multiple sources
+    CrossReference,
+
+    /// Direct documentation lookup
+    DocumentationLookup,
+
+    /// Academic paper verification
+    AcademicVerification,
+
+    /// Community consensus
+    CommunityConsensus,
+}
+
+/// An authoritative source used in validation
+#[derive(Clone)]
+pub struct AuthoritativeSource {
+    /// URL of the source
+    pub url: String,
+
+    /// Title or name
+    pub title: String,
+
+    /// Type of source
+    pub source_type: SourceType,
+
+    /// Credibility score (0-1)
+    pub credibility: f64,
+
+    /// Relevance to the claim (0-1)
+    pub relevance: f64,
+
+    /// Excerpt from the source
+    pub excerpt: Option<String>,
+
+    /// Date of source
+    pub date: Option<String>,
+}
+
+impl AuthoritativeSource {
+    /// Create from source reference
+    pub fn from_reference(reference: &SourceReference, relevance: f64) -> Self {
+        AuthoritativeSource {
+            url: reference.url.clone(),
+            title: reference.title.clone(),
+            source_type: reference.source_type,
+            credibility: reference.credibility,
+            relevance,
+            excerpt: reference.excerpt.clone(),
+            date: reference.date.clone(),
+        }
+    }
+
+    /// Is this a high-quality source?
+    pub fn is_high_quality(&self) -> bool {
+        self.credibility >= 0.8 && self.relevance >= 0.7
+    }
+
+    /// Combined score (credibility * relevance)
+    pub fn score(&self) -> f64 {
+        self.credibility * self.relevance
+    }
+}
+
+/// A validation issue
+#[derive(Clone)]
+pub struct ValidationIssue {
+    /// Severity of the issue
+    pub severity: IssueSeverity,
+
+    /// Description of the issue
+    pub message: String,
+
+    /// Source of the issue (if applicable)
+    pub source: Option<String>,
+}
+
+/// Severity of validation issue
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum IssueSeverity {
+    /// Informational note
+    Info,
+
+    /// Warning - may be incorrect
+    Warning,
+
+    /// Error - definitely incorrect
+    Error,
+}
+
+/// The Data Validator
+pub struct DataValidator {
+    /// Configuration
+    config: ValidationConfig,
+
+    /// Source registry
+    registry: SourceRegistry,
+
+    /// Statistics
+    stats: ValidatorStats,
+}
+
+impl DataValidator {
+    /// Create new validator
+    pub fn new() -> Self {
+        DataValidator {
+            config: ValidationConfig::default(),
+            registry: SourceRegistry::default(),
+            stats: ValidatorStats::default(),
+        }
+    }
+
+    /// Create with config
+    pub fn with_config(config: ValidationConfig) -> Self {
+        DataValidator {
+            config,
+            registry: SourceRegistry::default(),
+            stats: ValidatorStats::default(),
+        }
+    }
+
+    /// Validate a claim
+    pub fn validate(&mut self, claim: &str, domain: &str) -> ValidationResult {
+        self.stats.validations += 1;
+
+        // This is the interface - actual implementation would:
+        // 1. Parse the claim
+        // 2. Search authoritative sources
+        // 3. Compare claim to sources
+        // 4. Return result
+
+        // For now, return inconclusive
+        ValidationResult::inconclusive()
+    }
+
+    /// Validate a code example
+    pub fn validate_code(&mut self, code: &str, language: &str) -> ValidationResult {
+        self.stats.validations += 1;
+
+        // Would validate:
+        // 1. Syntax correctness
+        // 2. API usage correctness
+        // 3. Best practices
+        // 4. Security issues
+
+        ValidationResult::inconclusive()
+    }
+
+    /// Validate a factual claim
+    pub fn validate_fact(&mut self, fact: &str, domain: &str) -> ValidationResult {
+        self.stats.validations += 1;
+
+        // Would validate:
+        // 1. Check specification
+        // 2. Check documentation
+        // 3. Cross-reference sources
+        // 4. Check for contradictions
+
+        ValidationResult::inconclusive()
+    }
+
+    /// Check if a claim contradicts known facts
+    pub fn check_contradictions(&self, claim: &str, known_facts: &[String]) -> Vec<String> {
+        // Would use semantic similarity and logical analysis
+        // to detect contradictions
+        Vec::new()
+    }
+
+    /// Get statistics
+    pub fn stats(&self) -> &ValidatorStats {
+        &self.stats
+    }
+}
+
+/// Validator statistics
+#[derive(Clone, Default)]
+pub struct ValidatorStats {
+    /// Total validations performed
+    pub validations: u64,
+
+    /// Successful validations
+    pub valid: u64,
+
+    /// Invalid results
+    pub invalid: u64,
+
+    /// Inconclusive results
+    pub inconclusive: u64,
+
+    /// Contradictions found
+    pub contradictions_found: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validation_result_confidence() {
+        let mut result = ValidationResult::valid(0.5);
+
+        result.add_support(AuthoritativeSource {
+            url: "https://docs.python.org".to_string(),
+            title: "Python Docs".to_string(),
+            source_type: SourceType::OfficialDocumentation,
+            credibility: 0.95,
+            relevance: 0.9,
+            excerpt: None,
+            date: None,
+        });
+
+        assert!(result.confidence > 0.8);
+        assert!(result.is_valid);
+    }
+
+    #[test]
+    fn test_contradiction_reduces_confidence() {
+        let mut result = ValidationResult::valid(0.9);
+
+        result.add_support(AuthoritativeSource {
+            url: "https://docs.python.org".to_string(),
+            title: "Python Docs".to_string(),
+            source_type: SourceType::OfficialDocumentation,
+            credibility: 0.9,
+            relevance: 0.9,
+            excerpt: None,
+            date: None,
+        });
+
+        result.add_contradiction(AuthoritativeSource {
+            url: "https://other.source.com".to_string(),
+            title: "Other Source".to_string(),
+            source_type: SourceType::TechnicalReference,
+            credibility: 0.7,
+            relevance: 0.8,
+            excerpt: None,
+            date: None,
+        });
+
+        assert!(!result.is_valid);
+        assert!(result.confidence < 0.9);
+    }
+}

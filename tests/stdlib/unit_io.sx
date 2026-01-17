@@ -8,42 +8,42 @@
 // =============================================================================
 
 fn test_io_error_variants() -> i64 {
-    println("  Testing IoError variants...");
+ println(" Testing IoError variants...");
 
-    // Verify all error variants are distinct
-    let err_eof: i64 = 1;         // UnexpectedEof
-    let err_write: i64 = 2;       // WriteZero
-    let err_data: i64 = 3;        // InvalidData
-    let err_refused: i64 = 4;     // ConnectionRefused
-    let err_reset: i64 = 5;       // ConnectionReset
-    let err_closed: i64 = 6;      // ConnectionClosed
-    let err_timeout: i64 = 7;     // Timeout
-    let err_inuse: i64 = 8;       // AddrInUse
-    let err_notavail: i64 = 9;    // AddrNotAvailable
-    let err_perm: i64 = 10;       // PermissionDenied
-    let err_notfound: i64 = 11;   // NotFound
-    let err_other: i64 = 12;      // Other
+ // Verify all error variants are distinct
+ let err_eof: i64 = 1; // UnexpectedEof
+ let err_write: i64 = 2; // WriteZero
+ let err_data: i64 = 3; // InvalidData
+ let err_refused: i64 = 4; // ConnectionRefused
+ let err_reset: i64 = 5; // ConnectionReset
+ let err_closed: i64 = 6; // ConnectionClosed
+ let err_timeout: i64 = 7; // Timeout
+ let err_inuse: i64 = 8; // AddrInUse
+ let err_notavail: i64 = 9; // AddrNotAvailable
+ let err_perm: i64 = 10; // PermissionDenied
+ let err_notfound: i64 = 11; // NotFound
+ let err_other: i64 = 12; // Other
 
-    // All variants should be distinct
-    if err_eof == err_write {
-        println("    FAIL: error variants should be distinct");
-        return 1;
-    }
+ // All variants should be distinct
+ if err_eof == err_write {
+ println(" FAIL: error variants should be distinct");
+ return 1;
+ }
 
-    if err_timeout == err_closed {
-        println("    FAIL: error variants should be distinct");
-        return 1;
-    }
+ if err_timeout == err_closed {
+ println(" FAIL: error variants should be distinct");
+ return 1;
+ }
 
-    // 12 distinct error types
-    let total_variants: i64 = 12;
-    if err_other != total_variants {
-        println("    FAIL: should have 12 error variants");
-        return 1;
-    }
+ // 12 distinct error types
+ let total_variants: i64 = 12;
+ if err_other != total_variants {
+ println(" FAIL: should have 12 error variants");
+ return 1;
+ }
 
-    println("    PASS: IoError variants");
-    0
+ println(" PASS: IoError variants");
+ 0
 }
 
 // =============================================================================
@@ -51,32 +51,32 @@ fn test_io_error_variants() -> i64 {
 // =============================================================================
 
 fn test_buffer_capacity() -> i64 {
-    println("  Testing buffer capacity...");
+ println(" Testing buffer capacity...");
 
-    // Default buffer size is 8KB (8192 bytes)
-    let default_capacity: i64 = 8192;
+ // Default buffer size is 8KB (8192 bytes)
+ let default_capacity: i64 = 8192;
 
-    if default_capacity != 8192 {
-        println("    FAIL: default capacity should be 8KB");
-        return 1;
-    }
+ if default_capacity != 8192 {
+ println(" FAIL: default capacity should be 8KB");
+ return 1;
+ }
 
-    // Custom capacity should be respected
-    let custom_capacity: i64 = 4096;
-    if custom_capacity != 4096 {
-        println("    FAIL: custom capacity not set");
-        return 1;
-    }
+ // Custom capacity should be respected
+ let custom_capacity: i64 = 4096;
+ if custom_capacity != 4096 {
+ println(" FAIL: custom capacity not set");
+ return 1;
+ }
 
-    // Large buffer for high throughput
-    let large_capacity: i64 = 65536;  // 64KB
-    if large_capacity < default_capacity {
-        println("    FAIL: large buffer should exceed default");
-        return 1;
-    }
+ // Large buffer for high throughput
+ let large_capacity: i64 = 65536; // 64KB
+ if large_capacity < default_capacity {
+ println(" FAIL: large buffer should exceed default");
+ return 1;
+ }
 
-    println("    PASS: buffer capacity");
-    0
+ println(" PASS: buffer capacity");
+ 0
 }
 
 // =============================================================================
@@ -84,41 +84,41 @@ fn test_buffer_capacity() -> i64 {
 // =============================================================================
 
 fn test_bufreader_state() -> i64 {
-    println("  Testing BufReader state...");
+ println(" Testing BufReader state...");
 
-    // BufReader tracks position and capacity
-    let pos: i64 = 0;
-    let cap: i64 = 0;
-    let buf_size: i64 = 8192;
+ // BufReader tracks position and capacity
+ let pos: i64 = 0;
+ let cap: i64 = 0;
+ let buf_size: i64 = 8192;
 
-    // Initial state: empty buffer
-    if pos != 0 {
-        println("    FAIL: initial pos should be 0");
-        return 1;
-    }
-    if cap != 0 {
-        println("    FAIL: initial cap should be 0");
-        return 1;
-    }
+ // Initial state: empty buffer
+ if pos != 0 {
+ println(" FAIL: initial pos should be 0");
+ return 1;
+ }
+ if cap != 0 {
+ println(" FAIL: initial cap should be 0");
+ return 1;
+ }
 
-    // After read: pos < cap
-    let new_pos: i64 = 100;
-    let new_cap: i64 = 1024;
+ // After read: pos < cap
+ let new_pos: i64 = 100;
+ let new_cap: i64 = 1024;
 
-    if new_pos >= new_cap {
-        println("    FAIL: pos should be less than cap after read");
-        return 1;
-    }
+ if new_pos >= new_cap {
+ println(" FAIL: pos should be less than cap after read");
+ return 1;
+ }
 
-    // Available bytes = cap - pos
-    let available: i64 = new_cap - new_pos;
-    if available != 924 {
-        println("    FAIL: available bytes mismatch");
-        return 1;
-    }
+ // Available bytes = cap - pos
+ let available: i64 = new_cap - new_pos;
+ if available != 924 {
+ println(" FAIL: available bytes mismatch");
+ return 1;
+ }
 
-    println("    PASS: BufReader state");
-    0
+ println(" PASS: BufReader state");
+ 0
 }
 
 // =============================================================================
@@ -126,38 +126,38 @@ fn test_bufreader_state() -> i64 {
 // =============================================================================
 
 fn test_bufwriter_flush() -> i64 {
-    println("  Testing BufWriter flush logic...");
+ println(" Testing BufWriter flush logic...");
 
-    let capacity: i64 = 8192;
-    let buffer_len: i64 = 0;
+ let capacity: i64 = 8192;
+ let buffer_len: i64 = 0;
 
-    // Write small data - should buffer
-    let small_write: i64 = 100;
-    let new_buffer_len: i64 = buffer_len + small_write;
+ // Write small data - should buffer
+ let small_write: i64 = 100;
+ let new_buffer_len: i64 = buffer_len + small_write;
 
-    if new_buffer_len >= capacity {
-        println("    FAIL: small write shouldn't exceed capacity");
-        return 1;
-    }
+ if new_buffer_len >= capacity {
+ println(" FAIL: small write shouldn't exceed capacity");
+ return 1;
+ }
 
-    // Write that exceeds capacity should trigger flush
-    let large_write: i64 = 9000;
-    let would_overflow: i64 = new_buffer_len + large_write;
+ // Write that exceeds capacity should trigger flush
+ let large_write: i64 = 9000;
+ let would_overflow: i64 = new_buffer_len + large_write;
 
-    if would_overflow <= capacity {
-        println("    FAIL: large write should exceed capacity");
-        return 1;
-    }
+ if would_overflow <= capacity {
+ println(" FAIL: large write should exceed capacity");
+ return 1;
+ }
 
-    // After flush, buffer is empty
-    let after_flush: i64 = 0;
-    if after_flush != 0 {
-        println("    FAIL: buffer should be empty after flush");
-        return 1;
-    }
+ // After flush, buffer is empty
+ let after_flush: i64 = 0;
+ if after_flush != 0 {
+ println(" FAIL: buffer should be empty after flush");
+ return 1;
+ }
 
-    println("    PASS: BufWriter flush logic");
-    0
+ println(" PASS: BufWriter flush logic");
+ 0
 }
 
 // =============================================================================
@@ -165,36 +165,36 @@ fn test_bufwriter_flush() -> i64 {
 // =============================================================================
 
 fn test_read_exact() -> i64 {
-    println("  Testing read_exact semantics...");
+ println(" Testing read_exact semantics...");
 
-    // read_exact must read exactly N bytes
-    let requested: i64 = 100;
-    let mut total_read: i64 = 0;
+ // read_exact must read exactly N bytes
+ let requested: i64 = 100;
+ let total_read: i64 = 0;
 
-    // Simulate multiple reads to fill buffer
-    let read1: i64 = 50;
-    total_read = total_read + read1;
+ // Simulate multiple reads to fill buffer
+ let read1: i64 = 50;
+ total_read = total_read + read1;
 
-    let read2: i64 = 30;
-    total_read = total_read + read2;
+ let read2: i64 = 30;
+ total_read = total_read + read2;
 
-    let read3: i64 = 20;
-    total_read = total_read + read3;
+ let read3: i64 = 20;
+ total_read = total_read + read3;
 
-    if total_read != requested {
-        println("    FAIL: read_exact should read exactly requested bytes");
-        return 1;
-    }
+ if total_read != requested {
+ println(" FAIL: read_exact should read exactly requested bytes");
+ return 1;
+ }
 
-    // If read returns 0 before completion, it's UnexpectedEof
-    let partial_read: i64 = 75;
-    if partial_read >= requested {
-        println("    FAIL: partial read should be less than requested");
-        return 1;
-    }
+ // If read returns 0 before completion, it's UnexpectedEof
+ let partial_read: i64 = 75;
+ if partial_read >= requested {
+ println(" FAIL: partial read should be less than requested");
+ return 1;
+ }
 
-    println("    PASS: read_exact semantics");
-    0
+ println(" PASS: read_exact semantics");
+ 0
 }
 
 // =============================================================================
@@ -202,36 +202,36 @@ fn test_read_exact() -> i64 {
 // =============================================================================
 
 fn test_write_all() -> i64 {
-    println("  Testing write_all semantics...");
+ println(" Testing write_all semantics...");
 
-    // write_all must write exactly N bytes
-    let to_write: i64 = 200;
-    let mut total_written: i64 = 0;
+ // write_all must write exactly N bytes
+ let to_write: i64 = 200;
+ let total_written: i64 = 0;
 
-    // Simulate multiple writes
-    let write1: i64 = 80;
-    total_written = total_written + write1;
+ // Simulate multiple writes
+ let write1: i64 = 80;
+ total_written = total_written + write1;
 
-    let write2: i64 = 80;
-    total_written = total_written + write2;
+ let write2: i64 = 80;
+ total_written = total_written + write2;
 
-    let write3: i64 = 40;
-    total_written = total_written + write3;
+ let write3: i64 = 40;
+ total_written = total_written + write3;
 
-    if total_written != to_write {
-        println("    FAIL: write_all should write all bytes");
-        return 1;
-    }
+ if total_written != to_write {
+ println(" FAIL: write_all should write all bytes");
+ return 1;
+ }
 
-    // If write returns 0, it's WriteZero error
-    let zero_write: i64 = 0;
-    if zero_write != 0 {
-        println("    FAIL: zero write check failed");
-        return 1;
-    }
+ // If write returns 0, it's WriteZero error
+ let zero_write: i64 = 0;
+ if zero_write != 0 {
+ println(" FAIL: zero write check failed");
+ return 1;
+ }
 
-    println("    PASS: write_all semantics");
-    0
+ println(" PASS: write_all semantics");
+ 0
 }
 
 // =============================================================================
@@ -239,37 +239,37 @@ fn test_write_all() -> i64 {
 // =============================================================================
 
 fn test_read_to_end() -> i64 {
-    println("  Testing read_to_end...");
+ println(" Testing read_to_end...");
 
-    // read_to_end reads until EOF (0 bytes returned)
-    let chunk_size: i64 = 4096;
-    let mut total: i64 = 0;
+ // read_to_end reads until EOF (0 bytes returned)
+ let chunk_size: i64 = 4096;
+ let total: i64 = 0;
 
-    // Simulate reading chunks
-    let chunk1: i64 = 4096;
-    total = total + chunk1;
+ // Simulate reading chunks
+ let chunk1: i64 = 4096;
+ total = total + chunk1;
 
-    let chunk2: i64 = 4096;
-    total = total + chunk2;
+ let chunk2: i64 = 4096;
+ total = total + chunk2;
 
-    let chunk3: i64 = 1024;  // Partial chunk
-    total = total + chunk3;
+ let chunk3: i64 = 1024; // Partial chunk
+ total = total + chunk3;
 
-    let eof_read: i64 = 0;  // EOF
-    // No more data after EOF
+ let eof_read: i64 = 0; // EOF
+ // No more data after EOF
 
-    if total != 9216 {
-        println("    FAIL: total bytes mismatch");
-        return 1;
-    }
+ if total != 9216 {
+ println(" FAIL: total bytes mismatch");
+ return 1;
+ }
 
-    if eof_read != 0 {
-        println("    FAIL: EOF should return 0 bytes");
-        return 1;
-    }
+ if eof_read != 0 {
+ println(" FAIL: EOF should return 0 bytes");
+ return 1;
+ }
 
-    println("    PASS: read_to_end");
-    0
+ println(" PASS: read_to_end");
+ 0
 }
 
 // =============================================================================
@@ -277,34 +277,34 @@ fn test_read_to_end() -> i64 {
 // =============================================================================
 
 fn test_read_line() -> i64 {
-    println("  Testing read_line...");
+ println(" Testing read_line...");
 
-    // read_line reads until newline (0x0A)
-    let newline_char: i64 = 10;  // '\n' = 0x0A
+ // read_line reads until newline (0x0A)
+ let newline_char: i64 = 10; // '\n' = 0x0A
 
-    if newline_char != 10 {
-        println("    FAIL: newline should be 0x0A");
-        return 1;
-    }
+ if newline_char != 10 {
+ println(" FAIL: newline should be 0x0A");
+ return 1;
+ }
 
-    // Line content excludes the newline
-    let line_with_newline: i64 = 100;  // "hello world\n" length
-    let line_content: i64 = 99;        // "hello world" length (no newline)
+ // Line content excludes the newline
+ let line_with_newline: i64 = 100; // "hello world\n" length
+ let line_content: i64 = 99; // "hello world" length (no newline)
 
-    if line_content >= line_with_newline {
-        println("    FAIL: content should be shorter than with newline");
-        return 1;
-    }
+ if line_content >= line_with_newline {
+ println(" FAIL: content should be shorter than with newline");
+ return 1;
+ }
 
-    // EOF without newline is valid
-    let eof_line_len: i64 = 50;
-    if eof_line_len <= 0 {
-        println("    FAIL: EOF line can have content");
-        return 1;
-    }
+ // EOF without newline is valid
+ let eof_line_len: i64 = 50;
+ if eof_line_len <= 0 {
+ println(" FAIL: EOF line can have content");
+ return 1;
+ }
 
-    println("    PASS: read_line");
-    0
+ println(" PASS: read_line");
+ 0
 }
 
 // =============================================================================
@@ -312,39 +312,39 @@ fn test_read_line() -> i64 {
 // =============================================================================
 
 fn test_buffer_copy() -> i64 {
-    println("  Testing buffer copy semantics...");
+ println(" Testing buffer copy semantics...");
 
-    // copy_from_slice copies exact bytes
-    let src_len: i64 = 100;
-    let dst_len: i64 = 200;
+ // copy_from_slice copies exact bytes
+ let src_len: i64 = 100;
+ let dst_len: i64 = 200;
 
-    // Can copy to larger buffer
-    if src_len > dst_len {
-        println("    FAIL: src should fit in dst");
-        return 1;
-    }
+ // Can copy to larger buffer
+ if src_len > dst_len {
+ println(" FAIL: src should fit in dst");
+ return 1;
+ }
 
-    // Partial copy from buffer
-    let buf_pos: i64 = 50;
-    let buf_cap: i64 = 150;
-    let available: i64 = buf_cap - buf_pos;
+ // Partial copy from buffer
+ let buf_pos: i64 = 50;
+ let buf_cap: i64 = 150;
+ let available: i64 = buf_cap - buf_pos;
 
-    if available != 100 {
-        println("    FAIL: available calculation wrong");
-        return 1;
-    }
+ if available != 100 {
+ println(" FAIL: available calculation wrong");
+ return 1;
+ }
 
-    // to_copy = min(buf.len(), available)
-    let buf_len: i64 = 80;
-    let to_copy: i64 = buf_len;  // min(80, 100) = 80
+ // to_copy = min(buf.len(), available)
+ let buf_len: i64 = 80;
+ let to_copy: i64 = buf_len; // min(80, 100) = 80
 
-    if to_copy > available {
-        println("    FAIL: to_copy should not exceed available");
-        return 1;
-    }
+ if to_copy > available {
+ println(" FAIL: to_copy should not exceed available");
+ return 1;
+ }
 
-    println("    PASS: buffer copy semantics");
-    0
+ println(" PASS: buffer copy semantics");
+ 0
 }
 
 // =============================================================================
@@ -352,37 +352,37 @@ fn test_buffer_copy() -> i64 {
 // =============================================================================
 
 fn test_error_display() -> i64 {
-    println("  Testing error display...");
+ println(" Testing error display...");
 
-    // Each error has a meaningful message
-    let eof_msg_len: i64 = 23;      // "unexpected end of file"
-    let write_msg_len: i64 = 24;    // "write returned zero bytes"
-    let timeout_msg_len: i64 = 19;  // "operation timed out"
+ // Each error has a meaningful message
+ let eof_msg_len: i64 = 23; // "unexpected end of file"
+ let write_msg_len: i64 = 24; // "write returned zero bytes"
+ let timeout_msg_len: i64 = 19; // "operation timed out"
 
-    if eof_msg_len <= 0 {
-        println("    FAIL: EOF message should exist");
-        return 1;
-    }
+ if eof_msg_len <= 0 {
+ println(" FAIL: EOF message should exist");
+ return 1;
+ }
 
-    if write_msg_len <= 0 {
-        println("    FAIL: WriteZero message should exist");
-        return 1;
-    }
+ if write_msg_len <= 0 {
+ println(" FAIL: WriteZero message should exist");
+ return 1;
+ }
 
-    if timeout_msg_len <= 0 {
-        println("    FAIL: Timeout message should exist");
-        return 1;
-    }
+ if timeout_msg_len <= 0 {
+ println(" FAIL: Timeout message should exist");
+ return 1;
+ }
 
-    // Other(String) can have custom message
-    let custom_msg_len: i64 = 42;
-    if custom_msg_len <= 0 {
-        println("    FAIL: custom message should exist");
-        return 1;
-    }
+ // Other(String) can have custom message
+ let custom_msg_len: i64 = 42;
+ if custom_msg_len <= 0 {
+ println(" FAIL: custom message should exist");
+ return 1;
+ }
 
-    println("    PASS: error display");
-    0
+ println(" PASS: error display");
+ 0
 }
 
 // =============================================================================
@@ -390,38 +390,38 @@ fn test_error_display() -> i64 {
 // =============================================================================
 
 fn test_bufreader_inner() -> i64 {
-    println("  Testing BufReader inner access...");
+ println(" Testing BufReader inner access...");
 
-    // get_ref() returns &inner
-    // get_mut() returns &mut inner
-    // into_inner() consumes and returns inner
+ // get_ref() returns &inner
+ // get_mut() returns &mut inner
+ // into_inner() consumes and returns inner
 
-    // Simulated inner handle
-    let inner_handle: i64 = 12345;
+ // Simulated inner handle
+ let inner_handle: i64 = 12345;
 
-    // get_ref doesn't consume
-    let ref_handle: i64 = inner_handle;
-    if ref_handle != inner_handle {
-        println("    FAIL: get_ref should return same handle");
-        return 1;
-    }
+ // get_ref doesn't consume
+ let ref_handle: i64 = inner_handle;
+ if ref_handle != inner_handle {
+ println(" FAIL: get_ref should return same handle");
+ return 1;
+ }
 
-    // get_mut doesn't consume
-    let mut_handle: i64 = inner_handle;
-    if mut_handle != inner_handle {
-        println("    FAIL: get_mut should return same handle");
-        return 1;
-    }
+ // get_mut doesn't consume
+ let mutable_handle: i64 = inner_handle;
+ if mutable_handle != inner_handle {
+ println(" FAIL: get_mut should return same handle");
+ return 1;
+ }
 
-    // into_inner consumes
-    let owned_handle: i64 = inner_handle;
-    if owned_handle != inner_handle {
-        println("    FAIL: into_inner should return same handle");
-        return 1;
-    }
+ // into_inner consumes
+ let owned_handle: i64 = inner_handle;
+ if owned_handle != inner_handle {
+ println(" FAIL: into_inner should return same handle");
+ return 1;
+ }
 
-    println("    PASS: BufReader inner access");
-    0
+ println(" PASS: BufReader inner access");
+ 0
 }
 
 // =============================================================================
@@ -429,34 +429,34 @@ fn test_bufreader_inner() -> i64 {
 // =============================================================================
 
 fn test_bufwriter_into_inner() -> i64 {
-    println("  Testing BufWriter into_inner...");
+ println(" Testing BufWriter into_inner...");
 
-    // into_inner() flushes first, then returns inner
-    let buffer_len: i64 = 100;
-    let inner_handle: i64 = 54321;
+ // into_inner() flushes first, then returns inner
+ let buffer_len: i64 = 100;
+ let inner_handle: i64 = 54321;
 
-    // Before into_inner: buffer has data
-    if buffer_len == 0 {
-        println("    FAIL: buffer should have data");
-        return 1;
-    }
+ // Before into_inner: buffer has data
+ if buffer_len == 0 {
+ println(" FAIL: buffer should have data");
+ return 1;
+ }
 
-    // After flush: buffer is empty
-    let after_flush_len: i64 = 0;
-    if after_flush_len != 0 {
-        println("    FAIL: buffer should be empty after flush");
-        return 1;
-    }
+ // After flush: buffer is empty
+ let after_flush_len: i64 = 0;
+ if after_flush_len != 0 {
+ println(" FAIL: buffer should be empty after flush");
+ return 1;
+ }
 
-    // Returns inner
-    let returned_handle: i64 = inner_handle;
-    if returned_handle != inner_handle {
-        println("    FAIL: should return inner handle");
-        return 1;
-    }
+ // Returns inner
+ let returned_handle: i64 = inner_handle;
+ if returned_handle != inner_handle {
+ println(" FAIL: should return inner handle");
+ return 1;
+ }
 
-    println("    PASS: BufWriter into_inner");
-    0
+ println(" PASS: BufWriter into_inner");
+ 0
 }
 
 // =============================================================================
@@ -464,30 +464,30 @@ fn test_bufwriter_into_inner() -> i64 {
 // =============================================================================
 
 fn main() -> i64 {
-    println("=== I/O Module Tests ===");
-    println("");
+ println("=== I/O Module Tests ===");
+ println("");
 
-    let f1: i64 = test_io_error_variants();
-    let f2: i64 = test_buffer_capacity();
-    let f3: i64 = test_bufreader_state();
-    let f4: i64 = test_bufwriter_flush();
-    let f5: i64 = test_read_exact();
-    let f6: i64 = test_write_all();
-    let f7: i64 = test_read_to_end();
-    let f8: i64 = test_read_line();
-    let f9: i64 = test_buffer_copy();
-    let f10: i64 = test_error_display();
-    let f11: i64 = test_bufreader_inner();
-    let f12: i64 = test_bufwriter_into_inner();
+ let f1: i64 = test_io_error_variants();
+ let f2: i64 = test_buffer_capacity();
+ let f3: i64 = test_bufreader_state();
+ let f4: i64 = test_bufwriter_flush();
+ let f5: i64 = test_read_exact();
+ let f6: i64 = test_write_all();
+ let f7: i64 = test_read_to_end();
+ let f8: i64 = test_read_line();
+ let f9: i64 = test_buffer_copy();
+ let f10: i64 = test_error_display();
+ let f11: i64 = test_bufreader_inner();
+ let f12: i64 = test_bufwriter_into_inner();
 
-    let failures: i64 = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10 + f11 + f12;
+ let failures: i64 = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10 + f11 + f12;
 
-    println("");
-    if failures == 0 {
-        println("All I/O Module tests passed!");
-    } else {
-        println("Some I/O Module tests failed");
-    }
+ println("");
+ if failures == 0 {
+ println("All I/O Module tests passed!");
+ } else {
+ println("Some I/O Module tests failed");
+ }
 
-    failures
+ failures
 }

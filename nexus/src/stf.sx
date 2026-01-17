@@ -1,0 +1,769 @@
+// Nexus Protocol - STF (Simplex Term Format) Type Encoding
+//
+// Phase 5: Implements serialization for cognitive and neural types
+//
+// STF provides a compact binary encoding for:
+// - Actor addresses (node/hive/specialist/instance)
+// - Beliefs with confidence and sources
+// - Goals with priority and deadlines
+// - Intentions with plans and status
+// - Vector clocks for causality
+// - CRDT deltas for convergence
+
+// =============================================================================
+// Actor Address Encoding
+// =============================================================================
+
+// Actor Address Layout:
+// - Node ID (4 bytes): Unique node identifier
+// - Hive ID (2 bytes): Hive within node
+// - Specialist ID (2 bytes): Specialist type within hive
+// - Instance ID (4 bytes): Instance of specialist
+
+fn actor_addr_new(node_id: i64, hive_id: i64, specialist_id: i64, instance_id: i64) -> i64 {
+    let addr = vec_new();
+    vec_push(addr, node_id);
+    vec_push(addr, hive_id);
+    vec_push(addr, specialist_id);
+    vec_push(addr, instance_id);
+    addr
+}
+
+fn actor_addr_node(addr: i64) -> i64 { vec_get(addr, 0) }
+fn actor_addr_hive(addr: i64) -> i64 { vec_get(addr, 1) }
+fn actor_addr_specialist(addr: i64) -> i64 { vec_get(addr, 2) }
+fn actor_addr_instance(addr: i64) -> i64 { vec_get(addr, 3) }
+
+fn actor_addr_encode(addr: i64) -> i64 {
+    let bytes = vec_new();
+
+    // Tag byte
+    vec_push(bytes, STF_ACTOR_ADDR());
+
+    // Node ID (4 bytes)
+    let node_id = actor_addr_node(addr);
+    vec_push(bytes, (node_id >> 24) & 255);
+    vec_push(bytes, (node_id >> 16) & 255);
+    vec_push(bytes, (node_id >> 8) & 255);
+    vec_push(bytes, node_id & 255);
+
+    // Hive ID (2 bytes)
+    let hive_id = actor_addr_hive(addr);
+    vec_push(bytes, (hive_id >> 8) & 255);
+    vec_push(bytes, hive_id & 255);
+
+    // Specialist ID (2 bytes)
+    let specialist_id = actor_addr_specialist(addr);
+    vec_push(bytes, (specialist_id >> 8) & 255);
+    vec_push(bytes, specialist_id & 255);
+
+    // Instance ID (4 bytes)
+    let instance_id = actor_addr_instance(addr);
+    vec_push(bytes, (instance_id >> 24) & 255);
+    vec_push(bytes, (instance_id >> 16) & 255);
+    vec_push(bytes, (instance_id >> 8) & 255);
+    vec_push(bytes, instance_id & 255);
+
+    bytes
+}
+
+fn actor_addr_decode(bytes: i64, offset: i64) -> i64 {
+    if vec_len(bytes) < offset + 13 {
+        return 0;  // Not enough data
+    }
+
+    // Verify tag
+    if vec_get(bytes, offset) != STF_ACTOR_ADDR() {
+        return 0;
+    }
+
+    let pos = offset + 1;
+
+    // Node ID
+    let node_id = (vec_get(bytes, pos) << 24) |
+                  (vec_get(bytes, pos + 1) << 16) |
+                  (vec_get(bytes, pos + 2) << 8) |
+                  vec_get(bytes, pos + 3);
+    pos = pos + 4;
+
+    // Hive ID
+    let hive_id = (vec_get(bytes, pos) << 8) | vec_get(bytes, pos + 1);
+    pos = pos + 2;
+
+    // Specialist ID
+    let specialist_id = (vec_get(bytes, pos) << 8) | vec_get(bytes, pos + 1);
+    pos = pos + 2;
+
+    // Instance ID
+    let instance_id = (vec_get(bytes, pos) << 24) |
+                      (vec_get(bytes, pos + 1) << 16) |
+                      (vec_get(bytes, pos + 2) << 8) |
+                      vec_get(bytes, pos + 3);
+
+    actor_addr_new(node_id, hive_id, specialist_id, instance_id)
+}
+
+// Check if two addresses are equal
+fn actor_addr_equals(a: i64, b: i64) -> i64 {
+    if actor_addr_node(a) != actor_addr_node(b) { return 0; }
+    if actor_addr_hive(a) != actor_addr_hive(b) { return 0; }
+    if actor_addr_specialist(a) != actor_addr_specialist(b) { return 0; }
+    if actor_addr_instance(a) != actor_addr_instance(b) { return 0; }
+    1
+}
+
+// Check if address is on same node
+fn actor_addr_same_node(a: i64, b: i64) -> i64 {
+    actor_addr_node(a) == actor_addr_node(b)
+}
+
+// Check if address is in same hive
+fn actor_addr_same_hive(a: i64, b: i64) -> i64 {
+    if actor_addr_node(a) != actor_addr_node(b) { return 0; }
+    actor_addr_hive(a) == actor_addr_hive(b)
+}
+
+// =============================================================================
+// STF Belief Encoding
+// =============================================================================
+
+// Belief Layout:
+// - Belief ID (4 bytes): Unique identifier
+// - Confidence (2 bytes): Fixed-point 0-10000 (0.0-1.0)
+// - Confidence derivative (2 bytes): Rate of change (signed)
+// - Source count (1 byte): Number of sources
+// - Sources (12 bytes each): Actor addresses that contributed
+// - Content length (2 bytes)
+// - Content (variable): Serialized belief content
+
+fn stf_belief_new(belief_id: i64, confidence: i64, derivative: i64) -> i64 {
+    let belief = vec_new();
+    vec_push(belief, belief_id);      // Slot 0: id
+    vec_push(belief, confidence);     // Slot 1: confidence (0-10000)
+    vec_push(belief, derivative);     // Slot 2: derivative (for dual number)
+    vec_push(belief, vec_new());      // Slot 3: sources (list of actor_addr)
+    vec_push(belief, vec_new());      // Slot 4: content (bytes)
+    belief
+}
+
+fn stf_belief_id(belief: i64) -> i64 { vec_get(belief, 0) }
+fn stf_belief_confidence(belief: i64) -> i64 { vec_get(belief, 1) }
+fn stf_belief_derivative(belief: i64) -> i64 { vec_get(belief, 2) }
+fn stf_belief_sources(belief: i64) -> i64 { vec_get(belief, 3) }
+fn stf_belief_content(belief: i64) -> i64 { vec_get(belief, 4) }
+
+fn stf_belief_set_confidence(belief: i64, conf: i64, deriv: i64) -> i64 {
+    vec_set(belief, 1, conf);
+    vec_set(belief, 2, deriv);
+    0
+}
+
+fn stf_belief_add_source(belief: i64, source_addr: i64) -> i64 {
+    let sources = stf_belief_sources(belief);
+    vec_push(sources, source_addr);
+    0
+}
+
+fn stf_belief_set_content(belief: i64, content: i64) -> i64 {
+    vec_set(belief, 4, content);
+    0
+}
+
+fn stf_belief_encode(belief: i64) -> i64 {
+    let bytes = vec_new();
+
+    // Tag byte
+    vec_push(bytes, STF_BELIEF());
+
+    // Belief ID (4 bytes)
+    let belief_id = stf_belief_id(belief);
+    vec_push(bytes, (belief_id >> 24) & 255);
+    vec_push(bytes, (belief_id >> 16) & 255);
+    vec_push(bytes, (belief_id >> 8) & 255);
+    vec_push(bytes, belief_id & 255);
+
+    // Confidence (2 bytes)
+    let conf = stf_belief_confidence(belief);
+    vec_push(bytes, (conf >> 8) & 255);
+    vec_push(bytes, conf & 255);
+
+    // Derivative (2 bytes, signed)
+    let deriv = stf_belief_derivative(belief);
+    vec_push(bytes, (deriv >> 8) & 255);
+    vec_push(bytes, deriv & 255);
+
+    // Sources
+    let sources = stf_belief_sources(belief);
+    let source_count = vec_len(sources);
+    if source_count > 255 { source_count = 255; }
+    vec_push(bytes, source_count);
+
+    let i = 0;
+    while i < source_count {
+        let source = vec_get(sources, i);
+        // Encode source address inline (12 bytes, no tag)
+        let node_id = actor_addr_node(source);
+        vec_push(bytes, (node_id >> 24) & 255);
+        vec_push(bytes, (node_id >> 16) & 255);
+        vec_push(bytes, (node_id >> 8) & 255);
+        vec_push(bytes, node_id & 255);
+
+        let hive_id = actor_addr_hive(source);
+        vec_push(bytes, (hive_id >> 8) & 255);
+        vec_push(bytes, hive_id & 255);
+
+        let specialist_id = actor_addr_specialist(source);
+        vec_push(bytes, (specialist_id >> 8) & 255);
+        vec_push(bytes, specialist_id & 255);
+
+        let instance_id = actor_addr_instance(source);
+        vec_push(bytes, (instance_id >> 24) & 255);
+        vec_push(bytes, (instance_id >> 16) & 255);
+        vec_push(bytes, (instance_id >> 8) & 255);
+        vec_push(bytes, instance_id & 255);
+
+        i = i + 1;
+    }
+
+    // Content
+    let content = stf_belief_content(belief);
+    let content_len = vec_len(content);
+    vec_push(bytes, (content_len >> 8) & 255);
+    vec_push(bytes, content_len & 255);
+
+    i = 0;
+    while i < content_len {
+        vec_push(bytes, vec_get(content, i));
+        i = i + 1;
+    }
+
+    bytes
+}
+
+fn stf_belief_decode(bytes: i64, offset: i64) -> i64 {
+    let len = vec_len(bytes);
+    if len < offset + 10 {
+        return 0;  // Minimum size: tag + id + conf + deriv + source_count
+    }
+
+    // Verify tag
+    if vec_get(bytes, offset) != STF_BELIEF() {
+        return 0;
+    }
+
+    let pos = offset + 1;
+
+    // Belief ID
+    let belief_id = (vec_get(bytes, pos) << 24) |
+                    (vec_get(bytes, pos + 1) << 16) |
+                    (vec_get(bytes, pos + 2) << 8) |
+                    vec_get(bytes, pos + 3);
+    pos = pos + 4;
+
+    // Confidence
+    let conf = (vec_get(bytes, pos) << 8) | vec_get(bytes, pos + 1);
+    pos = pos + 2;
+
+    // Derivative (signed)
+    let deriv = (vec_get(bytes, pos) << 8) | vec_get(bytes, pos + 1);
+    // Sign extend if negative
+    if deriv > 32767 { deriv = deriv - 65536; }
+    pos = pos + 2;
+
+    let belief = stf_belief_new(belief_id, conf, deriv);
+
+    // Sources
+    let source_count = vec_get(bytes, pos);
+    pos = pos + 1;
+
+    if len < pos + source_count * 12 {
+        return 0;  // Not enough data for sources
+    }
+
+    let i = 0;
+    while i < source_count {
+        let node_id = (vec_get(bytes, pos) << 24) |
+                      (vec_get(bytes, pos + 1) << 16) |
+                      (vec_get(bytes, pos + 2) << 8) |
+                      vec_get(bytes, pos + 3);
+        pos = pos + 4;
+
+        let hive_id = (vec_get(bytes, pos) << 8) | vec_get(bytes, pos + 1);
+        pos = pos + 2;
+
+        let specialist_id = (vec_get(bytes, pos) << 8) | vec_get(bytes, pos + 1);
+        pos = pos + 2;
+
+        let instance_id = (vec_get(bytes, pos) << 24) |
+                          (vec_get(bytes, pos + 1) << 16) |
+                          (vec_get(bytes, pos + 2) << 8) |
+                          vec_get(bytes, pos + 3);
+        pos = pos + 4;
+
+        let source = actor_addr_new(node_id, hive_id, specialist_id, instance_id);
+        stf_belief_add_source(belief, source);
+
+        i = i + 1;
+    }
+
+    // Content
+    if len < pos + 2 { return 0; }
+    let content_len = (vec_get(bytes, pos) << 8) | vec_get(bytes, pos + 1);
+    pos = pos + 2;
+
+    if len < pos + content_len { return 0; }
+    let content = vec_new();
+    i = 0;
+    while i < content_len {
+        vec_push(content, vec_get(bytes, pos + i));
+        i = i + 1;
+    }
+    stf_belief_set_content(belief, content);
+
+    belief
+}
+
+// =============================================================================
+// STF Goal Encoding
+// =============================================================================
+
+// Goal Layout:
+// - Goal ID (4 bytes): Unique identifier
+// - Priority (2 bytes): 0-65535 priority level
+// - Priority derivative (2 bytes): Rate of change
+// - Deadline (4 bytes): Unix timestamp or 0 for no deadline
+// - Parent goal ID (4 bytes): 0 if top-level
+// - Status (1 byte): PENDING, ACTIVE, ACHIEVED, FAILED, CANCELLED
+// - Description length (2 bytes)
+// - Description (variable)
+
+fn GOAL_STATUS_PENDING() -> i64 { 0 }
+fn GOAL_STATUS_ACTIVE() -> i64 { 1 }
+fn GOAL_STATUS_ACHIEVED() -> i64 { 2 }
+fn GOAL_STATUS_FAILED() -> i64 { 3 }
+fn GOAL_STATUS_CANCELLED() -> i64 { 4 }
+
+fn stf_goal_new(goal_id: i64, priority: i64, deadline: i64) -> i64 {
+    let goal = vec_new();
+    vec_push(goal, goal_id);      // Slot 0: id
+    vec_push(goal, priority);     // Slot 1: priority
+    vec_push(goal, 0);            // Slot 2: priority derivative
+    vec_push(goal, deadline);     // Slot 3: deadline
+    vec_push(goal, 0);            // Slot 4: parent goal id
+    vec_push(goal, GOAL_STATUS_PENDING());  // Slot 5: status
+    vec_push(goal, vec_new());    // Slot 6: description
+    goal
+}
+
+fn stf_goal_id(goal: i64) -> i64 { vec_get(goal, 0) }
+fn stf_goal_priority(goal: i64) -> i64 { vec_get(goal, 1) }
+fn stf_goal_priority_deriv(goal: i64) -> i64 { vec_get(goal, 2) }
+fn stf_goal_deadline(goal: i64) -> i64 { vec_get(goal, 3) }
+fn stf_goal_parent(goal: i64) -> i64 { vec_get(goal, 4) }
+fn stf_goal_status(goal: i64) -> i64 { vec_get(goal, 5) }
+fn stf_goal_description(goal: i64) -> i64 { vec_get(goal, 6) }
+
+fn stf_goal_set_priority(goal: i64, priority: i64, deriv: i64) -> i64 {
+    vec_set(goal, 1, priority);
+    vec_set(goal, 2, deriv);
+    0
+}
+
+fn stf_goal_set_parent(goal: i64, parent_id: i64) -> i64 {
+    vec_set(goal, 4, parent_id);
+    0
+}
+
+fn stf_goal_set_status(goal: i64, status: i64) -> i64 {
+    vec_set(goal, 5, status);
+    0
+}
+
+fn stf_goal_set_description(goal: i64, desc: i64) -> i64 {
+    vec_set(goal, 6, desc);
+    0
+}
+
+fn stf_goal_encode(goal: i64) -> i64 {
+    let bytes = vec_new();
+
+    // Tag byte
+    vec_push(bytes, STF_GOAL());
+
+    // Goal ID (4 bytes)
+    let goal_id = stf_goal_id(goal);
+    vec_push(bytes, (goal_id >> 24) & 255);
+    vec_push(bytes, (goal_id >> 16) & 255);
+    vec_push(bytes, (goal_id >> 8) & 255);
+    vec_push(bytes, goal_id & 255);
+
+    // Priority (2 bytes)
+    let priority = stf_goal_priority(goal);
+    vec_push(bytes, (priority >> 8) & 255);
+    vec_push(bytes, priority & 255);
+
+    // Priority derivative (2 bytes)
+    let deriv = stf_goal_priority_deriv(goal);
+    vec_push(bytes, (deriv >> 8) & 255);
+    vec_push(bytes, deriv & 255);
+
+    // Deadline (4 bytes)
+    let deadline = stf_goal_deadline(goal);
+    vec_push(bytes, (deadline >> 24) & 255);
+    vec_push(bytes, (deadline >> 16) & 255);
+    vec_push(bytes, (deadline >> 8) & 255);
+    vec_push(bytes, deadline & 255);
+
+    // Parent goal ID (4 bytes)
+    let parent = stf_goal_parent(goal);
+    vec_push(bytes, (parent >> 24) & 255);
+    vec_push(bytes, (parent >> 16) & 255);
+    vec_push(bytes, (parent >> 8) & 255);
+    vec_push(bytes, parent & 255);
+
+    // Status (1 byte)
+    vec_push(bytes, stf_goal_status(goal) & 255);
+
+    // Description
+    let desc = stf_goal_description(goal);
+    let desc_len = vec_len(desc);
+    vec_push(bytes, (desc_len >> 8) & 255);
+    vec_push(bytes, desc_len & 255);
+
+    let i = 0;
+    while i < desc_len {
+        vec_push(bytes, vec_get(desc, i));
+        i = i + 1;
+    }
+
+    bytes
+}
+
+fn stf_goal_decode(bytes: i64, offset: i64) -> i64 {
+    let len = vec_len(bytes);
+    if len < offset + 20 {
+        return 0;  // Minimum size
+    }
+
+    if vec_get(bytes, offset) != STF_GOAL() {
+        return 0;
+    }
+
+    let pos = offset + 1;
+
+    // Goal ID
+    let goal_id = (vec_get(bytes, pos) << 24) |
+                  (vec_get(bytes, pos + 1) << 16) |
+                  (vec_get(bytes, pos + 2) << 8) |
+                  vec_get(bytes, pos + 3);
+    pos = pos + 4;
+
+    // Priority
+    let priority = (vec_get(bytes, pos) << 8) | vec_get(bytes, pos + 1);
+    pos = pos + 2;
+
+    // Priority derivative
+    let deriv = (vec_get(bytes, pos) << 8) | vec_get(bytes, pos + 1);
+    if deriv > 32767 { deriv = deriv - 65536; }
+    pos = pos + 2;
+
+    // Deadline
+    let deadline = (vec_get(bytes, pos) << 24) |
+                   (vec_get(bytes, pos + 1) << 16) |
+                   (vec_get(bytes, pos + 2) << 8) |
+                   vec_get(bytes, pos + 3);
+    pos = pos + 4;
+
+    // Parent
+    let parent = (vec_get(bytes, pos) << 24) |
+                 (vec_get(bytes, pos + 1) << 16) |
+                 (vec_get(bytes, pos + 2) << 8) |
+                 vec_get(bytes, pos + 3);
+    pos = pos + 4;
+
+    // Status
+    let status = vec_get(bytes, pos);
+    pos = pos + 1;
+
+    let goal = stf_goal_new(goal_id, priority, deadline);
+    stf_goal_set_priority(goal, priority, deriv);
+    stf_goal_set_parent(goal, parent);
+    stf_goal_set_status(goal, status);
+
+    // Description
+    if len < pos + 2 { return 0; }
+    let desc_len = (vec_get(bytes, pos) << 8) | vec_get(bytes, pos + 1);
+    pos = pos + 2;
+
+    if len < pos + desc_len { return 0; }
+    let desc = vec_new();
+    let i = 0;
+    while i < desc_len {
+        vec_push(desc, vec_get(bytes, pos + i));
+        i = i + 1;
+    }
+    stf_goal_set_description(goal, desc);
+
+    goal
+}
+
+// =============================================================================
+// STF Intention Encoding
+// =============================================================================
+
+// Intention Layout:
+// - Intention ID (4 bytes): Unique identifier
+// - Goal ID (4 bytes): The goal this intention serves
+// - Status (1 byte): PLANNING, EXECUTING, PAUSED, COMPLETED, ABORTED
+// - Progress (2 bytes): Fixed-point 0-10000 (0.0-1.0)
+// - Progress derivative (2 bytes): Rate of change
+// - Plan step count (2 bytes)
+// - Current step (2 bytes)
+// - Plan data length (2 bytes)
+// - Plan data (variable): Serialized plan
+
+fn INTENTION_STATUS_PLANNING() -> i64 { 0 }
+fn INTENTION_STATUS_EXECUTING() -> i64 { 1 }
+fn INTENTION_STATUS_PAUSED() -> i64 { 2 }
+fn INTENTION_STATUS_COMPLETED() -> i64 { 3 }
+fn INTENTION_STATUS_ABORTED() -> i64 { 4 }
+
+fn stf_intention_new(intention_id: i64, goal_id: i64) -> i64 {
+    let intention = vec_new();
+    vec_push(intention, intention_id);    // Slot 0: id
+    vec_push(intention, goal_id);         // Slot 1: goal_id
+    vec_push(intention, INTENTION_STATUS_PLANNING());  // Slot 2: status
+    vec_push(intention, 0);               // Slot 3: progress (0-10000)
+    vec_push(intention, 0);               // Slot 4: progress derivative
+    vec_push(intention, 0);               // Slot 5: plan step count
+    vec_push(intention, 0);               // Slot 6: current step
+    vec_push(intention, vec_new());       // Slot 7: plan data
+    intention
+}
+
+fn stf_intention_id(intention: i64) -> i64 { vec_get(intention, 0) }
+fn stf_intention_goal_id(intention: i64) -> i64 { vec_get(intention, 1) }
+fn stf_intention_status(intention: i64) -> i64 { vec_get(intention, 2) }
+fn stf_intention_progress(intention: i64) -> i64 { vec_get(intention, 3) }
+fn stf_intention_progress_deriv(intention: i64) -> i64 { vec_get(intention, 4) }
+fn stf_intention_step_count(intention: i64) -> i64 { vec_get(intention, 5) }
+fn stf_intention_current_step(intention: i64) -> i64 { vec_get(intention, 6) }
+fn stf_intention_plan_data(intention: i64) -> i64 { vec_get(intention, 7) }
+
+fn stf_intention_set_status(intention: i64, status: i64) -> i64 {
+    vec_set(intention, 2, status);
+    0
+}
+
+fn stf_intention_set_progress(intention: i64, progress: i64, deriv: i64) -> i64 {
+    vec_set(intention, 3, progress);
+    vec_set(intention, 4, deriv);
+    0
+}
+
+fn stf_intention_set_plan(intention: i64, step_count: i64, current_step: i64, plan_data: i64) -> i64 {
+    vec_set(intention, 5, step_count);
+    vec_set(intention, 6, current_step);
+    vec_set(intention, 7, plan_data);
+    0
+}
+
+fn stf_intention_encode(intention: i64) -> i64 {
+    let bytes = vec_new();
+
+    // Tag byte
+    vec_push(bytes, STF_INTENTION());
+
+    // Intention ID (4 bytes)
+    let id = stf_intention_id(intention);
+    vec_push(bytes, (id >> 24) & 255);
+    vec_push(bytes, (id >> 16) & 255);
+    vec_push(bytes, (id >> 8) & 255);
+    vec_push(bytes, id & 255);
+
+    // Goal ID (4 bytes)
+    let goal_id = stf_intention_goal_id(intention);
+    vec_push(bytes, (goal_id >> 24) & 255);
+    vec_push(bytes, (goal_id >> 16) & 255);
+    vec_push(bytes, (goal_id >> 8) & 255);
+    vec_push(bytes, goal_id & 255);
+
+    // Status (1 byte)
+    vec_push(bytes, stf_intention_status(intention) & 255);
+
+    // Progress (2 bytes)
+    let progress = stf_intention_progress(intention);
+    vec_push(bytes, (progress >> 8) & 255);
+    vec_push(bytes, progress & 255);
+
+    // Progress derivative (2 bytes)
+    let deriv = stf_intention_progress_deriv(intention);
+    vec_push(bytes, (deriv >> 8) & 255);
+    vec_push(bytes, deriv & 255);
+
+    // Step count (2 bytes)
+    let step_count = stf_intention_step_count(intention);
+    vec_push(bytes, (step_count >> 8) & 255);
+    vec_push(bytes, step_count & 255);
+
+    // Current step (2 bytes)
+    let current_step = stf_intention_current_step(intention);
+    vec_push(bytes, (current_step >> 8) & 255);
+    vec_push(bytes, current_step & 255);
+
+    // Plan data
+    let plan = stf_intention_plan_data(intention);
+    let plan_len = vec_len(plan);
+    vec_push(bytes, (plan_len >> 8) & 255);
+    vec_push(bytes, plan_len & 255);
+
+    let i = 0;
+    while i < plan_len {
+        vec_push(bytes, vec_get(plan, i));
+        i = i + 1;
+    }
+
+    bytes
+}
+
+fn stf_intention_decode(bytes: i64, offset: i64) -> i64 {
+    let len = vec_len(bytes);
+    if len < offset + 20 {
+        return 0;
+    }
+
+    if vec_get(bytes, offset) != STF_INTENTION() {
+        return 0;
+    }
+
+    let pos = offset + 1;
+
+    // Intention ID
+    let id = (vec_get(bytes, pos) << 24) |
+             (vec_get(bytes, pos + 1) << 16) |
+             (vec_get(bytes, pos + 2) << 8) |
+             vec_get(bytes, pos + 3);
+    pos = pos + 4;
+
+    // Goal ID
+    let goal_id = (vec_get(bytes, pos) << 24) |
+                  (vec_get(bytes, pos + 1) << 16) |
+                  (vec_get(bytes, pos + 2) << 8) |
+                  vec_get(bytes, pos + 3);
+    pos = pos + 4;
+
+    // Status
+    let status = vec_get(bytes, pos);
+    pos = pos + 1;
+
+    // Progress
+    let progress = (vec_get(bytes, pos) << 8) | vec_get(bytes, pos + 1);
+    pos = pos + 2;
+
+    // Progress derivative
+    let deriv = (vec_get(bytes, pos) << 8) | vec_get(bytes, pos + 1);
+    if deriv > 32767 { deriv = deriv - 65536; }
+    pos = pos + 2;
+
+    // Step count
+    let step_count = (vec_get(bytes, pos) << 8) | vec_get(bytes, pos + 1);
+    pos = pos + 2;
+
+    // Current step
+    let current_step = (vec_get(bytes, pos) << 8) | vec_get(bytes, pos + 1);
+    pos = pos + 2;
+
+    let intention = stf_intention_new(id, goal_id);
+    stf_intention_set_status(intention, status);
+    stf_intention_set_progress(intention, progress, deriv);
+
+    // Plan data
+    if len < pos + 2 { return 0; }
+    let plan_len = (vec_get(bytes, pos) << 8) | vec_get(bytes, pos + 1);
+    pos = pos + 2;
+
+    if len < pos + plan_len { return 0; }
+    let plan = vec_new();
+    let i = 0;
+    while i < plan_len {
+        vec_push(plan, vec_get(bytes, pos + i));
+        i = i + 1;
+    }
+    stf_intention_set_plan(intention, step_count, current_step, plan);
+
+    intention
+}
+
+// =============================================================================
+// Debug/Print Helpers
+// =============================================================================
+
+fn actor_addr_print(addr: i64) -> i64 {
+    print("ActorAddr(node=");
+    print_i64(actor_addr_node(addr));
+    print(", hive=");
+    print_i64(actor_addr_hive(addr));
+    print(", specialist=");
+    print_i64(actor_addr_specialist(addr));
+    print(", instance=");
+    print_i64(actor_addr_instance(addr));
+    print(")");
+    0
+}
+
+fn stf_belief_print(belief: i64) -> i64 {
+    print("Belief(id=");
+    print_i64(stf_belief_id(belief));
+    print(", conf=");
+    print_i64(stf_belief_confidence(belief));
+    print("/10000, deriv=");
+    print_i64(stf_belief_derivative(belief));
+    print(", sources=");
+    print_i64(vec_len(stf_belief_sources(belief)));
+    print(", content_len=");
+    print_i64(vec_len(stf_belief_content(belief)));
+    print(")");
+    0
+}
+
+fn stf_goal_print(goal: i64) -> i64 {
+    print("Goal(id=");
+    print_i64(stf_goal_id(goal));
+    print(", priority=");
+    print_i64(stf_goal_priority(goal));
+    print(", deadline=");
+    print_i64(stf_goal_deadline(goal));
+    print(", status=");
+    let status = stf_goal_status(goal);
+    if status == GOAL_STATUS_PENDING() { print("PENDING"); }
+    else if status == GOAL_STATUS_ACTIVE() { print("ACTIVE"); }
+    else if status == GOAL_STATUS_ACHIEVED() { print("ACHIEVED"); }
+    else if status == GOAL_STATUS_FAILED() { print("FAILED"); }
+    else if status == GOAL_STATUS_CANCELLED() { print("CANCELLED"); }
+    else { print("UNKNOWN"); }
+    print(")");
+    0
+}
+
+fn stf_intention_print(intention: i64) -> i64 {
+    print("Intention(id=");
+    print_i64(stf_intention_id(intention));
+    print(", goal=");
+    print_i64(stf_intention_goal_id(intention));
+    print(", status=");
+    let status = stf_intention_status(intention);
+    if status == INTENTION_STATUS_PLANNING() { print("PLANNING"); }
+    else if status == INTENTION_STATUS_EXECUTING() { print("EXECUTING"); }
+    else if status == INTENTION_STATUS_PAUSED() { print("PAUSED"); }
+    else if status == INTENTION_STATUS_COMPLETED() { print("COMPLETED"); }
+    else if status == INTENTION_STATUS_ABORTED() { print("ABORTED"); }
+    else { print("UNKNOWN"); }
+    print(", progress=");
+    print_i64(stf_intention_progress(intention));
+    print("/10000, step=");
+    print_i64(stf_intention_current_step(intention));
+    print("/");
+    print_i64(stf_intention_step_count(intention));
+    print(")");
+    0
+}

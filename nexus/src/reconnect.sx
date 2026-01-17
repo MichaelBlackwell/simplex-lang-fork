@@ -1,0 +1,648 @@
+// =============================================================================
+// Nexus Protocol - Phase 9: Reconnection Logic & Backoff
+// =============================================================================
+//
+// This module provides automatic reconnection with exponential backoff:
+//   - Configurable retry policies
+//   - Exponential backoff with jitter
+//   - Circuit breaker pattern
+//   - Failover to alternative endpoints
+//   - Connection state monitoring
+//
+// =============================================================================
+
+// =============================================================================
+// Backoff Strategy Constants
+// =============================================================================
+
+fn BACKOFF_CONSTANT() -> i64 { 0 }       // Fixed delay
+fn BACKOFF_LINEAR() -> i64 { 1 }         // Linear increase
+fn BACKOFF_EXPONENTIAL() -> i64 { 2 }    // Exponential increase
+fn BACKOFF_DECORRELATED() -> i64 { 3 }   // Decorrelated jitter (AWS style)
+
+// Reconnection states
+fn RECON_IDLE() -> i64 { 0 }           // Not attempting reconnection
+fn RECON_WAITING() -> i64 { 1 }        // Waiting for backoff delay
+fn RECON_CONNECTING() -> i64 { 2 }     // Attempting connection
+fn RECON_CONNECTED() -> i64 { 3 }      // Successfully connected
+fn RECON_FAILED() -> i64 { 4 }         // Permanently failed (circuit open)
+
+// Circuit breaker states
+fn CIRCUIT_CLOSED() -> i64 { 0 }       // Normal operation
+fn CIRCUIT_OPEN() -> i64 { 1 }         // Failing, rejecting attempts
+fn CIRCUIT_HALF_OPEN() -> i64 { 2 }    // Testing recovery
+
+// Default values
+fn DEFAULT_INITIAL_DELAY() -> i64 { 100 }      // 100ms initial delay
+fn DEFAULT_MAX_DELAY() -> i64 { 30000 }        // 30s max delay
+fn DEFAULT_MAX_ATTEMPTS() -> i64 { 10 }        // 10 retry attempts
+fn DEFAULT_JITTER_FACTOR() -> i64 { 25 }       // 25% jitter
+fn DEFAULT_MULTIPLIER() -> i64 { 2 }           // 2x exponential growth
+fn DEFAULT_CIRCUIT_THRESHOLD() -> i64 { 5 }    // Failures before circuit opens
+fn DEFAULT_CIRCUIT_TIMEOUT() -> i64 { 60000 }  // 60s circuit open duration
+
+// =============================================================================
+// Backoff Configuration
+// =============================================================================
+
+// Create backoff configuration
+// Structure: [strategy, initial_delay, max_delay, max_attempts,
+//             jitter_factor, multiplier]
+fn backoff_config_new() -> i64 {
+    let config = vec_new();
+    vec_push(config, BACKOFF_EXPONENTIAL());      // 0: strategy
+    vec_push(config, DEFAULT_INITIAL_DELAY());    // 1: initial delay ms
+    vec_push(config, DEFAULT_MAX_DELAY());        // 2: max delay ms
+    vec_push(config, DEFAULT_MAX_ATTEMPTS());     // 3: max attempts
+    vec_push(config, DEFAULT_JITTER_FACTOR());    // 4: jitter %
+    vec_push(config, DEFAULT_MULTIPLIER());       // 5: multiplier
+    config
+}
+
+fn backoff_config_strategy(config: i64) -> i64 { vec_get(config, 0) }
+fn backoff_config_initial_delay(config: i64) -> i64 { vec_get(config, 1) }
+fn backoff_config_max_delay(config: i64) -> i64 { vec_get(config, 2) }
+fn backoff_config_max_attempts(config: i64) -> i64 { vec_get(config, 3) }
+fn backoff_config_jitter(config: i64) -> i64 { vec_get(config, 4) }
+fn backoff_config_multiplier(config: i64) -> i64 { vec_get(config, 5) }
+
+fn backoff_config_set_strategy(config: i64, strategy: i64) -> i64 {
+    vec_set(config, 0, strategy);
+    1
+}
+
+fn backoff_config_set_initial_delay(config: i64, ms: i64) -> i64 {
+    vec_set(config, 1, ms);
+    1
+}
+
+fn backoff_config_set_max_delay(config: i64, ms: i64) -> i64 {
+    vec_set(config, 2, ms);
+    1
+}
+
+fn backoff_config_set_max_attempts(config: i64, attempts: i64) -> i64 {
+    vec_set(config, 3, attempts);
+    1
+}
+
+fn backoff_config_set_jitter(config: i64, percent: i64) -> i64 {
+    vec_set(config, 4, percent);
+    1
+}
+
+fn backoff_config_set_multiplier(config: i64, mult: i64) -> i64 {
+    vec_set(config, 5, mult);
+    1
+}
+
+// =============================================================================
+// Backoff State
+// =============================================================================
+
+// Create backoff state tracker
+// Structure: [config, attempt, last_delay, next_retry_at, last_error]
+fn backoff_state_new(config: i64) -> i64 {
+    let state = vec_new();
+    vec_push(state, config);  // 0: configuration
+    vec_push(state, 0);       // 1: current attempt count
+    vec_push(state, 0);       // 2: last delay used
+    vec_push(state, 0);       // 3: next retry timestamp
+    vec_push(state, 0);       // 4: last error code
+    state
+}
+
+fn backoff_state_config(state: i64) -> i64 { vec_get(state, 0) }
+fn backoff_state_attempt(state: i64) -> i64 { vec_get(state, 1) }
+fn backoff_state_last_delay(state: i64) -> i64 { vec_get(state, 2) }
+fn backoff_state_next_retry(state: i64) -> i64 { vec_get(state, 3) }
+fn backoff_state_last_error(state: i64) -> i64 { vec_get(state, 4) }
+
+fn backoff_state_set_attempt(state: i64, attempt: i64) -> i64 {
+    vec_set(state, 1, attempt);
+    1
+}
+
+fn backoff_state_set_last_delay(state: i64, delay: i64) -> i64 {
+    vec_set(state, 2, delay);
+    1
+}
+
+fn backoff_state_set_next_retry(state: i64, time: i64) -> i64 {
+    vec_set(state, 3, time);
+    1
+}
+
+fn backoff_state_set_last_error(state: i64, error: i64) -> i64 {
+    vec_set(state, 4, error);
+    1
+}
+
+// Reset backoff state (after successful connection)
+fn backoff_state_reset(state: i64) -> i64 {
+    vec_set(state, 1, 0);  // Reset attempt count
+    vec_set(state, 2, 0);  // Reset last delay
+    vec_set(state, 3, 0);  // Reset next retry
+    vec_set(state, 4, 0);  // Reset last error
+    1
+}
+
+// Check if max attempts exceeded
+fn backoff_state_exhausted(state: i64) -> i64 {
+    let config = backoff_state_config(state);
+    let max_attempts = backoff_config_max_attempts(config);
+    let attempt = backoff_state_attempt(state);
+
+    if attempt >= max_attempts { 1 } else { 0 }
+}
+
+// Check if we can retry now
+fn backoff_state_can_retry(state: i64, now: i64) -> i64 {
+    if backoff_state_exhausted(state) == 1 {
+        return 0;
+    }
+
+    let next_retry = backoff_state_next_retry(state);
+    if now >= next_retry { 1 } else { 0 }
+}
+
+// =============================================================================
+// Delay Calculation
+// =============================================================================
+
+// Simple pseudo-random for jitter (LCG)
+fn backoff_random(seed: i64) -> i64 {
+    // Linear congruential generator
+    let a = 1103515245;
+    let c = 12345;
+    let m = 2147483648;  // 2^31
+    ((a * seed + c) % m) / 1000000
+}
+
+// Calculate next backoff delay
+fn backoff_next_delay(state: i64, now: i64) -> i64 {
+    let config = backoff_state_config(state);
+    let strategy = backoff_config_strategy(config);
+    let initial = backoff_config_initial_delay(config);
+    let max_delay = backoff_config_max_delay(config);
+    let jitter_pct = backoff_config_jitter(config);
+    let multiplier = backoff_config_multiplier(config);
+    let attempt = backoff_state_attempt(state);
+    let last_delay = backoff_state_last_delay(state);
+
+    let delay = 0;
+
+    if strategy == BACKOFF_CONSTANT() {
+        delay = initial;
+    } else if strategy == BACKOFF_LINEAR() {
+        delay = initial * (attempt + 1);
+    } else if strategy == BACKOFF_EXPONENTIAL() {
+        // delay = initial * multiplier^attempt
+        delay = initial;
+        let i = 0;
+        while i < attempt {
+            delay = delay * multiplier;
+            i = i + 1;
+        }
+    } else if strategy == BACKOFF_DECORRELATED() {
+        // AWS-style decorrelated jitter
+        // delay = random(initial, last_delay * 3)
+        if last_delay == 0 {
+            delay = initial;
+        } else {
+            let upper = last_delay * 3;
+            if upper > max_delay {
+                upper = max_delay;
+            }
+            let range = upper - initial;
+            if range > 0 {
+                let rand_val = backoff_random(now + attempt);
+                delay = initial + (rand_val % range);
+            } else {
+                delay = initial;
+            }
+        }
+    }
+
+    // Apply max delay cap
+    if delay > max_delay {
+        delay = max_delay;
+    }
+
+    // Apply jitter
+    if jitter_pct > 0 {
+        let jitter_range = (delay * jitter_pct) / 100;
+        let jitter = backoff_random(now) % (jitter_range * 2 + 1);
+        delay = delay - jitter_range + jitter;
+        if delay < 0 {
+            delay = initial;
+        }
+    }
+
+    delay
+}
+
+// Record a failure and schedule next retry
+fn backoff_record_failure(state: i64, error: i64, now: i64) -> i64 {
+    // Calculate delay first using current attempt count
+    let delay = backoff_next_delay(state, now);
+    backoff_state_set_last_delay(state, delay);
+    backoff_state_set_next_retry(state, now + delay);
+    backoff_state_set_last_error(state, error);
+
+    // Then increment attempt for next time
+    let attempt = backoff_state_attempt(state);
+    backoff_state_set_attempt(state, attempt + 1);
+
+    delay
+}
+
+// =============================================================================
+// Circuit Breaker
+// =============================================================================
+
+// Create circuit breaker
+// Structure: [state, failure_count, success_count, threshold,
+//             open_time, timeout, last_failure_time]
+fn trans_circuit_new() -> i64 {
+    let breaker = vec_new();
+    vec_push(breaker, CIRCUIT_CLOSED());               // 0: state
+    vec_push(breaker, 0);                              // 1: failure count
+    vec_push(breaker, 0);                              // 2: success count
+    vec_push(breaker, DEFAULT_CIRCUIT_THRESHOLD());    // 3: failure threshold
+    vec_push(breaker, 0);                              // 4: time circuit opened
+    vec_push(breaker, DEFAULT_CIRCUIT_TIMEOUT());      // 5: timeout duration
+    vec_push(breaker, 0);                              // 6: last failure time
+    breaker
+}
+
+fn trans_circuit_state(cb: i64) -> i64 { vec_get(cb, 0) }
+fn trans_circuit_failures(cb: i64) -> i64 { vec_get(cb, 1) }
+fn trans_circuit_successes(cb: i64) -> i64 { vec_get(cb, 2) }
+fn trans_circuit_threshold(cb: i64) -> i64 { vec_get(cb, 3) }
+fn trans_circuit_open_time(cb: i64) -> i64 { vec_get(cb, 4) }
+fn trans_circuit_timeout(cb: i64) -> i64 { vec_get(cb, 5) }
+fn trans_circuit_last_failure(cb: i64) -> i64 { vec_get(cb, 6) }
+
+fn trans_circuit_set_state(cb: i64, state: i64) -> i64 {
+    vec_set(cb, 0, state);
+    1
+}
+
+fn trans_circuit_set_threshold(cb: i64, threshold: i64) -> i64 {
+    vec_set(cb, 3, threshold);
+    1
+}
+
+fn trans_circuit_set_timeout(cb: i64, timeout: i64) -> i64 {
+    vec_set(cb, 5, timeout);
+    1
+}
+
+// Check if circuit allows requests
+fn trans_circuit_allows(cb: i64, now: i64) -> i64 {
+    let state = trans_circuit_state(cb);
+
+    if state == CIRCUIT_CLOSED() {
+        return 1;
+    }
+
+    if state == CIRCUIT_OPEN() {
+        // Check if timeout has passed
+        let open_time = trans_circuit_open_time(cb);
+        let timeout = trans_circuit_timeout(cb);
+
+        if now - open_time >= timeout {
+            // Transition to half-open
+            trans_circuit_set_state(cb, CIRCUIT_HALF_OPEN());
+            return 1;
+        }
+        return 0;
+    }
+
+    // HALF_OPEN - allow one request
+    1
+}
+
+// Record successful operation
+fn trans_circuit_record_success(cb: i64) -> i64 {
+    let state = trans_circuit_state(cb);
+
+    if state == CIRCUIT_HALF_OPEN() {
+        // Recovery - close circuit
+        trans_circuit_set_state(cb, CIRCUIT_CLOSED());
+        vec_set(cb, 1, 0);  // Reset failure count
+        vec_set(cb, 2, 0);  // Reset success count
+    } else if state == CIRCUIT_CLOSED() {
+        let successes = vec_get(cb, 2);
+        vec_set(cb, 2, successes + 1);
+    }
+
+    1
+}
+
+// Record failed operation
+fn trans_circuit_record_failure(cb: i64, now: i64) -> i64 {
+    let state = trans_circuit_state(cb);
+    vec_set(cb, 6, now);  // Update last failure time
+
+    if state == CIRCUIT_HALF_OPEN() {
+        // Failed during probe - reopen circuit
+        trans_circuit_set_state(cb, CIRCUIT_OPEN());
+        vec_set(cb, 4, now);  // Set open time
+        return 1;
+    }
+
+    if state == CIRCUIT_CLOSED() {
+        let failures = vec_get(cb, 1);
+        vec_set(cb, 1, failures + 1);
+
+        // Check threshold
+        let threshold = trans_circuit_threshold(cb);
+        if failures + 1 >= threshold {
+            trans_circuit_set_state(cb, CIRCUIT_OPEN());
+            vec_set(cb, 4, now);  // Set open time
+        }
+    }
+
+    1
+}
+
+// Reset circuit breaker
+fn trans_circuit_reset(cb: i64) -> i64 {
+    trans_circuit_set_state(cb, CIRCUIT_CLOSED());
+    vec_set(cb, 1, 0);  // failures
+    vec_set(cb, 2, 0);  // successes
+    vec_set(cb, 4, 0);  // open time
+    vec_set(cb, 6, 0);  // last failure
+    1
+}
+
+// =============================================================================
+// Reconnection Manager
+// =============================================================================
+
+// Create reconnection manager
+// Structure: [state, transport, endpoint, backoff, circuit_breaker,
+//             endpoints_list, current_endpoint_idx, on_connect_cb, on_fail_cb]
+fn reconnect_manager_new(endpoint: i64, backoff_config: i64) -> i64 {
+    let mgr = vec_new();
+    vec_push(mgr, RECON_IDLE());                        // 0: state
+    vec_push(mgr, 0);                                   // 1: current transport
+    vec_push(mgr, endpoint);                            // 2: primary endpoint
+    vec_push(mgr, backoff_state_new(backoff_config));   // 3: backoff state
+    vec_push(mgr, trans_circuit_new());               // 4: circuit breaker
+    vec_push(mgr, vec_new());                           // 5: failover endpoints
+    vec_push(mgr, 0);                                   // 6: current endpoint index
+    vec_push(mgr, 0);                                   // 7: on_connect callback
+    vec_push(mgr, 0);                                   // 8: on_fail callback
+    mgr
+}
+
+fn reconnect_manager_state(mgr: i64) -> i64 { vec_get(mgr, 0) }
+fn reconnect_manager_transport(mgr: i64) -> i64 { vec_get(mgr, 1) }
+fn reconnect_manager_endpoint(mgr: i64) -> i64 { vec_get(mgr, 2) }
+fn reconnect_manager_backoff(mgr: i64) -> i64 { vec_get(mgr, 3) }
+fn reconnect_manager_circuit(mgr: i64) -> i64 { vec_get(mgr, 4) }
+fn reconnect_manager_failover_list(mgr: i64) -> i64 { vec_get(mgr, 5) }
+fn reconnect_manager_current_idx(mgr: i64) -> i64 { vec_get(mgr, 6) }
+
+fn reconnect_manager_set_state(mgr: i64, state: i64) -> i64 {
+    vec_set(mgr, 0, state);
+    1
+}
+
+fn reconnect_manager_set_transport(mgr: i64, transport: i64) -> i64 {
+    vec_set(mgr, 1, transport);
+    1
+}
+
+fn reconnect_manager_set_current_idx(mgr: i64, idx: i64) -> i64 {
+    vec_set(mgr, 6, idx);
+    1
+}
+
+// Add failover endpoint
+fn reconnect_manager_add_failover(mgr: i64, endpoint: i64) -> i64 {
+    let list = reconnect_manager_failover_list(mgr);
+    vec_push(list, endpoint);
+    1
+}
+
+// Get current endpoint (primary or failover)
+fn reconnect_manager_get_endpoint(mgr: i64) -> i64 {
+    let idx = reconnect_manager_current_idx(mgr);
+
+    if idx == 0 {
+        return reconnect_manager_endpoint(mgr);
+    }
+
+    let failover = reconnect_manager_failover_list(mgr);
+    if idx - 1 < vec_len(failover) {
+        return vec_get(failover, idx - 1);
+    }
+
+    reconnect_manager_endpoint(mgr)
+}
+
+// Move to next endpoint in failover list
+fn reconnect_manager_next_endpoint(mgr: i64) -> i64 {
+    let failover = reconnect_manager_failover_list(mgr);
+    let idx = reconnect_manager_current_idx(mgr);
+    let total = vec_len(failover) + 1;
+
+    let next = (idx + 1) % total;
+    reconnect_manager_set_current_idx(mgr, next);
+
+    next
+}
+
+// =============================================================================
+// Reconnection Operations
+// =============================================================================
+
+// Start or continue reconnection process
+fn reconnect_manager_connect(mgr: i64, transport_config: i64, now: i64) -> i64 {
+    let state = reconnect_manager_state(mgr);
+    let circuit = reconnect_manager_circuit(mgr);
+    let backoff = reconnect_manager_backoff(mgr);
+
+    // Check circuit breaker
+    if trans_circuit_allows(circuit, now) == 0 {
+        reconnect_manager_set_state(mgr, RECON_FAILED());
+        return 0;
+    }
+
+    // Check backoff state
+    if state == RECON_WAITING() {
+        if backoff_state_can_retry(backoff, now) == 0 {
+            return 0;  // Still waiting
+        }
+    }
+
+    // Check if exhausted
+    if backoff_state_exhausted(backoff) == 1 {
+        reconnect_manager_set_state(mgr, RECON_FAILED());
+        return 0;
+    }
+
+    // Attempt connection
+    reconnect_manager_set_state(mgr, RECON_CONNECTING());
+
+    let endpoint = reconnect_manager_get_endpoint(mgr);
+    let transport = transport_new(endpoint, transport_config);
+
+    if transport_connect(transport) == 1 {
+        // Success!
+        reconnect_manager_set_transport(mgr, transport);
+        reconnect_manager_set_state(mgr, RECON_CONNECTED());
+        backoff_state_reset(backoff);
+        trans_circuit_record_success(circuit);
+        reconnect_manager_set_current_idx(mgr, 0);  // Reset to primary
+        return 1;
+    }
+
+    // Failed - record and schedule retry
+    let error = transport_error_code(transport);
+    backoff_record_failure(backoff, error, now);
+    trans_circuit_record_failure(circuit, now);
+    reconnect_manager_set_state(mgr, RECON_WAITING());
+
+    // Try next endpoint
+    reconnect_manager_next_endpoint(mgr);
+
+    0
+}
+
+// Handle connection loss
+fn reconnect_manager_on_disconnect(mgr: i64, error: i64, now: i64) -> i64 {
+    let state = reconnect_manager_state(mgr);
+    let backoff = reconnect_manager_backoff(mgr);
+    let circuit = reconnect_manager_circuit(mgr);
+
+    // Close existing transport
+    let transport = reconnect_manager_transport(mgr);
+    if transport != 0 {
+        transport_close(transport);
+        reconnect_manager_set_transport(mgr, 0);
+    }
+
+    // Record failure
+    backoff_record_failure(backoff, error, now);
+    trans_circuit_record_failure(circuit, now);
+
+    reconnect_manager_set_state(mgr, RECON_WAITING());
+
+    1
+}
+
+// Cancel reconnection attempts
+fn reconnect_manager_cancel(mgr: i64) -> i64 {
+    let transport = reconnect_manager_transport(mgr);
+    if transport != 0 {
+        transport_close(transport);
+        reconnect_manager_set_transport(mgr, 0);
+    }
+
+    let backoff = reconnect_manager_backoff(mgr);
+    backoff_state_reset(backoff);
+
+    reconnect_manager_set_state(mgr, RECON_IDLE());
+    1
+}
+
+// Reset manager completely
+fn reconnect_manager_reset(mgr: i64) -> i64 {
+    reconnect_manager_cancel(mgr);
+
+    let circuit = reconnect_manager_circuit(mgr);
+    trans_circuit_reset(circuit);
+
+    reconnect_manager_set_current_idx(mgr, 0);
+    1
+}
+
+// =============================================================================
+// Status Information
+// =============================================================================
+
+// Check if connected
+fn reconnect_manager_is_connected(mgr: i64) -> i64 {
+    if reconnect_manager_state(mgr) == RECON_CONNECTED() { 1 } else { 0 }
+}
+
+// Check if reconnecting
+fn reconnect_manager_is_reconnecting(mgr: i64) -> i64 {
+    let state = reconnect_manager_state(mgr);
+    if state == RECON_WAITING() || state == RECON_CONNECTING() { 1 } else { 0 }
+}
+
+// Check if permanently failed
+fn reconnect_manager_is_failed(mgr: i64) -> i64 {
+    if reconnect_manager_state(mgr) == RECON_FAILED() { 1 } else { 0 }
+}
+
+// Get time until next retry
+fn reconnect_manager_time_to_retry(mgr: i64, now: i64) -> i64 {
+    let backoff = reconnect_manager_backoff(mgr);
+    let next_retry = backoff_state_next_retry(backoff);
+
+    if now >= next_retry {
+        return 0;
+    }
+
+    next_retry - now
+}
+
+// Get statistics
+fn reconnect_manager_stats(mgr: i64) -> i64 {
+    let backoff = reconnect_manager_backoff(mgr);
+    let circuit = reconnect_manager_circuit(mgr);
+
+    let stats = vec_new();
+    vec_push(stats, reconnect_manager_state(mgr));
+    vec_push(stats, backoff_state_attempt(backoff));
+    vec_push(stats, backoff_state_last_delay(backoff));
+    vec_push(stats, backoff_state_last_error(backoff));
+    vec_push(stats, trans_circuit_state(circuit));
+    vec_push(stats, trans_circuit_failures(circuit));
+    vec_push(stats, reconnect_manager_current_idx(mgr));
+
+    stats
+}
+
+fn recon_stats_state(stats: i64) -> i64 { vec_get(stats, 0) }
+fn recon_stats_attempts(stats: i64) -> i64 { vec_get(stats, 1) }
+fn recon_stats_last_delay(stats: i64) -> i64 { vec_get(stats, 2) }
+fn recon_stats_last_error(stats: i64) -> i64 { vec_get(stats, 3) }
+fn recon_stats_circuit_state(stats: i64) -> i64 { vec_get(stats, 4) }
+fn recon_stats_circuit_failures(stats: i64) -> i64 { vec_get(stats, 5) }
+fn recon_stats_endpoint_idx(stats: i64) -> i64 { vec_get(stats, 6) }
+
+// =============================================================================
+// Convenience Functions
+// =============================================================================
+
+// Create manager with default exponential backoff
+fn reconnect_manager_default(endpoint: i64) -> i64 {
+    let config = backoff_config_new();
+    reconnect_manager_new(endpoint, config)
+}
+
+// Create manager with aggressive reconnection (short delays)
+fn reconnect_manager_aggressive(endpoint: i64) -> i64 {
+    let config = backoff_config_new();
+    backoff_config_set_initial_delay(config, 50);
+    backoff_config_set_max_delay(config, 5000);
+    backoff_config_set_max_attempts(config, 20);
+    reconnect_manager_new(endpoint, config)
+}
+
+// Create manager with patient reconnection (long delays)
+fn reconnect_manager_patient(endpoint: i64) -> i64 {
+    let config = backoff_config_new();
+    backoff_config_set_initial_delay(config, 1000);
+    backoff_config_set_max_delay(config, 300000);  // 5 minutes
+    backoff_config_set_max_attempts(config, 50);
+    reconnect_manager_new(endpoint, config)
+}

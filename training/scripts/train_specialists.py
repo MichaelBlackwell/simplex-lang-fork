@@ -484,7 +484,7 @@ x = {(result - 5) // 2}
 
 **Answer: x = {x}**
 
-Verification: 2({x}) + 5 = {x * 2} + 5 = {result} ✓
+Verification: 2({x}) + 5 = {x * 2} + 5 = {result} (correct)
 [confidence: 0.99]"""
 
     return {"text": f"{prompt}\n\nAssistant: {response}"}

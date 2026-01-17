@@ -69,7 +69,7 @@ What does the hive believe?"""
         assert "text" in example
         assert "confidence" in example["text"].lower()
 
-    print("\n✓ Context protocol examples generated successfully")
+    print("\nPASS Context protocol examples generated successfully")
     return True
 
 
@@ -106,7 +106,7 @@ def test_confidence_calibration_example():
     for ex in examples:
         assert "[confidence:" in ex["text"]
 
-    print("\n✓ Confidence calibration examples generated successfully")
+    print("\nPASS Confidence calibration examples generated successfully")
     return True
 
 
@@ -157,7 +157,7 @@ Reasoning: Evidence is weak/unreliable, no update warranted
 
         assert "belief" in example["text"].lower()
 
-    print("\n✓ Belief revision examples generated successfully")
+    print("\nPASS Belief revision examples generated successfully")
     return True
 
 
@@ -204,7 +204,7 @@ Hard selection: Option A
 [confidence: 0.50]"""
     print(example)
 
-    print("\n✓ Neural IR/Gates examples generated successfully")
+    print("\nPASS Neural IR/Gates examples generated successfully")
     return True
 
 
@@ -229,7 +229,7 @@ def main():
             results.append((name, True, None))
         except Exception as e:
             results.append((name, False, str(e)))
-            print(f"\n✗ {name} FAILED: {e}")
+            print(f"\nFAIL {name} FAILED: {e}")
 
     # Summary
     print("\n" + "="*60)
@@ -239,7 +239,7 @@ def main():
     passed = sum(1 for _, success, _ in results if success)
 
     for name, success, error in results:
-        status = "✓ PASS" if success else "✗ FAIL"
+        status = "PASS PASS" if success else "FAIL FAIL"
         print(f"  {status}: {name}")
         if error:
             print(f"         Error: {error}")
@@ -247,7 +247,7 @@ def main():
     print(f"\nTotal: {passed}/{len(results)} passed")
 
     if passed == len(results):
-        print("\n✓ All data generation tests passed!")
+        print("\nPASS All data generation tests passed!")
         return 0
     else:
         return 1

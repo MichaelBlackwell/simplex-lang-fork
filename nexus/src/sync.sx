@@ -1,0 +1,581 @@
+// Nexus Protocol - SYNC Frame Encoder/Decoder
+//
+// The SYNC frame is the heart of Nexus's 400x compression.
+// It encodes belief state changes using bit-packed deltas.
+//
+// SYNC Frame Payload Structure:
+//   Belief count (2 bytes): Number of beliefs in this sync
+//   Update stream (variable): Bit-packed delta operations
+//
+// Each belief update is encoded as:
+//   Op (2 bits):
+//     00 = SAME:    No change (2 bits total)
+//     01 = DELTA_S: Small delta ±64, 7-bit value (9 bits total)
+//     10 = DELTA_L: Large delta ±32K, 16-bit value (18 bits total)
+//     11 = FULL:    Full 32-bit value (34 bits total)
+//
+// Example: 1000 beliefs with 90% unchanged, 9% small delta, 1% full
+//   900 x SAME (2 bits) = 225 bytes
+//   90 x DELTA_S (9 bits) = 102 bytes
+//   10 x FULL (34 bits) = 43 bytes
+//   Header = 8 bytes
+//   Total = 378 bytes (0.38 bytes/belief)
+
+// =============================================================================
+// SyncEncoder - Encodes belief state into SYNC frames
+// =============================================================================
+
+// SyncEncoder Structure:
+// Slot 0: belief_count (number of beliefs being synced)
+// Slot 1: baseline (vec of last-known values)
+// Slot 2: current (vec of current values)
+// Slot 3: tick (current tick number)
+// Slot 4: stats (encoding statistics)
+
+fn sync_encoder_new(belief_count: i64) -> i64 {
+    let encoder: i64 = vec_new();
+    vec_push(encoder, belief_count);    // Slot 0
+    vec_push(encoder, vec_new());       // Slot 1: baseline
+    vec_push(encoder, vec_new());       // Slot 2: current
+    vec_push(encoder, 0);               // Slot 3: tick
+    vec_push(encoder, sync_stats_new()); // Slot 4: stats
+    encoder
+}
+
+// Initialize baseline with all zeros
+fn sync_encoder_init_baseline(encoder: i64) -> i64 {
+    let count: i64 = vec_get(encoder, 0);
+    let baseline: i64 = vec_get(encoder, 1);
+    let current: i64 = vec_get(encoder, 2);
+
+    let i: i64 = 0;
+    while i < count {
+        vec_push(baseline, 0);
+        vec_push(current, 0);
+        i = i + 1;
+    }
+    0
+}
+
+// Set baseline from a full state snapshot
+fn sync_encoder_set_baseline(encoder: i64, values: i64) -> i64 {
+    let count: i64 = vec_get(encoder, 0);
+    let baseline: i64 = vec_get(encoder, 1);
+    let current: i64 = vec_get(encoder, 2);
+
+    // Clear existing
+    while vec_len(baseline) > 0 { vec_pop(baseline); }
+    while vec_len(current) > 0 { vec_pop(current); }
+
+    // Copy values to baseline and current
+    let i: i64 = 0;
+    while i < count && i < vec_len(values) {
+        let v: i64 = vec_get(values, i);
+        vec_push(baseline, v);
+        vec_push(current, v);
+        i = i + 1;
+    }
+
+    // Fill remaining with zeros if needed
+    while vec_len(baseline) < count {
+        vec_push(baseline, 0);
+        vec_push(current, 0);
+    }
+
+    0
+}
+
+// Update a single belief value
+fn sync_encoder_update(encoder: i64, index: i64, value: i64) -> i64 {
+    let count: i64 = vec_get(encoder, 0);
+    if index < 0 || index >= count {
+        return 1;  // Error: index out of bounds
+    }
+
+    let current: i64 = vec_get(encoder, 2);
+    vec_set(current, index, value);
+    0
+}
+
+// Update multiple beliefs from a vec
+fn sync_encoder_update_all(encoder: i64, values: i64) -> i64 {
+    let count: i64 = vec_get(encoder, 0);
+    let current: i64 = vec_get(encoder, 2);
+
+    let i: i64 = 0;
+    while i < count && i < vec_len(values) {
+        vec_set(current, i, vec_get(values, i));
+        i = i + 1;
+    }
+    0
+}
+
+// =============================================================================
+// SYNC Frame Encoding
+// =============================================================================
+
+// Encode current state as a SYNC frame
+// Returns: encoded frame bytes
+fn sync_encoder_encode(encoder: i64) -> i64 {
+    let count: i64 = vec_get(encoder, 0);
+    let baseline: i64 = vec_get(encoder, 1);
+    let current: i64 = vec_get(encoder, 2);
+    let tick: i64 = vec_get(encoder, 3);
+    let stats: i64 = vec_get(encoder, 4);
+
+    // Reset stats for this frame
+    sync_stats_reset(stats);
+
+    // Create bit writer
+    let writer: i64 = bitwriter_new();
+
+    // Write belief count (16 bits)
+    bitwriter_write_u16(writer, count);
+
+    // Write delta stream
+    let i: i64 = 0;
+    while i < count {
+        let old_val: i64 = vec_get(baseline, i);
+        let new_val: i64 = vec_get(current, i);
+
+        // Encode delta
+        let op: i64 = encode_belief_delta(writer, old_val, new_val);
+
+        // Update stats
+        sync_stats_record(stats, op);
+
+        i = i + 1;
+    }
+
+    // Finish bit writing
+    let payload: i64 = bitwriter_finish(writer);
+
+    // Create SYNC frame
+    let frame: i64 = frame_new_sync(tick);
+    frame_set_payload(frame, payload);
+
+    // Update baseline to current (for next sync)
+    i = 0;
+    while i < count {
+        vec_set(baseline, i, vec_get(current, i));
+        i = i + 1;
+    }
+
+    // Increment tick
+    vec_set(encoder, 3, tick + 1);
+
+    // Update stats with bytes written
+    let bytes: i64 = bitwriter_bytes_written(writer);
+    sync_stats_set_bytes(stats, bytes);
+
+    // Return encoded frame
+    frame_encode(frame)
+}
+
+// Encode a single belief delta
+// Returns: operation code used
+fn encode_belief_delta(writer: i64, old_val: i64, new_val: i64) -> i64 {
+    if old_val == new_val {
+        bitwriter_write_same(writer);
+        return DELTA_OP_SAME();
+    }
+
+    let delta: i64 = new_val - old_val;
+
+    // Try small delta (-64 to +63)
+    if delta >= DELTA_SMALL_MIN() && delta <= DELTA_SMALL_MAX() {
+        bitwriter_write_delta_small(writer, delta);
+        return DELTA_OP_SMALL();
+    }
+
+    // Try large delta (-32768 to +32767)
+    if delta >= DELTA_LARGE_MIN() && delta <= DELTA_LARGE_MAX() {
+        bitwriter_write_delta_large(writer, delta);
+        return DELTA_OP_LARGE();
+    }
+
+    // Fall back to full value
+    bitwriter_write_full(writer, new_val);
+    DELTA_OP_FULL()
+}
+
+// =============================================================================
+// SyncDecoder - Decodes SYNC frames into belief state
+// =============================================================================
+
+// SyncDecoder Structure:
+// Slot 0: belief_count
+// Slot 1: state (vec of current values)
+// Slot 2: tick (last received tick)
+// Slot 3: stats
+
+fn sync_decoder_new(belief_count: i64) -> i64 {
+    let decoder: i64 = vec_new();
+    vec_push(decoder, belief_count);    // Slot 0
+    vec_push(decoder, vec_new());       // Slot 1: state
+    vec_push(decoder, 0);               // Slot 2: tick
+    vec_push(decoder, sync_stats_new()); // Slot 3: stats
+    decoder
+}
+
+// Initialize state with zeros
+fn sync_decoder_init(decoder: i64) -> i64 {
+    let count: i64 = vec_get(decoder, 0);
+    let state: i64 = vec_get(decoder, 1);
+
+    let i: i64 = 0;
+    while i < count {
+        vec_push(state, 0);
+        i = i + 1;
+    }
+    0
+}
+
+// Set initial state from baseline
+fn sync_decoder_set_baseline(decoder: i64, values: i64) -> i64 {
+    let count: i64 = vec_get(decoder, 0);
+    let state: i64 = vec_get(decoder, 1);
+
+    // Clear existing
+    while vec_len(state) > 0 { vec_pop(state); }
+
+    // Copy values
+    let i: i64 = 0;
+    while i < count && i < vec_len(values) {
+        vec_push(state, vec_get(values, i));
+        i = i + 1;
+    }
+
+    // Fill remaining with zeros
+    while vec_len(state) < count {
+        vec_push(state, 0);
+    }
+
+    0
+}
+
+// Get current state value
+fn sync_decoder_get(decoder: i64, index: i64) -> i64 {
+    let state: i64 = vec_get(decoder, 1);
+    if index < 0 || index >= vec_len(state) {
+        return 0;
+    }
+    vec_get(state, index)
+}
+
+// Get full state as a vec
+fn sync_decoder_get_state(decoder: i64) -> i64 {
+    vec_get(decoder, 1)
+}
+
+// Get last received tick
+fn sync_decoder_tick(decoder: i64) -> i64 {
+    vec_get(decoder, 2)
+}
+
+// =============================================================================
+// SYNC Frame Decoding
+// =============================================================================
+
+// Decode a SYNC frame and update state
+// Returns: 0 on success, error code on failure
+fn sync_decoder_decode(decoder: i64, frame_bytes: i64) -> i64 {
+    // Decode frame header
+    let frame: i64 = frame_decode(frame_bytes);
+    if frame == 0 {
+        return ERR_DECODE_ERROR();
+    }
+
+    // Verify frame type
+    if frame_type(frame) != FRAME_SYNC() {
+        return ERR_INVALID_FRAME_TYPE();
+    }
+
+    // Get payload
+    let payload: i64 = frame_payload(frame);
+    if vec_len(payload) < 2 {
+        return ERR_INVALID_LENGTH();
+    }
+
+    // Update tick
+    vec_set(decoder, 2, frame_tick(frame));
+
+    // Decode payload
+    return sync_decoder_decode_payload(decoder, payload);
+}
+
+// Decode SYNC payload (can be called directly for testing)
+fn sync_decoder_decode_payload(decoder: i64, payload: i64) -> i64 {
+    let count: i64 = vec_get(decoder, 0);
+    let state: i64 = vec_get(decoder, 1);
+    let stats: i64 = vec_get(decoder, 3);
+
+    // Reset stats
+    sync_stats_reset(stats);
+
+    // Create bit reader
+    let reader: i64 = bitreader_new(payload);
+
+    // Read belief count
+    let frame_count: i64 = bitreader_read_u16(reader);
+
+    // Validate count matches
+    if frame_count != count {
+        return ERR_CATALOG_MISMATCH();
+    }
+
+    // Decode delta stream
+    let i: i64 = 0;
+    while i < count {
+        let old_val: i64 = vec_get(state, i);
+
+        // Read delta
+        let delta_result: i64 = bitreader_read_delta(reader);
+        if delta_result == 0 {
+            return ERR_DECODE_ERROR();
+        }
+
+        // Apply delta to get new value
+        let new_val: i64 = apply_delta(old_val, delta_result);
+        vec_set(state, i, new_val);
+
+        // Update stats
+        let op: i64 = vec_get(delta_result, 0);
+        sync_stats_record(stats, op);
+
+        i = i + 1;
+    }
+
+    // Update stats with bytes read
+    let bytes_read: i64 = (bitreader_bits_read(reader) + 7) / 8;
+    sync_stats_set_bytes(stats, bytes_read);
+
+    ERR_NONE()
+}
+
+// =============================================================================
+// Sync Statistics
+// =============================================================================
+
+// Stats Structure:
+// Slot 0: same_count
+// Slot 1: small_delta_count
+// Slot 2: large_delta_count
+// Slot 3: full_count
+// Slot 4: total_bytes
+
+fn sync_stats_new() -> i64 {
+    let stats: i64 = vec_new();
+    vec_push(stats, 0);  // same
+    vec_push(stats, 0);  // small_delta
+    vec_push(stats, 0);  // large_delta
+    vec_push(stats, 0);  // full
+    vec_push(stats, 0);  // bytes
+    stats
+}
+
+fn sync_stats_reset(stats: i64) -> i64 {
+    vec_set(stats, 0, 0);
+    vec_set(stats, 1, 0);
+    vec_set(stats, 2, 0);
+    vec_set(stats, 3, 0);
+    vec_set(stats, 4, 0);
+    0
+}
+
+fn sync_stats_record(stats: i64, op: i64) -> i64 {
+    if op == DELTA_OP_SAME() {
+        vec_set(stats, 0, vec_get(stats, 0) + 1);
+    } else if op == DELTA_OP_SMALL() {
+        vec_set(stats, 1, vec_get(stats, 1) + 1);
+    } else if op == DELTA_OP_LARGE() {
+        vec_set(stats, 2, vec_get(stats, 2) + 1);
+    } else if op == DELTA_OP_FULL() {
+        vec_set(stats, 3, vec_get(stats, 3) + 1);
+    }
+    0
+}
+
+fn sync_stats_set_bytes(stats: i64, bytes: i64) -> i64 {
+    vec_set(stats, 4, bytes);
+    0
+}
+
+fn sync_stats_same_count(stats: i64) -> i64 { vec_get(stats, 0) }
+fn sync_stats_small_count(stats: i64) -> i64 { vec_get(stats, 1) }
+fn sync_stats_large_count(stats: i64) -> i64 { vec_get(stats, 2) }
+fn sync_stats_full_count(stats: i64) -> i64 { vec_get(stats, 3) }
+fn sync_stats_bytes(stats: i64) -> i64 { vec_get(stats, 4) }
+
+fn sync_stats_total_beliefs(stats: i64) -> i64 {
+    sync_stats_same_count(stats) +
+    sync_stats_small_count(stats) +
+    sync_stats_large_count(stats) +
+    sync_stats_full_count(stats)
+}
+
+fn sync_stats_bytes_per_belief(stats: i64) -> i64 {
+    let total: i64 = sync_stats_total_beliefs(stats);
+    if total == 0 { return 0; }
+    let bytes: i64 = sync_stats_bytes(stats);
+    // Return in millibytes (e.g., 380 = 0.38 bytes)
+    (bytes * 1000) / total
+}
+
+fn sync_stats_print(stats: i64) -> i64 {
+    print("Sync Stats:\n");
+    print("  SAME:    ");
+    print_i64(sync_stats_same_count(stats));
+    print("\n");
+    print("  DELTA_S: ");
+    print_i64(sync_stats_small_count(stats));
+    print("\n");
+    print("  DELTA_L: ");
+    print_i64(sync_stats_large_count(stats));
+    print("\n");
+    print("  FULL:    ");
+    print_i64(sync_stats_full_count(stats));
+    print("\n");
+    print("  Bytes:   ");
+    print_i64(sync_stats_bytes(stats));
+    print("\n");
+    print("  Bytes/belief (x1000): ");
+    print_i64(sync_stats_bytes_per_belief(stats));
+    print("\n");
+    0
+}
+
+// =============================================================================
+// Checksum Support
+// =============================================================================
+
+// Compute checksum of current state (simple XOR for now)
+fn sync_compute_checksum(decoder: i64) -> i64 {
+    let state: i64 = sync_decoder_get_state(decoder);
+    let len: i64 = vec_len(state);
+
+    let checksum: i64 = 0;
+    let i: i64 = 0;
+    while i < len {
+        let val: i64 = vec_get(state, i);
+        checksum = checksum ^ val;
+        // Rotate checksum for better distribution
+        checksum = ((checksum << 7) | (checksum >> 57)) & 18446744073709551615;
+        i = i + 1;
+    }
+
+    checksum
+}
+
+// Encode a CHECKSUM frame
+fn sync_encode_checksum(tick: i64, checksum: i64) -> i64 {
+    let frame: i64 = frame_new_checksum(tick);
+
+    // Payload: checksum (8 bytes)
+    let payload: i64 = vec_new();
+    vec_push(payload, (checksum >> 56) & 255);
+    vec_push(payload, (checksum >> 48) & 255);
+    vec_push(payload, (checksum >> 40) & 255);
+    vec_push(payload, (checksum >> 32) & 255);
+    vec_push(payload, (checksum >> 24) & 255);
+    vec_push(payload, (checksum >> 16) & 255);
+    vec_push(payload, (checksum >> 8) & 255);
+    vec_push(payload, checksum & 255);
+
+    frame_set_payload(frame, payload);
+    frame_encode(frame)
+}
+
+// Decode checksum from CHECKSUM frame payload
+fn sync_decode_checksum(payload: i64) -> i64 {
+    if vec_len(payload) < 8 {
+        return 0;
+    }
+
+    let checksum: i64 = 0;
+    checksum = checksum | (vec_get(payload, 0) << 56);
+    checksum = checksum | (vec_get(payload, 1) << 48);
+    checksum = checksum | (vec_get(payload, 2) << 40);
+    checksum = checksum | (vec_get(payload, 3) << 32);
+    checksum = checksum | (vec_get(payload, 4) << 24);
+    checksum = checksum | (vec_get(payload, 5) << 16);
+    checksum = checksum | (vec_get(payload, 6) << 8);
+    checksum = checksum | vec_get(payload, 7);
+
+    checksum
+}
+
+// =============================================================================
+// High-Level Sync Session
+// =============================================================================
+
+// SyncSession manages encoder + decoder for bidirectional sync
+// Slot 0: local_encoder
+// Slot 1: remote_decoder
+// Slot 2: belief_count
+// Slot 3: checksum_interval
+// Slot 4: frames_since_checksum
+
+fn sync_session_new(belief_count: i64) -> i64 {
+    let session: i64 = vec_new();
+    vec_push(session, sync_encoder_new(belief_count));   // Slot 0
+    vec_push(session, sync_decoder_new(belief_count));   // Slot 1
+    vec_push(session, belief_count);                      // Slot 2
+    vec_push(session, DEFAULT_CHECKSUM_INTERVAL());      // Slot 3
+    vec_push(session, 0);                                 // Slot 4
+    session
+}
+
+fn sync_session_init(session: i64, initial_values: i64) -> i64 {
+    let encoder: i64 = vec_get(session, 0);
+    let decoder: i64 = vec_get(session, 1);
+
+    sync_encoder_set_baseline(encoder, initial_values);
+    sync_decoder_set_baseline(decoder, initial_values);
+    0
+}
+
+fn sync_session_update(session: i64, index: i64, value: i64) -> i64 {
+    let encoder: i64 = vec_get(session, 0);
+    sync_encoder_update(encoder, index, value)
+}
+
+fn sync_session_encode(session: i64) -> i64 {
+    let encoder: i64 = vec_get(session, 0);
+    let frames: i64 = vec_get(session, 4);
+
+    // Encode SYNC frame
+    let sync_frame: i64 = sync_encoder_encode(encoder);
+
+    // Check if checksum needed
+    frames = frames + 1;
+    vec_set(session, 4, frames);
+
+    let interval: i64 = vec_get(session, 3);
+    if frames >= interval {
+        // Reset counter
+        vec_set(session, 4, 0);
+        // Return sync frame - caller should follow with checksum
+    }
+
+    sync_frame
+}
+
+fn sync_session_needs_checksum(session: i64) -> i64 {
+    let frames: i64 = vec_get(session, 4);
+    if frames == 0 { 1 } else { 0 }
+}
+
+fn sync_session_decode(session: i64, frame_bytes: i64) -> i64 {
+    let decoder: i64 = vec_get(session, 1);
+    sync_decoder_decode(decoder, frame_bytes)
+}
+
+fn sync_session_get_value(session: i64, index: i64) -> i64 {
+    let decoder: i64 = vec_get(session, 1);
+    sync_decoder_get(decoder, index)
+}
+
+// Note: Functions from types.sx, bits.sx, and frame.sx are defined
+// in those files which must be included before this file when compiling
+// Built-in functions: vec_new, vec_push, vec_get, vec_set, vec_len, vec_pop, print, print_i64

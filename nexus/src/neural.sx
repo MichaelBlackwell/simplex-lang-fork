@@ -1,0 +1,911 @@
+// Nexus Protocol - Neural Type Encoding
+//
+// Phase 6: Implements serialization for neural types used in cognitive AI systems
+//
+// Neural types provide efficient encoding for:
+// - Codebook references: Pointers to shared dictionary entries
+// - Neural embeddings: High-dimensional vector representations
+// - Pattern instantiation: Template patterns with variable bindings
+//
+// These types enable efficient transmission of learned representations
+// between hive minds with 400x compression through codebook sharing.
+
+// =============================================================================
+// Codebook Reference (STF_CODEBOOK_REF = 48)
+// =============================================================================
+
+// Codebook references allow compact transmission of frequent patterns
+// by using shared dictionaries between hives. Instead of sending full
+// embeddings or patterns, we send a reference to a codebook entry.
+//
+// Layout:
+// - Tag byte (1): STF_CODEBOOK_REF = 48
+// - Codebook ID (2 bytes): Which codebook (0-65535)
+// - Entry index (4 bytes): Index within codebook
+// - Version (2 bytes): Codebook version for consistency
+
+fn codebook_ref_new(codebook_id: i64, entry_index: i64, version: i64) -> i64 {
+    let ref = vec_new();
+    vec_push(ref, codebook_id);     // Slot 0: codebook ID
+    vec_push(ref, entry_index);     // Slot 1: entry index
+    vec_push(ref, version);         // Slot 2: version
+    ref
+}
+
+fn codebook_ref_codebook_id(ref: i64) -> i64 { vec_get(ref, 0) }
+fn codebook_ref_entry_index(ref: i64) -> i64 { vec_get(ref, 1) }
+fn codebook_ref_version(ref: i64) -> i64 { vec_get(ref, 2) }
+
+fn codebook_ref_encode(ref: i64) -> i64 {
+    let bytes = vec_new();
+
+    // Tag byte
+    vec_push(bytes, STF_CODEBOOK_REF());
+
+    // Codebook ID (2 bytes)
+    let cb_id = codebook_ref_codebook_id(ref);
+    vec_push(bytes, (cb_id >> 8) & 255);
+    vec_push(bytes, cb_id & 255);
+
+    // Entry index (4 bytes)
+    let entry_idx = codebook_ref_entry_index(ref);
+    vec_push(bytes, (entry_idx >> 24) & 255);
+    vec_push(bytes, (entry_idx >> 16) & 255);
+    vec_push(bytes, (entry_idx >> 8) & 255);
+    vec_push(bytes, entry_idx & 255);
+
+    // Version (2 bytes)
+    let ver = codebook_ref_version(ref);
+    vec_push(bytes, (ver >> 8) & 255);
+    vec_push(bytes, ver & 255);
+
+    bytes
+}
+
+fn codebook_ref_decode(bytes: i64, offset: i64) -> i64 {
+    let len = vec_len(bytes);
+    if len < offset + 9 {
+        return 0;  // Not enough data
+    }
+
+    if vec_get(bytes, offset) != STF_CODEBOOK_REF() {
+        return 0;
+    }
+
+    let pos = offset + 1;
+
+    // Codebook ID
+    let cb_id = (vec_get(bytes, pos) << 8) | vec_get(bytes, pos + 1);
+    pos = pos + 2;
+
+    // Entry index
+    let entry_idx = (vec_get(bytes, pos) << 24) |
+                    (vec_get(bytes, pos + 1) << 16) |
+                    (vec_get(bytes, pos + 2) << 8) |
+                    vec_get(bytes, pos + 3);
+    pos = pos + 4;
+
+    // Version
+    let ver = (vec_get(bytes, pos) << 8) | vec_get(bytes, pos + 1);
+
+    codebook_ref_new(cb_id, entry_idx, ver)
+}
+
+// =============================================================================
+// Shared Codebook
+// =============================================================================
+
+// A codebook is a shared dictionary of embeddings or patterns.
+// Hives negotiate and share codebooks to enable efficient compression.
+
+fn nex_codebook_new(codebook_id: i64) -> i64 {
+    let cb = vec_new();
+    vec_push(cb, codebook_id);      // Slot 0: ID
+    vec_push(cb, 1);                // Slot 1: version
+    vec_push(cb, vec_new());        // Slot 2: entries (list of embeddings)
+    vec_push(cb, vec_new());        // Slot 3: entry hashes for lookup
+    cb
+}
+
+fn nex_codebook_id(cb: i64) -> i64 { vec_get(cb, 0) }
+fn nex_codebook_version(cb: i64) -> i64 { vec_get(cb, 1) }
+fn nex_codebook_entries(cb: i64) -> i64 { vec_get(cb, 2) }
+fn nex_codebook_hashes(cb: i64) -> i64 { vec_get(cb, 3) }
+
+fn nex_codebook_add_entry(cb: i64, entry: i64) -> i64 {
+    let entries = nex_codebook_entries(cb);
+    let index = vec_len(entries);
+    vec_push(entries, entry);
+
+    // Store simple hash for lookup
+    let hashes = nex_codebook_hashes(cb);
+    let hash = nex_codebook_compute_hash(entry);
+    vec_push(hashes, hash);
+
+    index
+}
+
+fn nex_codebook_get_entry(cb: i64, index: i64) -> i64 {
+    let entries = nex_codebook_entries(cb);
+    if index >= vec_len(entries) {
+        return 0;
+    }
+    vec_get(entries, index)
+}
+
+fn nex_codebook_size(cb: i64) -> i64 {
+    vec_len(nex_codebook_entries(cb))
+}
+
+fn nex_codebook_increment_version(cb: i64) -> i64 {
+    let ver = nex_codebook_version(cb);
+    vec_set(cb, 1, ver + 1);
+    ver + 1
+}
+
+// Simple hash function for codebook entry lookup
+fn nex_codebook_compute_hash(entry: i64) -> i64 {
+    let hash = 5381;  // djb2 initial value
+    let len = vec_len(entry);
+    let i = 0;
+    while i < len {
+        let val = vec_get(entry, i);
+        // djb2: hash * 33 + val
+        hash = ((hash << 5) + hash) + val;
+        // Keep in i64 range with simple mask
+        hash = hash & 2147483647;  // Keep positive
+        i = i + 1;
+    }
+    hash
+}
+
+// Find entry by hash (returns index or -1 if not found)
+fn nex_codebook_find_by_hash(cb: i64, hash: i64) -> i64 {
+    let hashes = nex_codebook_hashes(cb);
+    let len = vec_len(hashes);
+    let i = 0;
+    while i < len {
+        if vec_get(hashes, i) == hash {
+            return i;
+        }
+        i = i + 1;
+    }
+    0 - 1  // Not found
+}
+
+// =============================================================================
+// Neural Embedding (STF_NEURAL_EMB = 49)
+// =============================================================================
+
+// Neural embeddings are high-dimensional vectors representing semantic content.
+// We use quantized encoding for efficient transmission:
+//
+// Layout:
+// - Tag byte (1): STF_NEURAL_EMB = 49
+// - Flags (1 byte): quantization type, normalization
+// - Dimensions (2 bytes): vector length
+// - Scale (4 bytes): float32 scale factor for dequantization
+// - Offset (4 bytes): float32 offset for dequantization
+// - Data (variable): quantized values
+
+// Embedding flags
+fn EMB_FLAG_FLOAT32() -> i64 { 0 }    // Full precision (4 bytes per dim)
+fn EMB_FLAG_INT16() -> i64 { 1 }      // 16-bit quantized (2 bytes per dim)
+fn EMB_FLAG_INT8() -> i64 { 2 }       // 8-bit quantized (1 byte per dim)
+fn EMB_FLAG_BINARY() -> i64 { 3 }     // Binary (1 bit per dim)
+fn EMB_FLAG_NORMALIZED() -> i64 { 16 } // Vector is L2-normalized
+
+fn neural_emb_new(dimensions: i64, flags: i64) -> i64 {
+    let emb = vec_new();
+    vec_push(emb, dimensions);    // Slot 0: dimensions
+    vec_push(emb, flags);         // Slot 1: flags
+    vec_push(emb, 1000);          // Slot 2: scale (fixed-point, 1000 = 1.0)
+    vec_push(emb, 0);             // Slot 3: offset (fixed-point)
+    vec_push(emb, vec_new());     // Slot 4: data
+    emb
+}
+
+fn neural_emb_dimensions(emb: i64) -> i64 { vec_get(emb, 0) }
+fn neural_emb_flags(emb: i64) -> i64 { vec_get(emb, 1) }
+fn neural_emb_scale(emb: i64) -> i64 { vec_get(emb, 2) }
+fn neural_emb_offset(emb: i64) -> i64 { vec_get(emb, 3) }
+fn neural_emb_data(emb: i64) -> i64 { vec_get(emb, 4) }
+
+fn neural_emb_set_scale(emb: i64, scale: i64, offset_val: i64) -> i64 {
+    vec_set(emb, 2, scale);
+    vec_set(emb, 3, offset_val);
+    0
+}
+
+fn neural_emb_set_data(emb: i64, data: i64) -> i64 {
+    vec_set(emb, 4, data);
+    0
+}
+
+// Set a single dimension value
+fn neural_emb_set_dim(emb: i64, dim: i64, value: i64) -> i64 {
+    let data = neural_emb_data(emb);
+    let dims = neural_emb_dimensions(emb);
+    if dim >= dims {
+        return 0 - 1;  // Out of range
+    }
+
+    // Expand data if needed
+    while vec_len(data) <= dim {
+        vec_push(data, 0);
+    }
+
+    vec_set(data, dim, value);
+    0
+}
+
+// Get a single dimension value
+fn neural_emb_get_dim(emb: i64, dim: i64) -> i64 {
+    let data = neural_emb_data(emb);
+    if dim >= vec_len(data) {
+        return 0;
+    }
+    vec_get(data, dim)
+}
+
+fn neural_emb_encode(emb: i64) -> i64 {
+    let bytes = vec_new();
+
+    // Tag byte
+    vec_push(bytes, STF_NEURAL_EMB());
+
+    // Flags (1 byte)
+    let flags = neural_emb_flags(emb);
+    vec_push(bytes, flags & 255);
+
+    // Dimensions (2 bytes)
+    let dims = neural_emb_dimensions(emb);
+    vec_push(bytes, (dims >> 8) & 255);
+    vec_push(bytes, dims & 255);
+
+    // Scale (4 bytes as fixed-point)
+    let scale = neural_emb_scale(emb);
+    vec_push(bytes, (scale >> 24) & 255);
+    vec_push(bytes, (scale >> 16) & 255);
+    vec_push(bytes, (scale >> 8) & 255);
+    vec_push(bytes, scale & 255);
+
+    // Offset (4 bytes as fixed-point)
+    let offset_val = neural_emb_offset(emb);
+    vec_push(bytes, (offset_val >> 24) & 255);
+    vec_push(bytes, (offset_val >> 16) & 255);
+    vec_push(bytes, (offset_val >> 8) & 255);
+    vec_push(bytes, offset_val & 255);
+
+    // Data - encoding depends on quantization type
+    let data = neural_emb_data(emb);
+    let quant_type = flags & 3;  // Lower 2 bits
+
+    if quant_type == EMB_FLAG_INT8() {
+        // 8-bit quantized: 1 byte per dimension
+        let i = 0;
+        while i < dims {
+            if i < vec_len(data) {
+                vec_push(bytes, vec_get(data, i) & 255);
+            } else {
+                vec_push(bytes, 0);
+            }
+            i = i + 1;
+        }
+    } else if quant_type == EMB_FLAG_INT16() {
+        // 16-bit quantized: 2 bytes per dimension
+        let i = 0;
+        while i < dims {
+            let val = 0;
+            if i < vec_len(data) {
+                val = vec_get(data, i);
+            }
+            vec_push(bytes, (val >> 8) & 255);
+            vec_push(bytes, val & 255);
+            i = i + 1;
+        }
+    } else if quant_type == EMB_FLAG_BINARY() {
+        // Binary: 1 bit per dimension, packed into bytes
+        let byte_count = (dims + 7) / 8;
+        let byte_idx = 0;
+        while byte_idx < byte_count {
+            let byte_val = 0;
+            let bit = 0;
+            while bit < 8 {
+                let dim_idx = byte_idx * 8 + bit;
+                if dim_idx < dims && dim_idx < vec_len(data) {
+                    if vec_get(data, dim_idx) != 0 {
+                        byte_val = byte_val | (1 << (7 - bit));
+                    }
+                }
+                bit = bit + 1;
+            }
+            vec_push(bytes, byte_val);
+            byte_idx = byte_idx + 1;
+        }
+    } else {
+        // Float32 (default): 4 bytes per dimension (stored as fixed-point)
+        let i = 0;
+        while i < dims {
+            let val = 0;
+            if i < vec_len(data) {
+                val = vec_get(data, i);
+            }
+            vec_push(bytes, (val >> 24) & 255);
+            vec_push(bytes, (val >> 16) & 255);
+            vec_push(bytes, (val >> 8) & 255);
+            vec_push(bytes, val & 255);
+            i = i + 1;
+        }
+    }
+
+    bytes
+}
+
+fn neural_emb_decode(bytes: i64, offset: i64) -> i64 {
+    let len = vec_len(bytes);
+    if len < offset + 12 {
+        return 0;  // Minimum: tag + flags + dims + scale + offset
+    }
+
+    if vec_get(bytes, offset) != STF_NEURAL_EMB() {
+        return 0;
+    }
+
+    let pos = offset + 1;
+
+    // Flags
+    let flags = vec_get(bytes, pos);
+    pos = pos + 1;
+
+    // Dimensions
+    let dims = (vec_get(bytes, pos) << 8) | vec_get(bytes, pos + 1);
+    pos = pos + 2;
+
+    // Scale
+    let scale = (vec_get(bytes, pos) << 24) |
+                (vec_get(bytes, pos + 1) << 16) |
+                (vec_get(bytes, pos + 2) << 8) |
+                vec_get(bytes, pos + 3);
+    pos = pos + 4;
+
+    // Offset
+    let offset_val = (vec_get(bytes, pos) << 24) |
+                     (vec_get(bytes, pos + 1) << 16) |
+                     (vec_get(bytes, pos + 2) << 8) |
+                     vec_get(bytes, pos + 3);
+    pos = pos + 4;
+
+    let emb = neural_emb_new(dims, flags);
+    neural_emb_set_scale(emb, scale, offset_val);
+
+    // Decode data based on quantization type
+    let quant_type = flags & 3;
+    let data = neural_emb_data(emb);
+
+    if quant_type == EMB_FLAG_INT8() {
+        if len < pos + dims { return 0; }
+        let i = 0;
+        while i < dims {
+            vec_push(data, vec_get(bytes, pos + i));
+            i = i + 1;
+        }
+    } else if quant_type == EMB_FLAG_INT16() {
+        if len < pos + dims * 2 { return 0; }
+        let i = 0;
+        while i < dims {
+            let val = (vec_get(bytes, pos) << 8) | vec_get(bytes, pos + 1);
+            vec_push(data, val);
+            pos = pos + 2;
+            i = i + 1;
+        }
+    } else if quant_type == EMB_FLAG_BINARY() {
+        let byte_count = (dims + 7) / 8;
+        if len < pos + byte_count { return 0; }
+        let byte_idx = 0;
+        while byte_idx < byte_count {
+            let byte_val = vec_get(bytes, pos + byte_idx);
+            let bit = 0;
+            while bit < 8 {
+                let dim_idx = byte_idx * 8 + bit;
+                if dim_idx < dims {
+                    let bit_val = 0;
+                    if (byte_val & (1 << (7 - bit))) != 0 {
+                        bit_val = 1;
+                    }
+                    vec_push(data, bit_val);
+                }
+                bit = bit + 1;
+            }
+            byte_idx = byte_idx + 1;
+        }
+    } else {
+        // Float32
+        if len < pos + dims * 4 { return 0; }
+        let i = 0;
+        while i < dims {
+            let val = (vec_get(bytes, pos) << 24) |
+                      (vec_get(bytes, pos + 1) << 16) |
+                      (vec_get(bytes, pos + 2) << 8) |
+                      vec_get(bytes, pos + 3);
+            vec_push(data, val);
+            pos = pos + 4;
+            i = i + 1;
+        }
+    }
+
+    emb
+}
+
+// Calculate dot product between two embeddings (scaled by 1000)
+fn neural_emb_dot(a: i64, b: i64) -> i64 {
+    let dims_a = neural_emb_dimensions(a);
+    let dims_b = neural_emb_dimensions(b);
+    let dims = dims_a;
+    if dims_b < dims { dims = dims_b; }
+
+    let data_a = neural_emb_data(a);
+    let data_b = neural_emb_data(b);
+
+    let sum = 0;
+    let i = 0;
+    while i < dims {
+        let val_a = 0;
+        let val_b = 0;
+        if i < vec_len(data_a) { val_a = vec_get(data_a, i); }
+        if i < vec_len(data_b) { val_b = vec_get(data_b, i); }
+        sum = sum + val_a * val_b;
+        i = i + 1;
+    }
+
+    sum
+}
+
+// Calculate cosine similarity (returns value scaled by 10000)
+fn neural_emb_cosine_similarity(a: i64, b: i64) -> i64 {
+    let dot = neural_emb_dot(a, b);
+    let norm_a = neural_emb_dot(a, a);
+    let norm_b = neural_emb_dot(b, b);
+
+    if norm_a == 0 || norm_b == 0 {
+        return 0;
+    }
+
+    // Approximate: dot / sqrt(norm_a * norm_b)
+    // Using integer approximation
+    let denom_sq = norm_a * norm_b / 10000;  // Scale down
+
+    // Simple integer sqrt approximation
+    let denom = 1;
+    if denom_sq > 0 {
+        denom = nex_int_sqrt(denom_sq);
+        if denom == 0 { denom = 1; }
+    }
+
+    // Return similarity scaled by 10000
+    (dot * 100) / denom
+}
+
+// Integer square root (Newton's method)
+fn nex_int_sqrt(n: i64) -> i64 {
+    if n <= 1 { return n; }
+
+    let x = n;
+    let y = (x + 1) / 2;
+
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+
+    x
+}
+
+// =============================================================================
+// Pattern Instantiation (STF_PATTERN_INST = 50)
+// =============================================================================
+
+// Pattern instantiation represents a template pattern with variable bindings.
+// This enables sharing of common cognitive patterns across hives.
+//
+// Layout:
+// - Tag byte (1): STF_PATTERN_INST = 50
+// - Pattern ID (4 bytes): Reference to pattern template
+// - Binding count (1 byte): Number of variable bindings
+// - Bindings (variable): (slot_id: 1 byte, value_len: 2 bytes, value: variable)
+
+fn pattern_inst_new(pattern_id: i64) -> i64 {
+    let inst = vec_new();
+    vec_push(inst, pattern_id);    // Slot 0: pattern ID
+    vec_push(inst, vec_new());     // Slot 1: binding slot IDs
+    vec_push(inst, vec_new());     // Slot 2: binding values (list of vecs)
+    inst
+}
+
+fn pattern_inst_pattern_id(inst: i64) -> i64 { vec_get(inst, 0) }
+fn pattern_inst_slot_ids(inst: i64) -> i64 { vec_get(inst, 1) }
+fn pattern_inst_values(inst: i64) -> i64 { vec_get(inst, 2) }
+
+fn pattern_inst_binding_count(inst: i64) -> i64 {
+    vec_len(pattern_inst_slot_ids(inst))
+}
+
+fn pattern_inst_add_binding(inst: i64, slot_id: i64, value: i64) -> i64 {
+    let slot_ids = pattern_inst_slot_ids(inst);
+    let values = pattern_inst_values(inst);
+    vec_push(slot_ids, slot_id);
+    vec_push(values, value);
+    vec_len(slot_ids) - 1
+}
+
+fn pattern_inst_get_binding_slot(inst: i64, index: i64) -> i64 {
+    let slot_ids = pattern_inst_slot_ids(inst);
+    if index >= vec_len(slot_ids) {
+        return 0 - 1;
+    }
+    vec_get(slot_ids, index)
+}
+
+fn pattern_inst_get_binding_value(inst: i64, index: i64) -> i64 {
+    let values = pattern_inst_values(inst);
+    if index >= vec_len(values) {
+        return 0;
+    }
+    vec_get(values, index)
+}
+
+fn pattern_inst_get_value_by_slot(inst: i64, slot_id: i64) -> i64 {
+    let slot_ids = pattern_inst_slot_ids(inst);
+    let values = pattern_inst_values(inst);
+    let len = vec_len(slot_ids);
+
+    let i = 0;
+    while i < len {
+        if vec_get(slot_ids, i) == slot_id {
+            return vec_get(values, i);
+        }
+        i = i + 1;
+    }
+    0  // Not found
+}
+
+fn pattern_inst_encode(inst: i64) -> i64 {
+    let bytes = vec_new();
+
+    // Tag byte
+    vec_push(bytes, STF_PATTERN_INST());
+
+    // Pattern ID (4 bytes)
+    let pid = pattern_inst_pattern_id(inst);
+    vec_push(bytes, (pid >> 24) & 255);
+    vec_push(bytes, (pid >> 16) & 255);
+    vec_push(bytes, (pid >> 8) & 255);
+    vec_push(bytes, pid & 255);
+
+    // Binding count (1 byte)
+    let count = pattern_inst_binding_count(inst);
+    if count > 255 { count = 255; }
+    vec_push(bytes, count);
+
+    // Bindings
+    let slot_ids = pattern_inst_slot_ids(inst);
+    let values = pattern_inst_values(inst);
+
+    let i = 0;
+    while i < count {
+        // Slot ID (1 byte)
+        let slot = vec_get(slot_ids, i);
+        vec_push(bytes, slot & 255);
+
+        // Value length and data
+        let value = vec_get(values, i);
+        let value_len = vec_len(value);
+        vec_push(bytes, (value_len >> 8) & 255);
+        vec_push(bytes, value_len & 255);
+
+        let j = 0;
+        while j < value_len {
+            vec_push(bytes, vec_get(value, j));
+            j = j + 1;
+        }
+
+        i = i + 1;
+    }
+
+    bytes
+}
+
+fn pattern_inst_decode(bytes: i64, offset: i64) -> i64 {
+    let len = vec_len(bytes);
+    if len < offset + 6 {
+        return 0;  // Minimum: tag + pattern_id + count
+    }
+
+    if vec_get(bytes, offset) != STF_PATTERN_INST() {
+        return 0;
+    }
+
+    let pos = offset + 1;
+
+    // Pattern ID
+    let pid = (vec_get(bytes, pos) << 24) |
+              (vec_get(bytes, pos + 1) << 16) |
+              (vec_get(bytes, pos + 2) << 8) |
+              vec_get(bytes, pos + 3);
+    pos = pos + 4;
+
+    // Binding count
+    let count = vec_get(bytes, pos);
+    pos = pos + 1;
+
+    let inst = pattern_inst_new(pid);
+
+    // Decode bindings
+    let i = 0;
+    while i < count {
+        if len < pos + 3 { return 0; }  // slot + value_len
+
+        let slot = vec_get(bytes, pos);
+        pos = pos + 1;
+
+        let value_len = (vec_get(bytes, pos) << 8) | vec_get(bytes, pos + 1);
+        pos = pos + 2;
+
+        if len < pos + value_len { return 0; }
+
+        let value = vec_new();
+        let j = 0;
+        while j < value_len {
+            vec_push(value, vec_get(bytes, pos + j));
+            j = j + 1;
+        }
+        pos = pos + value_len;
+
+        pattern_inst_add_binding(inst, slot, value);
+
+        i = i + 1;
+    }
+
+    inst
+}
+
+// =============================================================================
+// Pattern Template Registry
+// =============================================================================
+
+// Pattern templates define reusable cognitive structures
+// with named slots for variable binding.
+
+fn pattern_template_new(pattern_id: i64, name_hash: i64) -> i64 {
+    let tmpl = vec_new();
+    vec_push(tmpl, pattern_id);    // Slot 0: ID
+    vec_push(tmpl, name_hash);     // Slot 1: name hash
+    vec_push(tmpl, vec_new());     // Slot 2: slot definitions
+    vec_push(tmpl, vec_new());     // Slot 3: template body
+    tmpl
+}
+
+fn pattern_template_id(tmpl: i64) -> i64 { vec_get(tmpl, 0) }
+fn pattern_template_name_hash(tmpl: i64) -> i64 { vec_get(tmpl, 1) }
+fn pattern_template_slots(tmpl: i64) -> i64 { vec_get(tmpl, 2) }
+fn pattern_template_body(tmpl: i64) -> i64 { vec_get(tmpl, 3) }
+
+fn pattern_template_add_slot(tmpl: i64, slot_id: i64, slot_type: i64) -> i64 {
+    let slots = pattern_template_slots(tmpl);
+    vec_push(slots, slot_id);
+    vec_push(slots, slot_type);
+    0
+}
+
+fn pattern_template_set_body(tmpl: i64, body: i64) -> i64 {
+    vec_set(tmpl, 3, body);
+    0
+}
+
+fn pattern_template_slot_count(tmpl: i64) -> i64 {
+    vec_len(pattern_template_slots(tmpl)) / 2
+}
+
+// Pattern registry for sharing templates
+fn pattern_registry_new() -> i64 {
+    let reg = vec_new();
+    vec_push(reg, vec_new());      // Slot 0: templates (by ID)
+    vec_push(reg, vec_new());      // Slot 1: ID lookup (hash -> ID)
+    reg
+}
+
+fn pattern_registry_templates(reg: i64) -> i64 { vec_get(reg, 0) }
+fn pattern_registry_lookup(reg: i64) -> i64 { vec_get(reg, 1) }
+
+fn pattern_registry_add(reg: i64, tmpl: i64) -> i64 {
+    let templates = pattern_registry_templates(reg);
+    let pid = pattern_template_id(tmpl);
+
+    // Extend templates list if needed
+    while vec_len(templates) <= pid {
+        vec_push(templates, 0);
+    }
+    vec_set(templates, pid, tmpl);
+
+    // Add to hash lookup
+    let lookup = pattern_registry_lookup(reg);
+    let hash = pattern_template_name_hash(tmpl);
+    vec_push(lookup, hash);
+    vec_push(lookup, pid);
+
+    0
+}
+
+fn pattern_registry_get(reg: i64, pattern_id: i64) -> i64 {
+    let templates = pattern_registry_templates(reg);
+    if pattern_id >= vec_len(templates) {
+        return 0;
+    }
+    vec_get(templates, pattern_id)
+}
+
+fn pattern_registry_find_by_hash(reg: i64, hash: i64) -> i64 {
+    let lookup = pattern_registry_lookup(reg);
+    let len = vec_len(lookup);
+    let i = 0;
+    while i < len {
+        if vec_get(lookup, i) == hash {
+            return vec_get(lookup, i + 1);
+        }
+        i = i + 2;
+    }
+    0 - 1  // Not found
+}
+
+// =============================================================================
+// Neural Cache
+// =============================================================================
+
+// Cache for frequently used neural embeddings to avoid re-transmission
+
+fn neural_cache_new(max_size: i64) -> i64 {
+    let cache = vec_new();
+    vec_push(cache, max_size);      // Slot 0: max size
+    vec_push(cache, vec_new());     // Slot 1: keys (hashes)
+    vec_push(cache, vec_new());     // Slot 2: values (embeddings)
+    vec_push(cache, vec_new());     // Slot 3: access counts (for LFU)
+    cache
+}
+
+fn neural_cache_max_size(cache: i64) -> i64 { vec_get(cache, 0) }
+fn neural_cache_keys(cache: i64) -> i64 { vec_get(cache, 1) }
+fn neural_cache_values(cache: i64) -> i64 { vec_get(cache, 2) }
+fn neural_cache_access_counts(cache: i64) -> i64 { vec_get(cache, 3) }
+
+fn neural_cache_size(cache: i64) -> i64 {
+    vec_len(neural_cache_keys(cache))
+}
+
+fn neural_cache_put(cache: i64, key: i64, embedding: i64) -> i64 {
+    let keys = neural_cache_keys(cache);
+    let values = neural_cache_values(cache);
+    let counts = neural_cache_access_counts(cache);
+
+    // Check if key exists
+    let len = vec_len(keys);
+    let i = 0;
+    while i < len {
+        if vec_get(keys, i) == key {
+            // Update existing entry
+            vec_set(values, i, embedding);
+            let count = vec_get(counts, i);
+            vec_set(counts, i, count + 1);
+            return 0;
+        }
+        i = i + 1;
+    }
+
+    // Check if we need to evict
+    let max = neural_cache_max_size(cache);
+    if len >= max {
+        // Find LFU entry to evict
+        let min_count = vec_get(counts, 0);
+        let min_idx = 0;
+        i = 1;
+        while i < len {
+            let count = vec_get(counts, i);
+            if count < min_count {
+                min_count = count;
+                min_idx = i;
+            }
+            i = i + 1;
+        }
+
+        // Replace the entry
+        vec_set(keys, min_idx, key);
+        vec_set(values, min_idx, embedding);
+        vec_set(counts, min_idx, 1);
+        return 0;
+    }
+
+    // Add new entry
+    vec_push(keys, key);
+    vec_push(values, embedding);
+    vec_push(counts, 1);
+    0
+}
+
+fn neural_cache_get(cache: i64, key: i64) -> i64 {
+    let keys = neural_cache_keys(cache);
+    let values = neural_cache_values(cache);
+    let counts = neural_cache_access_counts(cache);
+
+    let len = vec_len(keys);
+    let i = 0;
+    while i < len {
+        if vec_get(keys, i) == key {
+            // Update access count
+            let count = vec_get(counts, i);
+            vec_set(counts, i, count + 1);
+            return vec_get(values, i);
+        }
+        i = i + 1;
+    }
+    0  // Not found
+}
+
+fn neural_cache_contains(cache: i64, key: i64) -> i64 {
+    let keys = neural_cache_keys(cache);
+    let len = vec_len(keys);
+    let i = 0;
+    while i < len {
+        if vec_get(keys, i) == key {
+            return 1;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+fn neural_cache_clear(cache: i64) -> i64 {
+    let keys = neural_cache_keys(cache);
+    let values = neural_cache_values(cache);
+    let counts = neural_cache_access_counts(cache);
+
+    // Clear all lists by replacing with new empty ones
+    vec_set(cache, 1, vec_new());
+    vec_set(cache, 2, vec_new());
+    vec_set(cache, 3, vec_new());
+    0
+}
+
+// =============================================================================
+// Debug/Print Helpers
+// =============================================================================
+
+fn codebook_ref_print(ref: i64) -> i64 {
+    print("CodebookRef(cb=");
+    print_i64(codebook_ref_codebook_id(ref));
+    print(", entry=");
+    print_i64(codebook_ref_entry_index(ref));
+    print(", ver=");
+    print_i64(codebook_ref_version(ref));
+    print(")");
+    0
+}
+
+fn neural_emb_print(emb: i64) -> i64 {
+    print("NeuralEmb(dims=");
+    print_i64(neural_emb_dimensions(emb));
+    print(", flags=");
+    print_i64(neural_emb_flags(emb));
+    print(", data_len=");
+    print_i64(vec_len(neural_emb_data(emb)));
+    print(")");
+    0
+}
+
+fn pattern_inst_print(inst: i64) -> i64 {
+    print("PatternInst(pattern=");
+    print_i64(pattern_inst_pattern_id(inst));
+    print(", bindings=");
+    print_i64(pattern_inst_binding_count(inst));
+    print(")");
+    0
+}
+

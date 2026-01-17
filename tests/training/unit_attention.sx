@@ -1,0 +1,459 @@
+// Unit tests for attention mechanisms
+//
+// Tests MultiHeadAttention, GroupedQueryAttention, and temperature-aware variants.
+
+use simplex_std::dual;
+use simplex_std::vec::Vec;
+use simplex_learning::tensor::DualTensor;
+use simplex_training::{
+ MultiHeadAttention, GroupedQueryAttention,
+ TemperatureAttention, LearnableTemperature,
+ Linear, LayerNorm, RMSNorm,
+};
+
+#[cfg(test)]
+mod multi_head_attention_tests {
+ use super::*;
+
+ #[test]
+ fn test_mha_creation() {
+ let mha = MultiHeadAttention::new(512, 8, 64, 0.0);
+
+ assert_eq!(mha.hidden_dim(), 512);
+ assert_eq!(mha.num_heads(), 8);
+ assert_eq!(mha.head_dim(), 64);
+ }
+
+ #[test]
+ fn test_mha_forward_shape() {
+ let mha = MultiHeadAttention::new(256, 4, 64, 0.0);
+
+ // Input: [batch=2, seq=10, hidden=256]
+ let query = DualTensor::randn(&[2, 10, 256], 42);
+ let key = DualTensor::randn(&[2, 10, 256], 43);
+ let value = DualTensor::randn(&[2, 10, 256], 44);
+
+ let output = mha.forward(&query, &key, &value, None);
+
+ // Output should be same shape as query
+ assert_eq!(output.shape(), &[2, 10, 256]);
+ }
+
+ #[test]
+ fn test_mha_self_attention() {
+ let mha = MultiHeadAttention::new(128, 4, 32, 0.0);
+
+ let x = DualTensor::randn(&[1, 5, 128], 42);
+ let output = mha.forward(&x, &x, &x, None);
+
+ assert_eq!(output.shape(), &[1, 5, 128]);
+ }
+
+ #[test]
+ fn test_mha_with_mask() {
+ let mha = MultiHeadAttention::new(64, 2, 32, 0.0);
+
+ let x = DualTensor::randn(&[1, 4, 64], 42);
+
+ // Causal mask: lower triangular
+ let mask = DualTensor::tril(&[4, 4]);
+ let output = mha.forward(&x, &x, &x, Some(&mask));
+
+ assert_eq!(output.shape(), &[1, 4, 64]);
+ }
+
+ #[test]
+ fn test_mha_no_nan() {
+ let mha = MultiHeadAttention::new(128, 4, 32, 0.0);
+
+ let x = DualTensor::randn(&[2, 8, 128], 42);
+ let output = mha.forward(&x, &x, &x, None);
+
+ for val in output.data() {
+ assert!(!val.val.is_nan());
+ }
+ }
+
+ #[test]
+ fn test_mha_different_kv_length() {
+ // Cross-attention scenario: query and key/value have different lengths
+ let mha = MultiHeadAttention::new(128, 4, 32, 0.0);
+
+ let query = DualTensor::randn(&[1, 5, 128], 42); // seq_len = 5
+ let key = DualTensor::randn(&[1, 10, 128], 43); // seq_len = 10
+ let value = DualTensor::randn(&[1, 10, 128], 44);
+
+ let output = mha.forward(&query, &key, &value, None);
+
+ // Output seq_len should match query
+ assert_eq!(output.shape(), &[1, 5, 128]);
+ }
+
+ #[test]
+ fn test_mha_batched() {
+ let mha = MultiHeadAttention::new(64, 2, 32, 0.0);
+
+ for batch_size in [1, 4, 8, 16] {
+ let x = DualTensor::randn(&[batch_size, 10, 64], 42);
+ let output = mha.forward(&x, &x, &x, None);
+ assert_eq!(output.shape()[0], batch_size);
+ }
+ }
+
+ #[test]
+ fn test_mha_gradient_flow() {
+ let mha = MultiHeadAttention::new(32, 2, 16, 0.0);
+
+ let x = DualTensor::full(&[1, 4, 32], dual::variable(1.0));
+ let output = mha.forward(&x, &x, &x, None);
+
+ // Gradients should propagate
+ for val in output.data() {
+ assert!(!val.dot.is_nan());
+ }
+ }
+}
+
+#[cfg(test)]
+mod grouped_query_attention_tests {
+ use super::*;
+
+ #[test]
+ fn test_gqa_creation() {
+ // 8 heads with 2 KV heads (each KV head serves 4 query heads)
+ let gqa = GroupedQueryAttention::new(512, 8, 2, 64, 0.0);
+
+ assert_eq!(gqa.num_heads(), 8);
+ assert_eq!(gqa.num_kv_heads(), 2);
+ assert_eq!(gqa.head_dim(), 64);
+ }
+
+ #[test]
+ fn test_gqa_forward_shape() {
+ let gqa = GroupedQueryAttention::new(256, 8, 2, 32, 0.0);
+
+ let x = DualTensor::randn(&[2, 10, 256], 42);
+ let output = gqa.forward(&x, &x, &x, None);
+
+ assert_eq!(output.shape(), &[2, 10, 256]);
+ }
+
+ #[test]
+ fn test_gqa_memory_efficiency() {
+ // GQA should use fewer KV parameters
+ let mha = MultiHeadAttention::new(512, 8, 64, 0.0);
+ let gqa = GroupedQueryAttention::new(512, 8, 2, 64, 0.0);
+
+ // MHA: 8 heads each with 64 dim = 8*64 = 512 for K and V
+ // GQA: 2 KV heads each with 64 dim = 2*64 = 128 for K and V
+ // GQA uses 4x less KV parameters
+
+ let mha_kv_params = mha.kv_parameters();
+ let gqa_kv_params = gqa.kv_parameters();
+
+ assert!(gqa_kv_params < mha_kv_params);
+ }
+
+ #[test]
+ fn test_gqa_single_kv_head() {
+ // Multi-Query Attention: single KV head
+ let mqa = GroupedQueryAttention::new(256, 8, 1, 32, 0.0);
+
+ let x = DualTensor::randn(&[1, 5, 256], 42);
+ let output = mqa.forward(&x, &x, &x, None);
+
+ assert_eq!(output.shape(), &[1, 5, 256]);
+ }
+
+ #[test]
+ fn test_gqa_equals_mha_when_kv_equals_heads() {
+ // When num_kv_heads == num_heads, GQA should behave like MHA
+ let gqa = GroupedQueryAttention::new(128, 4, 4, 32, 0.0);
+
+ let x = DualTensor::randn(&[1, 5, 128], 42);
+ let output = gqa.forward(&x, &x, &x, None);
+
+ assert_eq!(output.shape(), &[1, 5, 128]);
+ }
+}
+
+#[cfg(test)]
+mod temperature_attention_tests {
+ use super::*;
+
+ #[test]
+ fn test_learnable_temperature_creation() {
+ let temp = LearnableTemperature::new(1.0, 0.1, 10.0, 0.01);
+
+ assert!((temp.value() - 1.0).abs() < 1e-10);
+ assert!((temp.min() - 0.1).abs() < 1e-10);
+ assert!((temp.max() - 10.0).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_temperature_clamping() {
+ let mut temp = LearnableTemperature::new(1.0, 0.1, 2.0, 1.0);
+
+ // Try to update beyond bounds
+ temp.update(100.0); // gradient that would push beyond max
+ assert!(temp.value() <= 2.0);
+
+ temp.update(-100.0); // gradient that would push below min
+ assert!(temp.value() >= 0.1);
+ }
+
+ #[test]
+ fn test_temperature_attention_creation() {
+ let temp_attn = TemperatureAttention::new(256, 4, 64, 0.0);
+
+ assert_eq!(temp_attn.hidden_dim(), 256);
+ assert!(temp_attn.temperature() > 0.0);
+ }
+
+ #[test]
+ fn test_temperature_attention_forward() {
+ let temp_attn = TemperatureAttention::new(128, 4, 32, 0.0);
+
+ let x = DualTensor::randn(&[2, 8, 128], 42);
+ let output = temp_attn.forward(&x, &x, &x, None);
+
+ assert_eq!(output.shape(), &[2, 8, 128]);
+ }
+
+ #[test]
+ fn test_temperature_affects_attention() {
+ let x = DualTensor::randn(&[1, 4, 64], 42);
+
+ // Low temperature (sharper attention)
+ let mut attn_low = TemperatureAttention::new(64, 2, 32, 0.0);
+ attn_low.set_temperature(0.1);
+ let out_low = attn_low.forward(&x, &x, &x, None);
+
+ // High temperature (softer attention)
+ let mut attn_high = TemperatureAttention::new(64, 2, 32, 0.0);
+ attn_high.set_temperature(10.0);
+ let out_high = attn_high.forward(&x, &x, &x, None);
+
+ // Outputs should differ
+ let diff: f64 = out_low.data().iter()
+ .zip(out_high.data().iter())
+ .map(|(a, b)| (a.val - b.val).abs())
+ .sum();
+
+ assert!(diff > 1e-5);
+ }
+
+ #[test]
+ fn test_temperature_gradient() {
+ let temp_attn = TemperatureAttention::new(64, 2, 32, 0.0);
+
+ let x = DualTensor::full(&[1, 4, 64], dual::variable(1.0));
+ let output = temp_attn.forward(&x, &x, &x, None);
+
+ // Temperature parameter should receive gradients
+ for val in output.data() {
+ assert!(!val.dot.is_nan());
+ }
+ }
+
+ #[test]
+ fn test_temperature_adaptation() {
+ let mut temp_attn = TemperatureAttention::new(64, 2, 32, 0.0);
+ let initial_temp = temp_attn.temperature();
+
+ // Simulate training with gradient updates
+ for _ in 0..10 {
+ let x = DualTensor::randn(&[1, 4, 64], 42);
+ let _ = temp_attn.forward(&x, &x, &x, None);
+ temp_attn.adapt_temperature(0.1); // small update
+ }
+
+ let final_temp = temp_attn.temperature();
+
+ // Temperature should have changed (unless by chance)
+ // This is a soft test - we just verify it doesn't crash
+ assert!(final_temp > 0.0);
+ }
+}
+
+#[cfg(test)]
+mod normalization_tests {
+ use super::*;
+
+ #[test]
+ fn test_layer_norm() {
+ let ln = LayerNorm::new(64, 1e-5);
+
+ let x = DualTensor::randn(&[2, 10, 64], 42);
+ let output = ln.forward(&x);
+
+ assert_eq!(output.shape(), &[2, 10, 64]);
+ }
+
+ #[test]
+ fn test_layer_norm_statistics() {
+ let ln = LayerNorm::new(64, 1e-5);
+
+ let x = DualTensor::randn(&[1, 1, 64], 42);
+ let output = ln.forward(&x);
+
+ // After layer norm, mean should be ~0 and std ~1
+ let mean: f64 = output.data().iter().map(|d| d.val).sum::<f64>() / 64.0;
+ let var: f64 = output.data().iter()
+ .map(|d| (d.val - mean).powi(2))
+ .sum::<f64>() / 64.0;
+ let std = var.sqrt();
+
+ assert!(mean.abs() < 0.1);
+ assert!((std - 1.0).abs() < 0.2);
+ }
+
+ #[test]
+ fn test_rms_norm() {
+ let rn = RMSNorm::new(64, 1e-5);
+
+ let x = DualTensor::randn(&[2, 10, 64], 42);
+ let output = rn.forward(&x);
+
+ assert_eq!(output.shape(), &[2, 10, 64]);
+ }
+
+ #[test]
+ fn test_rms_norm_scale() {
+ let rn = RMSNorm::new(64, 1e-5);
+
+ let x = DualTensor::randn(&[1, 1, 64], 42);
+ let output = rn.forward(&x);
+
+ // RMS norm scales by 1/sqrt(mean(x^2))
+ let rms: f64 = (output.data().iter()
+ .map(|d| d.val.powi(2))
+ .sum::<f64>() / 64.0).sqrt();
+
+ // Should be close to 1 after normalization (before scaling)
+ assert!((rms - 1.0).abs() < 0.3);
+ }
+
+ #[test]
+ fn test_norm_gradient_flow() {
+ let ln = LayerNorm::new(32, 1e-5);
+
+ let x = DualTensor::full(&[1, 4, 32], dual::variable(1.0));
+ let output = ln.forward(&x);
+
+ for val in output.data() {
+ assert!(!val.dot.is_nan());
+ }
+ }
+}
+
+#[cfg(test)]
+mod attention_mask_tests {
+ use super::*;
+
+ #[test]
+ fn test_causal_mask() {
+ let mask = DualTensor::causal_mask(4);
+
+ // Should be lower triangular
+ for i in 0..4 {
+ for j in 0..4 {
+ let expected = if j <= i { 1.0 } else { 0.0 };
+ assert!((mask.get(&[i, j]).val - expected).abs() < 1e-10);
+ }
+ }
+ }
+
+ #[test]
+ fn test_padding_mask() {
+ // Create padding mask for sequences of different lengths
+ let lengths = vec![3, 4, 2]; // batch of 3 with max_len 4
+ let mask = DualTensor::padding_mask(&lengths, 4);
+
+ assert_eq!(mask.shape(), &[3, 4]);
+
+ // First sequence: [1, 1, 1, 0]
+ assert!((mask.get(&[0, 2]).val - 1.0).abs() < 1e-10);
+ assert!((mask.get(&[0, 3]).val - 0.0).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_attention_with_causal_mask() {
+ let mha = MultiHeadAttention::new(64, 2, 32, 0.0);
+
+ let x = DualTensor::randn(&[1, 4, 64], 42);
+ let mask = DualTensor::causal_mask(4);
+
+ let output = mha.forward(&x, &x, &x, Some(&mask));
+
+ // Output should be valid
+ for val in output.data() {
+ assert!(!val.val.is_nan());
+ assert!(val.val.is_finite());
+ }
+ }
+
+ #[test]
+ fn test_combined_mask() {
+ // Combine causal mask with padding mask
+ let causal = DualTensor::causal_mask(4);
+ let padding = DualTensor::from_vec(
+ vec![
+ dual::constant(1.0), dual::constant(1.0),
+ dual::constant(1.0), dual::constant(0.0),
+ ],
+ &[1, 4]
+ );
+
+ // Combined mask: both conditions must be satisfied
+ let combined = causal.mul_broadcast(&padding);
+
+ assert_eq!(combined.shape(), &[4, 4]);
+ }
+}
+
+#[cfg(test)]
+mod rotary_embedding_tests {
+ use super::*;
+
+ #[test]
+ fn test_rotary_embedding_creation() {
+ let rope = RotaryEmbedding::new(64, 10000.0, 512);
+
+ assert_eq!(rope.dim(), 64);
+ }
+
+ #[test]
+ fn test_rotary_embedding_apply() {
+ let rope = RotaryEmbedding::new(64, 10000.0, 512);
+
+ // Input: [batch, seq, heads, head_dim]
+ let q = DualTensor::randn(&[1, 10, 4, 64], 42);
+ let k = DualTensor::randn(&[1, 10, 4, 64], 43);
+
+ let (q_rot, k_rot) = rope.apply(&q, &k, 0);
+
+ assert_eq!(q_rot.shape(), q.shape());
+ assert_eq!(k_rot.shape(), k.shape());
+ }
+
+ #[test]
+ fn test_rotary_position_sensitivity() {
+ let rope = RotaryEmbedding::new(64, 10000.0, 512);
+
+ let x = DualTensor::randn(&[1, 1, 1, 64], 42);
+ let x_same = x.clone();
+
+ // Apply at different positions
+ let (x_pos0, _) = rope.apply(&x, &x, 0);
+ let (x_pos5, _) = rope.apply(&x_same, &x_same, 5);
+
+ // Results should differ due to position
+ let diff: f64 = x_pos0.data().iter()
+ .zip(x_pos5.data().iter())
+ .map(|(a, b)| (a.val - b.val).abs())
+ .sum();
+
+ assert!(diff > 1e-5);
+ }
+}

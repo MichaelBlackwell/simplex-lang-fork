@@ -1,0 +1,136 @@
+// simplex-std/runtime - Async runtime utilities
+//
+// Provides the async runtime for executing futures and spawning tasks.
+//
+// # Example
+//
+// ```simplex
+// use simplex_std::runtime;
+//
+// fn main() {
+//     runtime::block_on(async {
+//         println!("Hello from async!");
+//     });
+// }
+// ```
+
+// =============================================================================
+// Runtime Entry Point
+// =============================================================================
+
+/// Run an async function to completion on the current thread.
+///
+/// This is the main entry point for async programs in Simplex.
+/// It blocks the current thread until the future completes.
+///
+/// # Example
+/// ```simplex
+/// runtime::block_on(async_main());
+/// ```
+pub fn block_on<F, T>(future: F) -> T
+where
+    F: Future<Output = T>,
+{
+    unsafe {
+        runtime_block_on(future)
+    }
+}
+
+// =============================================================================
+// Task Spawning
+// =============================================================================
+
+/// Spawn an async task to run concurrently.
+///
+/// The task will run on the runtime's thread pool.
+///
+/// # Example
+/// ```simplex
+/// spawn(async {
+///     do_background_work().await;
+/// });
+/// ```
+pub fn spawn<F>(future: F) -> JoinHandle<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    JoinHandle {
+        handle: unsafe { runtime_spawn(future) },
+        _marker: std::marker::PhantomData,
+    }
+}
+
+/// Handle to a spawned task.
+///
+/// Can be awaited to get the task's result.
+pub struct JoinHandle<T> {
+    handle: i64,
+    _marker: std::marker::PhantomData<T>,
+}
+
+impl<T> Future for JoinHandle<T> {
+    type Output = Result<T, JoinError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        unsafe {
+            let status = runtime_join_poll(self.handle);
+            match status {
+                0 => {
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+                1 => {
+                    let result = runtime_join_result(self.handle);
+                    Poll::Ready(Ok(result))
+                }
+                _ => Poll::Ready(Err(JoinError::Cancelled)),
+            }
+        }
+    }
+}
+
+impl<T> Drop for JoinHandle<T> {
+    fn drop(&mut self) {
+        unsafe {
+            runtime_join_drop(self.handle);
+        }
+    }
+}
+
+/// Error returned when a task fails.
+#[derive(Debug)]
+pub enum JoinError {
+    /// The task was cancelled
+    Cancelled,
+    /// The task panicked
+    Panic,
+}
+
+impl std::fmt::Display for JoinError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JoinError::Cancelled => write!(f, "task was cancelled"),
+            JoinError::Panic => write!(f, "task panicked"),
+        }
+    }
+}
+
+impl std::error::Error for JoinError {}
+
+// =============================================================================
+// FFI Declarations
+// =============================================================================
+
+extern "C" {
+    fn runtime_block_on<F, T>(future: F) -> T where F: Future<Output = T>;
+    fn runtime_spawn<F>(future: F) -> i64 where F: Future + Send + 'static;
+    fn runtime_join_poll(handle: i64) -> i32;
+    fn runtime_join_result<T>(handle: i64) -> T;
+    fn runtime_join_drop(handle: i64);
+}
+
+// Standard library imports
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};

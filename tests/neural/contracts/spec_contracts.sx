@@ -1,177 +1,177 @@
-// Phase 2: Contract Verification Test
+// : Contract Verification Test
 // Tests the contract system for neural gates
 
 fn main() -> i64 {
-    println("=== Contract Verification Test ===");
+ println("=== Contract Verification Test ===");
 
-    // Test 1: Contract settings
-    println("Test 1: Contract settings");
-    let panic_mode: i64 = contract_get_panic_mode();
-    if panic_mode == 0 {
-        println("  PASS: Default panic mode is 0");
-    } else {
-        println("  FAIL: Expected panic mode 0");
-        return 1;
-    }
+ // Test 1: Contract settings
+ println("Test 1: Contract settings");
+ let panic_mode: i64 = contract_get_panic_mode();
+ if panic_mode == 0 {
+ println(" PASS: Default panic mode is 0");
+ } else {
+ println(" FAIL: Expected panic mode 0");
+ return 1;
+ }
 
-    contract_set_panic_mode(1);
-    let panic_mode2: i64 = contract_get_panic_mode();
-    if panic_mode2 == 1 {
-        println("  PASS: Set panic mode to 1");
-    } else {
-        println("  FAIL: Expected panic mode 1");
-        return 1;
-    }
-    // Reset to non-panic for testing
-    contract_set_panic_mode(0);
+ contract_set_panic_mode(1);
+ let panic_mode2: i64 = contract_get_panic_mode();
+ if panic_mode2 == 1 {
+ println(" PASS: Set panic mode to 1");
+ } else {
+ println(" FAIL: Expected panic mode 1");
+ return 1;
+ }
+ // Reset to non-panic for testing
+ contract_set_panic_mode(0);
 
-    // Test 2: Contract result OK
-    println("Test 2: Contract result OK");
-    let ok_result: i64 = contract_result_ok();
-    if ok_result != 0 {
-        println("  PASS: Created OK result");
-    } else {
-        println("  FAIL: Failed to create OK result");
-        return 1;
-    }
+ // Test 2: Contract result OK
+ println("Test 2: Contract result OK");
+ let ok_result: i64 = contract_result_ok();
+ if ok_result != 0 {
+ println(" PASS: Created OK result");
+ } else {
+ println(" FAIL: Failed to create OK result");
+ return 1;
+ }
 
-    let satisfied: i64 = contract_result_satisfied(ok_result);
-    if satisfied == 1 {
-        println("  PASS: OK result is satisfied");
-    } else {
-        println("  FAIL: OK result not satisfied");
-        return 1;
-    }
-    contract_result_free(ok_result);
+ let satisfied: i64 = contract_result_satisfied(ok_result);
+ if satisfied == 1 {
+ println(" PASS: OK result is satisfied");
+ } else {
+ println(" FAIL: OK result not satisfied");
+ return 1;
+ }
+ contract_result_free(ok_result);
 
-    // Test 3: Contract check requires (passing)
-    println("Test 3: Check requires (passing)");
-    let req_pass: i64 = contract_check_requires(1.0, 0.5, 0);
-    let req_sat: i64 = contract_result_satisfied(req_pass);
-    if req_sat == 1 {
-        println("  PASS: Requires satisfied when condition >= min");
-    } else {
-        println("  FAIL: Requires should pass");
-        return 1;
-    }
-    contract_result_free(req_pass);
+ // Test 3: Contract check requires (passing)
+ println("Test 3: Check requires (passing)");
+ let req_pass: i64 = contract_check_requires(1.0, 0.5, 0);
+ let req_sat: i64 = contract_result_satisfied(req_pass);
+ if req_sat == 1 {
+ println(" PASS: Requires satisfied when condition >= min");
+ } else {
+ println(" FAIL: Requires should pass");
+ return 1;
+ }
+ contract_result_free(req_pass);
 
-    // Test 4: Contract check requires (failing)
-    println("Test 4: Check requires (failing)");
-    let req_fail: i64 = contract_check_requires(0.3, 0.5, 0);
-    let req_fail_sat: i64 = contract_result_satisfied(req_fail);
-    if req_fail_sat == 0 {
-        println("  PASS: Requires fails when condition < min");
-    } else {
-        println("  FAIL: Requires should fail");
-        return 1;
-    }
+ // Test 4: Contract check requires (failing)
+ println("Test 4: Check requires (failing)");
+ let req_fail: i64 = contract_check_requires(0.3, 0.5, 0);
+ let req_fail_sat: i64 = contract_result_satisfied(req_fail);
+ if req_fail_sat == 0 {
+ println(" PASS: Requires fails when condition < min");
+ } else {
+ println(" FAIL: Requires should fail");
+ return 1;
+ }
 
-    let vtype: i64 = contract_result_violation_type(req_fail);
-    if vtype == 1 {
-        println("  PASS: Violation type is REQUIRES_FAILED (1)");
-    } else {
-        print("  FAIL: Expected violation type 1, got ");
-        print_i64(vtype);
-        println("");
-        return 1;
-    }
-    contract_result_free(req_fail);
+ let vtype: i64 = contract_result_violation_type(req_fail);
+ if vtype == 1 {
+ println(" PASS: Violation type is REQUIRES_FAILED (1)");
+ } else {
+ print(" FAIL: Expected violation type 1, got ");
+ print_i64(vtype);
+ println("");
+ return 1;
+ }
+ contract_result_free(req_fail);
 
-    // Test 5: Contract check ensures
-    println("Test 5: Check ensures");
-    let ens_pass: i64 = contract_check_ensures(0.8, 0.7, 0);
-    let ens_sat: i64 = contract_result_satisfied(ens_pass);
-    if ens_sat == 1 {
-        println("  PASS: Ensures satisfied");
-    } else {
-        println("  FAIL: Ensures should pass");
-        return 1;
-    }
-    contract_result_free(ens_pass);
+ // Test 5: Contract check ensures
+ println("Test 5: Check ensures");
+ let ens_pass: i64 = contract_check_ensures(0.8, 0.7, 0);
+ let ens_sat: i64 = contract_result_satisfied(ens_pass);
+ if ens_sat == 1 {
+ println(" PASS: Ensures satisfied");
+ } else {
+ println(" FAIL: Ensures should pass");
+ return 1;
+ }
+ contract_result_free(ens_pass);
 
-    let ens_fail: i64 = contract_check_ensures(0.5, 0.7, 0);
-    let ens_fail_sat: i64 = contract_result_satisfied(ens_fail);
-    if ens_fail_sat == 0 {
-        println("  PASS: Ensures fails when < threshold");
-    } else {
-        println("  FAIL: Ensures should fail");
-        return 1;
-    }
+ let ens_fail: i64 = contract_check_ensures(0.5, 0.7, 0);
+ let ens_fail_sat: i64 = contract_result_satisfied(ens_fail);
+ if ens_fail_sat == 0 {
+ println(" PASS: Ensures fails when < threshold");
+ } else {
+ println(" FAIL: Ensures should fail");
+ return 1;
+ }
 
-    let vtype2: i64 = contract_result_violation_type(ens_fail);
-    if vtype2 == 2 {
-        println("  PASS: Violation type is ENSURES_FAILED (2)");
-    } else {
-        print("  FAIL: Expected violation type 2, got ");
-        print_i64(vtype2);
-        println("");
-        return 1;
-    }
-    contract_result_free(ens_fail);
+ let vtype2: i64 = contract_result_violation_type(ens_fail);
+ if vtype2 == 2 {
+ println(" PASS: Violation type is ENSURES_FAILED (2)");
+ } else {
+ print(" FAIL: Expected violation type 2, got ");
+ print_i64(vtype2);
+ println("");
+ return 1;
+ }
+ contract_result_free(ens_fail);
 
-    // Test 6: Contract check invariant
-    println("Test 6: Check invariant");
-    let inv_pass: i64 = contract_check_invariant(1.0, 0.9, 0);
-    let inv_sat: i64 = contract_result_satisfied(inv_pass);
-    if inv_sat == 1 {
-        println("  PASS: Invariant satisfied");
-    } else {
-        println("  FAIL: Invariant should pass");
-        return 1;
-    }
-    contract_result_free(inv_pass);
+ // Test 6: Contract check invariant
+ println("Test 6: Check invariant");
+ let inv_pass: i64 = contract_check_invariant(1.0, 0.9, 0);
+ let inv_sat: i64 = contract_result_satisfied(inv_pass);
+ if inv_sat == 1 {
+ println(" PASS: Invariant satisfied");
+ } else {
+ println(" FAIL: Invariant should pass");
+ return 1;
+ }
+ contract_result_free(inv_pass);
 
-    // Test 7: Contract in range
-    println("Test 7: In range check");
-    let range_pass: i64 = contract_in_range(0.5, 0.0, 1.0);
-    let range_sat: i64 = contract_result_satisfied(range_pass);
-    if range_sat == 1 {
-        println("  PASS: 0.5 is in [0.0, 1.0]");
-    } else {
-        println("  FAIL: Range check should pass");
-        return 1;
-    }
-    contract_result_free(range_pass);
+ // Test 7: Contract in range
+ println("Test 7: In range check");
+ let range_pass: i64 = contract_in_range(0.5, 0.0, 1.0);
+ let range_sat: i64 = contract_result_satisfied(range_pass);
+ if range_sat == 1 {
+ println(" PASS: 0.5 is in [0.0, 1.0]");
+ } else {
+ println(" FAIL: Range check should pass");
+ return 1;
+ }
+ contract_result_free(range_pass);
 
-    let range_fail: i64 = contract_in_range(1.5, 0.0, 1.0);
-    let range_fail_sat: i64 = contract_result_satisfied(range_fail);
-    if range_fail_sat == 0 {
-        println("  PASS: 1.5 is NOT in [0.0, 1.0]");
-    } else {
-        println("  FAIL: Range check should fail");
-        return 1;
-    }
-    contract_result_free(range_fail);
+ let range_fail: i64 = contract_in_range(1.5, 0.0, 1.0);
+ let range_fail_sat: i64 = contract_result_satisfied(range_fail);
+ if range_fail_sat == 0 {
+ println(" PASS: 1.5 is NOT in [0.0, 1.0]");
+ } else {
+ println(" FAIL: Range check should fail");
+ return 1;
+ }
+ contract_result_free(range_fail);
 
-    // Test 8: Neural gate with contract
-    println("Test 8: Neural gate with contract");
-    let name: i64 = string_from("contract_gate");
-    let gate: i64 = neural_gate_new(1, 0.5, 0, name);
-    if gate != 0 {
-        println("  PASS: Created gate");
-    } else {
-        println("  FAIL: Failed to create gate");
-        return 1;
-    }
+ // Test 8: Neural gate with contract
+ println("Test 8: Neural gate with contract");
+ let name: i64 = string_from("contract_gate");
+ let gate: i64 = neural_gate_new(1, 0.5, 0, name);
+ if gate != 0 {
+ println(" PASS: Created gate");
+ } else {
+ println(" FAIL: Failed to create gate");
+ return 1;
+ }
 
-    // Test with valid input (0.7 > 0.5 threshold)
-    // neural_gate_with_contract(gate, input, fallback, requires_conf, ensures_conf)
-    let output: f64 = neural_gate_with_contract(gate, 0.7, 0.0, 0.5, 0.5);
-    // In inference mode, 0.7 > 0.5, so output should be 1.0
-    if output > 0.9 {
-        println("  PASS: Gate output correct for input > threshold");
-    } else {
-        println("  FAIL: Expected output ~1.0");
-        return 1;
-    }
+ // Test with valid input (0.7 > 0.5 threshold)
+ // neural_gate_with_contract(gate, input, fallback, requires_conf, ensures_conf)
+ let output: f64 = neural_gate_with_contract(gate, 0.7, 0.0, 0.5, 0.5);
+ // In inference mode, 0.7 > 0.5, so output should be 1.0
+ if output > 0.9 {
+ println(" PASS: Gate output correct for input > threshold");
+ } else {
+ println(" FAIL: Expected output ~1.0");
+ return 1;
+ }
 
-    // Test with fallback (negative input should fail requires)
-    // Note: requires checks if input >= 0
-    // We'll skip the negative input test since it would trigger the fallback
-    // which is the expected behavior
+ // Test with fallback (negative input should fail requires)
+ // Note: requires checks if input >= 0
+ // We'll skip the negative input test since it would trigger the fallback
+ // which is the expected behavior
 
-    println("");
-    println("=== ALL 8 TESTS PASSED ===");
-    0
+ println("");
+ println("=== ALL 8 TESTS PASSED ===");
+ 0
 }

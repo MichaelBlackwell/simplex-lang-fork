@@ -1,0 +1,836 @@
+// =============================================================================
+// Nexus Protocol - Phase 9: Transport Abstraction Layer
+// =============================================================================
+//
+// This module provides a unified transport abstraction for the Nexus protocol,
+// allowing different underlying transport mechanisms (TCP, UDP, WebSocket,
+// shared memory) to be used interchangeably.
+//
+// Transport Types:
+//   - TRANSPORT_TCP: Reliable TCP with optional TLS
+//   - TRANSPORT_UDP: Low-latency UDP with reliability layer
+//   - TRANSPORT_WEBSOCKET: Browser/edge hive support
+//   - TRANSPORT_SHMEM: Same-machine zero-copy
+//
+// =============================================================================
+
+// =============================================================================
+// Transport Type Constants
+// =============================================================================
+
+fn TRANSPORT_UNKNOWN() -> i64 { 0 }
+fn TRANSPORT_TCP() -> i64 { 1 }
+fn TRANSPORT_UDP() -> i64 { 2 }
+fn TRANSPORT_WEBSOCKET() -> i64 { 3 }
+fn TRANSPORT_SHMEM() -> i64 { 4 }
+fn TRANSPORT_HTTP2() -> i64 { 5 }
+
+// Transport state constants
+fn TRANS_STATE_CLOSED() -> i64 { 0 }
+fn TRANS_STATE_CONNECTING() -> i64 { 1 }
+fn TRANS_STATE_CONNECTED() -> i64 { 2 }
+fn TRANS_STATE_READY() -> i64 { 3 }
+fn TRANS_STATE_DRAINING() -> i64 { 4 }
+fn TRANS_STATE_ERROR() -> i64 { 5 }
+
+// Transport options flags
+fn TRANS_OPT_NONE() -> i64 { 0 }
+fn TRANS_OPT_TLS() -> i64 { 1 }           // Enable TLS encryption
+fn TRANS_OPT_NODELAY() -> i64 { 2 }       // Disable Nagle's algorithm
+fn TRANS_OPT_KEEPALIVE() -> i64 { 4 }     // Enable keepalive probes
+fn TRANS_OPT_COMPRESS() -> i64 { 8 }      // Enable compression
+fn TRANS_OPT_MULTIPLEX() -> i64 { 16 }    // Enable stream multiplexing
+fn TRANS_OPT_RELIABLE() -> i64 { 32 }     // Reliability layer for UDP
+fn TRANS_OPT_ORDERED() -> i64 { 64 }      // Ordered delivery
+fn TRANS_OPT_ZEROCOPY() -> i64 { 128 }    // Zero-copy I/O when available
+
+// Transport errors
+fn TRANS_ERR_NONE() -> i64 { 0 }
+fn TRANS_ERR_CONNECT() -> i64 { 1 }
+fn TRANS_ERR_TIMEOUT() -> i64 { 2 }
+fn TRANS_ERR_CLOSED() -> i64 { 3 }
+fn TRANS_ERR_IO() -> i64 { 4 }
+fn TRANS_ERR_TLS() -> i64 { 5 }
+fn TRANS_ERR_PROTOCOL() -> i64 { 6 }
+fn TRANS_ERR_BUFFER_FULL() -> i64 { 7 }
+fn TRANS_ERR_NO_ROUTE() -> i64 { 8 }
+fn TRANS_ERR_DNS() -> i64 { 9 }
+fn TRANS_ERR_RESET() -> i64 { 10 }
+
+// Default buffer sizes
+fn TRANS_DEFAULT_READ_BUF() -> i64 { 65536 }    // 64KB read buffer
+fn TRANS_DEFAULT_WRITE_BUF() -> i64 { 65536 }   // 64KB write buffer
+fn TRANS_MAX_FRAME_SIZE() -> i64 { 1048576 }    // 1MB max frame
+
+// Timeout defaults (milliseconds)
+fn TRANS_CONNECT_TIMEOUT() -> i64 { 30000 }     // 30 seconds
+fn TRANS_READ_TIMEOUT() -> i64 { 60000 }        // 60 seconds
+fn TRANS_WRITE_TIMEOUT() -> i64 { 30000 }       // 30 seconds
+fn TRANS_KEEPALIVE_INTERVAL() -> i64 { 15000 }  // 15 seconds
+
+// =============================================================================
+// Transport Endpoint
+// =============================================================================
+
+// Create a new endpoint
+// Structure: [type, host, port, path, options]
+fn transport_endpoint_new(transport_type: i64, host: i64, port: i64) -> i64 {
+    let endpoint = vec_new();
+    vec_push(endpoint, transport_type);  // 0: transport type
+    vec_push(endpoint, host);            // 1: host (string as vec of bytes)
+    vec_push(endpoint, port);            // 2: port number
+    vec_push(endpoint, 0);               // 3: path (for websocket/http)
+    vec_push(endpoint, TRANS_OPT_NONE()); // 4: options
+    endpoint
+}
+
+fn transport_endpoint_type(endpoint: i64) -> i64 { vec_get(endpoint, 0) }
+fn transport_endpoint_host(endpoint: i64) -> i64 { vec_get(endpoint, 1) }
+fn transport_endpoint_port(endpoint: i64) -> i64 { vec_get(endpoint, 2) }
+fn transport_endpoint_path(endpoint: i64) -> i64 { vec_get(endpoint, 3) }
+fn transport_endpoint_options(endpoint: i64) -> i64 { vec_get(endpoint, 4) }
+
+fn transport_endpoint_set_path(endpoint: i64, path: i64) -> i64 {
+    vec_set(endpoint, 3, path);
+    1
+}
+
+fn transport_endpoint_set_options(endpoint: i64, options: i64) -> i64 {
+    vec_set(endpoint, 4, options);
+    1
+}
+
+fn transport_endpoint_has_option(endpoint: i64, opt: i64) -> i64 {
+    let options = vec_get(endpoint, 4);
+    if (options / opt) % 2 == 1 { 1 } else { 0 }
+}
+
+fn transport_endpoint_add_option(endpoint: i64, opt: i64) -> i64 {
+    let options = vec_get(endpoint, 4);
+    if transport_endpoint_has_option(endpoint, opt) == 0 {
+        vec_set(endpoint, 4, options + opt);
+    }
+    1
+}
+
+// Create endpoint from string format "type://host:port/path"
+// For simplicity, we use a structured approach here
+fn transport_endpoint_tcp(host: i64, port: i64) -> i64 {
+    transport_endpoint_new(TRANSPORT_TCP(), host, port)
+}
+
+fn transport_endpoint_udp(host: i64, port: i64) -> i64 {
+    transport_endpoint_new(TRANSPORT_UDP(), host, port)
+}
+
+fn transport_endpoint_websocket(host: i64, port: i64, path: i64) -> i64 {
+    let endpoint = transport_endpoint_new(TRANSPORT_WEBSOCKET(), host, port);
+    transport_endpoint_set_path(endpoint, path);
+    endpoint
+}
+
+fn transport_endpoint_shmem(name: i64) -> i64 {
+    // For shared memory, "host" is the shared memory segment name
+    transport_endpoint_new(TRANSPORT_SHMEM(), name, 0)
+}
+
+// =============================================================================
+// Transport Configuration
+// =============================================================================
+
+// Create transport configuration
+// Structure: [read_buf, write_buf, connect_timeout, read_timeout, write_timeout,
+//             keepalive_interval, max_frame, options, tls_config]
+fn transport_config_new() -> i64 {
+    let config = vec_new();
+    vec_push(config, TRANS_DEFAULT_READ_BUF());    // 0: read buffer size
+    vec_push(config, TRANS_DEFAULT_WRITE_BUF());   // 1: write buffer size
+    vec_push(config, TRANS_CONNECT_TIMEOUT());     // 2: connect timeout
+    vec_push(config, TRANS_READ_TIMEOUT());        // 3: read timeout
+    vec_push(config, TRANS_WRITE_TIMEOUT());       // 4: write timeout
+    vec_push(config, TRANS_KEEPALIVE_INTERVAL());  // 5: keepalive interval
+    vec_push(config, TRANS_MAX_FRAME_SIZE());      // 6: max frame size
+    vec_push(config, TRANS_OPT_NODELAY());         // 7: default options
+    vec_push(config, 0);                           // 8: TLS config (optional)
+    config
+}
+
+fn transport_config_read_buf(config: i64) -> i64 { vec_get(config, 0) }
+fn transport_config_write_buf(config: i64) -> i64 { vec_get(config, 1) }
+fn transport_config_connect_timeout(config: i64) -> i64 { vec_get(config, 2) }
+fn transport_config_read_timeout(config: i64) -> i64 { vec_get(config, 3) }
+fn transport_config_write_timeout(config: i64) -> i64 { vec_get(config, 4) }
+fn transport_config_keepalive(config: i64) -> i64 { vec_get(config, 5) }
+fn transport_config_max_frame(config: i64) -> i64 { vec_get(config, 6) }
+fn transport_config_options(config: i64) -> i64 { vec_get(config, 7) }
+fn transport_config_tls(config: i64) -> i64 { vec_get(config, 8) }
+
+fn transport_config_set_read_buf(config: i64, size: i64) -> i64 {
+    vec_set(config, 0, size);
+    1
+}
+
+fn transport_config_set_write_buf(config: i64, size: i64) -> i64 {
+    vec_set(config, 1, size);
+    1
+}
+
+fn transport_config_set_connect_timeout(config: i64, ms: i64) -> i64 {
+    vec_set(config, 2, ms);
+    1
+}
+
+fn transport_config_set_read_timeout(config: i64, ms: i64) -> i64 {
+    vec_set(config, 3, ms);
+    1
+}
+
+fn transport_config_set_write_timeout(config: i64, ms: i64) -> i64 {
+    vec_set(config, 4, ms);
+    1
+}
+
+fn transport_config_set_keepalive(config: i64, ms: i64) -> i64 {
+    vec_set(config, 5, ms);
+    1
+}
+
+fn transport_config_set_max_frame(config: i64, size: i64) -> i64 {
+    vec_set(config, 6, size);
+    1
+}
+
+fn transport_config_set_options(config: i64, options: i64) -> i64 {
+    vec_set(config, 7, options);
+    1
+}
+
+fn transport_config_set_tls(config: i64, tls_config: i64) -> i64 {
+    vec_set(config, 8, tls_config);
+    1
+}
+
+fn transport_config_enable_tls(config: i64) -> i64 {
+    let opts = vec_get(config, 7);
+    vec_set(config, 7, opts + TRANS_OPT_TLS());
+    1
+}
+
+// =============================================================================
+// Transport Handle (Abstract Transport Interface)
+// =============================================================================
+
+// Transport handle structure
+// Structure: [type, state, endpoint, config, handle, read_buf, write_buf,
+//             bytes_read, bytes_written, frames_read, frames_written,
+//             last_read_time, last_write_time, error_code, error_msg,
+//             callbacks, user_data]
+fn transport_new(endpoint: i64, config: i64) -> i64 {
+    let transport = vec_new();
+    let transport_type = transport_endpoint_type(endpoint);
+
+    vec_push(transport, transport_type);           // 0: type
+    vec_push(transport, TRANS_STATE_CLOSED());     // 1: state
+    vec_push(transport, endpoint);                 // 2: endpoint
+    vec_push(transport, config);                   // 3: config
+    vec_push(transport, 0);                        // 4: underlying handle (fd/socket)
+    vec_push(transport, vec_new());                // 5: read buffer
+    vec_push(transport, vec_new());                // 6: write buffer
+    vec_push(transport, 0);                        // 7: bytes read
+    vec_push(transport, 0);                        // 8: bytes written
+    vec_push(transport, 0);                        // 9: frames read
+    vec_push(transport, 0);                        // 10: frames written
+    vec_push(transport, 0);                        // 11: last read time
+    vec_push(transport, 0);                        // 12: last write time
+    vec_push(transport, TRANS_ERR_NONE());         // 13: error code
+    vec_push(transport, 0);                        // 14: error message
+    vec_push(transport, vec_new());                // 15: callbacks
+    vec_push(transport, 0);                        // 16: user data
+
+    transport
+}
+
+// Accessors
+fn transport_type(t: i64) -> i64 { vec_get(t, 0) }
+fn transport_state(t: i64) -> i64 { vec_get(t, 1) }
+fn transport_endpoint(t: i64) -> i64 { vec_get(t, 2) }
+fn transport_config(t: i64) -> i64 { vec_get(t, 3) }
+fn transport_handle(t: i64) -> i64 { vec_get(t, 4) }
+fn transport_read_buf(t: i64) -> i64 { vec_get(t, 5) }
+fn transport_write_buf(t: i64) -> i64 { vec_get(t, 6) }
+fn transport_bytes_read(t: i64) -> i64 { vec_get(t, 7) }
+fn transport_bytes_written(t: i64) -> i64 { vec_get(t, 8) }
+fn transport_frames_read(t: i64) -> i64 { vec_get(t, 9) }
+fn transport_frames_written(t: i64) -> i64 { vec_get(t, 10) }
+fn transport_last_read(t: i64) -> i64 { vec_get(t, 11) }
+fn transport_last_write(t: i64) -> i64 { vec_get(t, 12) }
+fn transport_error_code(t: i64) -> i64 { vec_get(t, 13) }
+fn transport_error_msg(t: i64) -> i64 { vec_get(t, 14) }
+fn transport_callbacks(t: i64) -> i64 { vec_get(t, 15) }
+fn transport_user_data(t: i64) -> i64 { vec_get(t, 16) }
+
+// Setters
+fn transport_set_state(t: i64, state: i64) -> i64 {
+    vec_set(t, 1, state);
+    1
+}
+
+fn transport_set_handle(t: i64, handle: i64) -> i64 {
+    vec_set(t, 4, handle);
+    1
+}
+
+fn transport_set_error(t: i64, code: i64, msg: i64) -> i64 {
+    vec_set(t, 13, code);
+    vec_set(t, 14, msg);
+    if code != TRANS_ERR_NONE() {
+        vec_set(t, 1, TRANS_STATE_ERROR());
+    }
+    1
+}
+
+fn transport_clear_error(t: i64) -> i64 {
+    vec_set(t, 13, TRANS_ERR_NONE());
+    vec_set(t, 14, 0);
+    1
+}
+
+fn transport_set_user_data(t: i64, data: i64) -> i64 {
+    vec_set(t, 16, data);
+    1
+}
+
+// Statistics update
+fn transport_add_bytes_read(t: i64, count: i64) -> i64 {
+    let current = vec_get(t, 7);
+    vec_set(t, 7, current + count);
+    current + count
+}
+
+fn transport_add_bytes_written(t: i64, count: i64) -> i64 {
+    let current = vec_get(t, 8);
+    vec_set(t, 8, current + count);
+    current + count
+}
+
+fn transport_inc_frames_read(t: i64) -> i64 {
+    let current = vec_get(t, 9);
+    vec_set(t, 9, current + 1);
+    current + 1
+}
+
+fn transport_inc_frames_written(t: i64) -> i64 {
+    let current = vec_get(t, 10);
+    vec_set(t, 10, current + 1);
+    current + 1
+}
+
+fn transport_set_last_read(t: i64, time: i64) -> i64 {
+    vec_set(t, 11, time);
+    1
+}
+
+fn transport_set_last_write(t: i64, time: i64) -> i64 {
+    vec_set(t, 12, time);
+    1
+}
+
+// =============================================================================
+// Transport State Queries
+// =============================================================================
+
+fn transport_is_connected(t: i64) -> i64 {
+    let state = transport_state(t);
+    if state == TRANS_STATE_CONNECTED() || state == TRANS_STATE_READY() {
+        1
+    } else {
+        0
+    }
+}
+
+fn transport_is_ready(t: i64) -> i64 {
+    if transport_state(t) == TRANS_STATE_READY() { 1 } else { 0 }
+}
+
+fn transport_is_closed(t: i64) -> i64 {
+    if transport_state(t) == TRANS_STATE_CLOSED() { 1 } else { 0 }
+}
+
+fn transport_has_error(t: i64) -> i64 {
+    if transport_state(t) == TRANS_STATE_ERROR() { 1 } else { 0 }
+}
+
+fn transport_is_draining(t: i64) -> i64 {
+    if transport_state(t) == TRANS_STATE_DRAINING() { 1 } else { 0 }
+}
+
+// =============================================================================
+// Read/Write Buffer Management
+// =============================================================================
+
+// Append data to write buffer
+fn transport_buffer_write(t: i64, data: i64) -> i64 {
+    let buf = transport_write_buf(t);
+    let config = transport_config(t);
+    let max_size = transport_config_write_buf(config);
+
+    let data_len = vec_len(data);
+    let buf_len = vec_len(buf);
+
+    // Check if buffer would overflow
+    if buf_len + data_len > max_size {
+        transport_set_error(t, TRANS_ERR_BUFFER_FULL(), 0);
+        return 0;
+    }
+
+    // Append data to buffer
+    let i = 0;
+    while i < data_len {
+        vec_push(buf, vec_get(data, i));
+        i = i + 1;
+    }
+
+    data_len
+}
+
+// Read data from read buffer
+fn transport_buffer_read(t: i64, count: i64) -> i64 {
+    let buf = transport_read_buf(t);
+    let available = vec_len(buf);
+
+    if count > available {
+        count = available;
+    }
+
+    if count == 0 {
+        return vec_new();
+    }
+
+    // Extract 'count' bytes from front of buffer
+    let result = vec_new();
+    let i = 0;
+    while i < count {
+        vec_push(result, vec_get(buf, i));
+        i = i + 1;
+    }
+
+    // Shift remaining data in buffer
+    let new_buf = vec_new();
+    while i < available {
+        vec_push(new_buf, vec_get(buf, i));
+        i = i + 1;
+    }
+
+    // Replace buffer
+    vec_set(t, 5, new_buf);
+
+    result
+}
+
+// Check available bytes in read buffer
+fn transport_buffer_available(t: i64) -> i64 {
+    vec_len(transport_read_buf(t))
+}
+
+// Peek at read buffer without consuming
+fn transport_buffer_peek(t: i64, count: i64) -> i64 {
+    let buf = transport_read_buf(t);
+    let available = vec_len(buf);
+
+    if count > available {
+        count = available;
+    }
+
+    let result = vec_new();
+    let i = 0;
+    while i < count {
+        vec_push(result, vec_get(buf, i));
+        i = i + 1;
+    }
+
+    result
+}
+
+// Clear buffers
+fn transport_clear_read_buf(t: i64) -> i64 {
+    vec_set(t, 5, vec_new());
+    1
+}
+
+fn transport_clear_write_buf(t: i64) -> i64 {
+    vec_set(t, 6, vec_new());
+    1
+}
+
+// =============================================================================
+// Frame-Level I/O
+// =============================================================================
+
+// Read a complete frame from the transport
+// Returns the frame data or 0 if not enough data available
+fn transport_read_frame(t: i64) -> i64 {
+    let buf = transport_read_buf(t);
+    let available = vec_len(buf);
+
+    // Need at least header (magic + type + length)
+    if available < 4 {
+        return 0;
+    }
+
+    // Check magic bytes
+    if vec_get(buf, 0) != NEXUS_MAGIC_BYTE_0() {
+        transport_set_error(t, TRANS_ERR_PROTOCOL(), 0);
+        return 0;
+    }
+    if vec_get(buf, 1) != NEXUS_MAGIC_BYTE_1() {
+        transport_set_error(t, TRANS_ERR_PROTOCOL(), 0);
+        return 0;
+    }
+
+    // Get frame length (byte 3 is length byte in basic frames)
+    // For variable length frames, we need to parse more carefully
+    let frame_type = vec_get(buf, 2);
+    let payload_len = vec_get(buf, 3);
+    let total_len = 4 + payload_len;
+
+    // Check max frame size
+    let config = transport_config(t);
+    let max_frame = transport_config_max_frame(config);
+    if total_len > max_frame {
+        transport_set_error(t, TRANS_ERR_PROTOCOL(), 0);
+        return 0;
+    }
+
+    // Check if complete frame is available
+    if available < total_len {
+        return 0;
+    }
+
+    // Extract frame
+    let frame = transport_buffer_read(t, total_len);
+    transport_inc_frames_read(t);
+    transport_add_bytes_read(t, total_len);
+
+    frame
+}
+
+// Write a frame to the transport (buffers it for sending)
+fn transport_write_frame(t: i64, frame: i64) -> i64 {
+    let frame_len = vec_len(frame);
+
+    // Check max frame size
+    let config = transport_config(t);
+    let max_frame = transport_config_max_frame(config);
+    if frame_len > max_frame {
+        transport_set_error(t, TRANS_ERR_PROTOCOL(), 0);
+        return 0;
+    }
+
+    // Validate frame header
+    if frame_len < 4 {
+        transport_set_error(t, TRANS_ERR_PROTOCOL(), 0);
+        return 0;
+    }
+
+    if vec_get(frame, 0) != NEXUS_MAGIC_BYTE_0() || vec_get(frame, 1) != NEXUS_MAGIC_BYTE_1() {
+        transport_set_error(t, TRANS_ERR_PROTOCOL(), 0);
+        return 0;
+    }
+
+    // Buffer the frame
+    if transport_buffer_write(t, frame) == 0 {
+        return 0;
+    }
+
+    transport_inc_frames_written(t);
+    transport_add_bytes_written(t, frame_len);
+
+    1
+}
+
+// =============================================================================
+// Transport Statistics
+// =============================================================================
+
+// Create statistics snapshot
+fn transport_stats_new(t: i64) -> i64 {
+    let stats = vec_new();
+    vec_push(stats, transport_type(t));
+    vec_push(stats, transport_state(t));
+    vec_push(stats, transport_bytes_read(t));
+    vec_push(stats, transport_bytes_written(t));
+    vec_push(stats, transport_frames_read(t));
+    vec_push(stats, transport_frames_written(t));
+    vec_push(stats, transport_last_read(t));
+    vec_push(stats, transport_last_write(t));
+    vec_push(stats, transport_error_code(t));
+    stats
+}
+
+fn transport_stats_type(stats: i64) -> i64 { vec_get(stats, 0) }
+fn transport_stats_state(stats: i64) -> i64 { vec_get(stats, 1) }
+fn transport_stats_bytes_read(stats: i64) -> i64 { vec_get(stats, 2) }
+fn transport_stats_bytes_written(stats: i64) -> i64 { vec_get(stats, 3) }
+fn transport_stats_frames_read(stats: i64) -> i64 { vec_get(stats, 4) }
+fn transport_stats_frames_written(stats: i64) -> i64 { vec_get(stats, 5) }
+fn transport_stats_last_read(stats: i64) -> i64 { vec_get(stats, 6) }
+fn transport_stats_last_write(stats: i64) -> i64 { vec_get(stats, 7) }
+fn transport_stats_error(stats: i64) -> i64 { vec_get(stats, 8) }
+
+// Calculate throughput (bytes per second)
+fn transport_stats_throughput_read(stats: i64, elapsed_ms: i64) -> i64 {
+    if elapsed_ms <= 0 { return 0; }
+    let bytes = transport_stats_bytes_read(stats);
+    (bytes * 1000) / elapsed_ms
+}
+
+fn transport_stats_throughput_write(stats: i64, elapsed_ms: i64) -> i64 {
+    if elapsed_ms <= 0 { return 0; }
+    let bytes = transport_stats_bytes_written(stats);
+    (bytes * 1000) / elapsed_ms
+}
+
+// =============================================================================
+// Transport Registry (for dispatching to type-specific implementations)
+// =============================================================================
+
+// The registry maps transport types to their implementation functions
+// Structure: [tcp_connect, tcp_close, tcp_send, tcp_recv, ...]
+fn transport_registry_new() -> i64 {
+    let registry = vec_new();
+    // Each transport type has slots for: connect, close, send, recv, poll
+    // We'll initialize with zeros (no implementations)
+    let i = 0;
+    while i < 30 {  // 6 transport types * 5 operations
+        vec_push(registry, 0);
+        i = i + 1;
+    }
+    registry
+}
+
+// Global registry (simulated with a function that returns consistent reference)
+fn transport_get_registry() -> i64 {
+    // In a real implementation, this would be a global
+    // For now, return a newly created registry each time
+    // The actual transport implementations will handle this
+    transport_registry_new()
+}
+
+// =============================================================================
+// Abstract Transport Operations
+// =============================================================================
+
+// Connect transport to its endpoint
+// Returns: 1 on success, 0 on failure
+fn transport_connect(t: i64) -> i64 {
+    let state = transport_state(t);
+    if state != TRANS_STATE_CLOSED() {
+        return 0;  // Already connected or connecting
+    }
+
+    transport_set_state(t, TRANS_STATE_CONNECTING());
+    transport_clear_error(t);
+
+    // Dispatch to type-specific implementation
+    let trans_type = transport_type(t);
+
+    if trans_type == TRANSPORT_TCP() {
+        return tcp_transport_connect(t);
+    } else if trans_type == TRANSPORT_UDP() {
+        return udp_transport_connect(t);
+    } else if trans_type == TRANSPORT_WEBSOCKET() {
+        return ws_transport_connect(t);
+    } else if trans_type == TRANSPORT_SHMEM() {
+        return shmem_transport_connect(t);
+    }
+
+    transport_set_error(t, TRANS_ERR_PROTOCOL(), 0);
+    0
+}
+
+// Close transport connection
+fn transport_close(t: i64) -> i64 {
+    let state = transport_state(t);
+    if state == TRANS_STATE_CLOSED() {
+        return 1;  // Already closed
+    }
+
+    // Start draining if there's buffered data
+    let write_buf = transport_write_buf(t);
+    if vec_len(write_buf) > 0 {
+        transport_set_state(t, TRANS_STATE_DRAINING());
+    }
+
+    // Dispatch to type-specific implementation
+    let trans_type = transport_type(t);
+
+    let result = 0;
+    if trans_type == TRANSPORT_TCP() {
+        result = tcp_transport_close(t);
+    } else if trans_type == TRANSPORT_UDP() {
+        result = udp_transport_close(t);
+    } else if trans_type == TRANSPORT_WEBSOCKET() {
+        result = ws_transport_close(t);
+    } else if trans_type == TRANSPORT_SHMEM() {
+        result = shmem_transport_close(t);
+    }
+
+    transport_set_state(t, TRANS_STATE_CLOSED());
+    transport_clear_read_buf(t);
+    transport_clear_write_buf(t);
+
+    result
+}
+
+// Send buffered data over the transport
+fn transport_flush(t: i64) -> i64 {
+    if transport_is_connected(t) == 0 {
+        return 0;
+    }
+
+    let write_buf = transport_write_buf(t);
+    if vec_len(write_buf) == 0 {
+        return 1;  // Nothing to send
+    }
+
+    // Dispatch to type-specific implementation
+    let trans_type = transport_type(t);
+
+    if trans_type == TRANSPORT_TCP() {
+        return tcp_transport_send(t, write_buf);
+    } else if trans_type == TRANSPORT_UDP() {
+        return udp_transport_send(t, write_buf);
+    } else if trans_type == TRANSPORT_WEBSOCKET() {
+        return ws_transport_send(t, write_buf);
+    } else if trans_type == TRANSPORT_SHMEM() {
+        return shmem_transport_send(t, write_buf);
+    }
+
+    0
+}
+
+// Receive data into the read buffer
+fn transport_poll(t: i64) -> i64 {
+    if transport_is_connected(t) == 0 {
+        return 0;
+    }
+
+    // Dispatch to type-specific implementation
+    let trans_type = transport_type(t);
+
+    if trans_type == TRANSPORT_TCP() {
+        return tcp_transport_recv(t);
+    } else if trans_type == TRANSPORT_UDP() {
+        return udp_transport_recv(t);
+    } else if trans_type == TRANSPORT_WEBSOCKET() {
+        return ws_transport_recv(t);
+    } else if trans_type == TRANSPORT_SHMEM() {
+        return shmem_transport_recv(t);
+    }
+
+    0
+}
+
+// =============================================================================
+// Stub implementations for transport types (to be implemented in separate modules)
+// =============================================================================
+
+// TCP transport stubs (implemented in tcp_transport.sx)
+fn tcp_transport_connect(t: i64) -> i64 {
+    // Stub - actual implementation connects TCP socket
+    transport_set_state(t, TRANS_STATE_CONNECTED());
+    transport_set_state(t, TRANS_STATE_READY());
+    1
+}
+
+fn tcp_transport_close(t: i64) -> i64 {
+    // Stub - actual implementation closes TCP socket
+    1
+}
+
+fn tcp_transport_send(t: i64, data: i64) -> i64 {
+    // Stub - actual implementation sends over TCP
+    transport_clear_write_buf(t);
+    1
+}
+
+fn tcp_transport_recv(t: i64) -> i64 {
+    // Stub - actual implementation receives from TCP
+    0
+}
+
+// UDP transport stubs
+fn udp_transport_connect(t: i64) -> i64 {
+    transport_set_state(t, TRANS_STATE_CONNECTED());
+    transport_set_state(t, TRANS_STATE_READY());
+    1
+}
+
+fn udp_transport_close(t: i64) -> i64 { 1 }
+fn udp_transport_send(t: i64, data: i64) -> i64 {
+    transport_clear_write_buf(t);
+    1
+}
+fn udp_transport_recv(t: i64) -> i64 { 0 }
+
+// WebSocket transport stubs
+fn ws_transport_connect(t: i64) -> i64 {
+    transport_set_state(t, TRANS_STATE_CONNECTED());
+    transport_set_state(t, TRANS_STATE_READY());
+    1
+}
+
+fn ws_transport_close(t: i64) -> i64 { 1 }
+fn ws_transport_send(t: i64, data: i64) -> i64 {
+    transport_clear_write_buf(t);
+    1
+}
+fn ws_transport_recv(t: i64) -> i64 { 0 }
+
+// Shared memory transport stubs
+fn shmem_transport_connect(t: i64) -> i64 {
+    transport_set_state(t, TRANS_STATE_CONNECTED());
+    transport_set_state(t, TRANS_STATE_READY());
+    1
+}
+
+fn shmem_transport_close(t: i64) -> i64 { 1 }
+fn shmem_transport_send(t: i64, data: i64) -> i64 {
+    transport_clear_write_buf(t);
+    1
+}
+fn shmem_transport_recv(t: i64) -> i64 { 0 }
+
+// =============================================================================
+// Transport Comparison (for priority ordering)
+// =============================================================================
+
+// Get transport priority (lower is higher priority)
+fn transport_priority(trans_type: i64) -> i64 {
+    if trans_type == TRANSPORT_SHMEM() { return 1; }      // Fastest
+    if trans_type == TRANSPORT_TCP() { return 2; }       // Reliable
+    if trans_type == TRANSPORT_UDP() { return 3; }       // Low latency
+    if trans_type == TRANSPORT_WEBSOCKET() { return 4; } // Web compatible
+    if trans_type == TRANSPORT_HTTP2() { return 5; }     // Enterprise
+    10  // Unknown
+}
+
+// Get transport name for debugging
+fn transport_type_name(trans_type: i64) -> i64 {
+    // Returns a string identifier (as vec of bytes)
+    let name = vec_new();
+    if trans_type == TRANSPORT_TCP() {
+        vec_push(name, 84); vec_push(name, 67); vec_push(name, 80);  // "TCP"
+    } else if trans_type == TRANSPORT_UDP() {
+        vec_push(name, 85); vec_push(name, 68); vec_push(name, 80);  // "UDP"
+    } else if trans_type == TRANSPORT_WEBSOCKET() {
+        vec_push(name, 87); vec_push(name, 83);  // "WS"
+    } else if trans_type == TRANSPORT_SHMEM() {
+        vec_push(name, 83); vec_push(name, 72); vec_push(name, 77);  // "SHM"
+    } else if trans_type == TRANSPORT_HTTP2() {
+        vec_push(name, 72); vec_push(name, 50);  // "H2"
+    } else {
+        vec_push(name, 63);  // "?"
+    }
+    name
+}

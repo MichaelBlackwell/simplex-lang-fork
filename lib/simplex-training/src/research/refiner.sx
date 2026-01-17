@@ -1,0 +1,567 @@
+// TASK-015: Data Refiner
+//
+// Orchestrates the complete epistemic data refinement pipeline.
+//
+// The Refinement Loop:
+// 1. RESEARCH - Gather knowledge from authoritative sources
+// 2. VALIDATE - Check examples against gathered knowledge
+// 3. ANNEAL - Apply temperature scheduling based on validation
+// 4. AUGMENT - Generate improved examples from validated knowledge
+// 5. PRUNE - Remove low-quality examples
+// 6. REPEAT - Continuous improvement through dissent windows
+//
+// This implements the user's vision: self-improving training data
+// through research and epistemic annealing.
+
+use simplex_std::vec::Vec;
+use simplex_std::string::String;
+use simplex_std::option::Option;
+use super::researcher::{ResearchSpecialist, ResearchConfig, ResearchResult};
+use super::validator::{DataValidator, ValidationConfig};
+use super::annealer::{DatasetAnnealer, AnnealerConfig, AnnealedExample, ValidationStatus};
+use super::sources::{SourceRegistry, SourceType};
+
+/// Configuration for the data refiner
+#[derive(Clone)]
+pub struct RefinerConfig {
+    /// Research configuration
+    pub research: ResearchConfig,
+
+    /// Validation configuration
+    pub validation: ValidationConfig,
+
+    /// Annealing configuration
+    pub annealing: AnnealerConfig,
+
+    /// Maximum refinement iterations
+    pub max_iterations: usize,
+
+    /// Convergence threshold (stop when improvement < this)
+    pub convergence_threshold: f64,
+
+    /// Enable augmentation (generate new examples from research)
+    pub enable_augmentation: bool,
+
+    /// Target dataset size (after refinement)
+    pub target_size: Option<usize>,
+
+    /// Minimum quality threshold for final dataset
+    pub min_quality: f64,
+
+    /// Domain weights for balanced refinement
+    pub domain_weights: Vec<(String, f64)>,
+}
+
+impl Default for RefinerConfig {
+    fn default() -> Self {
+        RefinerConfig {
+            research: ResearchConfig::default(),
+            validation: ValidationConfig::default(),
+            annealing: AnnealerConfig::default(),
+            max_iterations: 10,
+            convergence_threshold: 0.001,
+            enable_augmentation: true,
+            target_size: None,
+            min_quality: 0.7,
+            domain_weights: Vec::new(),
+        }
+    }
+}
+
+/// The Data Refiner
+///
+/// Orchestrates research, validation, and annealing to produce
+/// high-quality, epistemically-grounded training data.
+pub struct DataRefiner {
+    /// Configuration
+    config: RefinerConfig,
+
+    /// Research specialist
+    researcher: ResearchSpecialist,
+
+    /// Data validator
+    validator: DataValidator,
+
+    /// Dataset annealer
+    annealer: DatasetAnnealer,
+
+    /// Current iteration
+    iteration: usize,
+
+    /// Statistics
+    stats: RefinerStats,
+
+    /// Knowledge base (facts discovered during research)
+    knowledge_base: Vec<KnowledgeFact>,
+}
+
+impl DataRefiner {
+    /// Create new refiner
+    pub fn new(config: RefinerConfig) -> Self {
+        DataRefiner {
+            researcher: ResearchSpecialist::new(config.research.clone()),
+            validator: DataValidator::with_config(config.validation.clone()),
+            annealer: DatasetAnnealer::new(config.annealing.clone()),
+            config,
+            iteration: 0,
+            stats: RefinerStats::default(),
+            knowledge_base: Vec::new(),
+        }
+    }
+
+    /// Create with default config
+    pub fn default_refiner() -> Self {
+        DataRefiner::new(RefinerConfig::default())
+    }
+
+    /// Add raw training examples
+    pub fn add_examples(&mut self, examples: Vec<RawExample>) {
+        for ex in examples {
+            self.annealer.add_raw(&ex.prompt, &ex.response, &ex.domain, &ex.source);
+        }
+        self.stats.initial_count = self.annealer.stats().total_examples;
+    }
+
+    /// Run the complete refinement pipeline
+    pub fn refine(&mut self) -> RefinementReport {
+        let start_time = current_timestamp();
+
+        while self.iteration < self.config.max_iterations {
+            self.iteration += 1;
+
+            // Step 1: Research - gather authoritative knowledge
+            self.research_phase();
+
+            // Step 2: Validate - check examples against knowledge
+            // This happens within the annealer step
+
+            // Step 3: Anneal - apply temperature scheduling
+            self.annealer.step();
+
+            // Step 4: Augment - generate improved examples
+            if self.config.enable_augmentation {
+                self.augmentation_phase();
+            }
+
+            // Step 5: Prune - remove low-quality examples
+            self.annealer.prune();
+
+            // Check convergence
+            if self.has_converged() {
+                break;
+            }
+        }
+
+        // Build final report
+        let duration_ms = current_timestamp() - start_time;
+        self.build_report(duration_ms)
+    }
+
+    /// Research phase - gather knowledge from authoritative sources
+    fn research_phase(&mut self) {
+        // Get domains that need research
+        let domains: Vec<String> = self.annealer.get_uncertain_examples()
+            .iter()
+            .map(|e| e.domain.clone())
+            .collect();
+
+        let unique_domains: Vec<String> = domains.into_iter()
+            .fold(Vec::new(), |mut acc, d| {
+                if !acc.contains(&d) {
+                    acc.push(d);
+                }
+                acc
+            });
+
+        // Research each domain
+        for domain in unique_domains {
+            let result = self.researcher.research(&domain);
+            if result.success {
+                for fact in result.facts {
+                    self.knowledge_base.push(KnowledgeFact {
+                        claim: fact.claim,
+                        domain: fact.domain,
+                        confidence: fact.confidence,
+                        source_count: fact.supporting_sources.len(),
+                        has_conflicts: fact.has_conflict(),
+                    });
+                }
+                self.stats.facts_discovered += result.facts.len();
+            }
+        }
+    }
+
+    /// Augmentation phase - generate new examples from validated knowledge
+    fn augmentation_phase(&mut self) {
+        // Generate examples from high-confidence knowledge
+        let high_confidence_facts: Vec<&KnowledgeFact> = self.knowledge_base
+            .iter()
+            .filter(|f| f.confidence >= 0.8 && !f.has_conflicts)
+            .collect();
+
+        for fact in high_confidence_facts {
+            if let Some(example) = self.generate_example_from_fact(fact) {
+                self.annealer.add_example(example);
+                self.stats.augmented_count += 1;
+            }
+        }
+    }
+
+    /// Generate training example from a validated fact
+    fn generate_example_from_fact(&self, fact: &KnowledgeFact) -> Option<AnnealedExample> {
+        // This would use templates and the fact to generate
+        // a training example. For now, return None.
+        // In production, this would:
+        // 1. Select appropriate template for domain
+        // 2. Fill template with fact
+        // 3. Create example with high initial confidence (low temp)
+
+        None
+    }
+
+    /// Check if refinement has converged
+    fn has_converged(&self) -> bool {
+        let stats = self.annealer.stats();
+
+        // Converged if most examples are frozen
+        let frozen_ratio = stats.frozen as f64 / stats.total_examples.max(1) as f64;
+        if frozen_ratio > 0.95 {
+            return true;
+        }
+
+        // Converged if temperature is stable
+        if stats.avg_temperature < self.config.convergence_threshold {
+            return true;
+        }
+
+        false
+    }
+
+    /// Build the final report
+    fn build_report(&self, duration_ms: u64) -> RefinementReport {
+        let annealer_stats = self.annealer.stats();
+
+        RefinementReport {
+            initial_count: self.stats.initial_count,
+            final_count: self.annealer.get_training_examples().len(),
+            validated_count: annealer_stats.validated,
+            pruned_count: annealer_stats.total_pruned,
+            augmented_count: self.stats.augmented_count,
+            facts_discovered: self.stats.facts_discovered,
+            iterations: self.iteration,
+            final_avg_temperature: annealer_stats.avg_temperature,
+            final_avg_confidence: self.calculate_avg_confidence(),
+            duration_ms,
+            quality_improvement: self.calculate_quality_improvement(),
+            domain_breakdown: self.calculate_domain_breakdown(),
+        }
+    }
+
+    /// Calculate average confidence of validated examples
+    fn calculate_avg_confidence(&self) -> f64 {
+        let examples = self.annealer.get_training_examples();
+        if examples.is_empty() {
+            return 0.0;
+        }
+
+        examples.iter()
+            .map(|e| e.confidence())
+            .sum::<f64>() / examples.len() as f64
+    }
+
+    /// Calculate quality improvement
+    fn calculate_quality_improvement(&self) -> f64 {
+        // Improvement = (validated examples with low temp) / initial count
+        let stats = self.annealer.stats();
+        let validated_cold = self.annealer.get_training_examples()
+            .iter()
+            .filter(|e| matches!(e.validation_status, ValidationStatus::Validated))
+            .count();
+
+        if self.stats.initial_count > 0 {
+            validated_cold as f64 / self.stats.initial_count as f64
+        } else {
+            0.0
+        }
+    }
+
+    /// Calculate breakdown by domain
+    fn calculate_domain_breakdown(&self) -> Vec<DomainStats> {
+        let examples = self.annealer.get_training_examples();
+
+        // Group by domain
+        let mut domain_map: std::collections::HashMap<String, DomainStats> =
+            std::collections::HashMap::new();
+
+        for example in examples {
+            let entry = domain_map.entry(example.domain.clone()).or_insert(DomainStats {
+                domain: example.domain.clone(),
+                count: 0,
+                validated: 0,
+                avg_confidence: 0.0,
+            });
+
+            entry.count += 1;
+            if matches!(example.validation_status, ValidationStatus::Validated) {
+                entry.validated += 1;
+            }
+            entry.avg_confidence += example.confidence();
+        }
+
+        // Calculate averages
+        for stats in domain_map.values_mut() {
+            if stats.count > 0 {
+                stats.avg_confidence /= stats.count as f64;
+            }
+        }
+
+        domain_map.into_values().collect()
+    }
+
+    /// Get validated examples for training
+    pub fn get_training_examples(&self) -> Vec<&AnnealedExample> {
+        self.annealer.get_training_examples()
+    }
+
+    /// Get knowledge base
+    pub fn knowledge_base(&self) -> &[KnowledgeFact] {
+        &self.knowledge_base
+    }
+
+    /// Get statistics
+    pub fn stats(&self) -> &RefinerStats {
+        &self.stats
+    }
+}
+
+/// A raw example to be refined
+#[derive(Clone)]
+pub struct RawExample {
+    pub prompt: String,
+    pub response: String,
+    pub domain: String,
+    pub source: String,
+}
+
+impl RawExample {
+    pub fn new(prompt: &str, response: &str, domain: &str, source: &str) -> Self {
+        RawExample {
+            prompt: prompt.to_string(),
+            response: response.to_string(),
+            domain: domain.to_string(),
+            source: source.to_string(),
+        }
+    }
+}
+
+/// A fact in the knowledge base
+#[derive(Clone)]
+pub struct KnowledgeFact {
+    /// The claim
+    pub claim: String,
+
+    /// Domain
+    pub domain: String,
+
+    /// Confidence in this fact
+    pub confidence: f64,
+
+    /// Number of supporting sources
+    pub source_count: usize,
+
+    /// Does this fact have conflicts?
+    pub has_conflicts: bool,
+}
+
+/// Refinement report
+#[derive(Clone)]
+pub struct RefinementReport {
+    /// Initial example count
+    pub initial_count: usize,
+
+    /// Final example count
+    pub final_count: usize,
+
+    /// Validated example count
+    pub validated_count: usize,
+
+    /// Pruned example count
+    pub pruned_count: usize,
+
+    /// Augmented (generated) example count
+    pub augmented_count: usize,
+
+    /// Facts discovered during research
+    pub facts_discovered: usize,
+
+    /// Number of iterations
+    pub iterations: usize,
+
+    /// Final average temperature
+    pub final_avg_temperature: f64,
+
+    /// Final average confidence
+    pub final_avg_confidence: f64,
+
+    /// Duration in milliseconds
+    pub duration_ms: u64,
+
+    /// Quality improvement ratio
+    pub quality_improvement: f64,
+
+    /// Breakdown by domain
+    pub domain_breakdown: Vec<DomainStats>,
+}
+
+impl RefinementReport {
+    /// Generate summary string
+    pub fn summary(&self) -> String {
+        format!(
+            "=== Refinement Report ===\n\
+             Initial examples: {}\n\
+             Final examples: {} ({:+})\n\
+             Validated: {} ({:.1}%)\n\
+             Pruned: {}\n\
+             Augmented: {}\n\
+             Facts discovered: {}\n\
+             Iterations: {}\n\
+             Final avg temperature: {:.4}\n\
+             Final avg confidence: {:.2}%\n\
+             Quality improvement: {:.1}%\n\
+             Duration: {:.2}s",
+            self.initial_count,
+            self.final_count,
+            self.final_count as i64 - self.initial_count as i64,
+            self.validated_count,
+            self.validated_count as f64 / self.final_count.max(1) as f64 * 100.0,
+            self.pruned_count,
+            self.augmented_count,
+            self.facts_discovered,
+            self.iterations,
+            self.final_avg_temperature,
+            self.final_avg_confidence * 100.0,
+            self.quality_improvement * 100.0,
+            self.duration_ms as f64 / 1000.0
+        )
+    }
+
+    /// Get domain summary
+    pub fn domain_summary(&self) -> String {
+        let mut summary = String::from("Domain Breakdown:\n");
+        for domain in &self.domain_breakdown {
+            summary.push_str(&format!(
+                "  {}: {} examples, {} validated ({:.1}%), avg conf {:.2}%\n",
+                domain.domain,
+                domain.count,
+                domain.validated,
+                domain.validated as f64 / domain.count.max(1) as f64 * 100.0,
+                domain.avg_confidence * 100.0
+            ));
+        }
+        summary
+    }
+}
+
+/// Statistics for a domain
+#[derive(Clone)]
+pub struct DomainStats {
+    /// Domain name
+    pub domain: String,
+
+    /// Example count
+    pub count: usize,
+
+    /// Validated count
+    pub validated: usize,
+
+    /// Average confidence
+    pub avg_confidence: f64,
+}
+
+/// Refiner statistics
+#[derive(Clone, Default)]
+pub struct RefinerStats {
+    /// Initial example count
+    pub initial_count: usize,
+
+    /// Facts discovered
+    pub facts_discovered: usize,
+
+    /// Examples augmented
+    pub augmented_count: usize,
+}
+
+/// Get current timestamp (milliseconds)
+fn current_timestamp() -> u64 {
+    // In real implementation, use system time
+    0
+}
+
+/// The complete pipeline for self-improving training data
+///
+/// This is the high-level API that implements the user's vision:
+/// "A researcher that can search the internet to find information,
+/// sift through knowledge, distill facts over incorrect data and
+/// improve the base training datasets through the belief system
+/// and applied self learning philosophy from the gathered research."
+pub fn refine_training_data(
+    examples: Vec<RawExample>,
+    config: RefinerConfig,
+) -> RefinementReport {
+    let mut refiner = DataRefiner::new(config);
+    refiner.add_examples(examples);
+    refiner.refine()
+}
+
+/// Quick refinement with default settings
+pub fn quick_refine(examples: Vec<RawExample>) -> RefinementReport {
+    refine_training_data(examples, RefinerConfig::default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_refiner_creation() {
+        let refiner = DataRefiner::default_refiner();
+        assert_eq!(refiner.iteration, 0);
+        assert!(refiner.knowledge_base.is_empty());
+    }
+
+    #[test]
+    fn test_raw_example() {
+        let ex = RawExample::new(
+            "What is 2+2?",
+            "4",
+            "math",
+            "synthetic:math_generator"
+        );
+
+        assert_eq!(ex.prompt, "What is 2+2?");
+        assert_eq!(ex.domain, "math");
+    }
+
+    #[test]
+    fn test_refinement_report_summary() {
+        let report = RefinementReport {
+            initial_count: 1000,
+            final_count: 800,
+            validated_count: 700,
+            pruned_count: 200,
+            augmented_count: 0,
+            facts_discovered: 50,
+            iterations: 5,
+            final_avg_temperature: 0.25,
+            final_avg_confidence: 0.85,
+            duration_ms: 5000,
+            quality_improvement: 0.7,
+            domain_breakdown: Vec::new(),
+        };
+
+        let summary = report.summary();
+        assert!(summary.contains("Initial examples: 1000"));
+        assert!(summary.contains("Final examples: 800"));
+        assert!(summary.contains("Validated: 700"));
+    }
+}

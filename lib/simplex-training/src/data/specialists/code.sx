@@ -1,0 +1,368 @@
+// Code generation data generator
+//
+// Generates synthetic coding tasks and solutions for training
+// code specialists.
+
+use simplex_std::vec::Vec;
+use simplex_std::string::String;
+use super::super::generator::{DataGenerator, TrainingExample, ExampleMetadata, Rng, WordLists};
+use super::super::super::SpecialistDomain;
+
+/// Generator for code generation training data
+pub struct CodeGenerator {
+    /// Random number generator
+    rng: Rng,
+
+    /// Programming languages
+    languages: Vec<String>,
+
+    /// Task types
+    task_types: Vec<String>,
+
+    /// Generator name
+    name: String,
+}
+
+impl CodeGenerator {
+    /// Create new code generator
+    pub fn new() -> Self {
+        CodeGenerator {
+            rng: Rng::new(42),
+            languages: WordLists::programming_languages().iter().map(|s| s.to_string()).collect(),
+            task_types: WordLists::code_tasks().iter().map(|s| s.to_string()).collect(),
+            name: "code_generator".to_string(),
+        }
+    }
+
+    /// Generate function implementation task
+    fn generate_function_task(&mut self) -> TrainingExample {
+        let lang = self.rng.choice_clone(&self.languages);
+        let func_type = self.rng.int_range(0, 5);
+
+        let (task, code, explanation) = match func_type {
+            0 => self.fibonacci_task(&lang),
+            1 => self.factorial_task(&lang),
+            2 => self.string_reverse_task(&lang),
+            3 => self.binary_search_task(&lang),
+            _ => self.sort_task(&lang),
+        };
+
+        let prompt = format!(
+            "Write a {} function that {}.\n\n\
+             Requirements:\n\
+             - Include error handling\n\
+             - Add docstring/comments\n\
+             - Make it efficient",
+            lang, task
+        );
+
+        let response = format!(
+            "Here's the {} implementation:\n\n\
+             ```{}\n\
+             {}\n\
+             ```\n\n\
+             **Explanation:**\n\
+             {}\n\n\
+             [confidence: 0.92]",
+            lang, lang.to_lowercase(), code, explanation
+        );
+
+        TrainingExample {
+            prompt,
+            response,
+            metadata: ExampleMetadata {
+                domain: "code_generation".to_string(),
+                confidence_target: 0.92,
+                source: "synthetic".to_string(),
+                difficulty: 0.5,
+                quality: 1.0,
+                tags: vec![lang.to_lowercase(), "function".to_string()],
+            },
+        }
+    }
+
+    fn fibonacci_task(&self, lang: &str) -> (String, String, String) {
+        let task = "calculates the nth Fibonacci number".to_string();
+
+        let code = match lang {
+            "Python" => r#"def fibonacci(n: int) -> int:
+    """Calculate the nth Fibonacci number.
+
+    Args:
+        n: The position in Fibonacci sequence (0-indexed)
+
+    Returns:
+        The nth Fibonacci number
+
+    Raises:
+        ValueError: If n is negative
+    """
+    if n < 0:
+        raise ValueError("n must be non-negative")
+    if n <= 1:
+        return n
+
+    a, b = 0, 1
+    for _ in range(2, n + 1):
+        a, b = b, a + b
+    return b"#.to_string(),
+
+            "Rust" => r#"/// Calculate the nth Fibonacci number.
+///
+/// # Arguments
+/// * `n` - The position in Fibonacci sequence
+///
+/// # Returns
+/// The nth Fibonacci number
+pub fn fibonacci(n: u64) -> u64 {
+    match n {
+        0 => 0,
+        1 => 1,
+        _ => {
+            let mut a = 0u64;
+            let mut b = 1u64;
+            for _ in 2..=n {
+                let temp = a + b;
+                a = b;
+                b = temp;
+            }
+            b
+        }
+    }
+}"#.to_string(),
+
+            _ => "function fibonacci(n) {\n  if (n <= 1) return n;\n  let [a, b] = [0, 1];\n  for (let i = 2; i <= n; i++) [a, b] = [b, a + b];\n  return b;\n}".to_string(),
+        };
+
+        let explanation = "Uses iterative approach with O(n) time and O(1) space complexity. \
+                          The loop maintains two variables tracking consecutive Fibonacci numbers.".to_string();
+
+        (task, code, explanation)
+    }
+
+    fn factorial_task(&self, lang: &str) -> (String, String, String) {
+        let task = "calculates the factorial of n".to_string();
+
+        let code = match lang {
+            "Python" => r#"def factorial(n: int) -> int:
+    """Calculate factorial of n (n!).
+
+    Args:
+        n: Non-negative integer
+
+    Returns:
+        n! = n * (n-1) * ... * 1
+    """
+    if n < 0:
+        raise ValueError("n must be non-negative")
+    if n <= 1:
+        return 1
+    result = 1
+    for i in range(2, n + 1):
+        result *= i
+    return result"#.to_string(),
+
+            _ => "function factorial(n) {\n  if (n < 0) throw new Error('n must be non-negative');\n  let result = 1;\n  for (let i = 2; i <= n; i++) result *= i;\n  return result;\n}".to_string(),
+        };
+
+        let explanation = "Iterative solution avoids stack overflow for large n. \
+                          Time complexity O(n), space complexity O(1).".to_string();
+
+        (task, code, explanation)
+    }
+
+    fn string_reverse_task(&self, lang: &str) -> (String, String, String) {
+        let task = "reverses a string".to_string();
+
+        let code = match lang {
+            "Python" => r#"def reverse_string(s: str) -> str:
+    """Reverse the input string.
+
+    Args:
+        s: String to reverse
+
+    Returns:
+        Reversed string
+    """
+    return s[::-1]"#.to_string(),
+
+            "Rust" => r#"/// Reverse a string.
+pub fn reverse_string(s: &str) -> String {
+    s.chars().rev().collect()
+}"#.to_string(),
+
+            _ => "function reverseString(s) {\n  return s.split('').reverse().join('');\n}".to_string(),
+        };
+
+        let explanation = "Uses built-in language features for efficient reversal. \
+                          O(n) time and space complexity.".to_string();
+
+        (task, code, explanation)
+    }
+
+    fn binary_search_task(&self, lang: &str) -> (String, String, String) {
+        let task = "performs binary search on a sorted array".to_string();
+
+        let code = match lang {
+            "Python" => r#"def binary_search(arr: list, target: int) -> int:
+    """Binary search for target in sorted array.
+
+    Args:
+        arr: Sorted array of integers
+        target: Value to search for
+
+    Returns:
+        Index of target if found, -1 otherwise
+    """
+    left, right = 0, len(arr) - 1
+    while left <= right:
+        mid = (left + right) // 2
+        if arr[mid] == target:
+            return mid
+        elif arr[mid] < target:
+            left = mid + 1
+        else:
+            right = mid - 1
+    return -1"#.to_string(),
+
+            _ => "function binarySearch(arr, target) {\n  let left = 0, right = arr.length - 1;\n  while (left <= right) {\n    const mid = Math.floor((left + right) / 2);\n    if (arr[mid] === target) return mid;\n    if (arr[mid] < target) left = mid + 1;\n    else right = mid - 1;\n  }\n  return -1;\n}".to_string(),
+        };
+
+        let explanation = "Classic binary search with O(log n) time complexity. \
+                          Requires input array to be sorted.".to_string();
+
+        (task, code, explanation)
+    }
+
+    fn sort_task(&self, lang: &str) -> (String, String, String) {
+        let task = "implements quicksort algorithm".to_string();
+
+        let code = match lang {
+            "Python" => r#"def quicksort(arr: list) -> list:
+    """Sort array using quicksort algorithm.
+
+    Args:
+        arr: Array to sort
+
+    Returns:
+        Sorted array
+    """
+    if len(arr) <= 1:
+        return arr
+    pivot = arr[len(arr) // 2]
+    left = [x for x in arr if x < pivot]
+    middle = [x for x in arr if x == pivot]
+    right = [x for x in arr if x > pivot]
+    return quicksort(left) + middle + quicksort(right)"#.to_string(),
+
+            _ => "function quicksort(arr) {\n  if (arr.length <= 1) return arr;\n  const pivot = arr[Math.floor(arr.length / 2)];\n  const left = arr.filter(x => x < pivot);\n  const middle = arr.filter(x => x === pivot);\n  const right = arr.filter(x => x > pivot);\n  return [...quicksort(left), ...middle, ...quicksort(right)];\n}".to_string(),
+        };
+
+        let explanation = "Quicksort with average O(n log n) time complexity. \
+                          This implementation uses list comprehensions for clarity.".to_string();
+
+        (task, code, explanation)
+    }
+
+    /// Generate bug fix task
+    fn generate_bugfix_task(&mut self) -> TrainingExample {
+        let lang = self.rng.choice_clone(&self.languages);
+
+        let prompt = format!(
+            "Fix the bug in this {} code:\n\n\
+             ```{}\n\
+             def sum_evens(numbers):\n\
+                 total = 0\n\
+                 for i in range(len(numbers)):\n\
+                     if i % 2 == 0:  # Bug: checking index instead of value\n\
+                         total += numbers[i]\n\
+                 return total\n\
+             ```\n\n\
+             The function should sum all even numbers in the list.",
+            lang, lang.to_lowercase()
+        );
+
+        let response = format!(
+            "**Bug Found:** The condition `i % 2 == 0` checks if the *index* is even, \
+             but we want to check if the *value* is even.\n\n\
+             **Fixed Code:**\n\n\
+             ```{}\n\
+             def sum_evens(numbers):\n\
+                 total = 0\n\
+                 for num in numbers:\n\
+                     if num % 2 == 0:  # Fixed: check the value, not index\n\
+                         total += num\n\
+                 return total\n\
+             ```\n\n\
+             **Or more pythonically:**\n\
+             ```{}\n\
+             def sum_evens(numbers):\n\
+                 return sum(n for n in numbers if n % 2 == 0)\n\
+             ```\n\n\
+             [confidence: 0.95]",
+            lang.to_lowercase(), lang.to_lowercase()
+        );
+
+        TrainingExample {
+            prompt,
+            response,
+            metadata: ExampleMetadata {
+                domain: "code_generation".to_string(),
+                confidence_target: 0.95,
+                source: "synthetic".to_string(),
+                difficulty: 0.4,
+                quality: 1.0,
+                tags: vec!["bugfix".to_string(), lang.to_lowercase()],
+            },
+        }
+    }
+}
+
+impl DataGenerator for CodeGenerator {
+    fn generate(&mut self) -> TrainingExample {
+        if self.rng.bernoulli(0.8) {
+            self.generate_function_task()
+        } else {
+            self.generate_bugfix_task()
+        }
+    }
+
+    fn domain(&self) -> SpecialistDomain {
+        SpecialistDomain::Code
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn seed(&mut self, seed: u64) {
+        self.rng.seed(seed);
+    }
+
+    fn reset(&mut self) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_code_generator() {
+        let mut gen = CodeGenerator::new();
+
+        let example = gen.generate();
+        assert!(!example.prompt.is_empty());
+        assert!(example.response.contains("```"));
+    }
+
+    #[test]
+    fn test_code_batch() {
+        let mut gen = CodeGenerator::new();
+        let examples = gen.generate_batch(5);
+
+        assert_eq!(examples.len(), 5);
+        for ex in examples {
+            assert_eq!(ex.metadata.domain, "code_generation");
+        }
+    }
+}

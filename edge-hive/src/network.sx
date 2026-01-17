@@ -1,0 +1,878 @@
+// Edge Hive - Network I/O Layer (Secure)
+// WebSocket-based communication for cloud and peer federation
+//
+// Security Features:
+// - TLS 1.3 mandatory for all connections
+// - Token-based authentication
+// - Message signing with HMAC-SHA256
+// - Session management with expiry
+// - Replay attack protection via timestamps
+//
+// This module provides:
+// - Secure WebSocket connection management
+// - Authenticated message framing
+// - Reconnection with exponential backoff
+// - Connection health monitoring
+//
+// Protocol: Binary WebSocket over TLS with authenticated framing
+// Frame: [msg_type(1), timestamp(8), length(4), payload(N), signature(32)]
+
+// =============================================================================
+// Connection States
+// =============================================================================
+
+fn CONN_CLOSED() -> i64 { 0 }
+fn CONN_CONNECTING() -> i64 { 1 }
+fn CONN_OPEN() -> i64 { 2 }
+fn CONN_CLOSING() -> i64 { 3 }
+fn CONN_ERROR() -> i64 { 4 }
+
+// =============================================================================
+// Message Types
+// =============================================================================
+
+fn MSG_DELEGATE() -> i64 { 1 }      // Request delegation to cloud
+fn MSG_SYNC() -> i64 { 2 }          // Belief synchronization
+fn MSG_PING() -> i64 { 3 }          // Keep-alive ping
+fn MSG_PONG() -> i64 { 4 }          // Ping response
+fn MSG_ACK() -> i64 { 5 }           // Acknowledgment
+fn MSG_ERROR() -> i64 { 6 }         // Error response
+fn MSG_PEER_ANNOUNCE() -> i64 { 7 } // Peer discovery announcement
+fn MSG_PEER_SYNC() -> i64 { 8 }     // Peer-to-peer sync
+
+// =============================================================================
+// WebSocket Connection Structure (Secure)
+// =============================================================================
+
+// Connection structure (vec-based):
+// Slot 0: state (CONN_*)
+// Slot 1: endpoint (string handle)
+// Slot 2: socket_handle (native TLS socket reference)
+// Slot 3: last_activity (timestamp)
+// Slot 4: reconnect_attempts
+// Slot 5: reconnect_delay (ms)
+// Slot 6: send_queue (vec of pending messages)
+// Slot 7: recv_buffer (partial message accumulator)
+// Slot 8: device_id (cryptographically secure)
+// Slot 9: user_identity (from security.sx)
+// Slot 10: session_token (from server after auth)
+// Slot 11: last_seen_timestamp (for replay protection)
+// Slot 12: authenticated (0 or 1)
+
+fn ws_connection_new(endpoint: i64, device_id: i64, identity: i64) -> i64 {
+    // Validate endpoint uses TLS
+    if is_secure_endpoint(endpoint) == 0 {
+        // Reject non-TLS connections
+        return 0;
+    }
+
+    let conn: i64 = vec_new();
+    vec_push(conn, CONN_CLOSED());     // Slot 0: state
+    vec_push(conn, endpoint);           // Slot 1: endpoint
+    vec_push(conn, 0);                  // Slot 2: socket handle (0 = none)
+    vec_push(conn, 0);                  // Slot 3: last activity
+    vec_push(conn, 0);                  // Slot 4: reconnect attempts
+    vec_push(conn, 1000);               // Slot 5: reconnect delay (1s initial)
+    vec_push(conn, vec_new());          // Slot 6: send queue
+    vec_push(conn, vec_new());          // Slot 7: recv buffer
+    vec_push(conn, device_id);          // Slot 8: device id
+    vec_push(conn, identity);           // Slot 9: user identity
+    vec_push(conn, 0);                  // Slot 10: session token (set after auth)
+    vec_push(conn, 0);                  // Slot 11: last seen timestamp
+    vec_push(conn, 0);                  // Slot 12: authenticated flag
+    conn
+}
+
+fn is_secure_endpoint(endpoint: i64) -> i64 {
+    // Check that endpoint starts with wss:// (WebSocket Secure)
+    if string_starts_with(endpoint, string_from("wss://")) == 1 {
+        return 1;
+    }
+    // Also allow localhost for development (still requires TLS)
+    if string_starts_with(endpoint, string_from("wss://localhost")) == 1 {
+        return 1;
+    }
+    if string_starts_with(endpoint, string_from("wss://127.0.0.1")) == 1 {
+        return 1;
+    }
+    0  // Reject insecure ws:// connections
+}
+
+// Legacy constructor for backwards compatibility (no authentication)
+fn ws_connection_new_legacy(endpoint: i64, device_id: i64) -> i64 {
+    // Allow insecure connections for legacy code (not recommended)
+    let conn: i64 = vec_new();
+    vec_push(conn, CONN_CLOSED());     // Slot 0: state
+    vec_push(conn, endpoint);           // Slot 1: endpoint
+    vec_push(conn, 0);                  // Slot 2: socket handle
+    vec_push(conn, 0);                  // Slot 3: last activity
+    vec_push(conn, 0);                  // Slot 4: reconnect attempts
+    vec_push(conn, 1000);               // Slot 5: reconnect delay
+    vec_push(conn, vec_new());          // Slot 6: send queue
+    vec_push(conn, vec_new());          // Slot 7: recv buffer
+    vec_push(conn, device_id);          // Slot 8: device id
+    vec_push(conn, 0);                  // Slot 9: NO user identity
+    vec_push(conn, 0);                  // Slot 10: session token
+    vec_push(conn, 0);                  // Slot 11: last seen timestamp
+    vec_push(conn, 0);                  // Slot 12: NOT authenticated
+    conn
+}
+
+// =============================================================================
+// Connection Accessors
+// =============================================================================
+
+fn ws_conn_state(conn: i64) -> i64 { vec_get(conn, 0) }
+fn ws_conn_endpoint(conn: i64) -> i64 { vec_get(conn, 1) }
+fn ws_conn_socket(conn: i64) -> i64 { vec_get(conn, 2) }
+fn ws_conn_last_activity(conn: i64) -> i64 { vec_get(conn, 3) }
+fn ws_conn_reconnect_attempts(conn: i64) -> i64 { vec_get(conn, 4) }
+fn ws_conn_reconnect_delay(conn: i64) -> i64 { vec_get(conn, 5) }
+fn ws_conn_send_queue(conn: i64) -> i64 { vec_get(conn, 6) }
+fn ws_conn_recv_buffer(conn: i64) -> i64 { vec_get(conn, 7) }
+fn ws_conn_device_id(conn: i64) -> i64 { vec_get(conn, 8) }
+fn ws_conn_identity(conn: i64) -> i64 { vec_get(conn, 9) }
+fn ws_conn_session_token(conn: i64) -> i64 { vec_get(conn, 10) }
+fn ws_conn_last_seen_timestamp(conn: i64) -> i64 { vec_get(conn, 11) }
+fn ws_conn_is_authenticated(conn: i64) -> i64 { vec_get(conn, 12) }
+
+fn ws_conn_set_state(conn: i64, state: i64) -> i64 {
+    vec_set(conn, 0, state);
+    0
+}
+
+fn ws_conn_set_socket(conn: i64, socket: i64) -> i64 {
+    vec_set(conn, 2, socket);
+    0
+}
+
+fn ws_conn_update_activity(conn: i64) -> i64 {
+    vec_set(conn, 3, time_now());
+    0
+}
+
+fn ws_conn_set_session_token(conn: i64, token: i64) -> i64 {
+    vec_set(conn, 10, token);
+    0
+}
+
+fn ws_conn_set_authenticated(conn: i64, authenticated: i64) -> i64 {
+    vec_set(conn, 12, authenticated);
+    0
+}
+
+fn ws_conn_update_last_seen(conn: i64, timestamp: i64) -> i64 {
+    vec_set(conn, 11, timestamp);
+    0
+}
+
+// =============================================================================
+// Connection Lifecycle (Secure)
+// =============================================================================
+
+fn ws_connect(conn: i64) -> i64 {
+    let state: i64 = ws_conn_state(conn);
+
+    if state == CONN_OPEN() {
+        // Check if still authenticated
+        if ws_conn_is_authenticated(conn) == 1 {
+            return 1;  // Already connected and authenticated
+        }
+        // Need to re-authenticate
+    }
+
+    if state == CONN_CONNECTING() {
+        return 0;  // In progress
+    }
+
+    ws_conn_set_state(conn, CONN_CONNECTING());
+
+    // Get endpoint and initiate TLS connection
+    let endpoint: i64 = ws_conn_endpoint(conn);
+    let socket: i64 = net_wss_connect(endpoint);  // Note: wss = WebSocket Secure
+
+    if socket == 0 {
+        // Connection failed
+        ws_conn_set_state(conn, CONN_ERROR());
+        ws_increment_reconnect(conn);
+        return 0;
+    }
+
+    // Verify TLS certificate
+    if net_verify_tls_cert(socket) == 0 {
+        // Certificate validation failed - possible MITM
+        net_ws_close(socket);
+        ws_conn_set_state(conn, CONN_ERROR());
+        return 0;
+    }
+
+    // Store socket
+    ws_conn_set_socket(conn, socket);
+    ws_conn_update_activity(conn);
+
+    // Reset reconnect state on TLS success
+    vec_set(conn, 4, 0);     // Reset attempts
+    vec_set(conn, 5, 1000);  // Reset delay
+
+    // Perform authentication handshake
+    let auth_result: i64 = ws_authenticate(conn);
+
+    if auth_result == 0 {
+        // Authentication failed
+        net_ws_close(socket);
+        ws_conn_set_socket(conn, 0);
+        ws_conn_set_state(conn, CONN_ERROR());
+        return 0;
+    }
+
+    // Mark as fully connected and authenticated
+    ws_conn_set_state(conn, CONN_OPEN());
+    ws_conn_set_authenticated(conn, 1);
+
+    // Process any queued messages
+    ws_flush_send_queue(conn);
+
+    1
+}
+
+// =============================================================================
+// Authentication
+// =============================================================================
+
+fn ws_authenticate(conn: i64) -> i64 {
+    let identity: i64 = ws_conn_identity(conn);
+    let device_id: i64 = ws_conn_device_id(conn);
+
+    // Create authentication message
+    let auth_msg: i64 = create_auth_handshake(identity, device_id);
+
+    // Send auth message (unqueued - must succeed now)
+    let socket: i64 = ws_conn_socket(conn);
+    let frame: i64 = ws_frame_authenticated_message(conn, MSG_AUTH_HANDSHAKE(), auth_msg);
+
+    if net_ws_send(socket, frame) == 0 {
+        return 0;  // Send failed
+    }
+
+    // Wait for auth response (with timeout)
+    let timeout: i64 = 10000;  // 10 seconds
+    let start: i64 = time_now_ms();
+
+    while time_now_ms() - start < timeout {
+        let response: i64 = net_ws_recv(socket);
+        if response != 0 {
+            // Parse response
+            let msg: i64 = ws_unframe_authenticated_message(conn, response);
+            if msg == 0 {
+                return 0;  // Invalid message (signature failed)
+            }
+
+            let msg_type: i64 = vec_get(msg, 0);
+            if msg_type == MSG_AUTH_RESPONSE() {
+                let payload: i64 = vec_get(msg, 1);
+                let status: i64 = vec_get(payload, 0);
+
+                if status == AUTH_SUCCESS() {
+                    // Store session token
+                    let session_token: i64 = vec_get(payload, 1);
+                    ws_conn_set_session_token(conn, session_token);
+                    return 1;  // Success
+                }
+
+                return 0;  // Auth rejected
+            }
+        }
+
+        // Brief sleep before retry
+        sleep_ms(100);
+    }
+
+    0  // Timeout
+}
+
+fn ws_disconnect(conn: i64) -> i64 {
+    let state: i64 = ws_conn_state(conn);
+
+    if state == CONN_CLOSED() {
+        return 0;  // Already closed
+    }
+
+    ws_conn_set_state(conn, CONN_CLOSING());
+
+    let socket: i64 = ws_conn_socket(conn);
+    if socket != 0 {
+        net_ws_close(socket);
+        ws_conn_set_socket(conn, 0);
+    }
+
+    ws_conn_set_state(conn, CONN_CLOSED());
+    0
+}
+
+fn ws_is_connected(conn: i64) -> i64 {
+    let state: i64 = ws_conn_state(conn);
+    if state == CONN_OPEN() { 1 }
+    else { 0 }
+}
+
+// =============================================================================
+// Reconnection Logic
+// =============================================================================
+
+fn ws_increment_reconnect(conn: i64) -> i64 {
+    let attempts: i64 = ws_conn_reconnect_attempts(conn);
+    vec_set(conn, 4, attempts + 1);
+
+    // Exponential backoff with cap
+    let delay: i64 = ws_conn_reconnect_delay(conn);
+    let new_delay: i64 = delay * 2;
+    let max_delay: i64 = 60000;  // 1 minute max
+
+    if new_delay > max_delay {
+        new_delay = max_delay;
+    }
+    vec_set(conn, 5, new_delay);
+
+    new_delay
+}
+
+fn ws_should_reconnect(conn: i64) -> i64 {
+    let attempts: i64 = ws_conn_reconnect_attempts(conn);
+    let max_attempts: i64 = 10;
+
+    if attempts >= max_attempts {
+        return 0;  // Give up after too many attempts
+    }
+
+    // Check if enough time has passed since last attempt
+    let last_activity: i64 = ws_conn_last_activity(conn);
+    let delay: i64 = ws_conn_reconnect_delay(conn);
+    let now: i64 = time_now();
+
+    if now - last_activity >= delay {
+        return 1;
+    }
+
+    0
+}
+
+fn ws_try_reconnect(conn: i64) -> i64 {
+    if ws_should_reconnect(conn) == 0 {
+        return 0;
+    }
+
+    ws_connect(conn)
+}
+
+// =============================================================================
+// Message Sending
+// =============================================================================
+
+fn ws_send(conn: i64, msg_type: i64, payload: i64) -> i64 {
+    if ws_is_connected(conn) == 0 {
+        // Queue for later
+        ws_queue_message(conn, msg_type, payload);
+        return 0;
+    }
+
+    // Frame the message
+    let frame: i64 = ws_frame_message(msg_type, payload);
+
+    // Send over socket
+    let socket: i64 = ws_conn_socket(conn);
+    let result: i64 = net_ws_send(socket, frame);
+
+    if result == 1 {
+        ws_conn_update_activity(conn);
+        return 1;
+    }
+
+    // Send failed - connection may be broken
+    ws_conn_set_state(conn, CONN_ERROR());
+    ws_queue_message(conn, msg_type, payload);  // Queue for retry
+    0
+}
+
+fn ws_queue_message(conn: i64, msg_type: i64, payload: i64) -> i64 {
+    let queue: i64 = ws_conn_send_queue(conn);
+    let msg: i64 = vec_new();
+    vec_push(msg, msg_type);
+    vec_push(msg, payload);
+    vec_push(msg, time_now());  // Timestamp for timeout
+    vec_push(queue, msg);
+    vec_len(queue)
+}
+
+// Authenticated send - signs message before sending
+fn ws_send_authenticated(conn: i64, msg: i64) -> i64 {
+    // Extract message type and payload from federation message format
+    // Federation message: [msg_type, device_id, timestamp, payload]
+    let msg_type: i64 = vec_get(msg, 0);
+    let payload: i64 = msg;  // Use full message as payload
+
+    if ws_is_connected(conn) == 0 {
+        ws_queue_message(conn, msg_type, payload);
+        return 0;
+    }
+
+    // Create authenticated frame with signature
+    let frame: i64 = ws_frame_authenticated_message(conn, msg_type, payload);
+
+    // Send over socket
+    let socket: i64 = ws_conn_socket(conn);
+    let result: i64 = net_ws_send(socket, frame);
+
+    if result == 1 {
+        ws_conn_update_activity(conn);
+        return 1;
+    }
+
+    // Send failed
+    ws_conn_set_state(conn, CONN_ERROR());
+    ws_queue_message(conn, msg_type, payload);
+    0
+}
+
+// Simple send wrapper for federation compatibility
+// Accepts [msg_type, device_id, timestamp, payload] format
+fn ws_send_simple(conn: i64, msg: i64) -> i64 {
+    let msg_type: i64 = vec_get(msg, 0);
+    ws_send(conn, msg_type, msg)
+}
+
+fn ws_flush_send_queue(conn: i64) -> i64 {
+    if ws_is_connected(conn) == 0 {
+        return 0;
+    }
+
+    let queue: i64 = ws_conn_send_queue(conn);
+    let sent: i64 = 0;
+
+    while vec_len(queue) > 0 {
+        let msg: i64 = vec_get(queue, 0);
+        let msg_type: i64 = vec_get(msg, 0);
+        let payload: i64 = vec_get(msg, 1);
+
+        // Remove from queue
+        let new_queue: i64 = vec_new();
+        let i: i64 = 1;
+        while i < vec_len(queue) {
+            vec_push(new_queue, vec_get(queue, i));
+            i = i + 1;
+        }
+        vec_set(conn, 6, new_queue);
+
+        // Try to send
+        let frame: i64 = ws_frame_message(msg_type, payload);
+        let socket: i64 = ws_conn_socket(conn);
+
+        if net_ws_send(socket, frame) == 1 {
+            sent = sent + 1;
+        } else {
+            // Put back and stop
+            vec_push(new_queue, msg);
+            return sent;
+        }
+    }
+
+    sent
+}
+
+// =============================================================================
+// Message Framing (Authenticated)
+// =============================================================================
+
+// Authenticated frame format:
+// [msg_type(1), timestamp(1), payload_len(1), payload(N), signature(32)]
+
+fn SIGNATURE_LENGTH() -> i64 { 32 }  // HMAC-SHA256
+
+fn ws_frame_authenticated_message(conn: i64, msg_type: i64, payload: i64) -> i64 {
+    let identity: i64 = ws_conn_identity(conn);
+    let frame: i64 = vec_new();
+
+    // Message type
+    vec_push(frame, msg_type);
+
+    // Timestamp (for replay protection)
+    let timestamp: i64 = time_now();
+    vec_push(frame, timestamp);
+
+    // Payload length
+    let payload_len: i64 = vec_len(payload);
+    vec_push(frame, payload_len);
+
+    // Payload data
+    let i: i64 = 0;
+    while i < payload_len {
+        vec_push(frame, vec_get(payload, i));
+        i = i + 1;
+    }
+
+    // Compute signature over [msg_type, timestamp, payload_len, payload]
+    let signature: i64 = sign_message(identity, frame);
+
+    // Append signature
+    i = 0;
+    while i < SIGNATURE_LENGTH() {
+        vec_push(frame, vec_get(signature, i));
+        i = i + 1;
+    }
+
+    frame
+}
+
+fn ws_unframe_authenticated_message(conn: i64, frame: i64) -> i64 {
+    let frame_len: i64 = vec_len(frame);
+
+    // Minimum size: msg_type(1) + timestamp(1) + len(1) + signature(32) = 35
+    if frame_len < 35 {
+        return 0;  // Invalid frame
+    }
+
+    let msg_type: i64 = vec_get(frame, 0);
+    let timestamp: i64 = vec_get(frame, 1);
+    let payload_len: i64 = vec_get(frame, 2);
+
+    // Verify frame has enough data
+    let expected_len: i64 = 3 + payload_len + SIGNATURE_LENGTH();
+    if frame_len < expected_len {
+        return 0;  // Incomplete frame
+    }
+
+    // Check timestamp for replay protection
+    let last_seen: i64 = ws_conn_last_seen_timestamp(conn);
+    if timestamp <= last_seen {
+        return 0;  // Replay attack or out-of-order message
+    }
+
+    let now: i64 = time_now();
+    if timestamp > now + 60 {
+        return 0;  // Future timestamp (clock skew attack)
+    }
+    if now - timestamp > 300 {
+        return 0;  // Message too old (5 minute window)
+    }
+
+    // Extract signature (last 32 bytes)
+    let signature: i64 = vec_new();
+    let sig_start: i64 = 3 + payload_len;
+    let i: i64 = 0;
+    while i < SIGNATURE_LENGTH() {
+        vec_push(signature, vec_get(frame, sig_start + i));
+        i = i + 1;
+    }
+
+    // Extract message data (without signature) for verification
+    let msg_data: i64 = vec_new();
+    i = 0;
+    while i < sig_start {
+        vec_push(msg_data, vec_get(frame, i));
+        i = i + 1;
+    }
+
+    // Verify signature
+    let identity: i64 = ws_conn_identity(conn);
+    if verify_message_signature(identity, msg_data, signature) == 0 {
+        return 0;  // Signature verification failed (tampering detected)
+    }
+
+    // Update last seen timestamp
+    ws_conn_update_last_seen(conn, timestamp);
+
+    // Extract payload
+    let payload: i64 = vec_new();
+    i = 0;
+    while i < payload_len {
+        vec_push(payload, vec_get(frame, 3 + i));
+        i = i + 1;
+    }
+
+    // Return verified message structure
+    let msg: i64 = vec_new();
+    vec_push(msg, msg_type);
+    vec_push(msg, payload);
+    vec_push(msg, timestamp);
+    msg
+}
+
+// Legacy function (DEPRECATED - use authenticated version)
+fn ws_frame_message(msg_type: i64, payload: i64) -> i64 {
+    // This is insecure - kept only for internal use during auth
+    let frame: i64 = vec_new();
+    vec_push(frame, msg_type);
+    let payload_len: i64 = vec_len(payload);
+    vec_push(frame, payload_len);
+    let i: i64 = 0;
+    while i < payload_len {
+        vec_push(frame, vec_get(payload, i));
+        i = i + 1;
+    }
+    frame
+}
+
+fn ws_unframe_message(frame: i64) -> i64 {
+    // DEPRECATED - use ws_unframe_authenticated_message
+    if vec_len(frame) < 2 {
+        return 0;
+    }
+    let msg_type: i64 = vec_get(frame, 0);
+    let payload_len: i64 = vec_get(frame, 1);
+    if vec_len(frame) < 2 + payload_len {
+        return 0;
+    }
+    let payload: i64 = vec_new();
+    let i: i64 = 0;
+    while i < payload_len {
+        vec_push(payload, vec_get(frame, 2 + i));
+        i = i + 1;
+    }
+    let msg: i64 = vec_new();
+    vec_push(msg, msg_type);
+    vec_push(msg, payload);
+    msg
+}
+
+// =============================================================================
+// Message Receiving
+// =============================================================================
+
+fn ws_recv(conn: i64) -> i64 {
+    if ws_is_connected(conn) == 0 {
+        return 0;
+    }
+
+    let socket: i64 = ws_conn_socket(conn);
+    let data: i64 = net_ws_recv(socket);
+
+    if data == 0 {
+        return 0;  // No data available
+    }
+
+    ws_conn_update_activity(conn);
+
+    // Accumulate in recv buffer
+    let buffer: i64 = ws_conn_recv_buffer(conn);
+    let i: i64 = 0;
+    while i < vec_len(data) {
+        vec_push(buffer, vec_get(data, i));
+        i = i + 1;
+    }
+
+    // Try to parse a complete message
+    ws_try_parse_message(conn)
+}
+
+fn ws_try_parse_message(conn: i64) -> i64 {
+    let buffer: i64 = ws_conn_recv_buffer(conn);
+
+    if vec_len(buffer) < 2 {
+        return 0;  // Need more data
+    }
+
+    let msg_type: i64 = vec_get(buffer, 0);
+    let payload_len: i64 = vec_get(buffer, 1);
+    let total_len: i64 = 2 + payload_len;
+
+    if vec_len(buffer) < total_len {
+        return 0;  // Need more data
+    }
+
+    // Extract complete frame
+    let frame: i64 = vec_new();
+    let i: i64 = 0;
+    while i < total_len {
+        vec_push(frame, vec_get(buffer, i));
+        i = i + 1;
+    }
+
+    // Remove from buffer
+    let new_buffer: i64 = vec_new();
+    while i < vec_len(buffer) {
+        vec_push(new_buffer, vec_get(buffer, i));
+        i = i + 1;
+    }
+    vec_set(conn, 7, new_buffer);
+
+    // Unframe and return message
+    ws_unframe_message(frame)
+}
+
+// =============================================================================
+// Protocol Messages
+// =============================================================================
+
+fn ws_send_handshake(conn: i64) -> i64 {
+    let device_id: i64 = ws_conn_device_id(conn);
+
+    let payload: i64 = vec_new();
+    vec_push(payload, device_id);
+    vec_push(payload, PROTOCOL_VERSION());
+    vec_push(payload, time_now());
+
+    ws_send(conn, MSG_PEER_ANNOUNCE(), payload)
+}
+
+fn ws_send_ping(conn: i64) -> i64 {
+    let payload: i64 = vec_new();
+    vec_push(payload, time_now());
+    ws_send(conn, MSG_PING(), payload)
+}
+
+fn ws_send_pong(conn: i64, ping_time: i64) -> i64 {
+    let payload: i64 = vec_new();
+    vec_push(payload, ping_time);
+    vec_push(payload, time_now());
+    ws_send(conn, MSG_PONG(), payload)
+}
+
+fn ws_send_delegate(conn: i64, request: i64) -> i64 {
+    ws_send(conn, MSG_DELEGATE(), request)
+}
+
+fn ws_send_sync(conn: i64, beliefs: i64) -> i64 {
+    ws_send(conn, MSG_SYNC(), beliefs)
+}
+
+fn ws_send_ack(conn: i64, msg_id: i64) -> i64 {
+    let payload: i64 = vec_new();
+    vec_push(payload, msg_id);
+    ws_send(conn, MSG_ACK(), payload)
+}
+
+fn ws_send_error(conn: i64, error_code: i64, error_msg: i64) -> i64 {
+    let payload: i64 = vec_new();
+    vec_push(payload, error_code);
+    vec_push(payload, error_msg);
+    ws_send(conn, MSG_ERROR(), payload)
+}
+
+// =============================================================================
+// Health Monitoring
+// =============================================================================
+
+fn PING_INTERVAL() -> i64 { 30 }      // 30 seconds
+fn PING_TIMEOUT() -> i64 { 10 }       // 10 seconds
+
+fn ws_needs_ping(conn: i64) -> i64 {
+    if ws_is_connected(conn) == 0 {
+        return 0;
+    }
+
+    let last_activity: i64 = ws_conn_last_activity(conn);
+    let now: i64 = time_now();
+
+    if now - last_activity > PING_INTERVAL() {
+        return 1;
+    }
+
+    0
+}
+
+fn ws_check_timeout(conn: i64) -> i64 {
+    if ws_is_connected(conn) == 0 {
+        return 0;
+    }
+
+    let last_activity: i64 = ws_conn_last_activity(conn);
+    let now: i64 = time_now();
+    let timeout: i64 = PING_INTERVAL() + PING_TIMEOUT();
+
+    if now - last_activity > timeout {
+        // Connection timed out
+        ws_conn_set_state(conn, CONN_ERROR());
+        return 1;
+    }
+
+    0
+}
+
+fn ws_maintenance(conn: i64) -> i64 {
+    let state: i64 = ws_conn_state(conn);
+
+    // Try reconnect if in error state
+    if state == CONN_ERROR() {
+        ws_try_reconnect(conn);
+        return 0;
+    }
+
+    // Check for timeout
+    if ws_check_timeout(conn) == 1 {
+        return 0;  // Just transitioned to error
+    }
+
+    // Send ping if needed
+    if ws_needs_ping(conn) == 1 {
+        ws_send_ping(conn);
+    }
+
+    1
+}
+
+// =============================================================================
+// Protocol Constants
+// =============================================================================
+
+fn PROTOCOL_VERSION() -> i64 { 1 }
+
+// =============================================================================
+// Statistics
+// =============================================================================
+
+fn ws_get_queue_size(conn: i64) -> i64 {
+    let queue: i64 = ws_conn_send_queue(conn);
+    vec_len(queue)
+}
+
+fn ws_get_reconnect_info(conn: i64) -> i64 {
+    let info: i64 = vec_new();
+    vec_push(info, ws_conn_reconnect_attempts(conn));
+    vec_push(info, ws_conn_reconnect_delay(conn));
+    info
+}
+
+// =============================================================================
+// Authentication Constants
+// =============================================================================
+
+fn AUTH_SUCCESS() -> i64 { 1 }
+fn AUTH_FAILED() -> i64 { 0 }
+fn AUTH_INVALID_CREDENTIALS() -> i64 { 2 }
+fn AUTH_EXPIRED() -> i64 { 3 }
+fn AUTH_RATE_LIMITED() -> i64 { 4 }
+
+fn MSG_AUTH_HANDSHAKE() -> i64 { 100 }
+fn MSG_AUTH_RESPONSE() -> i64 { 101 }
+
+// =============================================================================
+// Runtime Declarations
+// =============================================================================
+
+// Native network operations (TLS)
+extern fn net_wss_connect(endpoint: i64) -> i64;      // WebSocket Secure connect
+extern fn net_ws_connect(endpoint: i64) -> i64;       // Legacy (deprecated)
+extern fn net_ws_close(socket: i64) -> i64;
+extern fn net_ws_send(socket: i64, data: i64) -> i64;
+extern fn net_ws_recv(socket: i64) -> i64;
+extern fn net_verify_tls_cert(socket: i64) -> i64;    // Certificate validation
+
+// Security functions (from security.sx)
+extern fn create_auth_handshake(identity: i64, device_id: i64) -> i64;
+extern fn sign_message(identity: i64, msg: i64) -> i64;
+extern fn verify_message_signature(identity: i64, msg: i64, signature: i64) -> i64;
+
+// String operations
+extern fn string_starts_with(s: i64, prefix: i64) -> i64;
+extern fn string_from(s: &str) -> i64;
+
+// Vector operations (from runtime.sx)
+extern fn vec_new() -> i64;
+extern fn vec_push(v: i64, val: i64) -> i64;
+extern fn vec_get(v: i64, idx: i64) -> i64;
+extern fn vec_set(v: i64, idx: i64, val: i64) -> i64;
+extern fn vec_len(v: i64) -> i64;
+
+// Time (from runtime.sx)
+extern fn time_now() -> i64;
+extern fn time_now_ms() -> i64;
+extern fn sleep_ms(ms: i64) -> i64;

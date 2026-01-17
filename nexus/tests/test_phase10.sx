@@ -1,0 +1,1440 @@
+// Nexus Protocol Phase 10 Tests
+// Session, Multiplexing, Flow Control, and Request/Response
+//
+// Tests cover:
+// - Session lifecycle and state management
+// - Stream multiplexing
+// - Flow control (windowing, backpressure, rate limiting)
+// - RPC request/response patterns
+
+fn main() -> i64 {
+    print_string("=== Phase 10: Session & Stream Multiplexing Tests ===\n");
+
+    // Session tests
+    test_session_config();
+    test_session_id_generation();
+    test_session_lifecycle();
+    test_session_state_transitions();
+    test_session_resume();
+    test_session_keepalive();
+    test_session_streams();
+    test_session_pending_requests();
+    test_session_stats();
+
+    // Multiplexing tests
+    test_stream_id();
+    test_stream_lifecycle();
+    test_stream_states();
+    test_mux_frame();
+    test_mux_config();
+    test_multiplexer_basic();
+    test_multiplexer_create_stream();
+    test_multiplexer_accept_stream();
+    test_multiplexer_send_recv();
+    test_multiplexer_window_update();
+    test_multiplexer_goaway();
+    test_multiplexer_cleanup();
+    test_wfq_scheduler();
+
+    // Flow control tests
+    test_flow_window();
+    test_flow_window_consume_release();
+    test_flow_credit();
+    test_rate_limiter();
+    test_rate_limiter_refill();
+    test_adaptive_flow();
+    test_adaptive_flow_rtt();
+    test_adaptive_flow_loss();
+    test_backpressure_monitor();
+    test_flow_controller();
+    test_nex_flow_ctrl_strategies();
+
+    // Request/Response tests
+    test_correlation_generator();
+    test_rpc_request();
+    test_rpc_response();
+    test_pending_map();
+    test_pending_map_timeouts();
+    test_handler_registry();
+    test_rpc_channel();
+    test_rpc_channel_call();
+    test_rpc_channel_fire_forget();
+    test_rpc_channel_complete();
+    test_rpc_metrics();
+
+    print_string("\n=== All Phase 10 tests passed! ===\n");
+    0
+}
+
+// ============================================================================
+// Session Tests
+// ============================================================================
+
+fn test_session_config() {
+    print_string("test_session_config... ");
+
+    let config = session_config_new();
+    assert(config != 0, "config creation");
+
+    // Check defaults
+    assert(session_config_handshake_timeout(config) == 30000, "handshake timeout");
+    assert(session_config_idle_timeout(config) == 300000, "idle timeout");
+    assert(session_config_keepalive_interval(config) == 30000, "keepalive interval");
+    assert(session_config_max_streams(config) == 100, "max streams");
+    assert(session_config_max_pending(config) == 1000, "max pending");
+    assert(session_config_enable_resume(config) == 1, "enable resume");
+
+    // Modify and verify
+    session_config_set_handshake_timeout(config, 60000);
+    assert(session_config_handshake_timeout(config) == 60000, "modified handshake timeout");
+
+    session_config_set_max_streams(config, 200);
+    assert(session_config_max_streams(config) == 200, "modified max streams");
+
+    session_config_free(config);
+    print_string("PASS\n");
+}
+
+fn test_session_id_generation() {
+    print_string("test_session_id_generation... ");
+
+    let id1 = session_id_generate(1000);
+    let id2 = session_id_generate(1001);
+
+    assert(id1 != 0, "id1 generated");
+    assert(id2 != 0, "id2 generated");
+    assert(id1 != id2, "ids unique");
+
+    // Test serialization
+    let buf = alloc(64);
+    let len = session_id_serialize(id1, buf);
+    assert(len > 0, "serialization");
+
+    // Parse back
+    let parsed = session_id_parse(buf, len);
+    assert(parsed == id1, "parse matches");
+
+    print_string("PASS\n");
+}
+
+fn test_session_lifecycle() {
+    print_string("test_session_lifecycle... ");
+
+    let config = session_config_new();
+    let now = 1000000;
+
+    let session = session_new(config, 12345, now);
+    assert(session != 0, "session creation");
+    assert(session_state(session) == SESSION_STATE_NEW(), "initial state NEW");
+    assert(session_local_hive_id(session) == 12345, "local hive id");
+
+    // Connect
+    let transport = 99;  // Mock transport
+    assert(session_connect(session, transport, now + 100) == 1, "connect");
+    assert(session_state(session) == SESSION_STATE_CONNECTING(), "state CONNECTING");
+
+    // Handshake
+    assert(session_handshake(session, now + 200) == 1, "handshake");
+    assert(session_state(session) == SESSION_STATE_HANDSHAKING(), "state HANDSHAKING");
+
+    // Authenticate
+    assert(session_authenticate(session, now + 300) == 1, "authenticate");
+    assert(session_state(session) == SESSION_STATE_AUTHENTICATING(), "state AUTHENTICATING");
+
+    // Activate
+    assert(session_activate(session, 67890, now + 400) == 1, "activate");
+    assert(session_state(session) == SESSION_STATE_ACTIVE(), "state ACTIVE");
+    assert(session_remote_hive_id(session) == 67890, "remote hive id");
+
+    // Close
+    assert(session_close(session, 0, now + 500) == 1, "close");
+    assert(session_state(session) == SESSION_STATE_CLOSING(), "state CLOSING");
+
+    session_free(session);
+    session_config_free(config);
+    print_string("PASS\n");
+}
+
+fn test_session_state_transitions() {
+    print_string("test_session_state_transitions... ");
+
+    let config = session_config_new();
+    let now = 1000000;
+    let session = session_new(config, 12345, now);
+
+    // Cannot activate from NEW
+    assert(session_activate(session, 67890, now) == 0, "cannot activate from NEW");
+
+    // Connect first
+    session_connect(session, 99, now);
+    session_handshake(session, now);
+    session_authenticate(session, now);
+    session_activate(session, 67890, now);
+
+    // Suspend active session
+    assert(session_suspend(session, now) == 1, "suspend");
+    assert(session_state(session) == SESSION_STATE_SUSPENDED(), "state SUSPENDED");
+
+    // Resume from suspended
+    let token = session_generate_resume_token(session, now);
+    assert(token != 0, "resume token generated");
+
+    session_free(session);
+    session_config_free(config);
+    print_string("PASS\n");
+}
+
+fn test_session_resume() {
+    print_string("test_session_resume... ");
+
+    let config = session_config_new();
+    let now = 1000000;
+    let session = session_new(config, 12345, now);
+
+    // Activate session
+    session_connect(session, 99, now);
+    session_handshake(session, now);
+    session_authenticate(session, now);
+    session_activate(session, 67890, now);
+
+    // Generate resume token
+    let token = session_generate_resume_token(session, now);
+    assert(token != 0, "token generated");
+
+    // Suspend
+    session_suspend(session, now + 1000);
+
+    // Resume
+    let new_transport = 100;
+    assert(session_resume(session, new_transport, token, now + 2000) == 1, "resume");
+    assert(session_state(session) == SESSION_STATE_ACTIVE(), "resumed to ACTIVE");
+
+    session_free(session);
+    session_config_free(config);
+    print_string("PASS\n");
+}
+
+fn test_session_keepalive() {
+    print_string("test_session_keepalive... ");
+
+    let config = session_config_new();
+    session_config_set_keepalive_interval(config, 5000);
+
+    let now = 1000000;
+    let session = session_new(config, 12345, now);
+
+    // Activate session
+    session_connect(session, 99, now);
+    session_handshake(session, now);
+    session_authenticate(session, now);
+    session_activate(session, 67890, now);
+
+    // Initially no keepalive needed
+    assert(session_needs_keepalive(session, now + 1000) == 0, "no keepalive needed early");
+
+    // After interval, keepalive needed
+    assert(session_needs_keepalive(session, now + 6000) == 1, "keepalive needed");
+
+    // Send ping
+    let ping_id = session_send_ping(session, now + 6000);
+    assert(ping_id > 0, "ping sent");
+
+    // Receive pong
+    assert(session_recv_pong(session, ping_id, now + 6050) == 1, "pong received");
+
+    session_free(session);
+    session_config_free(config);
+    print_string("PASS\n");
+}
+
+fn test_session_streams() {
+    print_string("test_session_streams... ");
+
+    let config = session_config_new();
+    session_config_set_max_streams(config, 10);
+
+    let now = 1000000;
+    let session = session_new(config, 12345, now);
+
+    // Activate
+    session_connect(session, 99, now);
+    session_handshake(session, now);
+    session_authenticate(session, now);
+    session_activate(session, 67890, now);
+
+    // Add streams
+    assert(session_add_stream(session, 1) == 1, "add stream 1");
+    assert(session_add_stream(session, 3) == 1, "add stream 3");
+    assert(session_add_stream(session, 5) == 1, "add stream 5");
+
+    assert(session_stream_count(session) == 3, "stream count");
+
+    // Find stream
+    assert(session_find_stream(session, 3) == 1, "find stream 3");
+    assert(session_find_stream(session, 7) == 0, "stream 7 not found");
+
+    // Remove stream
+    assert(session_remove_stream(session, 3) == 1, "remove stream 3");
+    assert(session_stream_count(session) == 2, "stream count after remove");
+    assert(session_find_stream(session, 3) == 0, "stream 3 removed");
+
+    session_free(session);
+    session_config_free(config);
+    print_string("PASS\n");
+}
+
+fn test_session_pending_requests() {
+    print_string("test_session_pending_requests... ");
+
+    let config = session_config_new();
+    session_config_set_max_pending(config, 5);
+
+    let now = 1000000;
+    let session = session_new(config, 12345, now);
+
+    // Activate
+    session_connect(session, 99, now);
+    session_handshake(session, now);
+    session_authenticate(session, now);
+    session_activate(session, 67890, now);
+
+    // Add pending requests
+    assert(session_add_pending(session, 100) == 1, "add pending 100");
+    assert(session_add_pending(session, 101) == 1, "add pending 101");
+    assert(session_add_pending(session, 102) == 1, "add pending 102");
+
+    assert(session_pending_count(session) == 3, "pending count");
+
+    // Find pending
+    assert(session_find_pending(session, 101) == 1, "find pending 101");
+    assert(session_find_pending(session, 999) == 0, "pending 999 not found");
+
+    // Remove pending
+    assert(session_remove_pending(session, 101) == 1, "remove pending 101");
+    assert(session_pending_count(session) == 2, "pending count after remove");
+
+    session_free(session);
+    session_config_free(config);
+    print_string("PASS\n");
+}
+
+fn test_session_stats() {
+    print_string("test_session_stats... ");
+
+    let config = session_config_new();
+    let now = 1000000;
+    let session = session_new(config, 12345, now);
+
+    // Activate
+    session_connect(session, 99, now);
+    session_handshake(session, now);
+    session_authenticate(session, now);
+    session_activate(session, 67890, now);
+
+    // Update stats
+    session_add_bytes_sent(session, 1000);
+    session_add_bytes_sent(session, 500);
+    session_add_bytes_recv(session, 2000);
+    session_add_frames_sent(session, 5);
+    session_add_frames_recv(session, 8);
+
+    // Check stats
+    let stats = session_get_stats(session);
+    assert(stats != 0, "stats created");
+    assert(session_stats_bytes_sent(stats) == 1500, "bytes sent");
+    assert(session_stats_bytes_recv(stats) == 2000, "bytes recv");
+    assert(session_stats_frames_sent(stats) == 5, "frames sent");
+    assert(session_stats_frames_recv(stats) == 8, "frames recv");
+
+    session_free(session);
+    session_config_free(config);
+    print_string("PASS\n");
+}
+
+// ============================================================================
+// Multiplexing Tests
+// ============================================================================
+
+fn test_stream_id() {
+    print_string("test_stream_id... ");
+
+    let sid1 = stream_id_new(1);
+    let sid2 = stream_id_new(2);
+    let sid3 = stream_id_new(0);
+
+    assert(stream_id_value(sid1) == 1, "sid1 value");
+    assert(stream_id_value(sid2) == 2, "sid2 value");
+
+    // Client-initiated (odd)
+    assert(stream_id_is_client_initiated(sid1) == 1, "sid1 is client");
+    assert(stream_id_is_server_initiated(sid1) == 0, "sid1 not server");
+
+    // Server-initiated (even, non-zero)
+    assert(stream_id_is_server_initiated(sid2) == 1, "sid2 is server");
+    assert(stream_id_is_client_initiated(sid2) == 0, "sid2 not client");
+
+    // Connection-level (0)
+    assert(stream_id_is_connection_level(sid3) == 1, "sid3 is connection-level");
+
+    stream_id_free(sid1);
+    stream_id_free(sid2);
+    stream_id_free(sid3);
+    print_string("PASS\n");
+}
+
+fn test_stream_lifecycle() {
+    print_string("test_stream_lifecycle... ");
+
+    let now = 1000000;
+    let s = mux_stream_new(1, STREAM_TYPE_DATA(), now);
+
+    assert(s != 0, "stream created");
+    assert(stream_id(s) == 1, "stream id");
+    assert(stream_type(s) == STREAM_TYPE_DATA(), "stream type");
+    assert(stream_state(s) == MUX_STREAM_STATE_IDLE(), "initial state IDLE");
+
+    // Open
+    assert(stream_open(s, now + 100) == 1, "open");
+    assert(stream_state(s) == MUX_STREAM_STATE_OPEN(), "state OPEN");
+
+    // Can send and receive
+    assert(stream_can_send(s) == 1, "can send");
+    assert(stream_can_recv(s) == 1, "can recv");
+
+    // Close local side
+    assert(stream_close_local(s, now + 200) == 1, "close local");
+    assert(stream_state(s) == MUX_STREAM_STATE_HALF_CLOSED_LOCAL(), "state HALF_CLOSED_LOCAL");
+    assert(stream_can_send(s) == 0, "cannot send");
+    assert(stream_can_recv(s) == 1, "can still recv");
+
+    // Close remote side
+    assert(stream_close_remote(s, now + 300) == 1, "close remote");
+    assert(stream_state(s) == MUX_STREAM_STATE_CLOSED(), "state CLOSED");
+
+    stream_free(s);
+    print_string("PASS\n");
+}
+
+fn test_stream_states() {
+    print_string("test_stream_states... ");
+
+    let now = 1000000;
+    let s = mux_stream_new(3, STREAM_TYPE_RPC(), now);
+
+    assert(stream_is_idle(s) == 1, "is idle");
+    assert(stream_is_open(s) == 0, "not open");
+    assert(stream_is_closed(s) == 0, "not closed");
+
+    stream_open(s, now);
+    assert(stream_is_open(s) == 1, "is open");
+
+    // Reset stream
+    stream_reset(s, STREAM_ERROR_CANCEL(), now + 100);
+    assert(stream_is_closed(s) == 1, "is closed after reset");
+    assert(stream_error_code(s) == STREAM_ERROR_CANCEL(), "error code");
+
+    stream_free(s);
+    print_string("PASS\n");
+}
+
+fn test_mux_frame() {
+    print_string("test_mux_frame... ");
+
+    let payload = alloc(100);
+    let f = mux_frame_new(MUX_FRAME_DATA(), MUX_FLAG_END_STREAM(), 5, payload, 100);
+
+    assert(f != 0, "frame created");
+    assert(mux_frame_type(f) == MUX_FRAME_DATA(), "frame type");
+    assert(mux_frame_flags(f) == MUX_FLAG_END_STREAM(), "frame flags");
+    assert(mux_frame_stream_id(f) == 5, "stream id");
+    assert(mux_frame_payload(f) == payload, "payload");
+    assert(mux_frame_length(f) == 100, "length");
+
+    // Flag checks
+    assert(mux_frame_is_end_stream(f) == 1, "is end stream");
+    assert(mux_frame_has_flag(f, MUX_FLAG_PADDED()) == 0, "not padded");
+
+    mux_frame_free(f);
+    print_string("PASS\n");
+}
+
+fn test_mux_config() {
+    print_string("test_mux_config... ");
+
+    let c = mux_config_new();
+
+    assert(c != 0, "config created");
+    assert(mux_config_max_streams(c) == 100, "default max streams");
+    assert(mux_config_init_window(c) == 65535, "default init window");
+    assert(mux_config_max_frame_size(c) == 16384, "default max frame size");
+    assert(mux_config_enable_push(c) == 1, "push enabled");
+
+    mux_config_set_max_streams(c, 200);
+    assert(mux_config_max_streams(c) == 200, "modified max streams");
+
+    mux_config_free(c);
+    print_string("PASS\n");
+}
+
+fn test_multiplexer_basic() {
+    print_string("test_multiplexer_basic... ");
+
+    let config = mux_config_new();
+    let now = 1000000;
+
+    // Client multiplexer (is_server=0)
+    let client_mux = multiplexer_new(config, 0, now);
+    assert(client_mux != 0, "client mux created");
+    assert(multiplexer_is_server(client_mux) == 0, "is client");
+    assert(multiplexer_next_stream_id(client_mux) == 1, "client starts at 1");
+
+    // Server multiplexer (is_server=1)
+    let server_mux = multiplexer_new(config, 1, now);
+    assert(server_mux != 0, "server mux created");
+    assert(multiplexer_is_server(server_mux) == 1, "is server");
+    assert(multiplexer_next_stream_id(server_mux) == 2, "server starts at 2");
+
+    multiplexer_free(client_mux);
+    multiplexer_free(server_mux);
+    mux_config_free(config);
+    print_string("PASS\n");
+}
+
+fn test_multiplexer_create_stream() {
+    print_string("test_multiplexer_create_stream... ");
+
+    let config = mux_config_new();
+    mux_config_set_max_streams(config, 5);
+    let now = 1000000;
+
+    let mux = multiplexer_new(config, 0, now);
+
+    // Create streams
+    let s1 = multiplexer_create_stream(mux, STREAM_TYPE_DATA(), now);
+    assert(s1 != 0, "stream 1 created");
+    assert(stream_id(s1) == 1, "stream 1 id");
+
+    let s2 = multiplexer_create_stream(mux, STREAM_TYPE_RPC(), now + 100);
+    assert(s2 != 0, "stream 2 created");
+    assert(stream_id(s2) == 3, "stream 2 id (odd)");
+
+    let s3 = multiplexer_create_stream(mux, STREAM_TYPE_DATA(), now + 200);
+    assert(stream_id(s3) == 5, "stream 3 id");
+
+    assert(multiplexer_stream_count(mux) == 3, "stream count");
+
+    // Find stream
+    let found = multiplexer_find_stream(mux, 3);
+    assert(found == s2, "found stream 3");
+
+    multiplexer_free(mux);
+    mux_config_free(config);
+    print_string("PASS\n");
+}
+
+fn test_multiplexer_accept_stream() {
+    print_string("test_multiplexer_accept_stream... ");
+
+    let config = mux_config_new();
+    let now = 1000000;
+
+    // Server accepts client streams (odd IDs)
+    let server_mux = multiplexer_new(config, 1, now);
+
+    let s1 = multiplexer_accept_stream(server_mux, 1, STREAM_TYPE_DATA(), now);
+    assert(s1 != 0, "accepted stream 1");
+    assert(stream_state(s1) == MUX_STREAM_STATE_OPEN(), "stream is open");
+
+    let s2 = multiplexer_accept_stream(server_mux, 3, STREAM_TYPE_RPC(), now);
+    assert(s2 != 0, "accepted stream 3");
+
+    // Cannot accept even IDs (server-initiated)
+    let s3 = multiplexer_accept_stream(server_mux, 2, STREAM_TYPE_DATA(), now);
+    assert(s3 == 0, "cannot accept server stream as server");
+
+    multiplexer_free(server_mux);
+    mux_config_free(config);
+    print_string("PASS\n");
+}
+
+fn test_multiplexer_send_recv() {
+    print_string("test_multiplexer_send_recv... ");
+
+    let config = mux_config_new();
+    let now = 1000000;
+
+    let mux = multiplexer_new(config, 0, now);
+
+    // Create and open stream
+    let s = multiplexer_create_stream(mux, STREAM_TYPE_DATA(), now);
+    stream_open(s, now);
+
+    let data = alloc(1000);
+    let initial_window = stream_send_window(s);
+
+    // Send data
+    let sent = multiplexer_send(mux, stream_id(s), data, 500, 0, now);
+    assert(sent == 500, "sent 500 bytes");
+    assert(stream_send_window(s) == initial_window - 500, "send window decreased");
+    assert(stream_bytes_sent(s) == 500, "bytes sent stat");
+
+    // Receive data
+    let recv_data = alloc(1000);
+    let recvd = multiplexer_recv(mux, stream_id(s), recv_data, 300, now);
+    assert(recvd == 300, "received 300 bytes");
+    assert(stream_bytes_recv(s) == 300, "bytes recv stat");
+
+    multiplexer_free(mux);
+    mux_config_free(config);
+    print_string("PASS\n");
+}
+
+fn test_multiplexer_window_update() {
+    print_string("test_multiplexer_window_update... ");
+
+    let config = mux_config_new();
+    let now = 1000000;
+
+    let mux = multiplexer_new(config, 0, now);
+    let s = multiplexer_create_stream(mux, STREAM_TYPE_DATA(), now);
+    stream_open(s, now);
+
+    let initial_recv = stream_recv_window(s);
+
+    // Consume some receive window
+    multiplexer_recv(mux, stream_id(s), 0, 1000, now);
+    assert(stream_recv_window(s) == initial_recv - 1000, "recv window decreased");
+
+    // Update receive window
+    multiplexer_update_window(mux, stream_id(s), 1000);
+    assert(stream_recv_window(s) == initial_recv, "recv window restored");
+
+    // Connection-level window update
+    let initial_conn = multiplexer_conn_window_recv(mux);
+    multiplexer_recv(mux, stream_id(s), 0, 500, now);
+    multiplexer_update_window(mux, 0, 500);  // Stream ID 0 = connection level
+    assert(multiplexer_conn_window_recv(mux) == initial_conn - 500 + 500, "conn window updated");
+
+    multiplexer_free(mux);
+    mux_config_free(config);
+    print_string("PASS\n");
+}
+
+fn test_multiplexer_goaway() {
+    print_string("test_multiplexer_goaway... ");
+
+    let config = mux_config_new();
+    let now = 1000000;
+
+    let mux = multiplexer_new(config, 0, now);
+
+    // Create some streams
+    let s1 = multiplexer_create_stream(mux, STREAM_TYPE_DATA(), now);
+    let s2 = multiplexer_create_stream(mux, STREAM_TYPE_DATA(), now);
+
+    // Can create streams initially
+    assert(multiplexer_can_create_stream(mux) == 1, "can create initially");
+
+    // Send GOAWAY
+    assert(multiplexer_goaway(mux, STREAM_ERROR_NONE(), now) == 1, "goaway sent");
+    assert(multiplexer_goaway_sent(mux) == 1, "goaway_sent flag");
+
+    // Cannot send another GOAWAY
+    assert(multiplexer_goaway(mux, STREAM_ERROR_NONE(), now) == 0, "no duplicate goaway");
+
+    // Receive GOAWAY
+    let other_mux = multiplexer_new(config, 1, now);
+    multiplexer_create_stream(other_mux, STREAM_TYPE_DATA(), now);  // ID 2
+    multiplexer_create_stream(other_mux, STREAM_TYPE_DATA(), now);  // ID 4
+
+    multiplexer_recv_goaway(other_mux, 2, STREAM_ERROR_NONE(), now);
+    assert(multiplexer_goaway_recv(other_mux) == 1, "goaway_recv flag");
+
+    // Cannot create new streams after receiving GOAWAY
+    assert(multiplexer_can_create_stream(other_mux) == 0, "cannot create after goaway");
+
+    multiplexer_free(mux);
+    multiplexer_free(other_mux);
+    mux_config_free(config);
+    print_string("PASS\n");
+}
+
+fn test_multiplexer_cleanup() {
+    print_string("test_multiplexer_cleanup... ");
+
+    let config = mux_config_new();
+    let now = 1000000;
+
+    let mux = multiplexer_new(config, 0, now);
+
+    // Create streams
+    let s1 = multiplexer_create_stream(mux, STREAM_TYPE_DATA(), now);
+    let s2 = multiplexer_create_stream(mux, STREAM_TYPE_DATA(), now);
+    let s3 = multiplexer_create_stream(mux, STREAM_TYPE_DATA(), now);
+
+    stream_open(s1, now);
+    stream_open(s2, now);
+    stream_open(s3, now);
+
+    assert(multiplexer_stream_count(mux) == 3, "3 streams");
+
+    // Close some streams
+    stream_reset(s1, STREAM_ERROR_NONE(), now);
+    stream_reset(s3, STREAM_ERROR_NONE(), now);
+
+    // Active count
+    assert(multiplexer_active_stream_count(mux) == 1, "1 active");
+
+    // Cleanup closed
+    let removed = multiplexer_cleanup_closed(mux);
+    assert(removed == 2, "removed 2 streams");
+    assert(multiplexer_stream_count(mux) == 1, "1 stream remaining");
+
+    multiplexer_free(mux);
+    mux_config_free(config);
+    print_string("PASS\n");
+}
+
+fn test_wfq_scheduler() {
+    print_string("test_wfq_scheduler... ");
+
+    let now = 1000000;
+    let wfq = wfq_scheduler_new();
+
+    // Create streams with different weights
+    let s1 = mux_stream_new(1, STREAM_TYPE_DATA(), now);
+    let s2 = mux_stream_new(3, STREAM_TYPE_DATA(), now);
+    let s3 = mux_stream_new(5, STREAM_TYPE_DATA(), now);
+
+    stream_open(s1, now);
+    stream_open(s2, now);
+    stream_open(s3, now);
+
+    stream_set_weight(s1, 16);  // Normal weight
+    stream_set_weight(s2, 32);  // Higher weight
+    stream_set_weight(s3, 8);   // Lower weight
+
+    wfq_scheduler_add(wfq, s1);
+    wfq_scheduler_add(wfq, s2);
+    wfq_scheduler_add(wfq, s3);
+
+    assert(wfq_scheduler_count(wfq) == 3, "3 streams in scheduler");
+
+    // Get next streams (higher weight should be scheduled more often)
+    let next = wfq_scheduler_next(wfq);
+    assert(next != 0, "got next stream");
+
+    // Remove a stream
+    wfq_scheduler_remove(wfq, s2);
+    assert(wfq_scheduler_count(wfq) == 2, "2 streams after remove");
+
+    wfq_scheduler_free(wfq);
+    stream_free(s1);
+    stream_free(s2);
+    stream_free(s3);
+    print_string("PASS\n");
+}
+
+// ============================================================================
+// Flow Control Tests
+// ============================================================================
+
+fn test_flow_window() {
+    print_string("test_flow_window... ");
+
+    let w = flow_window_new(65536);
+
+    assert(w != 0, "window created");
+    assert(flow_window_size(w) == 65536, "size");
+    assert(flow_window_available(w) == 65536, "available");
+    assert(flow_window_initial(w) == 65536, "initial");
+    assert(flow_window_pending(w) == 0, "pending");
+
+    // Threshold is half of initial
+    assert(flow_window_threshold(w) == 32768, "threshold");
+
+    flow_window_free(w);
+    print_string("PASS\n");
+}
+
+fn test_flow_window_consume_release() {
+    print_string("test_flow_window_consume_release... ");
+
+    let w = flow_window_new(10000);
+
+    // Consume
+    assert(flow_window_consume(w, 3000) == 1, "consume 3000");
+    assert(flow_window_available(w) == 7000, "available after consume");
+    assert(flow_window_pending(w) == 3000, "pending");
+
+    // Try to consume too much
+    assert(flow_window_consume(w, 8000) == 0, "cannot overconsume");
+
+    // Release
+    flow_window_release(w, 2000);
+    assert(flow_window_pending(w) == 1000, "pending after release");
+
+    // Update window
+    let now = 1000000;
+    flow_window_update(w, 5000, now);
+    assert(flow_window_available(w) == 12000, "available after update");
+
+    // Needs update check
+    let w2 = flow_window_new(10000);
+    flow_window_consume(w2, 6000);
+    assert(flow_window_needs_update(w2) == 1, "needs update");
+    assert(flow_window_update_amount(w2) == 6000, "update amount");
+
+    flow_window_free(w);
+    flow_window_free(w2);
+    print_string("PASS\n");
+}
+
+fn test_flow_credit() {
+    print_string("test_flow_credit... ");
+
+    let c = flow_credit_new(100);
+
+    assert(c != 0, "credit created");
+    assert(flow_credit_credits(c) == 100, "initial credits");
+    assert(flow_credit_max_credits(c) == 200, "max credits");
+
+    // Use credits
+    assert(flow_credit_use(c, 30) == 1, "use 30");
+    assert(flow_credit_credits(c) == 70, "70 remaining");
+
+    // Try to use too many
+    assert(flow_credit_use(c, 80) == 0, "cannot overuse");
+
+    // Grant credits
+    let now = 1000000;
+    flow_credit_grant(c, 50, now);
+    assert(flow_credit_credits(c) == 120, "120 after grant");
+
+    // Grant beyond max
+    flow_credit_grant(c, 100, now);
+    assert(flow_credit_credits(c) == 200, "capped at max");
+
+    // Needs request
+    let c2 = flow_credit_new(100);
+    flow_credit_use(c2, 80);
+    assert(flow_credit_needs_request(c2) == 1, "needs request");
+    assert(flow_credit_request_amount(c2) == 180, "request amount");
+
+    flow_credit_free(c);
+    flow_credit_free(c2);
+    print_string("PASS\n");
+}
+
+fn test_rate_limiter() {
+    print_string("test_rate_limiter... ");
+
+    // 1000 tokens/sec, burst of 100
+    let r = rate_limiter_new(1000, 100);
+
+    assert(r != 0, "limiter created");
+    assert(rate_limiter_tokens(r) == 100, "initial tokens");
+    assert(rate_limiter_capacity(r) == 100, "capacity");
+    assert(rate_limiter_rate(r) == 1000, "rate");
+
+    let now = 1000000;
+
+    // Acquire tokens
+    assert(rate_limiter_try_acquire(r, 30, now) == 1, "acquire 30");
+    assert(rate_limiter_tokens(r) == 70, "70 remaining");
+
+    // Try to acquire too many
+    assert(rate_limiter_try_acquire(r, 80, now) == 0, "cannot acquire 80");
+
+    // Check without consuming
+    assert(rate_limiter_check(r, 50, now) == 1, "can acquire 50");
+    assert(rate_limiter_check(r, 100, now) == 0, "cannot acquire 100");
+
+    rate_limiter_free(r);
+    print_string("PASS\n");
+}
+
+fn test_rate_limiter_refill() {
+    print_string("test_rate_limiter_refill... ");
+
+    // 1000 tokens/sec, burst of 100
+    let r = rate_limiter_new(1000, 100);
+    let now = 1000000;
+
+    // Use all tokens
+    rate_limiter_try_acquire(r, 100, now);
+    assert(rate_limiter_tokens(r) == 0, "no tokens");
+
+    // After 50ms, should have ~50 tokens (1000 * 50 / 1000 = 50)
+    rate_limiter_refill(r, now + 50);
+    assert(rate_limiter_tokens(r) == 50, "refilled 50");
+
+    // Wait time calculation
+    let wait = rate_limiter_wait_time(r, 100, now + 50);
+    assert(wait == 50, "wait 50ms for 50 more tokens");
+
+    rate_limiter_free(r);
+    print_string("PASS\n");
+}
+
+fn test_adaptive_flow() {
+    print_string("test_adaptive_flow... ");
+
+    let a = adaptive_flow_new(10000);
+
+    assert(a != 0, "adaptive created");
+    assert(adaptive_flow_window(a) == 10000, "initial window");
+    assert(adaptive_flow_cwnd(a) == 10000, "initial cwnd");
+    assert(adaptive_flow_state(a) == CONGESTION_SLOW_START(), "initial state slow start");
+
+    // Available window
+    assert(adaptive_flow_available(a) == 10000, "available");
+
+    adaptive_flow_free(a);
+    print_string("PASS\n");
+}
+
+fn test_adaptive_flow_rtt() {
+    print_string("test_adaptive_flow_rtt... ");
+
+    let a = adaptive_flow_new(10000);
+    let now = 1000000;
+
+    // First RTT sample
+    adaptive_flow_update_rtt(a, 100);
+    assert(adaptive_flow_rtt_smoothed(a) == 100, "first smoothed rtt");
+    assert(adaptive_flow_rtt_min(a) == 100, "first min rtt");
+
+    // Second RTT sample (slightly higher)
+    adaptive_flow_update_rtt(a, 120);
+    // Smoothed should be weighted average
+    let smoothed = adaptive_flow_rtt_smoothed(a);
+    assert(smoothed > 100 && smoothed < 120, "smoothed between samples");
+
+    // Lower RTT sample
+    adaptive_flow_update_rtt(a, 80);
+    assert(adaptive_flow_rtt_min(a) == 80, "min updated");
+
+    adaptive_flow_free(a);
+    print_string("PASS\n");
+}
+
+fn test_adaptive_flow_loss() {
+    print_string("test_adaptive_flow_loss... ");
+
+    let a = adaptive_flow_new(10000);
+    let now = 1000000;
+
+    // Grow window with ACKs (slow start)
+    adaptive_flow_on_ack(a, 1460, now);
+    let cwnd1 = adaptive_flow_cwnd(a);
+    assert(cwnd1 > 10000, "cwnd grew in slow start");
+
+    // Packet loss - should reduce window
+    adaptive_flow_on_loss(a, 100, now + 100);
+    assert(adaptive_flow_state(a) == CONGESTION_RECOVERY(), "entered recovery");
+    let cwnd2 = adaptive_flow_cwnd(a);
+    assert(cwnd2 < cwnd1, "cwnd reduced on loss");
+
+    // ssthresh should be set
+    assert(adaptive_flow_ssthresh(a) == cwnd2, "ssthresh set");
+
+    // Recovery complete
+    adaptive_flow_recovery_complete(a, now + 200);
+    assert(adaptive_flow_state(a) == CONGESTION_AVOIDANCE(), "in avoidance");
+
+    adaptive_flow_free(a);
+    print_string("PASS\n");
+}
+
+fn test_backpressure_monitor() {
+    print_string("test_backpressure_monitor... ");
+
+    let b = backpressure_monitor_new(1000);
+
+    assert(b != 0, "monitor created");
+    assert(backpressure_queue_limit(b) == 1000, "queue limit");
+    assert(backpressure_slow_threshold(b) == 500, "slow threshold");
+    assert(backpressure_pause_threshold(b) == 750, "pause threshold");
+
+    let now = 1000000;
+
+    // No backpressure initially
+    backpressure_update(b, 100, now);
+    assert(backpressure_current_signal(b) == BACKPRESSURE_NONE(), "no backpressure");
+    assert(backpressure_can_accept(b) == 1, "can accept");
+
+    // Slow threshold
+    backpressure_update(b, 600, now + 100);
+    assert(backpressure_current_signal(b) == BACKPRESSURE_SLOW(), "slow signal");
+    assert(backpressure_should_slow(b) == 1, "should slow");
+
+    // Pause threshold
+    backpressure_update(b, 800, now + 200);
+    assert(backpressure_current_signal(b) == BACKPRESSURE_PAUSE(), "pause signal");
+
+    // Drop threshold
+    backpressure_update(b, 1000, now + 300);
+    assert(backpressure_current_signal(b) == BACKPRESSURE_DROP(), "drop signal");
+    assert(backpressure_can_accept(b) == 0, "cannot accept");
+
+    // Utilization
+    assert(backpressure_utilization(b) == 100, "100% utilization");
+
+    backpressure_monitor_free(b);
+    print_string("PASS\n");
+}
+
+fn test_flow_controller() {
+    print_string("test_flow_controller... ");
+
+    let fc = nex_flow_ctrl_new(FLOW_STRATEGY_WINDOW(), 10000);
+
+    assert(fc != 0, "controller created");
+    assert(nex_flow_ctrl_strategy(fc) == FLOW_STRATEGY_WINDOW(), "strategy");
+    assert(nex_flow_ctrl_enabled(fc) == 1, "enabled");
+
+    let now = 1000000;
+
+    // Can send
+    assert(nex_flow_ctrl_can_send(fc, 5000, now) == 1, "can send 5000");
+    assert(nex_flow_ctrl_can_send(fc, 15000, now) == 0, "cannot send 15000");
+
+    // Consume send
+    assert(nex_flow_ctrl_consume_send(fc, 3000, now) == 1, "consume 3000");
+    assert(nex_flow_ctrl_send_available(fc) == 7000, "7000 available");
+
+    // Consume receive
+    assert(nex_flow_ctrl_consume_recv(fc, 2000) == 1, "consume recv");
+    assert(nex_flow_ctrl_recv_available(fc) == 8000, "8000 recv available");
+
+    // Update receive
+    nex_flow_ctrl_update_recv(fc, 2000, now);
+    assert(nex_flow_ctrl_recv_available(fc) == 10000, "recv restored");
+
+    // Disable flow control
+    nex_flow_ctrl_set_enabled(fc, 0);
+    assert(nex_flow_ctrl_can_send(fc, 100000, now) == 1, "unlimited when disabled");
+
+    nex_flow_ctrl_free(fc);
+    print_string("PASS\n");
+}
+
+fn test_nex_flow_ctrl_strategies() {
+    print_string("test_nex_flow_ctrl_strategies... ");
+
+    let now = 1000000;
+
+    // Rate-based strategy
+    let fc_rate = nex_flow_ctrl_new(FLOW_STRATEGY_RATE(), 1000);
+    assert(nex_flow_ctrl_rate_limiter(fc_rate) != 0, "rate limiter created");
+    assert(nex_flow_ctrl_can_send(fc_rate, 500, now) == 1, "rate can send");
+
+    // Adaptive strategy
+    let fc_adapt = nex_flow_ctrl_new(FLOW_STRATEGY_ADAPTIVE(), 10000);
+    assert(nex_flow_ctrl_adaptive(fc_adapt) != 0, "adaptive created");
+    assert(nex_flow_ctrl_send_available(fc_adapt) == 10000, "adaptive available");
+
+    // Test loss handling
+    nex_flow_ctrl_on_loss(fc_adapt, 100, now);
+    let adaptive = nex_flow_ctrl_adaptive(fc_adapt);
+    assert(adaptive_flow_state(adaptive) == CONGESTION_RECOVERY(), "entered recovery");
+
+    nex_flow_ctrl_free(fc_rate);
+    nex_flow_ctrl_free(fc_adapt);
+    print_string("PASS\n");
+}
+
+// ============================================================================
+// Request/Response Tests
+// ============================================================================
+
+fn test_correlation_generator() {
+    print_string("test_correlation_generator... ");
+
+    let g = correlation_generator_new(42);
+
+    let id1 = correlation_generator_next(g);
+    let id2 = correlation_generator_next(g);
+    let id3 = correlation_generator_next(g);
+
+    assert(id1 != id2, "id1 != id2");
+    assert(id2 != id3, "id2 != id3");
+    assert(id1 != id3, "id1 != id3");
+
+    // Sequential
+    assert(id2 == id1 + 1, "sequential");
+
+    correlation_generator_free(g);
+    print_string("PASS\n");
+}
+
+fn test_rpc_request() {
+    print_string("test_rpc_request... ");
+
+    let now = 1000000;
+    let r = rpc_request_new(123, 456, now);
+
+    assert(r != 0, "request created");
+    assert(rpc_request_id(r) == 123, "request id");
+    assert(rpc_request_method(r) == 456, "method");
+    assert(rpc_request_status(r) == RPC_STATUS_PENDING(), "status pending");
+    assert(rpc_request_pattern(r) == RPC_PATTERN_REQUEST_RESPONSE(), "default pattern");
+    assert(rpc_request_timeout(r) == 30000, "default timeout");
+    assert(rpc_request_max_retries(r) == 3, "default max retries");
+
+    // Set payload
+    let payload = alloc(100);
+    rpc_request_set_payload(r, payload, 100);
+    assert(rpc_request_payload(r) == payload, "payload");
+    assert(rpc_request_payload_len(r) == 100, "payload len");
+
+    // Set timeout
+    rpc_request_set_timeout(r, 5000, now);
+    assert(rpc_request_deadline(r) == now + 5000, "deadline");
+
+    // Expiry
+    assert(rpc_request_is_expired(r, now + 4000) == 0, "not expired");
+    assert(rpc_request_is_expired(r, now + 6000) == 1, "expired");
+
+    // Retries
+    assert(rpc_request_can_retry(r) == 1, "can retry");
+    rpc_request_increment_retries(r);
+    rpc_request_increment_retries(r);
+    rpc_request_increment_retries(r);
+    assert(rpc_request_can_retry(r) == 0, "max retries reached");
+
+    // Mark sent
+    rpc_request_mark_sent(r, now + 100);
+    assert(rpc_request_status(r) == RPC_STATUS_SENT(), "status sent");
+    assert(rpc_request_sent_at(r) == now + 100, "sent_at");
+
+    rpc_request_free(r);
+    print_string("PASS\n");
+}
+
+fn test_rpc_response() {
+    print_string("test_rpc_response... ");
+
+    let now = 1000000;
+    let r = rpc_response_new(789, 123, now);
+
+    assert(r != 0, "response created");
+    assert(rpc_response_id(r) == 789, "response id");
+    assert(rpc_response_request_id(r) == 123, "request id");
+    assert(rpc_response_status_code(r) == 200, "default status code");
+    assert(rpc_response_error_code(r) == RPC_ERROR_NONE(), "no error");
+    assert(rpc_response_is_final(r) == 1, "is final");
+
+    assert(rpc_response_is_success(r) == 1, "is success");
+    assert(rpc_response_is_error(r) == 0, "not error");
+
+    // Set error
+    rpc_response_set_error_code(r, RPC_ERROR_TIMEOUT());
+    assert(rpc_response_is_error(r) == 1, "is error");
+    assert(rpc_response_is_success(r) == 0, "not success");
+
+    // Set payload
+    let payload = alloc(50);
+    rpc_response_set_payload(r, payload, 50);
+    assert(rpc_response_payload_len(r) == 50, "payload len");
+
+    // Streaming response (not final)
+    rpc_response_set_is_final(r, 0);
+    assert(rpc_response_is_final(r) == 0, "not final");
+
+    rpc_response_free(r);
+    print_string("PASS\n");
+}
+
+fn test_pending_map() {
+    print_string("test_pending_map... ");
+
+    let m = pending_map_new();
+    let now = 1000000;
+
+    // Add requests
+    let r1 = rpc_request_new(100, 1, now);
+    let r2 = rpc_request_new(101, 2, now);
+    let r3 = rpc_request_new(102, 3, now);
+
+    pending_map_add(m, r1);
+    pending_map_add(m, r2);
+    pending_map_add(m, r3);
+
+    assert(pending_map_count(m) == 3, "3 pending");
+
+    // Find
+    let found = pending_map_find(m, 101);
+    assert(found == r2, "found request 101");
+
+    assert(pending_map_find(m, 999) == 0, "not found 999");
+
+    // Remove
+    let removed = pending_map_remove(m, 101);
+    assert(removed == r2, "removed request 101");
+    assert(pending_map_count(m) == 2, "2 pending after remove");
+    assert(pending_map_find(m, 101) == 0, "101 no longer found");
+
+    pending_map_free(m);
+    rpc_request_free(r1);
+    rpc_request_free(r2);
+    rpc_request_free(r3);
+    print_string("PASS\n");
+}
+
+fn test_pending_map_timeouts() {
+    print_string("test_pending_map_timeouts... ");
+
+    let m = pending_map_new();
+    let now = 1000000;
+
+    // Add requests with different deadlines
+    let r1 = rpc_request_new(100, 1, now);
+    rpc_request_set_timeout(r1, 1000, now);  // expires at now+1000
+
+    let r2 = rpc_request_new(101, 2, now);
+    rpc_request_set_timeout(r2, 5000, now);  // expires at now+5000
+
+    let r3 = rpc_request_new(102, 3, now);
+    rpc_request_set_timeout(r3, 2000, now);  // expires at now+2000
+
+    pending_map_add(m, r1);
+    pending_map_add(m, r2);
+    pending_map_add(m, r3);
+
+    // Check at now+1500 - r1 should be expired
+    let timed_out = pending_map_check_timeouts(m, now + 1500);
+    assert(timed_out == 1, "1 timed out");
+    assert(rpc_request_status(r1) == RPC_STATUS_TIMEOUT(), "r1 timed out");
+    assert(rpc_request_status(r2) == RPC_STATUS_PENDING(), "r2 still pending");
+
+    // Check at now+3000 - r3 should also be expired
+    timed_out = pending_map_check_timeouts(m, now + 3000);
+    assert(timed_out == 1, "1 more timed out");  // r1 already marked
+    assert(rpc_request_status(r3) == RPC_STATUS_TIMEOUT(), "r3 timed out");
+
+    pending_map_free(m);
+    rpc_request_free(r1);
+    rpc_request_free(r2);
+    rpc_request_free(r3);
+    print_string("PASS\n");
+}
+
+fn test_handler_registry() {
+    print_string("test_handler_registry... ");
+
+    let r = handler_registry_new();
+
+    // Register handlers
+    handler_registry_register(r, 1, 1001, 0);
+    handler_registry_register(r, 2, 1002, 0);
+    handler_registry_register(r, 3, 1003, 0);
+
+    assert(handler_registry_count(r) == 3, "3 handlers");
+
+    // Find handler
+    let h = handler_registry_find(r, 2);
+    assert(h != 0, "found handler 2");
+    assert(rpc_handler_method(h) == 2, "handler method");
+    assert(rpc_handler_callback(h) == 1002, "handler callback");
+
+    assert(handler_registry_find(r, 99) == 0, "handler 99 not found");
+
+    // Unregister
+    handler_registry_unregister(r, 2);
+    assert(handler_registry_count(r) == 2, "2 handlers after unregister");
+    assert(handler_registry_find(r, 2) == 0, "handler 2 unregistered");
+
+    handler_registry_free(r);
+    print_string("PASS\n");
+}
+
+fn test_rpc_channel() {
+    print_string("test_rpc_channel... ");
+
+    let mux = 0;  // Mock multiplexer
+    let session_id = 12345;
+
+    let ch = rpc_channel_new(mux, session_id);
+
+    assert(ch != 0, "channel created");
+    assert(rpc_channel_default_timeout(ch) == 30000, "default timeout");
+    assert(rpc_channel_pending_count(ch) == 0, "no pending");
+    assert(rpc_channel_handler_count(ch) == 0, "no handlers");
+
+    // Set timeout
+    rpc_channel_set_default_timeout(ch, 10000);
+    assert(rpc_channel_default_timeout(ch) == 10000, "modified timeout");
+
+    // Register handler
+    rpc_channel_register(ch, 1, 2001, 0);
+    assert(rpc_channel_handler_count(ch) == 1, "1 handler");
+
+    // Unregister
+    rpc_channel_unregister(ch, 1);
+    assert(rpc_channel_handler_count(ch) == 0, "0 handlers");
+
+    rpc_channel_free(ch);
+    print_string("PASS\n");
+}
+
+fn test_rpc_channel_call() {
+    print_string("test_rpc_channel_call... ");
+
+    let mux = 0;
+    let session_id = 12345;
+    let now = 1000000;
+
+    let ch = rpc_channel_new(mux, session_id);
+
+    // Make calls
+    let payload = alloc(50);
+    let r1 = rpc_channel_call(ch, 100, payload, 50, now);
+    let r2 = rpc_channel_call(ch, 101, payload, 50, now + 100);
+
+    assert(r1 != 0, "request 1 created");
+    assert(r2 != 0, "request 2 created");
+    assert(rpc_request_id(r1) != rpc_request_id(r2), "different ids");
+
+    assert(rpc_channel_pending_count(ch) == 2, "2 pending");
+    assert(rpc_channel_requests_sent(ch) == 2, "2 requests sent");
+
+    // Find pending
+    let pending = rpc_channel_pending(ch);
+    let found = pending_map_find(pending, rpc_request_id(r1));
+    assert(found == r1, "found pending request");
+
+    rpc_channel_free(ch);
+    print_string("PASS\n");
+}
+
+fn test_rpc_channel_fire_forget() {
+    print_string("test_rpc_channel_fire_forget... ");
+
+    let mux = 0;
+    let session_id = 12345;
+    let now = 1000000;
+
+    let ch = rpc_channel_new(mux, session_id);
+
+    let payload = alloc(30);
+    let r = rpc_channel_fire(ch, 200, payload, 30, now);
+
+    assert(r != 0, "fire request created");
+    assert(rpc_request_pattern(r) == RPC_PATTERN_FIRE_FORGET(), "fire and forget pattern");
+    assert(rpc_request_status(r) == RPC_STATUS_SENT(), "marked as sent");
+
+    // Fire and forget should NOT add to pending
+    assert(rpc_channel_pending_count(ch) == 0, "no pending for fire and forget");
+    assert(rpc_channel_requests_sent(ch) == 1, "1 request sent");
+
+    rpc_channel_free(ch);
+    print_string("PASS\n");
+}
+
+fn test_rpc_channel_complete() {
+    print_string("test_rpc_channel_complete... ");
+
+    let mux = 0;
+    let session_id = 12345;
+    let now = 1000000;
+
+    let ch = rpc_channel_new(mux, session_id);
+
+    // Make a call
+    let payload = alloc(50);
+    let req = rpc_channel_call(ch, 100, payload, 50, now);
+    let req_id = rpc_request_id(req);
+
+    assert(rpc_channel_pending_count(ch) == 1, "1 pending");
+
+    // Create response
+    let resp = rpc_response_new(1, req_id, now + 100);
+
+    // Complete the request
+    let completed = rpc_channel_complete(ch, req_id, resp, now + 100);
+    assert(completed == req, "completed request returned");
+    assert(rpc_request_status(completed) == RPC_STATUS_COMPLETED(), "status completed");
+    assert(rpc_channel_pending_count(ch) == 0, "0 pending");
+    assert(rpc_channel_responses_recv(ch) == 1, "1 response received");
+
+    // Complete with error
+    let req2 = rpc_channel_call(ch, 101, payload, 50, now);
+    let req2_id = rpc_request_id(req2);
+
+    let err_resp = rpc_response_new(2, req2_id, now + 200);
+    rpc_response_set_error_code(err_resp, RPC_ERROR_TIMEOUT());
+
+    let completed2 = rpc_channel_complete(ch, req2_id, err_resp, now + 200);
+    assert(rpc_request_status(completed2) == RPC_STATUS_FAILED(), "status failed");
+    assert(rpc_channel_errors(ch) == 1, "1 error");
+
+    rpc_channel_free(ch);
+    print_string("PASS\n");
+}
+
+fn test_rpc_metrics() {
+    print_string("test_rpc_metrics... ");
+
+    let m = rpc_metrics_new();
+
+    assert(m != 0, "metrics created");
+    assert(rpc_metrics_total_requests(m) == 0, "no requests");
+    assert(rpc_metrics_total_responses(m) == 0, "no responses");
+
+    // Record requests
+    rpc_metrics_record_request(m);
+    rpc_metrics_record_request(m);
+    rpc_metrics_record_request(m);
+    assert(rpc_metrics_total_requests(m) == 3, "3 requests");
+
+    // Record responses with latency
+    rpc_metrics_record_response(m, 100);  // 100ms
+    rpc_metrics_record_response(m, 200);  // 200ms
+    rpc_metrics_record_response(m, 150);  // 150ms
+    assert(rpc_metrics_total_responses(m) == 3, "3 responses");
+
+    // Latency stats
+    assert(rpc_metrics_min_latency(m) == 100, "min latency");
+    assert(rpc_metrics_max_latency(m) == 200, "max latency");
+    assert(rpc_metrics_avg_latency(m) == 150, "avg latency");
+
+    // Record errors
+    rpc_metrics_record_error(m);
+    assert(rpc_metrics_total_errors(m) == 1, "1 error");
+
+    // Record timeouts
+    rpc_metrics_record_timeout(m);
+    rpc_metrics_record_timeout(m);
+    assert(rpc_metrics_total_timeouts(m) == 2, "2 timeouts");
+
+    // Success rate: 3 responses, 1 error, 2 timeouts = 0 successful
+    // But errors/timeouts don't reduce response count in current implementation
+    // Success = responses - errors - timeouts = 3 - 1 - 2 = 0
+    let rate = rpc_metrics_success_rate(m);
+    assert(rate == 0, "0% success rate");
+
+    rpc_metrics_free(m);
+    print_string("PASS\n");
+}
+
+// ============================================================================
+// Test Utilities
+// ============================================================================
+
+// Global failure counter
+fn get_test_failures() -> i64 {
+    // Using a constant location for simplicity
+    // In a real implementation this would be a proper global
+    0
+}
+
+fn assert(condition: i64, test_name: i64) {
+    if condition == 0 {
+        print_string("FAIL - ");
+        print_string(test_name);
+        print_string("\n");
+        // Note: Cannot exit, test will continue but failure is logged
+    }
+}

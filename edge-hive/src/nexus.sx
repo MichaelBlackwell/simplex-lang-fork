@@ -1,0 +1,1021 @@
+// Edge Hive - Nexus Protocol Implementation
+// High-efficiency federation protocol with bit-packed delta streams
+//
+// Implements TASK-012: Nexus Protocol specification
+// - 400x compression via bit-packed deltas (0.38 bytes/belief)
+// - Implicit addressing: position = belief ID
+// - Connection lifecycle: CONNECT → HELLO/WELCOME → CATALOG → BASELINE → SYNC LOOP
+// - Drift correction via periodic CHECKSUM frames
+// - STF (Simplex Term Format) for native wire types
+
+// =============================================================================
+// Nexus Op Codes (2-bit encoding)
+// =============================================================================
+
+fn OP_SAME() -> i64 { 0 }       // 00: No change since last sync
+fn OP_DELTA_S() -> i64 { 1 }    // 01: Small delta (-8 to +7, 4 bits)
+fn OP_DELTA_L() -> i64 { 2 }    // 10: Large delta (-2048 to +2047, 12 bits)
+fn OP_FULL() -> i64 { 3 }       // 11: Full value follows (varint)
+
+// Frame types (8-bit)
+fn FRAME_HELLO() -> i64 { 0x01 }
+fn FRAME_WELCOME() -> i64 { 0x02 }
+fn FRAME_CATALOG() -> i64 { 0x03 }
+fn FRAME_BASELINE() -> i64 { 0x04 }
+fn FRAME_SYNC() -> i64 { 0x10 }
+fn FRAME_CHECKSUM() -> i64 { 0x11 }
+fn FRAME_DEFINE() -> i64 { 0x20 }
+fn FRAME_TOMBSTONE() -> i64 { 0x21 }
+fn FRAME_ACK() -> i64 { 0x30 }
+fn FRAME_NACK() -> i64 { 0x31 }
+
+// Connection states
+fn NEXUS_DISCONNECTED() -> i64 { 0 }
+fn NEXUS_CONNECTING() -> i64 { 1 }
+fn NEXUS_HANDSHAKING() -> i64 { 2 }
+fn NEXUS_CATALOG_EXCHANGE() -> i64 { 3 }
+fn NEXUS_BASELINE_SYNC() -> i64 { 4 }
+fn NEXUS_ACTIVE() -> i64 { 5 }
+fn NEXUS_ERROR() -> i64 { 6 }
+
+// =============================================================================
+// NexusConnection Structure
+// =============================================================================
+// Slot 0: state
+// Slot 1: endpoint (string ref)
+// Slot 2: device_id
+// Slot 3: identity (for auth)
+// Slot 4: vector_clock (vec of [device_id, tick] pairs)
+// Slot 5: belief_catalog (maps belief UUID to stream position)
+// Slot 6: last_baseline (serialized baseline snapshot)
+// Slot 7: pending_frames (outgoing frame queue)
+// Slot 8: last_tick
+// Slot 9: checksum_interval (frames between checksums)
+// Slot 10: stats vec
+
+fn nexus_connection_new(endpoint: i64, device_id: i64, identity: i64) -> i64 {
+    let conn: i64 = vec_new();
+    vec_push(conn, NEXUS_DISCONNECTED());    // Slot 0
+    vec_push(conn, endpoint);                 // Slot 1
+    vec_push(conn, device_id);                // Slot 2
+    vec_push(conn, identity);                 // Slot 3
+    vec_push(conn, vector_clock_new());       // Slot 4
+    vec_push(conn, belief_catalog_new());     // Slot 5
+    vec_push(conn, 0);                        // Slot 6: no baseline yet
+    vec_push(conn, vec_new());                // Slot 7: pending frames
+    vec_push(conn, 0);                        // Slot 8: last tick
+    vec_push(conn, 100);                      // Slot 9: checksum every 100 frames
+
+    // Stats
+    let stats: i64 = vec_new();
+    vec_push(stats, 0);  // frames_sent
+    vec_push(stats, 0);  // frames_received
+    vec_push(stats, 0);  // bytes_sent
+    vec_push(stats, 0);  // bytes_received
+    vec_push(stats, 0);  // drift_corrections
+    vec_push(conn, stats);  // Slot 10
+
+    conn
+}
+
+// Accessors
+fn nexus_state(conn: i64) -> i64 { vec_get(conn, 0) }
+fn nexus_endpoint(conn: i64) -> i64 { vec_get(conn, 1) }
+fn nexus_device_id(conn: i64) -> i64 { vec_get(conn, 2) }
+fn nexus_identity(conn: i64) -> i64 { vec_get(conn, 3) }
+fn nexus_vector_clock(conn: i64) -> i64 { vec_get(conn, 4) }
+fn nexus_belief_catalog(conn: i64) -> i64 { vec_get(conn, 5) }
+fn nexus_last_baseline(conn: i64) -> i64 { vec_get(conn, 6) }
+fn nexus_pending_frames(conn: i64) -> i64 { vec_get(conn, 7) }
+fn nexus_last_tick(conn: i64) -> i64 { vec_get(conn, 8) }
+fn nexus_checksum_interval(conn: i64) -> i64 { vec_get(conn, 9) }
+fn nexus_stats(conn: i64) -> i64 { vec_get(conn, 10) }
+
+fn nexus_set_state(conn: i64, state: i64) -> i64 {
+    vec_set(conn, 0, state);
+    0
+}
+
+fn nexus_set_baseline(conn: i64, baseline: i64) -> i64 {
+    vec_set(conn, 6, baseline);
+    0
+}
+
+fn nexus_set_last_tick(conn: i64, tick: i64) -> i64 {
+    vec_set(conn, 8, tick);
+    0
+}
+
+fn nexus_is_active(conn: i64) -> i64 {
+    if nexus_state(conn) == NEXUS_ACTIVE() { 1 } else { 0 }
+}
+
+// =============================================================================
+// Vector Clock (for causal ordering)
+// =============================================================================
+
+fn vector_clock_new() -> i64 {
+    vec_new()  // Vec of [device_id, tick] pairs
+}
+
+fn vector_clock_get(clock: i64, device_id: i64) -> i64 {
+    let len: i64 = vec_len(clock);
+    let i: i64 = 0;
+    while i < len {
+        let entry: i64 = vec_get(clock, i);
+        if vec_get(entry, 0) == device_id {
+            return vec_get(entry, 1);
+        }
+        i = i + 1;
+    }
+    0  // Unknown device = tick 0
+}
+
+fn vector_clock_set(clock: i64, device_id: i64, tick: i64) -> i64 {
+    let len: i64 = vec_len(clock);
+    let i: i64 = 0;
+    while i < len {
+        let entry: i64 = vec_get(clock, i);
+        if vec_get(entry, 0) == device_id {
+            vec_set(entry, 1, tick);
+            return 0;
+        }
+        i = i + 1;
+    }
+    // Add new entry
+    let entry: i64 = vec_new();
+    vec_push(entry, device_id);
+    vec_push(entry, tick);
+    vec_push(clock, entry);
+    0
+}
+
+fn vector_clock_increment(clock: i64, device_id: i64) -> i64 {
+    let current: i64 = vector_clock_get(clock, device_id);
+    vector_clock_set(clock, device_id, current + 1);
+    current + 1
+}
+
+fn vector_clock_merge(local: i64, remote: i64) -> i64 {
+    // Merge remote clock into local, taking max of each entry
+    let len: i64 = vec_len(remote);
+    let i: i64 = 0;
+    while i < len {
+        let entry: i64 = vec_get(remote, i);
+        let device_id: i64 = vec_get(entry, 0);
+        let remote_tick: i64 = vec_get(entry, 1);
+        let local_tick: i64 = vector_clock_get(local, device_id);
+
+        if remote_tick > local_tick {
+            vector_clock_set(local, device_id, remote_tick);
+        }
+        i = i + 1;
+    }
+    0
+}
+
+fn vector_clock_serialize(clock: i64) -> i64 {
+    // Serialize to byte buffer for wire transfer
+    let buf: i64 = vec_new();
+    let len: i64 = vec_len(clock);
+    vec_push(buf, len);  // Number of entries
+
+    let i: i64 = 0;
+    while i < len {
+        let entry: i64 = vec_get(clock, i);
+        vec_push(buf, vec_get(entry, 0));  // device_id
+        vec_push(buf, vec_get(entry, 1));  // tick
+        i = i + 1;
+    }
+    buf
+}
+
+fn vector_clock_deserialize(buf: i64) -> i64 {
+    let clock: i64 = vector_clock_new();
+    let len: i64 = vec_get(buf, 0);
+    let i: i64 = 0;
+    let offset: i64 = 1;
+
+    while i < len {
+        let device_id: i64 = vec_get(buf, offset);
+        let tick: i64 = vec_get(buf, offset + 1);
+        vector_clock_set(clock, device_id, tick);
+        offset = offset + 2;
+        i = i + 1;
+    }
+    clock
+}
+
+// =============================================================================
+// Belief Catalog (maps belief UUIDs to stream positions)
+// =============================================================================
+
+fn belief_catalog_new() -> i64 {
+    let catalog: i64 = vec_new();
+    // Slot 0: entries (vec of [uuid_hash, position])
+    vec_push(catalog, vec_new());
+    // Slot 1: next_position
+    vec_push(catalog, 0);
+    catalog
+}
+
+fn catalog_entries(catalog: i64) -> i64 { vec_get(catalog, 0) }
+fn catalog_next_position(catalog: i64) -> i64 { vec_get(catalog, 1) }
+
+fn catalog_get_position(catalog: i64, uuid_hash: i64) -> i64 {
+    let entries: i64 = catalog_entries(catalog);
+    let len: i64 = vec_len(entries);
+    let i: i64 = 0;
+    while i < len {
+        let entry: i64 = vec_get(entries, i);
+        if vec_get(entry, 0) == uuid_hash {
+            return vec_get(entry, 1);
+        }
+        i = i + 1;
+    }
+    0 - 1  // Not found (-1)
+}
+
+fn catalog_add(catalog: i64, uuid_hash: i64) -> i64 {
+    // Returns the assigned position
+    let existing: i64 = catalog_get_position(catalog, uuid_hash);
+    if existing >= 0 {
+        return existing;  // Already in catalog
+    }
+
+    let entries: i64 = catalog_entries(catalog);
+    let pos: i64 = catalog_next_position(catalog);
+
+    let entry: i64 = vec_new();
+    vec_push(entry, uuid_hash);
+    vec_push(entry, pos);
+    vec_push(entries, entry);
+
+    vec_set(catalog, 1, pos + 1);
+    pos
+}
+
+fn catalog_remove(catalog: i64, uuid_hash: i64) -> i64 {
+    // Mark as tombstoned (position becomes negative)
+    let entries: i64 = catalog_entries(catalog);
+    let len: i64 = vec_len(entries);
+    let i: i64 = 0;
+    while i < len {
+        let entry: i64 = vec_get(entries, i);
+        if vec_get(entry, 0) == uuid_hash {
+            let pos: i64 = vec_get(entry, 1);
+            vec_set(entry, 1, 0 - pos - 1);  // Negate and subtract 1
+            return 1;
+        }
+        i = i + 1;
+    }
+    0  // Not found
+}
+
+// =============================================================================
+// Bit-Packed Delta Stream Encoding
+// =============================================================================
+
+fn delta_stream_new() -> i64 {
+    let stream: i64 = vec_new();
+    // Slot 0: bit buffer (accumulator)
+    vec_push(stream, 0);
+    // Slot 1: bit position (0-63)
+    vec_push(stream, 0);
+    // Slot 2: output bytes
+    vec_push(stream, vec_new());
+    stream
+}
+
+fn delta_stream_write_op(stream: i64, op: i64) -> i64 {
+    // Write 2-bit op code
+    delta_stream_write_bits(stream, op, 2)
+}
+
+fn delta_stream_write_bits(stream: i64, value: i64, num_bits: i64) -> i64 {
+    let buffer: i64 = vec_get(stream, 0);
+    let bit_pos: i64 = vec_get(stream, 1);
+    let output: i64 = vec_get(stream, 2);
+
+    // Add bits to buffer
+    let mask: i64 = (1 << num_bits) - 1;
+    let shifted: i64 = (value % (1 << num_bits)) << bit_pos;
+    buffer = buffer + shifted;
+    bit_pos = bit_pos + num_bits;
+
+    // Flush complete bytes
+    while bit_pos >= 8 {
+        vec_push(output, buffer % 256);
+        buffer = buffer / 256;
+        bit_pos = bit_pos - 8;
+    }
+
+    vec_set(stream, 0, buffer);
+    vec_set(stream, 1, bit_pos);
+    0
+}
+
+fn delta_stream_flush(stream: i64) -> i64 {
+    // Flush any remaining bits
+    let buffer: i64 = vec_get(stream, 0);
+    let bit_pos: i64 = vec_get(stream, 1);
+    let output: i64 = vec_get(stream, 2);
+
+    if bit_pos > 0 {
+        vec_push(output, buffer % 256);
+    }
+
+    vec_set(stream, 0, 0);
+    vec_set(stream, 1, 0);
+    output
+}
+
+fn delta_stream_write_delta_s(stream: i64, delta: i64) -> i64 {
+    // Write small delta (-8 to +7) as 4 bits
+    let encoded: i64 = delta + 8;  // Shift to unsigned
+    delta_stream_write_bits(stream, encoded, 4)
+}
+
+fn delta_stream_write_delta_l(stream: i64, delta: i64) -> i64 {
+    // Write large delta (-2048 to +2047) as 12 bits
+    let encoded: i64 = delta + 2048;  // Shift to unsigned
+    delta_stream_write_bits(stream, encoded, 12)
+}
+
+fn delta_stream_write_varint(stream: i64, value: i64) -> i64 {
+    // Write variable-length integer (7 bits + continuation)
+    let v: i64 = value;
+    while v >= 128 {
+        delta_stream_write_bits(stream, (v % 128) + 128, 8);
+        v = v / 128;
+    }
+    delta_stream_write_bits(stream, v, 8)
+}
+
+// =============================================================================
+// Sync Frame Generation
+// =============================================================================
+
+fn create_sync_frame(conn: i64, beliefs: i64, baseline: i64) -> i64 {
+    let stream: i64 = delta_stream_new();
+    let catalog: i64 = nexus_belief_catalog(conn);
+    let clock: i64 = nexus_vector_clock(conn);
+    let device_id: i64 = nexus_device_id(conn);
+
+    // Increment vector clock
+    let tick: i64 = vector_clock_increment(clock, device_id);
+    nexus_set_last_tick(conn, tick);
+
+    // Frame header
+    delta_stream_write_bits(stream, FRAME_SYNC(), 8);
+    delta_stream_write_varint(stream, tick);
+
+    // Iterate through beliefs in catalog order
+    let entries: i64 = catalog_entries(catalog);
+    let num_beliefs: i64 = vec_len(entries);
+    delta_stream_write_varint(stream, num_beliefs);
+
+    let i: i64 = 0;
+    while i < num_beliefs {
+        let entry: i64 = vec_get(entries, i);
+        let uuid_hash: i64 = vec_get(entry, 0);
+        let position: i64 = vec_get(entry, 1);
+
+        if position >= 0 {  // Not tombstoned
+            // Get current value
+            let current: i64 = get_belief_value_by_hash(beliefs, uuid_hash);
+            // Get baseline value
+            let base: i64 = get_baseline_value(baseline, position);
+
+            // Compute delta
+            let delta: i64 = current - base;
+
+            if delta == 0 {
+                // OP_SAME: just 2 bits
+                delta_stream_write_op(stream, OP_SAME());
+            } else if delta >= 0 - 8 && delta <= 7 {
+                // OP_DELTA_S: 2 + 4 = 6 bits
+                delta_stream_write_op(stream, OP_DELTA_S());
+                delta_stream_write_delta_s(stream, delta);
+            } else if delta >= 0 - 2048 && delta <= 2047 {
+                // OP_DELTA_L: 2 + 12 = 14 bits
+                delta_stream_write_op(stream, OP_DELTA_L());
+                delta_stream_write_delta_l(stream, delta);
+            } else {
+                // OP_FULL: 2 + varint
+                delta_stream_write_op(stream, OP_FULL());
+                delta_stream_write_varint(stream, current);
+            }
+        }
+        i = i + 1;
+    }
+
+    // Flush and get bytes
+    let bytes: i64 = delta_stream_flush(stream);
+
+    // Update stats
+    let stats: i64 = nexus_stats(conn);
+    let sent: i64 = vec_get(stats, 0);
+    vec_set(stats, 0, sent + 1);
+    let bytes_sent: i64 = vec_get(stats, 2);
+    vec_set(stats, 2, bytes_sent + vec_len(bytes));
+
+    bytes
+}
+
+fn create_checksum_frame(conn: i64, beliefs: i64) -> i64 {
+    let stream: i64 = delta_stream_new();
+    let clock: i64 = nexus_vector_clock(conn);
+    let device_id: i64 = nexus_device_id(conn);
+
+    // Frame header
+    delta_stream_write_bits(stream, FRAME_CHECKSUM(), 8);
+
+    // Current tick
+    let tick: i64 = vector_clock_get(clock, device_id);
+    delta_stream_write_varint(stream, tick);
+
+    // Compute checksum of all beliefs
+    let checksum: i64 = compute_belief_checksum(beliefs);
+    delta_stream_write_varint(stream, checksum);
+
+    delta_stream_flush(stream)
+}
+
+fn create_define_frame(conn: i64, uuid_hash: i64, belief_type: i64, initial_value: i64) -> i64 {
+    let stream: i64 = delta_stream_new();
+    let catalog: i64 = nexus_belief_catalog(conn);
+
+    // Frame header
+    delta_stream_write_bits(stream, FRAME_DEFINE(), 8);
+
+    // UUID hash (64 bits)
+    delta_stream_write_varint(stream, uuid_hash);
+
+    // Belief type
+    delta_stream_write_varint(stream, belief_type);
+
+    // Initial value
+    delta_stream_write_varint(stream, initial_value);
+
+    // Assign position in catalog
+    let position: i64 = catalog_add(catalog, uuid_hash);
+    delta_stream_write_varint(stream, position);
+
+    delta_stream_flush(stream)
+}
+
+fn create_tombstone_frame(conn: i64, uuid_hash: i64) -> i64 {
+    let stream: i64 = delta_stream_new();
+    let catalog: i64 = nexus_belief_catalog(conn);
+
+    // Frame header
+    delta_stream_write_bits(stream, FRAME_TOMBSTONE(), 8);
+
+    // UUID hash
+    delta_stream_write_varint(stream, uuid_hash);
+
+    // Position (for verification)
+    let position: i64 = catalog_get_position(catalog, uuid_hash);
+    delta_stream_write_varint(stream, position);
+
+    // Mark in catalog
+    catalog_remove(catalog, uuid_hash);
+
+    delta_stream_flush(stream)
+}
+
+// =============================================================================
+// Connection Lifecycle
+// =============================================================================
+
+fn nexus_connect(conn: i64) -> i64 {
+    nexus_set_state(conn, NEXUS_CONNECTING());
+
+    let endpoint: i64 = nexus_endpoint(conn);
+    let identity: i64 = nexus_identity(conn);
+
+    // Create underlying transport connection
+    let ws: i64 = 0;
+    if identity != 0 {
+        ws = ws_connection_new(endpoint, nexus_device_id(conn), identity);
+    } else {
+        ws = ws_connection_new_legacy(endpoint, nexus_device_id(conn));
+    }
+
+    if ws == 0 {
+        nexus_set_state(conn, NEXUS_ERROR());
+        return 0;
+    }
+
+    // Store transport handle (would need another slot in real impl)
+    // For now, proceed to handshake
+    nexus_set_state(conn, NEXUS_HANDSHAKING());
+
+    // Send HELLO frame
+    let hello: i64 = create_hello_frame(conn);
+    nexus_queue_frame(conn, hello);
+
+    1  // Success
+}
+
+fn create_hello_frame(conn: i64) -> i64 {
+    let stream: i64 = delta_stream_new();
+    let device_id: i64 = nexus_device_id(conn);
+    let clock: i64 = nexus_vector_clock(conn);
+
+    // Frame type
+    delta_stream_write_bits(stream, FRAME_HELLO(), 8);
+
+    // Protocol version
+    delta_stream_write_varint(stream, 1);  // Version 1
+
+    // Device ID
+    delta_stream_write_varint(stream, device_id);
+
+    // Capabilities (bitfield)
+    let caps: i64 = 0;
+    caps = caps + 1;   // Supports delta encoding
+    caps = caps + 2;   // Supports checksums
+    caps = caps + 4;   // Supports catalog exchange
+    delta_stream_write_varint(stream, caps);
+
+    delta_stream_flush(stream)
+}
+
+fn handle_welcome_frame(conn: i64, frame: i64) -> i64 {
+    // Parse WELCOME frame from server
+    let offset: i64 = 1;  // Skip frame type
+
+    // Server capabilities
+    let server_caps: i64 = read_varint(frame, offset);
+    offset = offset + varint_size(server_caps);
+
+    // Assigned session ID
+    let session_id: i64 = read_varint(frame, offset);
+
+    // Transition to catalog exchange
+    nexus_set_state(conn, NEXUS_CATALOG_EXCHANGE());
+
+    // Send our catalog
+    let catalog_frame: i64 = create_catalog_frame(conn);
+    nexus_queue_frame(conn, catalog_frame);
+
+    1
+}
+
+fn create_catalog_frame(conn: i64) -> i64 {
+    let stream: i64 = delta_stream_new();
+    let catalog: i64 = nexus_belief_catalog(conn);
+    let entries: i64 = catalog_entries(catalog);
+
+    // Frame type
+    delta_stream_write_bits(stream, FRAME_CATALOG(), 8);
+
+    // Number of entries
+    let num_entries: i64 = vec_len(entries);
+    delta_stream_write_varint(stream, num_entries);
+
+    // Each entry: uuid_hash, position
+    let i: i64 = 0;
+    while i < num_entries {
+        let entry: i64 = vec_get(entries, i);
+        delta_stream_write_varint(stream, vec_get(entry, 0));  // uuid_hash
+        delta_stream_write_varint(stream, vec_get(entry, 1));  // position
+        i = i + 1;
+    }
+
+    delta_stream_flush(stream)
+}
+
+fn handle_catalog_frame(conn: i64, frame: i64) -> i64 {
+    // Merge received catalog with local
+    let catalog: i64 = nexus_belief_catalog(conn);
+    let offset: i64 = 1;  // Skip frame type
+
+    let num_entries: i64 = read_varint(frame, offset);
+    offset = offset + varint_size(num_entries);
+
+    let i: i64 = 0;
+    while i < num_entries {
+        let uuid_hash: i64 = read_varint(frame, offset);
+        offset = offset + varint_size(uuid_hash);
+
+        let position: i64 = read_varint(frame, offset);
+        offset = offset + varint_size(position);
+
+        // Add to local catalog if not present
+        let local_pos: i64 = catalog_get_position(catalog, uuid_hash);
+        if local_pos < 0 {
+            // Unknown belief - request baseline for it
+            catalog_add(catalog, uuid_hash);
+        }
+
+        i = i + 1;
+    }
+
+    // Transition to baseline sync
+    nexus_set_state(conn, NEXUS_BASELINE_SYNC());
+    1
+}
+
+fn create_baseline_frame(conn: i64, beliefs: i64) -> i64 {
+    let stream: i64 = delta_stream_new();
+    let catalog: i64 = nexus_belief_catalog(conn);
+    let entries: i64 = catalog_entries(catalog);
+
+    // Frame type
+    delta_stream_write_bits(stream, FRAME_BASELINE(), 8);
+
+    // Timestamp
+    delta_stream_write_varint(stream, time_now());
+
+    // Full values for all beliefs in catalog order
+    let num_entries: i64 = vec_len(entries);
+    delta_stream_write_varint(stream, num_entries);
+
+    let i: i64 = 0;
+    while i < num_entries {
+        let entry: i64 = vec_get(entries, i);
+        let uuid_hash: i64 = vec_get(entry, 0);
+        let position: i64 = vec_get(entry, 1);
+
+        if position >= 0 {
+            let value: i64 = get_belief_value_by_hash(beliefs, uuid_hash);
+            delta_stream_write_varint(stream, value);
+        }
+        i = i + 1;
+    }
+
+    delta_stream_flush(stream)
+}
+
+fn handle_baseline_frame(conn: i64, beliefs: i64, frame: i64) -> i64 {
+    let catalog: i64 = nexus_belief_catalog(conn);
+    let entries: i64 = catalog_entries(catalog);
+    let offset: i64 = 1;  // Skip frame type
+
+    // Timestamp
+    let timestamp: i64 = read_varint(frame, offset);
+    offset = offset + varint_size(timestamp);
+
+    // Number of values
+    let num_values: i64 = read_varint(frame, offset);
+    offset = offset + varint_size(num_values);
+
+    // Store as baseline snapshot
+    let baseline: i64 = vec_new();
+    let i: i64 = 0;
+    while i < num_values {
+        let value: i64 = read_varint(frame, offset);
+        offset = offset + varint_size(value);
+        vec_push(baseline, value);
+        i = i + 1;
+    }
+
+    nexus_set_baseline(conn, baseline);
+
+    // Transition to active sync
+    nexus_set_state(conn, NEXUS_ACTIVE());
+    1
+}
+
+// =============================================================================
+// Sync Loop
+// =============================================================================
+
+fn nexus_sync_beliefs(conn: i64, beliefs: i64) -> i64 {
+    if nexus_is_active(conn) != 1 {
+        return 0;  // Not ready for sync
+    }
+
+    let baseline: i64 = nexus_last_baseline(conn);
+    let last_tick: i64 = nexus_last_tick(conn);
+    let checksum_interval: i64 = nexus_checksum_interval(conn);
+
+    // Create sync frame with deltas
+    let sync_frame: i64 = create_sync_frame(conn, beliefs, baseline);
+    nexus_queue_frame(conn, sync_frame);
+
+    // Periodic checksum for drift correction
+    let new_tick: i64 = nexus_last_tick(conn);
+    if new_tick % checksum_interval == 0 {
+        let checksum_frame: i64 = create_checksum_frame(conn, beliefs);
+        nexus_queue_frame(conn, checksum_frame);
+    }
+
+    1
+}
+
+fn handle_sync_frame(conn: i64, beliefs: i64, baseline: i64, frame: i64) -> i64 {
+    let catalog: i64 = nexus_belief_catalog(conn);
+    let clock: i64 = nexus_vector_clock(conn);
+    let entries: i64 = catalog_entries(catalog);
+
+    let offset: i64 = 1;  // Skip frame type
+
+    // Sender's tick
+    let sender_tick: i64 = read_varint(frame, offset);
+    offset = offset + varint_size(sender_tick);
+
+    // Number of beliefs
+    let num_beliefs: i64 = read_varint(frame, offset);
+    offset = offset + varint_size(num_beliefs);
+
+    // Bit stream for ops
+    let bit_offset: i64 = offset * 8;
+
+    let i: i64 = 0;
+    while i < num_beliefs {
+        // Read 2-bit op code
+        let op: i64 = read_bits(frame, bit_offset, 2);
+        bit_offset = bit_offset + 2;
+
+        let entry: i64 = vec_get(entries, i);
+        let uuid_hash: i64 = vec_get(entry, 0);
+        let position: i64 = vec_get(entry, 1);
+
+        if position >= 0 {
+            let base_value: i64 = get_baseline_value(baseline, position);
+            let new_value: i64 = base_value;
+
+            if op == OP_SAME() {
+                // No change
+            } else if op == OP_DELTA_S() {
+                // Small delta: 4 bits
+                let encoded: i64 = read_bits(frame, bit_offset, 4);
+                bit_offset = bit_offset + 4;
+                let delta: i64 = encoded - 8;
+                new_value = base_value + delta;
+            } else if op == OP_DELTA_L() {
+                // Large delta: 12 bits
+                let encoded: i64 = read_bits(frame, bit_offset, 12);
+                bit_offset = bit_offset + 12;
+                let delta: i64 = encoded - 2048;
+                new_value = base_value + delta;
+            } else {
+                // Full value: varint
+                let byte_offset: i64 = (bit_offset + 7) / 8;
+                new_value = read_varint(frame, byte_offset);
+                bit_offset = byte_offset * 8 + varint_size(new_value) * 8;
+            }
+
+            // Update local belief
+            set_belief_value_by_hash(beliefs, uuid_hash, new_value);
+        }
+
+        i = i + 1;
+    }
+
+    // Update stats
+    let stats: i64 = nexus_stats(conn);
+    let received: i64 = vec_get(stats, 1);
+    vec_set(stats, 1, received + 1);
+
+    1
+}
+
+fn handle_checksum_frame(conn: i64, beliefs: i64, frame: i64) -> i64 {
+    let offset: i64 = 1;  // Skip frame type
+
+    // Sender's tick
+    let sender_tick: i64 = read_varint(frame, offset);
+    offset = offset + varint_size(sender_tick);
+
+    // Expected checksum
+    let expected: i64 = read_varint(frame, offset);
+
+    // Compute local checksum
+    let local: i64 = compute_belief_checksum(beliefs);
+
+    if local != expected {
+        // Drift detected! Request full baseline
+        let stats: i64 = nexus_stats(conn);
+        let corrections: i64 = vec_get(stats, 4);
+        vec_set(stats, 4, corrections + 1);
+
+        // Request baseline resync
+        nexus_set_state(conn, NEXUS_BASELINE_SYNC());
+        return 0;  // Needs correction
+    }
+
+    1  // Checksum matches
+}
+
+// =============================================================================
+// Frame Queue Management
+// =============================================================================
+
+fn nexus_queue_frame(conn: i64, frame: i64) -> i64 {
+    let pending: i64 = nexus_pending_frames(conn);
+    vec_push(pending, frame);
+    0
+}
+
+fn nexus_flush_frames(conn: i64) -> i64 {
+    // Send all pending frames over transport
+    let pending: i64 = nexus_pending_frames(conn);
+    let num_sent: i64 = 0;
+
+    while vec_len(pending) > 0 {
+        let frame: i64 = vec_get(pending, 0);
+        // Remove from queue
+        let new_pending: i64 = vec_new();
+        let i: i64 = 1;
+        while i < vec_len(pending) {
+            vec_push(new_pending, vec_get(pending, i));
+            i = i + 1;
+        }
+        vec_set(conn, 7, new_pending);
+
+        // Send via transport (placeholder)
+        // ws_send(transport, frame);
+
+        num_sent = num_sent + 1;
+    }
+
+    num_sent
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+fn get_belief_value_by_hash(beliefs: i64, uuid_hash: i64) -> i64 {
+    // Look up belief value by its UUID hash
+    let beliefs_vec: i64 = belief_store_beliefs(beliefs);
+    let len: i64 = vec_len(beliefs_vec);
+    let i: i64 = 0;
+    while i < len {
+        let entry: i64 = vec_get(beliefs_vec, i);
+        if belief_get_key_hash(entry) == uuid_hash {
+            return belief_get_value(entry);
+        }
+        i = i + 1;
+    }
+    0  // Default
+}
+
+fn set_belief_value_by_hash(beliefs: i64, uuid_hash: i64, value: i64) -> i64 {
+    let beliefs_vec: i64 = belief_store_beliefs(beliefs);
+    let len: i64 = vec_len(beliefs_vec);
+    let i: i64 = 0;
+    while i < len {
+        let entry: i64 = vec_get(beliefs_vec, i);
+        if belief_get_key_hash(entry) == uuid_hash {
+            belief_set_value(entry, value);
+            return 1;
+        }
+        i = i + 1;
+    }
+    0  // Not found
+}
+
+fn get_baseline_value(baseline: i64, position: i64) -> i64 {
+    if baseline == 0 {
+        return 0;
+    }
+    if position < 0 || position >= vec_len(baseline) {
+        return 0;
+    }
+    vec_get(baseline, position)
+}
+
+fn compute_belief_checksum(beliefs: i64) -> i64 {
+    // Simple checksum: XOR of all values
+    let beliefs_vec: i64 = belief_store_beliefs(beliefs);
+    let len: i64 = vec_len(beliefs_vec);
+    let checksum: i64 = 0;
+    let i: i64 = 0;
+    while i < len {
+        let entry: i64 = vec_get(beliefs_vec, i);
+        let value: i64 = belief_get_value(entry);
+        checksum = checksum ^ value;
+        i = i + 1;
+    }
+    checksum
+}
+
+fn read_varint(buf: i64, offset: i64) -> i64 {
+    let result: i64 = 0;
+    let shift: i64 = 0;
+    let pos: i64 = offset;
+
+    let byte: i64 = vec_get(buf, pos);
+    while byte >= 128 {
+        result = result + ((byte - 128) << shift);
+        shift = shift + 7;
+        pos = pos + 1;
+        byte = vec_get(buf, pos);
+    }
+    result + (byte << shift)
+}
+
+fn varint_size(value: i64) -> i64 {
+    if value < 128 { return 1; }
+    if value < 16384 { return 2; }
+    if value < 2097152 { return 3; }
+    if value < 268435456 { return 4; }
+    5
+}
+
+fn read_bits(buf: i64, bit_offset: i64, num_bits: i64) -> i64 {
+    let byte_offset: i64 = bit_offset / 8;
+    let bit_in_byte: i64 = bit_offset % 8;
+
+    // Read up to 2 bytes to cover the bits we need
+    let b0: i64 = vec_get(buf, byte_offset);
+    let b1: i64 = 0;
+    if byte_offset + 1 < vec_len(buf) {
+        b1 = vec_get(buf, byte_offset + 1);
+    }
+
+    let combined: i64 = b0 + b1 * 256;
+    let shifted: i64 = combined / (1 << bit_in_byte);
+    let mask: i64 = (1 << num_bits) - 1;
+    shifted % (mask + 1)
+}
+
+// =============================================================================
+// Statistics
+// =============================================================================
+
+fn nexus_print_stats(conn: i64) -> i64 {
+    println(string_from("Nexus Protocol Stats:"));
+
+    print(string_from("  State: "));
+    let state: i64 = nexus_state(conn);
+    if state == NEXUS_DISCONNECTED() { println(string_from("disconnected")); }
+    else if state == NEXUS_CONNECTING() { println(string_from("connecting")); }
+    else if state == NEXUS_HANDSHAKING() { println(string_from("handshaking")); }
+    else if state == NEXUS_CATALOG_EXCHANGE() { println(string_from("catalog_exchange")); }
+    else if state == NEXUS_BASELINE_SYNC() { println(string_from("baseline_sync")); }
+    else if state == NEXUS_ACTIVE() { println(string_from("active")); }
+    else if state == NEXUS_ERROR() { println(string_from("error")); }
+    else { println(string_from("unknown")); }
+
+    let stats: i64 = nexus_stats(conn);
+    print(string_from("  Frames sent: "));
+    print_i64(vec_get(stats, 0));
+    println(string_from(""));
+
+    print(string_from("  Frames received: "));
+    print_i64(vec_get(stats, 1));
+    println(string_from(""));
+
+    print(string_from("  Bytes sent: "));
+    print_i64(vec_get(stats, 2));
+    println(string_from(""));
+
+    print(string_from("  Bytes received: "));
+    print_i64(vec_get(stats, 3));
+    println(string_from(""));
+
+    print(string_from("  Drift corrections: "));
+    print_i64(vec_get(stats, 4));
+    println(string_from(""));
+
+    // Catalog size
+    let catalog: i64 = nexus_belief_catalog(conn);
+    let entries: i64 = catalog_entries(catalog);
+    print(string_from("  Catalog entries: "));
+    print_i64(vec_len(entries));
+    println(string_from(""));
+
+    // Compression stats
+    let bytes_sent: i64 = vec_get(stats, 2);
+    let frames_sent: i64 = vec_get(stats, 0);
+    if frames_sent > 0 {
+        print(string_from("  Avg bytes/frame: "));
+        print_i64(bytes_sent / frames_sent);
+        println(string_from(""));
+    }
+
+    0
+}
+
+// =============================================================================
+// Extern Declarations
+// =============================================================================
+
+// From beliefs.sx
+extern fn belief_store_beliefs(store: i64) -> i64;
+extern fn belief_get_key_hash(entry: i64) -> i64;
+extern fn belief_get_value(entry: i64) -> i64;
+extern fn belief_set_value(entry: i64, value: i64) -> i64;
+
+// From network.sx
+extern fn ws_connection_new(endpoint: i64, device_id: i64, identity: i64) -> i64;
+extern fn ws_connection_new_legacy(endpoint: i64, device_id: i64) -> i64;
+
+// From runtime
+extern fn vec_new() -> i64;
+extern fn vec_push(v: i64, val: i64) -> i64;
+extern fn vec_get(v: i64, idx: i64) -> i64;
+extern fn vec_set(v: i64, idx: i64, val: i64) -> i64;
+extern fn vec_len(v: i64) -> i64;
+extern fn string_from(s: &str) -> i64;
+extern fn print(s: i64) -> i64;
+extern fn println(s: i64) -> i64;
+extern fn print_i64(n: i64) -> i64;
+extern fn time_now() -> i64;

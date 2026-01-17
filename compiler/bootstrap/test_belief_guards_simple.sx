@@ -1,0 +1,205 @@
+// Simple test for TASK-013-A: Belief Guard Runtime Functions
+// Tests the C runtime belief functions using i64-based functions
+// f64 values are passed as their IEEE 754 bit representations
+
+// IEEE 754 double bit patterns for common values:
+// 0.8  = 0x3FE999999999999A = 4604930618986332314
+// 0.6  = 0x3FE3333333333333 = 4603579539098312499
+// 0.5  = 0x3FE0000000000000 = 4602678819172646912
+// 0.7  = 0x3FE6666666666666 = 4604053034331956070
+// 0.65 = 0x3FE4CCCCCCCCCCCD = 4603816276715153613
+// 0.3  = 0x3FD3333333333333 = 4599075939470750515
+// 0.9  = 0x3FECCCCCCCCCCCCD = 4606281698874543309
+// 0.1  = 0x3FB999999999999A = 4591870180066957722
+// 1.0  = 0x3FF0000000000000 = 4607182418800017408
+// 1.5  = 0x3FF8000000000000 = 4609434218613702656
+// -0.5 = 0xBFE0000000000000 = -4616189618054758400
+// 0.0  = 0x0000000000000000 = 0
+// -0.15 = 0xBFC3333333333333 = -4610842590788288205
+// -0.2 = 0xBFC999999999999A = -4609434218613702554
+// -0.05 = 0xBFA999999999999A = -4617315517961601862
+
+fn main() -> i64 {
+    let passed = 0;
+    let failed = 0;
+    print("=== Belief Guard Simple Tests ===\n");
+
+    // Bit patterns for f64 values
+    let zero: i64 = 0;
+    let conf_08: i64 = 4604930618986332314;  // 0.8
+    let conf_06: i64 = 4603579539098312499;  // 0.6
+    let conf_05: i64 = 4602678819172646912;  // 0.5
+    let conf_07: i64 = 4604053034331956070;  // 0.7
+    let conf_065: i64 = 4603816276715153613; // 0.65
+    let conf_03: i64 = 4599075939470750515;  // 0.3
+    let conf_09: i64 = 4606281698874543309;  // 0.9
+    let conf_01: i64 = 4591870180066957722;  // 0.1
+    let conf_15: i64 = 4609434218613702656;  // 1.5
+    let conf_neg05: i64 = -4616189618054758400; // -0.5
+    let der_neg015: i64 = -4610842590788288205; // -0.15
+    let der_neg02: i64 = -4609434218613702554;  // -0.2
+    let der_neg005: i64 = -4617315517961601862; // -0.05
+
+    // Test 1: Register a belief
+    print("Test 1: belief_register... ");
+    let name1 = make_sx_string("obstacle");
+    let r1 = belief_register_i64(name1, conf_08, zero);
+    if r1 > 0 {
+        print("PASS\n");
+        passed = passed + 1;
+    } else {
+        print("FAIL\n");
+        failed = failed + 1;
+    }
+
+    // Test 2: Get confidence
+    print("Test 2: belief_guard_get_confidence... ");
+    let conf_bits = belief_guard_get_confidence(name1);
+    // Compare i64 bit patterns directly (0.7 < conf < 0.9)
+    // 0.7 bits = 4604053034331956070, 0.9 bits = 4606281698874543309
+    let diff = conf_bits - conf_08;  // Should be close to 0
+    if diff < 100 && diff > -100 {
+        print("PASS\n");
+        passed = passed + 1;
+    } else {
+        print("FAIL (bits mismatch)\n");
+        failed = failed + 1;
+    }
+
+    // Test 3: Register belief with derivative
+    print("Test 3: belief_register with derivative... ");
+    let name2 = make_sx_string("velocity");
+    let r3 = belief_register_i64(name2, conf_06, der_neg015);
+    if r3 > 0 {
+        print("PASS\n");
+        passed = passed + 1;
+    } else {
+        print("FAIL\n");
+        failed = failed + 1;
+    }
+
+    // Test 4: Get derivative
+    print("Test 4: belief_guard_get_derivative... ");
+    let der_bits = belief_guard_get_derivative(name2);
+    // Compare i64 bit patterns directly
+    let der_diff = der_bits - der_neg015;  // Should be close to 0
+    if der_diff < 100 && der_diff > -100 {
+        print("PASS\n");
+        passed = passed + 1;
+    } else {
+        print("FAIL (bits mismatch)\n");
+        failed = failed + 1;
+    }
+
+    // Test 5: Update belief
+    print("Test 5: belief_update... ");
+    let name3 = make_sx_string("temperature");
+    belief_register_i64(name3, conf_05, zero);
+    belief_update_i64(name3, conf_08);
+    let temp_bits = belief_guard_get_confidence(name3);
+    let temp_diff = temp_bits - conf_08;
+    if temp_diff < 100 && temp_diff > -100 {
+        print("PASS\n");
+        passed = passed + 1;
+    } else {
+        print("FAIL (bits mismatch)\n");
+        failed = failed + 1;
+    }
+
+    // Test 6: Update with explicit derivative
+    print("Test 6: belief_update_dual... ");
+    let name4 = make_sx_string("sensor");
+    belief_register_i64(name4, conf_05, zero);
+    belief_update_dual_i64(name4, conf_07, der_neg02);
+    let s_conf_bits = belief_guard_get_confidence(name4);
+    let s_der_bits = belief_guard_get_derivative(name4);
+    let conf_diff6 = s_conf_bits - conf_07;
+    let der_diff6 = s_der_bits - der_neg02;
+    if conf_diff6 < 100 && conf_diff6 > -100 && der_diff6 < 100 && der_diff6 > -100 {
+        print("PASS\n");
+        passed = passed + 1;
+    } else {
+        print("FAIL\n");
+        failed = failed + 1;
+    }
+
+    // Test 7: Confidence clamping (high)
+    // When registering with 1.5, it should clamp to 1.0
+    // 1.0 bits = 4607182418800017408
+    print("Test 7: confidence clamp high... ");
+    let name5 = make_sx_string("clamp_high");
+    let conf_10: i64 = 4607182418800017408;  // 1.0
+    belief_register_i64(name5, conf_15, zero);
+    let ch_bits = belief_guard_get_confidence(name5);
+    let ch_diff = ch_bits - conf_10;
+    if ch_diff < 100 && ch_diff > -100 {
+        print("PASS\n");
+        passed = passed + 1;
+    } else {
+        print("FAIL (bits mismatch)\n");
+        failed = failed + 1;
+    }
+
+    // Test 8: Confidence clamping (low)
+    // When registering with -0.5, it should clamp to 0.0
+    print("Test 8: confidence clamp low... ");
+    let name6 = make_sx_string("clamp_low");
+    belief_register_i64(name6, conf_neg05, zero);
+    let cl_bits = belief_guard_get_confidence(name6);
+    // 0.0 bits = 0
+    if cl_bits < 100 && cl_bits > -100 {
+        print("PASS\n");
+        passed = passed + 1;
+    } else {
+        print("FAIL (bits mismatch)\n");
+        failed = failed + 1;
+    }
+
+    // Test 9: Auto-register on update
+    print("Test 9: auto-register on update... ");
+    let name7 = make_sx_string("new_belief");
+    belief_update_i64(name7, conf_065);
+    let nb_bits = belief_guard_get_confidence(name7);
+    let nb_diff = nb_bits - conf_065;
+    if nb_diff < 100 && nb_diff > -100 {
+        print("PASS\n");
+        passed = passed + 1;
+    } else {
+        print("FAIL (bits mismatch)\n");
+        failed = failed + 1;
+    }
+
+    // Test 10: Multiple beliefs independent
+    print("Test 10: multiple beliefs independent... ");
+    let name8 = make_sx_string("belief_a");
+    let name9 = make_sx_string("belief_b");
+    belief_register_i64(name8, conf_03, conf_01);
+    belief_register_i64(name9, conf_09, der_neg005);
+    let a_bits = belief_guard_get_confidence(name8);
+    let b_bits = belief_guard_get_confidence(name9);
+    let a_diff = a_bits - conf_03;
+    let b_diff = b_bits - conf_09;
+    if a_diff < 100 && a_diff > -100 && b_diff < 100 && b_diff > -100 {
+        print("PASS\n");
+        passed = passed + 1;
+    } else {
+        print("FAIL\n");
+        failed = failed + 1;
+    }
+
+    // Summary
+    print("\n=== Summary ===\n");
+    print("Passed: ");
+    print_i64(passed);
+    print(" / ");
+    print_i64(passed + failed);
+    print("\n");
+
+    if failed == 0 {
+        print("All tests passed!\n");
+    } else {
+        print("Some tests failed.\n");
+    }
+
+    failed
+}

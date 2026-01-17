@@ -1,0 +1,636 @@
+// TASK-014: Hive Integration Patterns
+//
+// This module provides integration patterns for using the epistemic system
+// with any Simplex cognitive hive (edge hives, cloud hives, hybrid systems).
+//
+// The epistemic components (Skeptic, EpistemicMonitors, DissentWindow, etc.)
+// are CORE components that live in simplex-learning, not in any specific hive.
+// Hives import and use these components as part of their cognitive loop.
+//
+// =============================================================================
+// Integration Architecture
+// =============================================================================
+//
+// ┌─────────────────────────────────────────────────────────────────────────┐
+// │                           Any Hive System                                │
+// │  (edge-hive, cloud-hive, hybrid-hive, etc.)                             │
+// │                                                                          │
+// │  ┌─────────────────────────────────────────────────────────────────┐    │
+// │  │                    Cognitive Loop                                │    │
+// │  │                                                                  │    │
+// │  │  1. Receive request/observation                                  │    │
+// │  │  2. Update beliefs                                               │    │
+// │  │  3. ──► EpistemicIntegration.step() ◄──                         │    │
+// │  │         - Run Skeptic challenges                                 │    │
+// │  │         - Update epistemic health                                │    │
+// │  │         - Modulate temperature                                   │    │
+// │  │         - Apply belief revisions                                 │    │
+// │  │  4. Make decisions with epistemic-aware confidence               │    │
+// │  │  5. Learn from outcomes                                          │    │
+// │  │                                                                  │    │
+// │  └─────────────────────────────────────────────────────────────────┘    │
+// │                                                                          │
+// └─────────────────────────────────────────────────────────────────────────┘
+//                                    │
+//                                    ▼
+// ┌─────────────────────────────────────────────────────────────────────────┐
+// │                      simplex-learning/epistemic                          │
+// │                                                                          │
+// │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌─────────────┐  │
+// │  │   Skeptic    │  │  Dissent     │  │ Counterfact  │  │  Monitors   │  │
+// │  │              │  │  Window      │  │   Prober     │  │             │  │
+// │  │ - challenges │  │              │  │              │  │ - health    │  │
+// │  │ - revisions  │  │ - phases     │  │ - scenarios  │  │ - metrics   │  │
+// │  │ - cooldowns  │  │ - heat       │  │ - divergence │  │ - trends    │  │
+// │  └──────────────┘  └──────────────┘  └──────────────┘  └─────────────┘  │
+// │                                                                          │
+// └─────────────────────────────────────────────────────────────────────────┘
+
+use std::collections::HashMap;
+
+use crate::belief::{GroundedBelief, BeliefId};
+use super::monitors::{EpistemicMonitors, EpistemicHealth};
+use super::schedule::EpistemicSchedule;
+use super::dissent::{DissentConfig, DissentPhase};
+use super::skeptic::{Skeptic, SkepticConfig, SkepticRunner};
+use super::counterfactual::BeliefRevision;
+
+// =============================================================================
+// Integration Configuration
+// =============================================================================
+
+/// Configuration for epistemic integration with a hive
+#[derive(Clone)]
+pub struct EpistemicIntegrationConfig {
+    /// Skeptic configuration
+    pub skeptic: SkepticConfig,
+
+    /// Dissent window configuration
+    pub dissent: DissentConfig,
+
+    /// Base learning rate (will be modulated by epistemic health)
+    pub base_learning_rate: f64,
+
+    /// Base temperature (will be modulated by epistemic state)
+    pub base_temperature: f64,
+
+    /// Automatically apply safe revisions
+    pub auto_apply_safe_revisions: bool,
+
+    /// Threshold for "safe" revisions (priority below this)
+    pub safe_revision_threshold: f64,
+
+    /// Enable epistemic logging
+    pub enable_logging: bool,
+
+    /// Log level (0=none, 1=summary, 2=detailed, 3=verbose)
+    pub log_level: u8,
+}
+
+impl Default for EpistemicIntegrationConfig {
+    fn default() -> Self {
+        EpistemicIntegrationConfig {
+            skeptic: SkepticConfig::default(),
+            dissent: DissentConfig::default(),
+            base_learning_rate: 0.001,
+            base_temperature: 1.0,
+            auto_apply_safe_revisions: false,
+            safe_revision_threshold: 0.3,
+            enable_logging: false,
+            log_level: 1,
+        }
+    }
+}
+
+impl EpistemicIntegrationConfig {
+    /// Configuration for production use
+    pub fn production() -> Self {
+        EpistemicIntegrationConfig {
+            skeptic: SkepticConfig::conservative(),
+            dissent: DissentConfig::conservative(),
+            base_learning_rate: 0.0001,
+            base_temperature: 1.0,
+            auto_apply_safe_revisions: false,
+            safe_revision_threshold: 0.2,
+            enable_logging: true,
+            log_level: 1,
+        }
+    }
+
+    /// Configuration for development/testing
+    pub fn development() -> Self {
+        EpistemicIntegrationConfig {
+            skeptic: SkepticConfig::aggressive(),
+            dissent: DissentConfig::aggressive(),
+            base_learning_rate: 0.001,
+            base_temperature: 1.0,
+            auto_apply_safe_revisions: true,
+            safe_revision_threshold: 0.5,
+            enable_logging: true,
+            log_level: 3,
+        }
+    }
+
+    /// Configuration for edge devices (conservative, low overhead)
+    pub fn edge() -> Self {
+        EpistemicIntegrationConfig {
+            skeptic: SkepticConfig {
+                min_confidence_to_challenge: 0.9,
+                max_challenges_per_window: 3,
+                challenge_cooldown: 2000,
+                ..SkepticConfig::conservative()
+            },
+            dissent: DissentConfig {
+                dissent_period: 10000,
+                dissent_window: 500,
+                ..DissentConfig::conservative()
+            },
+            base_learning_rate: 0.0001,
+            base_temperature: 1.0,
+            auto_apply_safe_revisions: false,
+            safe_revision_threshold: 0.1,
+            enable_logging: false,
+            log_level: 0,
+        }
+    }
+}
+
+// =============================================================================
+// Integration Result
+// =============================================================================
+
+/// Result of an epistemic integration step
+#[derive(Clone)]
+pub struct EpistemicStepResult {
+    /// Current epistemic health snapshot
+    pub health: EpistemicHealth,
+
+    /// Recommended revisions from this step
+    pub revisions: Vec<BeliefRevision>,
+
+    /// Revisions that were auto-applied
+    pub applied_revisions: Vec<BeliefRevision>,
+
+    /// Current modulated learning rate
+    pub learning_rate: f64,
+
+    /// Current modulated temperature
+    pub temperature: f64,
+
+    /// Current dissent phase
+    pub phase: DissentPhase,
+
+    /// Is skeptic actively challenging?
+    pub skeptic_active: bool,
+
+    /// Number of beliefs challenged this step
+    pub challenges_issued: usize,
+}
+
+// =============================================================================
+// Main Integration Type
+// =============================================================================
+
+/// Main integration point for epistemic system with any hive
+///
+/// # Example Usage
+///
+/// ```simplex
+/// use simplex_learning::epistemic::{EpistemicIntegration, EpistemicIntegrationConfig};
+/// use simplex_learning::belief::GroundedBelief;
+///
+/// // In your hive initialization:
+/// let mut epistemic = EpistemicIntegration::new(EpistemicIntegrationConfig::production());
+///
+/// // In your cognitive loop:
+/// fn cognitive_step(&mut self) {
+///     // Collect current beliefs and observations
+///     let beliefs = self.get_all_beliefs();
+///     let observations = self.get_recent_observations();
+///
+///     // Run epistemic step
+///     let result = self.epistemic.step(&beliefs, &observations);
+///
+///     // Apply recommended revisions
+///     for revision in &result.revisions {
+///         if self.should_apply_revision(revision) {
+///             self.apply_revision(revision);
+///             self.epistemic.mark_revision_applied(&revision.belief_id);
+///         }
+///     }
+///
+///     // Use modulated learning rate and temperature
+///     self.current_learning_rate = result.learning_rate;
+///     self.current_temperature = result.temperature;
+///
+///     // Check epistemic health
+///     if result.health.has_critical_issue {
+///         self.handle_epistemic_crisis(&result.health);
+///     }
+/// }
+/// ```
+pub struct EpistemicIntegration {
+    /// Configuration
+    config: EpistemicIntegrationConfig,
+
+    /// Skeptic runner
+    runner: SkepticRunner,
+
+    /// Epistemic schedule for temperature/LR modulation
+    schedule: EpistemicSchedule,
+
+    /// Current step
+    step: u64,
+
+    /// Total revisions recommended
+    total_revisions: u64,
+
+    /// Total revisions applied
+    total_applied: u64,
+}
+
+impl EpistemicIntegration {
+    /// Create a new integration with given configuration
+    pub fn new(config: EpistemicIntegrationConfig) -> Self {
+        let runner = SkepticRunner::with_config(
+            config.skeptic.clone(),
+            config.dissent.clone(),
+        );
+        let schedule = EpistemicSchedule::new().with_dissent(config.dissent.clone());
+
+        EpistemicIntegration {
+            config,
+            runner,
+            schedule,
+            step: 0,
+            total_revisions: 0,
+            total_applied: 0,
+        }
+    }
+
+    /// Create with default configuration
+    pub fn default_integration() -> Self {
+        EpistemicIntegration::new(EpistemicIntegrationConfig::default())
+    }
+
+    /// Run a single epistemic step
+    ///
+    /// Call this once per cognitive loop iteration.
+    /// Returns information about epistemic state and any recommended revisions.
+    pub fn step<T: Clone>(
+        &mut self,
+        beliefs: &[GroundedBelief<T>],
+        observations: &[(String, f64)],
+    ) -> EpistemicStepResult {
+        self.step += 1;
+
+        // Run skeptic
+        let revisions = self.runner.step(beliefs, observations);
+        let challenges_issued = revisions.len();
+
+        // Separate auto-applied from pending
+        let mut applied_revisions = Vec::new();
+        let mut pending_revisions = Vec::new();
+
+        for revision in revisions {
+            if self.config.auto_apply_safe_revisions
+                && revision.priority <= self.config.safe_revision_threshold
+            {
+                applied_revisions.push(revision);
+                self.total_applied += 1;
+            } else {
+                pending_revisions.push(revision);
+            }
+            self.total_revisions += 1;
+        }
+
+        // Update schedule with current state
+        let health = EpistemicHealth::from_monitors(&self.runner.monitors);
+
+        // Compute modulated learning rate
+        let learning_rate = self.schedule.safe_learning_rate(
+            self.config.base_learning_rate,
+            &self.runner.monitors,
+        );
+
+        // Compute modulated temperature
+        let temperature = self.config.base_temperature
+            + self.runner.current_heat()
+            + self.schedule.current(&self.runner.monitors)
+            - self.schedule.base.params.initial_temp; // Adjust for base
+
+        // Log if enabled
+        if self.config.enable_logging && self.config.log_level >= 2 {
+            self.log_step(&health, challenges_issued, pending_revisions.len());
+        }
+
+        EpistemicStepResult {
+            health,
+            revisions: pending_revisions,
+            applied_revisions,
+            learning_rate,
+            temperature: temperature.max(0.01), // Never go below minimum
+            phase: self.runner.skeptic.phase(),
+            skeptic_active: self.runner.is_challenging(),
+            challenges_issued,
+        }
+    }
+
+    /// Mark a revision as applied (for tracking)
+    pub fn mark_revision_applied(&mut self, belief_id: &str) {
+        self.runner.skeptic.mark_revision_reviewed(belief_id, true);
+        self.total_applied += 1;
+    }
+
+    /// Mark a revision as rejected (for tracking)
+    pub fn mark_revision_rejected(&mut self, belief_id: &str) {
+        self.runner.skeptic.mark_revision_reviewed(belief_id, false);
+    }
+
+    /// Update epistemic monitors with external observations
+    pub fn update_monitors(&mut self, update: MonitorUpdate) {
+        if let Some(v) = update.source_agreement {
+            self.runner.monitors.update_source_agreement(v);
+        }
+        if let Some(v) = update.predictive_accuracy {
+            self.runner.monitors.update_predictive_accuracy(v);
+        }
+        if let Some(v) = update.confidence_velocity {
+            self.runner.monitors.update_confidence_velocity(v);
+        }
+        if let Some(v) = update.exploration_ratio {
+            self.runner.monitors.update_exploration_ratio(v);
+        }
+        if let Some(v) = update.evidence_staleness {
+            self.runner.monitors.update_evidence_staleness(v);
+        }
+        if let Some(v) = update.evidence_coverage {
+            self.runner.monitors.update_evidence_coverage(v);
+        }
+    }
+
+    /// Record a prediction outcome
+    pub fn record_prediction(&mut self, was_correct: bool, confidence: f64) {
+        self.runner.monitors.record_prediction(was_correct, confidence);
+    }
+
+    /// Get current epistemic health
+    pub fn current_health(&self) -> EpistemicHealth {
+        EpistemicHealth::from_monitors(&self.runner.monitors)
+    }
+
+    /// Get current dissent phase
+    pub fn current_phase(&self) -> DissentPhase {
+        self.runner.skeptic.phase()
+    }
+
+    /// Is the system in an active dissent window?
+    pub fn in_dissent_window(&self) -> bool {
+        self.runner.is_challenging()
+    }
+
+    /// Get current heat level
+    pub fn current_heat(&self) -> f64 {
+        self.runner.current_heat()
+    }
+
+    /// Get pending revisions awaiting review
+    pub fn pending_revisions(&self) -> &[BeliefRevision] {
+        self.runner.skeptic.pending_revisions()
+    }
+
+    /// Get statistics
+    pub fn stats(&self) -> IntegrationStats {
+        IntegrationStats {
+            steps: self.step,
+            total_revisions: self.total_revisions,
+            total_applied: self.total_applied,
+            skeptic_stats: self.runner.skeptic.stats().clone(),
+            dissent_stats: self.runner.skeptic.dissent_stats(),
+        }
+    }
+
+    /// Get a summary string
+    pub fn summary(&self) -> String {
+        format!(
+            "Epistemic Integration (step {})\n{}\nRevisions: {} total, {} applied",
+            self.step,
+            self.runner.summary(),
+            self.total_revisions,
+            self.total_applied
+        )
+    }
+
+    /// Reset all state
+    pub fn reset(&mut self) {
+        self.step = 0;
+        self.total_revisions = 0;
+        self.total_applied = 0;
+        self.runner.skeptic.clear();
+        self.schedule.reset();
+    }
+
+    fn log_step(&self, health: &EpistemicHealth, challenges: usize, pending: usize) {
+        println!(
+            "[Epistemic] Step {} | Health: {:.2} | Phase: {:?} | Challenges: {} | Pending: {}",
+            self.step,
+            health.score,
+            self.runner.skeptic.phase(),
+            challenges,
+            pending
+        );
+
+        if self.config.log_level >= 3 && !health.issues.is_empty() {
+            for issue in &health.issues {
+                println!("[Epistemic]   Issue: {}", issue);
+            }
+        }
+    }
+}
+
+impl Default for EpistemicIntegration {
+    fn default() -> Self {
+        EpistemicIntegration::default_integration()
+    }
+}
+
+// =============================================================================
+// Helper Types
+// =============================================================================
+
+/// Update for epistemic monitors
+#[derive(Clone, Default)]
+pub struct MonitorUpdate {
+    pub source_agreement: Option<f64>,
+    pub predictive_accuracy: Option<f64>,
+    pub confidence_velocity: Option<f64>,
+    pub exploration_ratio: Option<f64>,
+    pub evidence_staleness: Option<f64>,
+    pub evidence_coverage: Option<f64>,
+}
+
+impl MonitorUpdate {
+    pub fn new() -> Self {
+        MonitorUpdate::default()
+    }
+
+    pub fn source_agreement(mut self, v: f64) -> Self {
+        self.source_agreement = Some(v);
+        self
+    }
+
+    pub fn predictive_accuracy(mut self, v: f64) -> Self {
+        self.predictive_accuracy = Some(v);
+        self
+    }
+
+    pub fn confidence_velocity(mut self, v: f64) -> Self {
+        self.confidence_velocity = Some(v);
+        self
+    }
+
+    pub fn exploration_ratio(mut self, v: f64) -> Self {
+        self.exploration_ratio = Some(v);
+        self
+    }
+
+    pub fn evidence_staleness(mut self, v: f64) -> Self {
+        self.evidence_staleness = Some(v);
+        self
+    }
+
+    pub fn evidence_coverage(mut self, v: f64) -> Self {
+        self.evidence_coverage = Some(v);
+        self
+    }
+}
+
+/// Statistics about integration
+#[derive(Clone)]
+pub struct IntegrationStats {
+    pub steps: u64,
+    pub total_revisions: u64,
+    pub total_applied: u64,
+    pub skeptic_stats: super::skeptic::SkepticStats,
+    pub dissent_stats: super::dissent::DissentStats,
+}
+
+// =============================================================================
+// Trait for Hive Integration
+// =============================================================================
+
+/// Trait that hives can implement for epistemic integration
+///
+/// This provides a standard interface for integrating epistemic components
+/// with any hive system.
+pub trait EpistemicAware {
+    /// Get beliefs in a format the epistemic system can analyze
+    fn get_beliefs_for_analysis(&self) -> Vec<GroundedBelief<String>>;
+
+    /// Get recent observations for counterfactual evaluation
+    fn get_observations(&self) -> Vec<(String, f64)>;
+
+    /// Apply a belief revision
+    fn apply_revision(&mut self, revision: &BeliefRevision) -> bool;
+
+    /// Handle an epistemic crisis (critical health issue)
+    fn handle_epistemic_crisis(&mut self, health: &EpistemicHealth);
+
+    /// Get current learning rate (for modulation)
+    fn base_learning_rate(&self) -> f64;
+
+    /// Set modulated learning rate
+    fn set_learning_rate(&mut self, rate: f64);
+
+    /// Get current temperature (for modulation)
+    fn base_temperature(&self) -> f64;
+
+    /// Set modulated temperature
+    fn set_temperature(&mut self, temp: f64);
+}
+
+/// Run epistemic integration for any EpistemicAware hive
+pub fn run_epistemic_step<H: EpistemicAware>(
+    hive: &mut H,
+    integration: &mut EpistemicIntegration,
+) -> EpistemicStepResult {
+    let beliefs = hive.get_beliefs_for_analysis();
+    let observations = hive.get_observations();
+
+    let result = integration.step(&beliefs, &observations);
+
+    // Apply auto-applied revisions
+    for revision in &result.applied_revisions {
+        hive.apply_revision(revision);
+    }
+
+    // Apply modulated rates
+    hive.set_learning_rate(result.learning_rate);
+    hive.set_temperature(result.temperature);
+
+    // Handle crisis if needed
+    if result.health.has_critical_issue {
+        hive.handle_epistemic_crisis(&result.health);
+    }
+
+    result
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_integration_creation() {
+        let integration = EpistemicIntegration::new(EpistemicIntegrationConfig::development());
+        assert_eq!(integration.step, 0);
+    }
+
+    #[test]
+    fn test_integration_step() {
+        let mut integration = EpistemicIntegration::new(
+            EpistemicIntegrationConfig {
+                dissent: DissentConfig::step_based(10, 8),
+                skeptic: SkepticConfig {
+                    min_confidence_to_challenge: 0.5,
+                    challenge_cooldown: 0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        );
+
+        // Create test beliefs
+        let beliefs: Vec<GroundedBelief<String>> = vec![
+            GroundedBelief::observed("belief_1", "claim 1".to_string(), "test", 0.9),
+            GroundedBelief::observed("belief_2", "claim 2".to_string(), "test", 0.8),
+        ];
+
+        let observations = vec![("metric".to_string(), 0.5)];
+
+        // Run several steps
+        for _ in 0..10 {
+            let result = integration.step(&beliefs, &observations);
+            assert!(result.learning_rate > 0.0);
+            assert!(result.temperature > 0.0);
+        }
+    }
+
+    #[test]
+    fn test_monitor_updates() {
+        let mut integration = EpistemicIntegration::default_integration();
+
+        integration.update_monitors(
+            MonitorUpdate::new()
+                .source_agreement(0.5)
+                .predictive_accuracy(0.6)
+        );
+
+        let health = integration.current_health();
+        assert!(health.source_agreement < 0.8); // Updated from default
+    }
+}

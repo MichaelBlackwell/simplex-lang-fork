@@ -150,7 +150,9 @@ cd ../..
 echo ""
 echo "Step 3: Linking sxc compiler..."
 
-clang -O2 $INCLUDES \
+# Build with warnings as errors for production
+clang -O2 -Wall -Wextra -Wformat-security -Werror \
+    $INCLUDES \
     compiler/bootstrap/sxc_combined.ll \
     runtime/standalone_runtime.c \
     -o build/sxc \

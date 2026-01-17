@@ -1,0 +1,31 @@
+// TASK-014: Epistemic Integrity & Self-Correcting Belief Architecture
+//
+// This module implements grounded beliefs - beliefs with full epistemic metadata
+// that prevent the system from confidently producing coherent nonsense.
+//
+// Core principle: A belief system can be internally consistent while being wrong.
+// Coherence is necessary but not sufficient. Every belief must be GROUNDED to
+// something outside the belief graph.
+//
+// Components:
+//   - provenance:  Where beliefs come from (observed, inferred, authoritative, learned, prior)
+//   - evidence:    Links between beliefs and observations, with falsification conditions
+//   - confidence:  Calibrated confidence with ECE tracking
+//   - scope:       Domain boundaries where beliefs apply
+//   - timestamps:  Temporal metadata for belief lifecycle
+//   - grounded:    The main GroundedBelief<T> type bringing it all together
+
+pub mod provenance;
+pub mod evidence;
+pub mod confidence;
+pub mod scope;
+pub mod timestamps;
+pub mod grounded;
+
+// Re-export core types
+pub use provenance::{BeliefProvenance, ProvenanceOrigin, InferenceRule, Signature};
+pub use evidence::{EvidenceLink, EvidenceStatus, Observation, FalsificationCondition, FalsificationCheck, FalsificationAction, Comparator};
+pub use confidence::{CalibratedConfidence, CalibrationRecord};
+pub use scope::{BeliefScope, Domain, Condition, ContextPattern, Context, ScopeViolation};
+pub use timestamps::BeliefTimestamps;
+pub use grounded::{GroundedBelief, BeliefId};

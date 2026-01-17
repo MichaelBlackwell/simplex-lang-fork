@@ -1,0 +1,395 @@
+// Nexus Protocol - Bit Reader/Writer
+//
+// High-performance bit-level I/O for variable-width encoding.
+// This is the foundation of Nexus's 400x compression.
+//
+// BitWriter Structure:
+// Slot 0: buffer (vec of bytes)
+// Slot 1: current byte being written
+// Slot 2: bit position in current byte (0-7)
+// Slot 3: total bits written
+
+// =============================================================================
+// BitWriter - Variable-Width Bit Encoding
+// =============================================================================
+
+fn bitwriter_new() -> i64 {
+    let writer = vec_new();
+    vec_push(writer, vec_new());  // Slot 0: buffer
+    vec_push(writer, 0);          // Slot 1: current byte
+    vec_push(writer, 0);          // Slot 2: bit position (0-7)
+    vec_push(writer, 0);          // Slot 3: total bits written
+    writer
+}
+
+// Accessors
+fn bitwriter_buffer(writer: i64) -> i64 { vec_get(writer, 0) }
+fn bitwriter_current_byte(writer: i64) -> i64 { vec_get(writer, 1) }
+fn bitwriter_bit_pos(writer: i64) -> i64 { vec_get(writer, 2) }
+fn bitwriter_bits_written(writer: i64) -> i64 { vec_get(writer, 3) }
+
+fn bitwriter_bytes_written(writer: i64) -> i64 {
+    let bits = bitwriter_bits_written(writer);
+    (bits + 7) / 8  // Round up to nearest byte
+}
+
+// =============================================================================
+// BitWriter - Core Write Operations
+// =============================================================================
+
+// Write a single bit (0 or 1)
+fn bitwriter_write_bit(writer: i64, bit: i64) -> i64 {
+    var current = bitwriter_current_byte(writer);
+    var bit_pos = bitwriter_bit_pos(writer);
+
+    // Set the bit at position (MSB first)
+    if bit != 0 {
+        let mask = 128 >> bit_pos;  // 10000000 >> pos
+        current = current | mask;
+        vec_set(writer, 1, current);
+    }
+
+    // Advance position
+    bit_pos = bit_pos + 1;
+    let total_bits = bitwriter_bits_written(writer) + 1;
+    vec_set(writer, 3, total_bits);
+
+    if bit_pos >= 8 {
+        // Flush current byte to buffer
+        let buffer = bitwriter_buffer(writer);
+        vec_push(buffer, current);
+        vec_set(writer, 1, 0);   // Reset current byte
+        vec_set(writer, 2, 0);   // Reset bit position
+    } else {
+        vec_set(writer, 2, bit_pos);
+    }
+
+    0
+}
+
+// Write multiple bits from a value (MSB first)
+fn bitwriter_write_bits(writer: i64, value: i64, num_bits: i64) -> i64 {
+    if num_bits <= 0 { return 0; }
+    if num_bits > 64 { return 1; }  // Error: too many bits
+
+    var i = num_bits - 1;
+    while i >= 0 {
+        let bit = (value >> i) & 1;
+        bitwriter_write_bit(writer, bit);
+        i = i - 1;
+    }
+    0
+}
+
+// Write a full byte (8 bits)
+fn bitwriter_write_byte(writer: i64, byte: i64) -> i64 {
+    bitwriter_write_bits(writer, byte & 255, 8)
+}
+
+// Write a 16-bit unsigned integer (big-endian)
+fn bitwriter_write_u16(writer: i64, value: i64) -> i64 {
+    bitwriter_write_bits(writer, value & 65535, 16)
+}
+
+// Write a 32-bit unsigned integer (big-endian)
+fn bitwriter_write_u32(writer: i64, value: i64) -> i64 {
+    bitwriter_write_bits(writer, value & 4294967295, 32)
+}
+
+// =============================================================================
+// BitWriter - Delta Encoding Operations
+// =============================================================================
+
+// Write 2-bit delta operation code
+fn bitwriter_write_delta_op(writer: i64, op: i64) -> i64 {
+    bitwriter_write_bits(writer, op & 3, 2)
+}
+
+// Write SAME operation (just 2 bits)
+fn bitwriter_write_same(writer: i64) -> i64 {
+    bitwriter_write_delta_op(writer, DELTA_OP_SAME())
+}
+
+// Write DELTA_S operation (2 bits op + 7 bits value = 9 bits total)
+fn bitwriter_write_delta_small(writer: i64, delta: i64) -> i64 {
+    bitwriter_write_delta_op(writer, DELTA_OP_SMALL());
+    let encoded = delta & 127;  // Mask to 7 bits
+    bitwriter_write_bits(writer, encoded, 7)
+}
+
+// Write DELTA_L operation (2 bits op + 16 bits value = 18 bits total)
+fn bitwriter_write_delta_large(writer: i64, delta: i64) -> i64 {
+    bitwriter_write_delta_op(writer, DELTA_OP_LARGE());
+    let encoded = delta & 65535;  // Mask to 16 bits
+    bitwriter_write_bits(writer, encoded, 16)
+}
+
+// Write FULL operation (2 bits op + 32 bits value = 34 bits total)
+fn bitwriter_write_full(writer: i64, value: i64) -> i64 {
+    bitwriter_write_delta_op(writer, DELTA_OP_FULL());
+    bitwriter_write_u32(writer, value)
+}
+
+// Automatic delta encoding - choose smallest representation
+fn bitwriter_write_delta_auto(writer: i64, old_value: i64, new_value: i64) -> i64 {
+    if old_value == new_value {
+        return bitwriter_write_same(writer);
+    }
+
+    let delta = new_value - old_value;
+
+    // Check if fits in small delta (-64 to +63)
+    if delta >= DELTA_SMALL_MIN() && delta <= DELTA_SMALL_MAX() {
+        return bitwriter_write_delta_small(writer, delta);
+    }
+
+    // Check if fits in large delta (-32768 to +32767)
+    if delta >= DELTA_LARGE_MIN() && delta <= DELTA_LARGE_MAX() {
+        return bitwriter_write_delta_large(writer, delta);
+    }
+
+    // Fall back to full value
+    bitwriter_write_full(writer, new_value)
+}
+
+// =============================================================================
+// BitWriter - Finalization
+// =============================================================================
+
+// Flush any remaining bits and return the buffer
+fn bitwriter_finish(writer: i64) -> i64 {
+    let bit_pos = bitwriter_bit_pos(writer);
+
+    // If there are pending bits, flush the current byte
+    if bit_pos > 0 {
+        let buffer = bitwriter_buffer(writer);
+        let current = bitwriter_current_byte(writer);
+        vec_push(buffer, current);
+        vec_set(writer, 1, 0);
+        vec_set(writer, 2, 0);
+    }
+
+    bitwriter_buffer(writer)
+}
+
+// Reset writer for reuse
+fn bitwriter_reset(writer: i64) -> i64 {
+    let buffer = bitwriter_buffer(writer);
+    vec_clear(buffer);
+    vec_set(writer, 1, 0);  // current byte
+    vec_set(writer, 2, 0);  // bit position
+    vec_set(writer, 3, 0);  // total bits
+    0
+}
+
+// =============================================================================
+// BitReader - Variable-Width Bit Decoding
+// =============================================================================
+
+// BitReader Structure:
+// Slot 0: buffer (vec of bytes)
+// Slot 1: byte position in buffer
+// Slot 2: bit position in current byte (0-7)
+// Slot 3: total bits available
+// Slot 4: total bits read
+
+fn bitreader_new(buffer: i64) -> i64 {
+    let reader = vec_new();
+    vec_push(reader, buffer);           // Slot 0: buffer
+    vec_push(reader, 0);                // Slot 1: byte position
+    vec_push(reader, 0);                // Slot 2: bit position (0-7)
+    vec_push(reader, vec_len(buffer) * 8);  // Slot 3: total bits available
+    vec_push(reader, 0);                // Slot 4: total bits read
+    reader
+}
+
+// Accessors
+fn bitreader_buffer(reader: i64) -> i64 { vec_get(reader, 0) }
+fn bitreader_byte_pos(reader: i64) -> i64 { vec_get(reader, 1) }
+fn bitreader_bit_pos(reader: i64) -> i64 { vec_get(reader, 2) }
+fn bitreader_bits_available(reader: i64) -> i64 { vec_get(reader, 3) }
+fn bitreader_bits_read(reader: i64) -> i64 { vec_get(reader, 4) }
+
+fn bitreader_has_bits(reader: i64, count: i64) -> i64 {
+    let read = bitreader_bits_read(reader);
+    let available = bitreader_bits_available(reader);
+    if read + count <= available { 1 } else { 0 }
+}
+
+fn bitreader_remaining_bits(reader: i64) -> i64 {
+    bitreader_bits_available(reader) - bitreader_bits_read(reader)
+}
+
+// =============================================================================
+// BitReader - Core Read Operations
+// =============================================================================
+
+// Read a single bit (returns 0 or 1, or -1 on error)
+fn bitreader_read_bit(reader: i64) -> i64 {
+    if bitreader_has_bits(reader, 1) == 0 {
+        return -1;  // Error: no more bits
+    }
+
+    let buffer = bitreader_buffer(reader);
+    var byte_pos = bitreader_byte_pos(reader);
+    var bit_pos = bitreader_bit_pos(reader);
+
+    let byte = vec_get(buffer, byte_pos);
+    let mask = 128 >> bit_pos;  // MSB first
+    var bit = 0;
+    if (byte & mask) != 0 {
+        bit = 1;
+    }
+
+    // Advance position
+    bit_pos = bit_pos + 1;
+    let total_read = bitreader_bits_read(reader) + 1;
+    vec_set(reader, 4, total_read);
+
+    if bit_pos >= 8 {
+        vec_set(reader, 1, byte_pos + 1);  // Next byte
+        vec_set(reader, 2, 0);              // Reset bit position
+    } else {
+        vec_set(reader, 2, bit_pos);
+    }
+
+    bit
+}
+
+// Read multiple bits into a value (MSB first)
+fn bitreader_read_bits(reader: i64, num_bits: i64) -> i64 {
+    if num_bits <= 0 { return 0; }
+    if num_bits > 64 { return -1; }  // Error: too many bits
+
+    if bitreader_has_bits(reader, num_bits) == 0 {
+        return -1;  // Error: not enough bits
+    }
+
+    var value = 0;
+    var i = 0;
+    while i < num_bits {
+        let bit = bitreader_read_bit(reader);
+        if bit < 0 { return -1; }  // Error
+        value = (value << 1) | bit;
+        i = i + 1;
+    }
+    value
+}
+
+// Read a full byte (8 bits)
+fn bitreader_read_byte(reader: i64) -> i64 {
+    bitreader_read_bits(reader, 8)
+}
+
+// Read a 16-bit unsigned integer (big-endian)
+fn bitreader_read_u16(reader: i64) -> i64 {
+    bitreader_read_bits(reader, 16)
+}
+
+// Read a 32-bit unsigned integer (big-endian)
+fn bitreader_read_u32(reader: i64) -> i64 {
+    bitreader_read_bits(reader, 32)
+}
+
+// =============================================================================
+// BitReader - Delta Decoding Operations
+// =============================================================================
+
+// Read 2-bit delta operation code
+fn bitreader_read_delta_op(reader: i64) -> i64 {
+    bitreader_read_bits(reader, 2)
+}
+
+// Read delta value based on operation code
+// Returns: vec [op, delta_or_full_value]
+fn bitreader_read_delta(reader: i64) -> i64 {
+    let op = bitreader_read_delta_op(reader);
+    if op < 0 { return 0; }  // Error
+
+    let result = vec_new();
+    vec_push(result, op);
+
+    if op == DELTA_OP_SAME() {
+        vec_push(result, 0);  // No change
+    } else if op == DELTA_OP_SMALL() {
+        let encoded = bitreader_read_bits(reader, 7);
+        // Sign extend from 7 bits
+        let delta = sign_extend_7(encoded);
+        vec_push(result, delta);
+    } else if op == DELTA_OP_LARGE() {
+        let encoded = bitreader_read_bits(reader, 16);
+        // Sign extend from 16 bits
+        let delta = sign_extend_16(encoded);
+        vec_push(result, delta);
+    } else if op == DELTA_OP_FULL() {
+        let value = bitreader_read_u32(reader);
+        vec_push(result, value);
+    }
+
+    result
+}
+
+// Apply delta to get new value
+fn apply_delta(old_value: i64, delta_result: i64) -> i64 {
+    let op = vec_get(delta_result, 0);
+    let delta_or_value = vec_get(delta_result, 1);
+
+    if op == DELTA_OP_SAME() {
+        return old_value;
+    }
+    if op == DELTA_OP_FULL() {
+        return delta_or_value;  // Absolute value
+    }
+    // DELTA_S or DELTA_L: apply delta
+    old_value + delta_or_value
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+// Sign extend a 7-bit value to i64
+fn sign_extend_7(value: i64) -> i64 {
+    if (value & 64) != 0 {
+        // Negative: extend sign bits
+        value | -128  // 0xFFFFFFFFFFFFFF80
+    } else {
+        value
+    }
+}
+
+// Sign extend a 16-bit value to i64
+fn sign_extend_16(value: i64) -> i64 {
+    if (value & 32768) != 0 {
+        // Negative: extend sign bits
+        value | -65536  // 0xFFFFFFFFFFFF0000
+    } else {
+        value
+    }
+}
+
+// =============================================================================
+// Statistics and Debugging
+// =============================================================================
+
+fn bitwriter_print_stats(writer: i64) -> i64 {
+    print("BitWriter Stats:\n");
+    print("  Bits written: ");
+    print_i64(bitwriter_bits_written(writer));
+    print("\n  Bytes written: ");
+    print_i64(bitwriter_bytes_written(writer));
+    print("\n");
+    0
+}
+
+fn bitreader_print_stats(reader: i64) -> i64 {
+    print("BitReader Stats:\n");
+    print("  Bits available: ");
+    print_i64(bitreader_bits_available(reader));
+    print("\n  Bits read: ");
+    print_i64(bitreader_bits_read(reader));
+    print("\n  Remaining: ");
+    print_i64(bitreader_remaining_bits(reader));
+    print("\n");
+    0
+}

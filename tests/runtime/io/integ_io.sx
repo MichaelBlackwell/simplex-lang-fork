@@ -1,84 +1,99 @@
 // test_io.sx - Test I/O operations
 
-fn main() {
-    println("=== I/O Operations Test ===");
-    println("");
+fn main() -> i64 {
+ println("=== I/O Operations Test ===");
+ println("");
 
-    // Test stderr
-    println("--- Testing stderr ---");
-    stderr_write("Writing to stderr: ");
-    stderr_writeln("Hello stderr!");
+ let failures: i64 = 0;
 
-    // Test file operations
-    println("");
-    println("--- Testing file operations ---");
+ // Test stderr
+ println("--- Testing stderr ---");
+ stderr_write("Writing to stderr: ");
+ stderr_writeln("Hello stderr!");
 
-    // Create a test file
-    let test_path: str = "/tmp/simplex_io_test.txt";
-    let content: str = "Hello from Simplex I/O test!";
-    file_write(test_path, content);
-    println("Wrote test file");
+ // Test file operations
+ println("");
+ println("--- Testing file operations ---");
 
-    // Check file exists
-    let exists: bool = file_exists(test_path);
-    if exists {
-        println("File exists: OK");
-    } else {
-        println("File exists: FAIL");
-    }
+ // Create a test file
+ let test_path: str = "/tmp/simplex_io_test.txt";
+ let content: str = "Hello from Simplex I/O test!";
+ file_write(test_path, content);
+ println("Wrote test file");
 
-    // Check is_file
-    let is_f: bool = is_file(test_path);
-    if is_f {
-        println("is_file: OK");
-    } else {
-        println("is_file: FAIL");
-    }
+ // Check file exists
+ let exists: bool = file_exists(test_path);
+ if exists {
+ println("File exists: OK");
+ } else {
+ println("File exists: FAIL");
+ failures = failures + 1;
+ }
 
-    // Test file copy
-    let copy_path: str = "/tmp/simplex_io_test_copy.txt";
-    let copy_result: i64 = file_copy(test_path, copy_path);
-    if copy_result == 0 {
-        println("file_copy: OK");
-    } else {
-        println("file_copy: FAIL");
-    }
+ // Check is_file
+ let is_f: bool = is_file(test_path);
+ if is_f {
+ println("is_file: OK");
+ } else {
+ println("is_file: FAIL");
+ failures = failures + 1;
+ }
 
-    // Verify copy exists
-    let copy_exists: bool = file_exists(copy_path);
-    if copy_exists {
-        println("Copy exists: OK");
-    } else {
-        println("Copy exists: FAIL");
-    }
+ // Test file copy
+ let copy_path: str = "/tmp/simplex_io_test_copy.txt";
+ let copy_result: i64 = file_copy(test_path, copy_path);
+ if copy_result == 0 {
+ println("file_copy: OK");
+ } else {
+ println("file_copy: FAIL");
+ failures = failures + 1;
+ }
 
-    // Test file rename
-    let renamed_path: str = "/tmp/simplex_io_test_renamed.txt";
-    let rename_result: i64 = file_rename(copy_path, renamed_path);
-    if rename_result == 0 {
-        println("file_rename: OK");
-    } else {
-        println("file_rename: FAIL");
-    }
+ // Verify copy exists
+ let copy_exists: bool = file_exists(copy_path);
+ if copy_exists {
+ println("Copy exists: OK");
+ } else {
+ println("Copy exists: FAIL");
+ failures = failures + 1;
+ }
 
-    // Verify renamed file exists and original doesn't
-    let renamed_exists: bool = file_exists(renamed_path);
-    let old_gone: bool = file_exists(copy_path);
-    if renamed_exists {
-        println("Renamed file exists: OK");
-    } else {
-        println("Renamed file exists: FAIL");
-    }
-    if old_gone {
-        println("Old file still exists: FAIL");
-    } else {
-        println("Old file removed: OK");
-    }
+ // Test file rename
+ let renamed_path: str = "/tmp/simplex_io_test_renamed.txt";
+ let rename_result: i64 = file_rename(copy_path, renamed_path);
+ if rename_result == 0 {
+ println("file_rename: OK");
+ } else {
+ println("file_rename: FAIL");
+ failures = failures + 1;
+ }
 
-    // Clean up
-    remove_path(test_path);
-    remove_path(renamed_path);
+ // Verify renamed file exists and original doesn't
+ let renamed_exists: bool = file_exists(renamed_path);
+ let old_gone: bool = file_exists(copy_path);
+ if renamed_exists {
+ println("Renamed file exists: OK");
+ } else {
+ println("Renamed file exists: FAIL");
+ failures = failures + 1;
+ }
+ if old_gone {
+ println("Old file still exists: FAIL");
+ failures = failures + 1;
+ } else {
+ println("Old file removed: OK");
+ }
 
-    println("");
-    println("=== I/O Test Complete ===");
+ // Clean up
+ remove_path(test_path);
+ remove_path(renamed_path);
+
+ println("");
+ if failures == 0 {
+ println("=== ALL I/O TESTS PASSED ===");
+ } else {
+ println("=== I/O TESTS FAILED ===");
+ }
+
+ failures
 }

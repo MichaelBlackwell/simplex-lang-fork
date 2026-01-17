@@ -1,0 +1,616 @@
+// TASK-014: Belief Scope
+//
+// A belief learned in one domain shouldn't automatically apply everywhere.
+// BeliefScope defines the boundaries where a belief is valid.
+//
+// Attempting to use a belief outside its scope is an error, not a silent
+// misapplication. This prevents over-generalization.
+
+use std::collections::HashSet;
+
+/// A domain in which beliefs can apply
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct Domain {
+    /// Domain name (e.g., "medical", "financial", "general")
+    pub name: String,
+
+    /// Parent domain (for hierarchical domains)
+    pub parent: Option<Box<Domain>>,
+
+    /// Domain-specific constraints
+    pub constraints: Vec<String>,
+}
+
+impl Domain {
+    /// Create a new domain
+    pub fn new(name: &str) -> Self {
+        Domain {
+            name: name.to_string(),
+            parent: None,
+            constraints: Vec::new(),
+        }
+    }
+
+    /// Create a subdomain
+    pub fn subdomain(name: &str, parent: Domain) -> Self {
+        Domain {
+            name: name.to_string(),
+            parent: Some(Box::new(parent)),
+            constraints: Vec::new(),
+        }
+    }
+
+    /// Add a constraint
+    pub fn with_constraint(mut self, constraint: &str) -> Self {
+        self.constraints.push(constraint.to_string());
+        self
+    }
+
+    /// Check if this domain is a subdomain of another
+    pub fn is_subdomain_of(&self, other: &Domain) -> bool {
+        if self.name == other.name {
+            return true;
+        }
+        if let Some(ref parent) = self.parent {
+            parent.is_subdomain_of(other)
+        } else {
+            false
+        }
+    }
+
+    /// Get the full domain path (e.g., "general/medical/cardiology")
+    pub fn path(&self) -> String {
+        if let Some(ref parent) = self.parent {
+            format!("{}/{}", parent.path(), self.name)
+        } else {
+            self.name.clone()
+        }
+    }
+}
+
+/// Common domains
+pub mod domains {
+    use super::Domain;
+
+    /// General/universal domain
+    pub fn general() -> Domain {
+        Domain::new("general")
+    }
+
+    /// Technical/engineering domain
+    pub fn technical() -> Domain {
+        Domain::new("technical")
+    }
+
+    /// Medical domain
+    pub fn medical() -> Domain {
+        Domain::new("medical")
+            .with_constraint("requires_verification")
+    }
+
+    /// Financial domain
+    pub fn financial() -> Domain {
+        Domain::new("financial")
+            .with_constraint("audit_required")
+    }
+
+    /// Safety-critical domain
+    pub fn safety_critical() -> Domain {
+        Domain::new("safety_critical")
+            .with_constraint("no_learning")
+            .with_constraint("human_verified")
+    }
+
+    /// Experimental/testing domain
+    pub fn experimental() -> Domain {
+        Domain::new("experimental")
+            .with_constraint("not_for_production")
+    }
+}
+
+/// A condition that must hold for a belief to apply
+#[derive(Clone)]
+pub struct Condition {
+    /// Condition name/identifier
+    pub name: String,
+
+    /// Human-readable description
+    pub description: String,
+
+    /// Function to check the condition (as a closure identifier)
+    /// In practice, this would be a trait object or function pointer
+    pub check_id: String,
+
+    /// Parameters for the check
+    pub parameters: Vec<String>,
+}
+
+impl Condition {
+    /// Create a new condition
+    pub fn new(name: &str, description: &str) -> Self {
+        Condition {
+            name: name.to_string(),
+            description: description.to_string(),
+            check_id: name.to_string(),
+            parameters: Vec::new(),
+        }
+    }
+
+    /// Add a parameter
+    pub fn with_param(mut self, param: &str) -> Self {
+        self.parameters.push(param.to_string());
+        self
+    }
+
+    /// Check condition against a context
+    pub fn check(&self, context: &Context) -> bool {
+        // Look up the check function and execute it
+        // For now, use simple string matching on context properties
+        context.properties.get(&self.check_id)
+            .map(|v| v == "true" || v == "1")
+            .unwrap_or(false)
+    }
+}
+
+/// Common preconditions
+pub mod conditions {
+    use super::Condition;
+
+    /// Requires user to be authenticated
+    pub fn authenticated() -> Condition {
+        Condition::new("authenticated", "User must be authenticated")
+    }
+
+    /// Requires admin privileges
+    pub fn admin() -> Condition {
+        Condition::new("is_admin", "User must have admin privileges")
+    }
+
+    /// Requires data to be non-sensitive
+    pub fn non_sensitive() -> Condition {
+        Condition::new("non_sensitive", "Data must not be marked as sensitive")
+    }
+
+    /// Requires production environment
+    pub fn production() -> Condition {
+        Condition::new("is_production", "Must be in production environment")
+    }
+
+    /// Requires testing environment
+    pub fn testing() -> Condition {
+        Condition::new("is_testing", "Must be in testing environment")
+    }
+
+    /// Requires recent data (within specified hours)
+    pub fn recent_data(hours: u32) -> Condition {
+        Condition::new("data_recent", &format!("Data must be less than {} hours old", hours))
+            .with_param(&hours.to_string())
+    }
+}
+
+/// Pattern for matching contexts
+#[derive(Clone)]
+pub enum ContextPattern {
+    /// Match any context
+    Any,
+
+    /// Match specific actor IDs
+    Actors(HashSet<String>),
+
+    /// Match actors with specific roles
+    Roles(HashSet<String>),
+
+    /// Match specific specialist types
+    SpecialistTypes(HashSet<String>),
+
+    /// Match contexts with specific tags
+    Tagged(HashSet<String>),
+
+    /// Combination of patterns (all must match)
+    All(Vec<ContextPattern>),
+
+    /// Combination of patterns (any must match)
+    AnyOf(Vec<ContextPattern>),
+
+    /// Negation of a pattern
+    Not(Box<ContextPattern>),
+}
+
+impl ContextPattern {
+    /// Match any context
+    pub fn any() -> Self {
+        ContextPattern::Any
+    }
+
+    /// Match specific actors
+    pub fn actors(actors: Vec<&str>) -> Self {
+        ContextPattern::Actors(actors.into_iter().map(String::from).collect())
+    }
+
+    /// Match actors with roles
+    pub fn roles(roles: Vec<&str>) -> Self {
+        ContextPattern::Roles(roles.into_iter().map(String::from).collect())
+    }
+
+    /// Match specialist types
+    pub fn specialists(types: Vec<&str>) -> Self {
+        ContextPattern::SpecialistTypes(types.into_iter().map(String::from).collect())
+    }
+
+    /// Match tagged contexts
+    pub fn tagged(tags: Vec<&str>) -> Self {
+        ContextPattern::Tagged(tags.into_iter().map(String::from).collect())
+    }
+
+    /// Combine with AND
+    pub fn and(self, other: ContextPattern) -> Self {
+        match self {
+            ContextPattern::All(mut patterns) => {
+                patterns.push(other);
+                ContextPattern::All(patterns)
+            }
+            _ => ContextPattern::All(vec![self, other])
+        }
+    }
+
+    /// Combine with OR
+    pub fn or(self, other: ContextPattern) -> Self {
+        match self {
+            ContextPattern::AnyOf(mut patterns) => {
+                patterns.push(other);
+                ContextPattern::AnyOf(patterns)
+            }
+            _ => ContextPattern::AnyOf(vec![self, other])
+        }
+    }
+
+    /// Negate
+    pub fn not(self) -> Self {
+        ContextPattern::Not(Box::new(self))
+    }
+
+    /// Check if pattern matches a context
+    pub fn matches(&self, context: &Context) -> bool {
+        match self {
+            ContextPattern::Any => true,
+
+            ContextPattern::Actors(actors) => {
+                actors.contains(&context.actor_id)
+            }
+
+            ContextPattern::Roles(roles) => {
+                context.roles.iter().any(|r| roles.contains(r))
+            }
+
+            ContextPattern::SpecialistTypes(types) => {
+                context.specialist_type.as_ref()
+                    .map(|t| types.contains(t))
+                    .unwrap_or(false)
+            }
+
+            ContextPattern::Tagged(tags) => {
+                tags.iter().any(|t| context.tags.contains(t))
+            }
+
+            ContextPattern::All(patterns) => {
+                patterns.iter().all(|p| p.matches(context))
+            }
+
+            ContextPattern::AnyOf(patterns) => {
+                patterns.iter().any(|p| p.matches(context))
+            }
+
+            ContextPattern::Not(pattern) => {
+                !pattern.matches(context)
+            }
+        }
+    }
+}
+
+impl Default for ContextPattern {
+    fn default() -> Self {
+        ContextPattern::Any
+    }
+}
+
+/// Runtime context in which a belief might be used
+#[derive(Clone)]
+pub struct Context {
+    /// Current domain
+    pub domain: Domain,
+
+    /// Actor/user identifier
+    pub actor_id: String,
+
+    /// Actor's roles
+    pub roles: HashSet<String>,
+
+    /// Specialist type (if in a specialist)
+    pub specialist_type: Option<String>,
+
+    /// Context tags
+    pub tags: HashSet<String>,
+
+    /// Additional properties (for condition checking)
+    pub properties: std::collections::HashMap<String, String>,
+}
+
+impl Context {
+    /// Create a new context
+    pub fn new(domain: Domain, actor_id: &str) -> Self {
+        Context {
+            domain,
+            actor_id: actor_id.to_string(),
+            roles: HashSet::new(),
+            specialist_type: None,
+            tags: HashSet::new(),
+            properties: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Add a role
+    pub fn with_role(mut self, role: &str) -> Self {
+        self.roles.insert(role.to_string());
+        self
+    }
+
+    /// Set specialist type
+    pub fn with_specialist(mut self, specialist_type: &str) -> Self {
+        self.specialist_type = Some(specialist_type.to_string());
+        self
+    }
+
+    /// Add a tag
+    pub fn with_tag(mut self, tag: &str) -> Self {
+        self.tags.insert(tag.to_string());
+        self
+    }
+
+    /// Set a property
+    pub fn with_property(mut self, key: &str, value: &str) -> Self {
+        self.properties.insert(key.to_string(), value.to_string());
+        self
+    }
+
+    /// Check if context is in a specific domain
+    pub fn in_domain(&self, domain: &Domain) -> bool {
+        self.domain.is_subdomain_of(domain) || domain.is_subdomain_of(&self.domain)
+    }
+
+    /// Check if context has a role
+    pub fn has_role(&self, role: &str) -> bool {
+        self.roles.contains(role)
+    }
+
+    /// Check if context has a tag
+    pub fn has_tag(&self, tag: &str) -> bool {
+        self.tags.contains(tag)
+    }
+}
+
+/// Error when a belief is used outside its valid scope
+#[derive(Clone)]
+pub struct ScopeViolation {
+    /// The scope that was violated
+    pub belief_scope: BeliefScope,
+
+    /// The context in which the violation occurred
+    pub attempted_context: Context,
+
+    /// Human-readable explanation
+    pub reason: String,
+}
+
+impl ScopeViolation {
+    /// Create a scope violation error
+    pub fn new(scope: &BeliefScope, context: &Context, reason: &str) -> Self {
+        ScopeViolation {
+            belief_scope: scope.clone(),
+            attempted_context: context.clone(),
+            reason: reason.to_string(),
+        }
+    }
+
+    /// Format as error message
+    pub fn message(&self) -> String {
+        format!(
+            "Belief scope violation: {}. Context domain: {}, Actor: {}",
+            self.reason,
+            self.attempted_context.domain.path(),
+            self.attempted_context.actor_id
+        )
+    }
+}
+
+/// Defines the scope within which a belief is valid
+#[derive(Clone)]
+pub struct BeliefScope {
+    /// Domains where this belief applies
+    pub valid_domains: HashSet<Domain>,
+
+    /// Conditions that must hold for belief to apply
+    pub preconditions: Vec<Condition>,
+
+    /// Actors/contexts where this belief is valid
+    pub valid_contexts: ContextPattern,
+
+    /// Is this scope strict (error on violation) or advisory (warning only)?
+    pub strict: bool,
+}
+
+impl BeliefScope {
+    /// Create a universal scope (applies everywhere)
+    pub fn universal() -> Self {
+        BeliefScope {
+            valid_domains: HashSet::new(),  // Empty = all domains
+            preconditions: Vec::new(),
+            valid_contexts: ContextPattern::Any,
+            strict: false,
+        }
+    }
+
+    /// Create a domain-specific scope
+    pub fn domain(domain: Domain) -> Self {
+        let mut domains = HashSet::new();
+        domains.insert(domain);
+        BeliefScope {
+            valid_domains: domains,
+            preconditions: Vec::new(),
+            valid_contexts: ContextPattern::Any,
+            strict: true,
+        }
+    }
+
+    /// Create scope for multiple domains
+    pub fn domains(domains: Vec<Domain>) -> Self {
+        BeliefScope {
+            valid_domains: domains.into_iter().collect(),
+            preconditions: Vec::new(),
+            valid_contexts: ContextPattern::Any,
+            strict: true,
+        }
+    }
+
+    /// Add a precondition
+    pub fn with_precondition(mut self, condition: Condition) -> Self {
+        self.preconditions.push(condition);
+        self
+    }
+
+    /// Set context pattern
+    pub fn with_context(mut self, pattern: ContextPattern) -> Self {
+        self.valid_contexts = pattern;
+        self
+    }
+
+    /// Make scope strict (error on violation)
+    pub fn strict(mut self) -> Self {
+        self.strict = true;
+        self
+    }
+
+    /// Make scope advisory (warning only)
+    pub fn advisory(mut self) -> Self {
+        self.strict = false;
+        self
+    }
+
+    /// Check if belief applies in current context
+    pub fn applies(&self, context: &Context) -> bool {
+        // Check domain (empty = all domains)
+        if !self.valid_domains.is_empty() {
+            let domain_matches = self.valid_domains.iter()
+                .any(|d| context.in_domain(d));
+            if !domain_matches {
+                return false;
+            }
+        }
+
+        // Check preconditions
+        if !self.preconditions.iter().all(|c| c.check(context)) {
+            return false;
+        }
+
+        // Check context pattern
+        self.valid_contexts.matches(context)
+    }
+
+    /// Assert that belief applies, returning error if not
+    pub fn assert_applicable(&self, context: &Context) -> Result<(), ScopeViolation> {
+        if self.applies(context) {
+            Ok(())
+        } else {
+            let reason = self.diagnose_violation(context);
+            Err(ScopeViolation::new(self, context, &reason))
+        }
+    }
+
+    /// Diagnose why scope doesn't apply
+    fn diagnose_violation(&self, context: &Context) -> String {
+        // Check domain
+        if !self.valid_domains.is_empty() {
+            let domain_matches = self.valid_domains.iter()
+                .any(|d| context.in_domain(d));
+            if !domain_matches {
+                let valid: Vec<String> = self.valid_domains.iter()
+                    .map(|d| d.path())
+                    .collect();
+                return format!(
+                    "Domain '{}' not in valid domains: {:?}",
+                    context.domain.path(),
+                    valid
+                );
+            }
+        }
+
+        // Check preconditions
+        for condition in &self.preconditions {
+            if !condition.check(context) {
+                return format!("Precondition '{}' not met: {}",
+                    condition.name, condition.description);
+            }
+        }
+
+        // Check context pattern
+        if !self.valid_contexts.matches(context) {
+            return "Context pattern does not match".to_string();
+        }
+
+        "Unknown scope violation".to_string()
+    }
+
+    /// Get all domains this scope applies to
+    pub fn get_domains(&self) -> Vec<&Domain> {
+        self.valid_domains.iter().collect()
+    }
+
+    /// Check if this scope is universal
+    pub fn is_universal(&self) -> bool {
+        self.valid_domains.is_empty()
+            && self.preconditions.is_empty()
+            && matches!(self.valid_contexts, ContextPattern::Any)
+    }
+}
+
+impl Default for BeliefScope {
+    fn default() -> Self {
+        BeliefScope::universal()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_domain_hierarchy() {
+        let general = Domain::new("general");
+        let medical = Domain::subdomain("medical", general.clone());
+        let cardiology = Domain::subdomain("cardiology", medical.clone());
+
+        assert!(cardiology.is_subdomain_of(&medical));
+        assert!(cardiology.is_subdomain_of(&general));
+        assert!(medical.is_subdomain_of(&general));
+        assert!(!general.is_subdomain_of(&medical));
+    }
+
+    #[test]
+    fn test_scope_applies() {
+        let medical_scope = BeliefScope::domain(domains::medical());
+
+        let medical_context = Context::new(domains::medical(), "user1");
+        let general_context = Context::new(domains::general(), "user1");
+
+        assert!(medical_scope.applies(&medical_context));
+        assert!(!medical_scope.applies(&general_context));
+    }
+
+    #[test]
+    fn test_universal_scope() {
+        let universal = BeliefScope::universal();
+
+        let any_context = Context::new(domains::financial(), "user1");
+        assert!(universal.applies(&any_context));
+        assert!(universal.is_universal());
+    }
+}

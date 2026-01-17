@@ -1,0 +1,542 @@
+// Nexus Protocol - SYNC Frame Tests
+//
+// Tests for the SYNC frame encoder/decoder - the heart of Nexus compression
+// This file is combined with source files (types.sx, bits.sx, sync.sx) before compilation
+
+fn main() -> i64 {
+    print("=== Nexus SYNC Frame Tests ===\n\n");
+
+    var passed = 0;
+    var failed = 0;
+
+    // Encoder tests
+    if test_sync_encoder_create() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_sync_encoder_baseline() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_sync_encoder_update() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_sync_encode_all_same() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_sync_encode_mixed() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Decoder tests
+    if test_sync_decoder_create() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_sync_decode_simple() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Round-trip tests
+    if test_sync_roundtrip() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_sync_roundtrip_large() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Stats tests
+    if test_sync_stats() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Session tests
+    if test_sync_session() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Checksum tests
+    if test_checksum() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Performance estimation
+    if test_bandwidth_estimation() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Summary
+    print("\nPassed: ");
+    print_i64(passed);
+    print(" / ");
+    print_i64(passed + failed);
+    print("\n");
+
+    failed
+}
+
+// =============================================================================
+// Encoder Tests
+// =============================================================================
+
+fn test_sync_encoder_create() -> i64 {
+    print("Testing encoder creation... ");
+
+    let encoder = sync_encoder_new(1000);
+
+    if encoder == 0 {
+        print("FAIL: encoder is null\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_sync_encoder_baseline() -> i64 {
+    print("Testing baseline initialization... ");
+
+    let encoder = sync_encoder_new(5);
+
+    // Create baseline values
+    let baseline = vec_new();
+    vec_push(baseline, 100);
+    vec_push(baseline, 200);
+    vec_push(baseline, 300);
+    vec_push(baseline, 400);
+    vec_push(baseline, 500);
+
+    sync_encoder_set_baseline(encoder, baseline);
+
+    print("PASS\n");
+    0
+}
+
+fn test_sync_encoder_update() -> i64 {
+    print("Testing single value update... ");
+
+    let encoder = sync_encoder_new(5);
+    sync_encoder_init_baseline(encoder);
+
+    // Update index 2 to value 999
+    let result = sync_encoder_update(encoder, 2, 999);
+
+    if result != 0 {
+        print("FAIL: update returned error\n");
+        return 1;
+    }
+
+    // Invalid index should fail
+    let result2 = sync_encoder_update(encoder, 10, 123);
+    if result2 == 0 {
+        print("FAIL: out-of-bounds should fail\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_sync_encode_all_same() -> i64 {
+    print("Testing encode with all same... ");
+
+    let encoder = sync_encoder_new(100);
+    sync_encoder_init_baseline(encoder);
+
+    // No updates - all values same
+    let frame = sync_encoder_encode(encoder);
+
+    if frame == 0 {
+        print("FAIL: encode returned null\n");
+        return 1;
+    }
+
+    // With all SAME, should be very compact
+    // 100 beliefs x 2 bits = 200 bits = 25 bytes + 8 header + 2 count = 35 bytes
+    let len = vec_len(frame);
+    if len > 40 {
+        print("FAIL: frame too large: ");
+        print_i64(len);
+        print(" bytes\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_sync_encode_mixed() -> i64 {
+    print("Testing encode with mixed changes... ");
+
+    let encoder = sync_encoder_new(10);
+
+    // Set baseline
+    let baseline = vec_new();
+    var i = 0;
+    while i < 10 {
+        vec_push(baseline, i * 100);
+        i = i + 1;
+    }
+    sync_encoder_set_baseline(encoder, baseline);
+
+    // Update some values
+    sync_encoder_update(encoder, 3, 300 + 10);    // Small delta
+    sync_encoder_update(encoder, 5, 500 + 1000);  // Large delta
+    sync_encoder_update(encoder, 7, 999999);      // Full value
+
+    let frame = sync_encoder_encode(encoder);
+
+    if frame == 0 {
+        print("FAIL: encode returned null\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// Decoder Tests
+// =============================================================================
+
+fn test_sync_decoder_create() -> i64 {
+    print("Testing decoder creation... ");
+
+    let decoder = sync_decoder_new(1000);
+
+    if decoder == 0 {
+        print("FAIL: decoder is null\n");
+        return 1;
+    }
+
+    sync_decoder_init(decoder);
+
+    print("PASS\n");
+    0
+}
+
+fn test_sync_decode_simple() -> i64 {
+    print("Testing simple decode... ");
+
+    // Create encoder with known state
+    let encoder = sync_encoder_new(5);
+    let baseline = vec_new();
+    vec_push(baseline, 100);
+    vec_push(baseline, 200);
+    vec_push(baseline, 300);
+    vec_push(baseline, 400);
+    vec_push(baseline, 500);
+    sync_encoder_set_baseline(encoder, baseline);
+
+    // Update one value
+    sync_encoder_update(encoder, 2, 350);
+
+    // Encode
+    let frame = sync_encoder_encode(encoder);
+
+    // Create decoder with same baseline
+    let decoder = sync_decoder_new(5);
+    sync_decoder_set_baseline(decoder, baseline);
+
+    // Decode
+    let result = sync_decoder_decode(decoder, frame);
+
+    if result != ERR_NONE() {
+        print("FAIL: decode error ");
+        print_i64(result);
+        print("\n");
+        return 1;
+    }
+
+    // Verify value
+    let value = sync_decoder_get(decoder, 2);
+    if value != 350 {
+        print("FAIL: expected 350, got ");
+        print_i64(value);
+        print("\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// Round-Trip Tests
+// =============================================================================
+
+fn test_sync_roundtrip() -> i64 {
+    print("Testing full round-trip... ");
+
+    let belief_count = 100;
+
+    // Create encoder and decoder
+    let encoder = sync_encoder_new(belief_count);
+    let decoder = sync_decoder_new(belief_count);
+
+    // Initialize with random-ish baseline
+    let baseline = vec_new();
+    var i = 0;
+    while i < belief_count {
+        vec_push(baseline, (i * 17) % 1000);
+        i = i + 1;
+    }
+
+    sync_encoder_set_baseline(encoder, baseline);
+    sync_decoder_set_baseline(decoder, baseline);
+
+    // Make various changes
+    sync_encoder_update(encoder, 0, 42);        // Index 0: FULL
+    sync_encoder_update(encoder, 10, (10 * 17) % 1000 + 5);  // Small delta
+    sync_encoder_update(encoder, 50, 99999);   // FULL
+    // Index 25 unchanged (SAME)
+
+    // Encode
+    let frame = sync_encoder_encode(encoder);
+
+    // Decode
+    let result = sync_decoder_decode(decoder, frame);
+    if result != ERR_NONE() {
+        print("FAIL: decode error\n");
+        return 1;
+    }
+
+    // Verify all values
+    if sync_decoder_get(decoder, 0) != 42 {
+        print("FAIL: index 0 mismatch\n");
+        return 1;
+    }
+
+    if sync_decoder_get(decoder, 10) != (10 * 17) % 1000 + 5 {
+        print("FAIL: index 10 mismatch\n");
+        return 1;
+    }
+
+    if sync_decoder_get(decoder, 50) != 99999 {
+        print("FAIL: index 50 mismatch\n");
+        return 1;
+    }
+
+    // Unchanged value
+    if sync_decoder_get(decoder, 25) != (25 * 17) % 1000 {
+        print("FAIL: index 25 should be unchanged\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_sync_roundtrip_large() -> i64 {
+    print("Testing large round-trip (1000 beliefs)... ");
+
+    let belief_count = 1000;
+
+    let encoder = sync_encoder_new(belief_count);
+    let decoder = sync_decoder_new(belief_count);
+
+    // Initialize baseline
+    let baseline = vec_new();
+    var i = 0;
+    while i < belief_count {
+        vec_push(baseline, i * 100);
+        i = i + 1;
+    }
+
+    sync_encoder_set_baseline(encoder, baseline);
+    sync_decoder_set_baseline(decoder, baseline);
+
+    // Simulate typical case: 90% unchanged, 9% small delta, 1% full
+    // Change 10% of values
+    i = 0;
+    while i < belief_count {
+        if i % 10 == 0 {
+            // 10% get updated
+            if i % 100 == 0 {
+                // 1% get full value
+                sync_encoder_update(encoder, i, 999999);
+            } else {
+                // 9% get small delta
+                sync_encoder_update(encoder, i, i * 100 + 30);
+            }
+        }
+        i = i + 1;
+    }
+
+    // Encode
+    let frame = sync_encoder_encode(encoder);
+    let frame_size = vec_len(frame);
+
+    // Decode
+    let result = sync_decoder_decode(decoder, frame);
+    if result != ERR_NONE() {
+        print("FAIL: decode error\n");
+        return 1;
+    }
+
+    // Verify a few values
+    if sync_decoder_get(decoder, 0) != 999999 {
+        print("FAIL: index 0 mismatch\n");
+        return 1;
+    }
+
+    if sync_decoder_get(decoder, 10) != 10 * 100 + 30 {
+        print("FAIL: index 10 mismatch\n");
+        return 1;
+    }
+
+    // Unchanged
+    if sync_decoder_get(decoder, 11) != 11 * 100 {
+        print("FAIL: index 11 should be unchanged\n");
+        return 1;
+    }
+
+    print("PASS (");
+    print_i64(frame_size);
+    print(" bytes)\n");
+    0
+}
+
+// =============================================================================
+// Stats Tests
+// =============================================================================
+
+fn test_sync_stats() -> i64 {
+    print("Testing sync statistics... ");
+
+    let encoder = sync_encoder_new(100);
+    sync_encoder_init_baseline(encoder);
+
+    // Make specific changes
+    sync_encoder_update(encoder, 0, 10);      // Small delta
+    sync_encoder_update(encoder, 1, 1000);    // Large delta
+    sync_encoder_update(encoder, 2, 999999);  // Full
+    // Rest unchanged (97 SAME)
+
+    let frame = sync_encoder_encode(encoder);
+
+    // Get stats from encoder
+    let stats = vec_get(encoder, 4);
+
+    let same = sync_stats_same_count(stats);
+    let small = sync_stats_small_count(stats);
+    let large = sync_stats_large_count(stats);
+    let full = sync_stats_full_count(stats);
+
+    if same != 97 {
+        print("FAIL: expected 97 SAME, got ");
+        print_i64(same);
+        print("\n");
+        return 1;
+    }
+
+    // Note: exact counts depend on baseline values and deltas
+    let total = same + small + large + full;
+    if total != 100 {
+        print("FAIL: total should be 100, got ");
+        print_i64(total);
+        print("\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// Session Tests
+// =============================================================================
+
+fn test_sync_session() -> i64 {
+    print("Testing sync session... ");
+
+    let belief_count = 50;
+    let session = sync_session_new(belief_count);
+
+    // Initialize
+    let initial = vec_new();
+    var i = 0;
+    while i < belief_count {
+        vec_push(initial, i * 10);
+        i = i + 1;
+    }
+    sync_session_init(session, initial);
+
+    // Update and encode multiple frames
+    var frame1 = 0;
+    var frame2 = 0;
+
+    // Frame 1: update index 5
+    sync_session_update(session, 5, 999);
+    frame1 = sync_session_encode(session);
+
+    // Frame 2: update index 10
+    sync_session_update(session, 10, 888);
+    frame2 = sync_session_encode(session);
+
+    if frame1 == 0 || frame2 == 0 {
+        print("FAIL: encode failed\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// Checksum Tests
+// =============================================================================
+
+fn test_checksum() -> i64 {
+    print("Testing checksum... ");
+
+    let decoder1 = sync_decoder_new(10);
+    let decoder2 = sync_decoder_new(10);
+
+    // Same baseline
+    let baseline = vec_new();
+    var i = 0;
+    while i < 10 {
+        vec_push(baseline, i * 100);
+        i = i + 1;
+    }
+
+    sync_decoder_set_baseline(decoder1, baseline);
+    sync_decoder_set_baseline(decoder2, baseline);
+
+    // Checksums should match
+    let checksum1 = sync_compute_checksum(decoder1);
+    let checksum2 = sync_compute_checksum(decoder2);
+
+    if checksum1 != checksum2 {
+        print("FAIL: identical states should have same checksum\n");
+        return 1;
+    }
+
+    // Modify one decoder's state
+    let state = sync_decoder_get_state(decoder2);
+    vec_set(state, 5, 999);
+
+    // Now checksums should differ
+    let checksum3 = sync_compute_checksum(decoder2);
+    if checksum1 == checksum3 {
+        print("FAIL: different states should have different checksums\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// Bandwidth Estimation Tests
+// =============================================================================
+
+fn test_bandwidth_estimation() -> i64 {
+    print("Testing bandwidth estimation... ");
+
+    // 1000 beliefs, 60Hz, 90% unchanged, 9% small delta
+    let bw = nexus_estimate_bandwidth(1000, 60, 90, 9);
+
+    // Should be around 22KB/s based on spec
+    // 378 bytes/sync * 60 Hz = 22,680 bytes/sec
+    if bw < 20000 || bw > 30000 {
+        print("FAIL: bandwidth estimate out of range: ");
+        print_i64(bw);
+        print(" bytes/sec\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}

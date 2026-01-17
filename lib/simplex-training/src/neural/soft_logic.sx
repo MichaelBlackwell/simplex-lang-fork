@@ -1,0 +1,538 @@
+// Soft (differentiable) logic operations for Neural IR training
+//
+// Implements differentiable versions of Boolean logic gates that allow
+// gradient flow during training while approaching discrete logic at inference.
+//
+// All operations are parameterized by temperature:
+// - Low temperature (→0): Sharp, nearly discrete logic
+// - High temperature (→∞): Soft, continuous approximations
+//
+// # Operations
+//
+// - AND: Product of sigmoids - approaches min(a, b)
+// - OR: 1 - (1-a)(1-b) - approaches max(a, b)
+// - NOT: 1 - sigmoid(x) - approaches 1 - x
+// - XOR: a*(1-b) + (1-a)*b - exclusive or
+// - IMPLIES: 1 - a*(1-b) - logical implication
+// - IFF: 1 - |a-b| - if and only if
+//
+// # Example
+//
+// ```simplex
+// use simplex_training::neural::SoftLogic;
+// use simplex::dual;
+//
+// let logic = SoftLogic::new(0.5);
+//
+// let a = dual::variable(0.9);
+// let b = dual::variable(0.8);
+//
+// let result = logic.and(a, b); // ~0.72 (soft AND)
+// let or_result = logic.or(a, b); // ~0.98 (soft OR)
+// ```
+
+use simplex_std::dual;
+use simplex_std::vec::Vec;
+
+/// Logic operation types
+#[derive(Clone, Copy, Debug)]
+pub enum LogicOp {
+    And,
+    Or,
+    Not,
+    Xor,
+    Implies,
+    Iff,
+    Nand,
+    Nor,
+}
+
+/// Differentiable logic operations
+///
+/// Provides soft versions of Boolean operations that support gradient flow
+/// during training while converging to discrete logic as temperature → 0.
+pub struct SoftLogic {
+    /// Temperature controlling sharpness
+    /// Lower = sharper (more discrete), Higher = softer (more continuous)
+    temperature: dual,
+}
+
+impl SoftLogic {
+    /// Create soft logic with given temperature
+    pub fn new(temperature: f64) -> Self {
+        SoftLogic {
+            temperature: dual::variable(temperature.max(0.001)),
+        }
+    }
+
+    /// Create with learnable temperature
+    pub fn learnable() -> Self {
+        SoftLogic {
+            temperature: dual::variable(1.0),
+        }
+    }
+
+    /// Set temperature
+    pub fn set_temperature(&mut self, temperature: f64) {
+        self.temperature = dual::variable(temperature.max(0.001));
+    }
+
+    /// Get temperature
+    pub fn temperature(&self) -> dual {
+        self.temperature
+    }
+
+    /// Sigmoid helper with temperature scaling
+    fn sig(&self, x: dual) -> dual {
+        (x / self.temperature).sigmoid()
+    }
+
+    /// Soft AND: product of sigmoids
+    ///
+    /// Approximates min(a, b) as temperature → 0
+    /// Formula: sigmoid(a/T) * sigmoid(b/T)
+    pub fn and(&self, a: dual, b: dual) -> dual {
+        self.sig(a) * self.sig(b)
+    }
+
+    /// Soft OR: 1 - (1-a)(1-b)
+    ///
+    /// Approximates max(a, b) as temperature → 0
+    /// De Morgan: OR(a,b) = NOT(AND(NOT(a), NOT(b)))
+    pub fn or(&self, a: dual, b: dual) -> dual {
+        let sig_a = self.sig(a);
+        let sig_b = self.sig(b);
+        let one = dual::constant(1.0);
+        one - (one - sig_a) * (one - sig_b)
+    }
+
+    /// Soft NOT: 1 - sigmoid(x)
+    ///
+    /// Approaches 1 - x for x ∈ {0, 1}
+    pub fn not(&self, a: dual) -> dual {
+        dual::constant(1.0) - self.sig(a)
+    }
+
+    /// Soft XOR: a*(1-b) + (1-a)*b
+    ///
+    /// Exclusive OR: true when exactly one input is true
+    pub fn xor(&self, a: dual, b: dual) -> dual {
+        let sig_a = self.sig(a);
+        let sig_b = self.sig(b);
+        let one = dual::constant(1.0);
+        sig_a * (one - sig_b) + (one - sig_a) * sig_b
+    }
+
+    /// Soft IMPLIES: 1 - a*(1-b)
+    ///
+    /// Logical implication: a → b
+    /// True unless a is true and b is false
+    pub fn implies(&self, a: dual, b: dual) -> dual {
+        let sig_a = self.sig(a);
+        let sig_b = self.sig(b);
+        let one = dual::constant(1.0);
+        one - sig_a * (one - sig_b)
+    }
+
+    /// Soft IFF (if and only if): 1 - |a - b|
+    ///
+    /// True when both inputs have the same value
+    pub fn iff(&self, a: dual, b: dual) -> dual {
+        let sig_a = self.sig(a);
+        let sig_b = self.sig(b);
+        let one = dual::constant(1.0);
+        one - (sig_a - sig_b).abs()
+    }
+
+    /// Soft NAND: NOT(AND(a, b))
+    pub fn nand(&self, a: dual, b: dual) -> dual {
+        self.not(self.and(a, b))
+    }
+
+    /// Soft NOR: NOT(OR(a, b))
+    pub fn nor(&self, a: dual, b: dual) -> dual {
+        self.not(self.or(a, b))
+    }
+
+    /// Multi-input AND
+    pub fn and_all(&self, inputs: &[dual]) -> dual {
+        if inputs.is_empty() {
+            return dual::constant(1.0); // Vacuous truth
+        }
+
+        let mut result = self.sig(inputs[0]);
+        for i in 1..inputs.len() {
+            result = result * self.sig(inputs[i]);
+        }
+        result
+    }
+
+    /// Multi-input OR
+    pub fn or_all(&self, inputs: &[dual]) -> dual {
+        if inputs.is_empty() {
+            return dual::constant(0.0); // Vacuous false
+        }
+
+        // OR = NOT(AND(NOT(x1), NOT(x2), ...))
+        let one = dual::constant(1.0);
+        let mut prod = one - self.sig(inputs[0]);
+        for i in 1..inputs.len() {
+            prod = prod * (one - self.sig(inputs[i]));
+        }
+        one - prod
+    }
+
+    /// Apply operation by enum
+    pub fn apply(&self, op: LogicOp, a: dual, b: dual) -> dual {
+        match op {
+            LogicOp::And => self.and(a, b),
+            LogicOp::Or => self.or(a, b),
+            LogicOp::Not => self.not(a), // b is ignored
+            LogicOp::Xor => self.xor(a, b),
+            LogicOp::Implies => self.implies(a, b),
+            LogicOp::Iff => self.iff(a, b),
+            LogicOp::Nand => self.nand(a, b),
+            LogicOp::Nor => self.nor(a, b),
+        }
+    }
+}
+
+/// A soft logic gate with learnable parameters
+///
+/// Combines a soft logic operation with learnable weights and threshold.
+/// Can be composed into differentiable logic circuits.
+pub struct SoftLogicGate {
+    /// The logic operation
+    operation: LogicOp,
+
+    /// Soft logic implementation
+    logic: SoftLogic,
+
+    /// Input weights (for weighted inputs)
+    weights: Vec<dual>,
+
+    /// Bias/threshold
+    bias: dual,
+
+    /// Whether the gate is active (for pruning)
+    active: bool,
+}
+
+impl SoftLogicGate {
+    /// Create a new soft logic gate
+    pub fn new(operation: LogicOp, num_inputs: usize, temperature: f64) -> Self {
+        let weights = vec![dual::variable(1.0); num_inputs];
+
+        SoftLogicGate {
+            operation,
+            logic: SoftLogic::new(temperature),
+            weights,
+            bias: dual::variable(0.0),
+            active: true,
+        }
+    }
+
+    /// Create AND gate
+    pub fn and(num_inputs: usize) -> Self {
+        Self::new(LogicOp::And, num_inputs, 0.5)
+    }
+
+    /// Create OR gate
+    pub fn or(num_inputs: usize) -> Self {
+        Self::new(LogicOp::Or, num_inputs, 0.5)
+    }
+
+    /// Create NOT gate (single input)
+    pub fn not() -> Self {
+        Self::new(LogicOp::Not, 1, 0.5)
+    }
+
+    /// Create XOR gate
+    pub fn xor() -> Self {
+        Self::new(LogicOp::Xor, 2, 0.5)
+    }
+
+    /// Forward pass
+    pub fn forward(&self, inputs: &[dual]) -> dual {
+        if !self.active {
+            return dual::constant(0.0);
+        }
+
+        // Weight inputs and add bias
+        let weighted: Vec<dual> = inputs.iter()
+            .zip(self.weights.iter())
+            .map(|(&x, &w)| x * w + self.bias)
+            .collect();
+
+        // Apply logic operation
+        match self.operation {
+            LogicOp::Not => {
+                if !weighted.is_empty() {
+                    self.logic.not(weighted[0])
+                } else {
+                    dual::constant(1.0)
+                }
+            }
+            LogicOp::And => self.logic.and_all(&weighted),
+            LogicOp::Or => self.logic.or_all(&weighted),
+            LogicOp::Xor if weighted.len() >= 2 => self.logic.xor(weighted[0], weighted[1]),
+            LogicOp::Implies if weighted.len() >= 2 => self.logic.implies(weighted[0], weighted[1]),
+            LogicOp::Iff if weighted.len() >= 2 => self.logic.iff(weighted[0], weighted[1]),
+            LogicOp::Nand => self.logic.not(self.logic.and_all(&weighted)),
+            LogicOp::Nor => self.logic.not(self.logic.or_all(&weighted)),
+            _ => dual::constant(0.5),
+        }
+    }
+
+    /// Get trainable parameters
+    pub fn parameters(&self) -> Vec<dual> {
+        let mut params = self.weights.clone();
+        params.push(self.bias);
+        params.push(self.logic.temperature());
+        params
+    }
+
+    /// Update parameters from gradients
+    pub fn update(&mut self, gradients: &[f64], learning_rate: f64) {
+        // Update weights
+        for (i, grad) in gradients.iter().enumerate() {
+            if i < self.weights.len() {
+                let new_val = self.weights[i].val - learning_rate * grad;
+                self.weights[i] = dual::variable(new_val);
+            }
+        }
+
+        // Update bias
+        if gradients.len() > self.weights.len() {
+            let bias_grad = gradients[self.weights.len()];
+            self.bias = dual::variable(self.bias.val - learning_rate * bias_grad);
+        }
+
+        // Update temperature
+        if gradients.len() > self.weights.len() + 1 {
+            let temp_grad = gradients[self.weights.len() + 1];
+            let new_temp = (self.logic.temperature().val - learning_rate * temp_grad).max(0.01);
+            self.logic.set_temperature(new_temp);
+        }
+    }
+
+    /// Enable/disable gate (for pruning)
+    pub fn set_active(&mut self, active: bool) {
+        self.active = active;
+    }
+
+    /// Check if gate is active
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
+    /// Get operation type
+    pub fn operation(&self) -> LogicOp {
+        self.operation
+    }
+}
+
+/// Logic circuit: composition of soft logic gates
+///
+/// Represents a differentiable logic circuit that can be trained end-to-end.
+pub struct LogicCircuit {
+    /// Layers of gates (for sequential evaluation)
+    layers: Vec<Vec<SoftLogicGate>>,
+
+    /// Connections: (from_layer, from_gate, to_layer, to_gate, to_input)
+    connections: Vec<(usize, usize, usize, usize, usize)>,
+}
+
+impl LogicCircuit {
+    /// Create empty circuit
+    pub fn new() -> Self {
+        LogicCircuit {
+            layers: Vec::new(),
+            connections: Vec::new(),
+        }
+    }
+
+    /// Add a layer of gates
+    pub fn add_layer(&mut self, gates: Vec<SoftLogicGate>) {
+        self.layers.push(gates);
+    }
+
+    /// Connect output of one gate to input of another
+    pub fn connect(&mut self, from_layer: usize, from_gate: usize,
+                   to_layer: usize, to_gate: usize, to_input: usize) {
+        self.connections.push((from_layer, from_gate, to_layer, to_gate, to_input));
+    }
+
+    /// Forward pass through circuit
+    pub fn forward(&self, inputs: &[dual]) -> Vec<dual> {
+        if self.layers.is_empty() {
+            return inputs.to_vec();
+        }
+
+        // Evaluate layer by layer
+        let mut layer_outputs: Vec<Vec<dual>> = Vec::new();
+        layer_outputs.push(inputs.to_vec());
+
+        for layer_idx in 0..self.layers.len() {
+            let layer = &self.layers[layer_idx];
+            let mut outputs: Vec<dual> = Vec::with_capacity(layer.len());
+
+            for gate_idx in 0..layer.len() {
+                // Gather inputs for this gate from previous layer or connections
+                let gate_inputs = self.gather_inputs(layer_idx, gate_idx, &layer_outputs);
+                outputs.push(layer[gate_idx].forward(&gate_inputs));
+            }
+
+            layer_outputs.push(outputs);
+        }
+
+        // Return final layer outputs
+        layer_outputs.last().map(|v| v.clone()).unwrap_or_default()
+    }
+
+    /// Gather inputs for a specific gate
+    fn gather_inputs(&self, layer_idx: usize, gate_idx: usize,
+                     layer_outputs: &[Vec<dual>]) -> Vec<dual> {
+        // Find all connections to this gate
+        let mut inputs: Vec<(usize, dual)> = Vec::new(); // (input_idx, value)
+
+        for &(from_layer, from_gate, to_layer, to_gate, to_input) in &self.connections {
+            if to_layer == layer_idx && to_gate == gate_idx {
+                if from_layer < layer_outputs.len() && from_gate < layer_outputs[from_layer].len() {
+                    inputs.push((to_input, layer_outputs[from_layer][from_gate]));
+                }
+            }
+        }
+
+        // If no explicit connections, use previous layer outputs
+        if inputs.is_empty() && layer_idx > 0 {
+            return layer_outputs[layer_idx - 1].clone();
+        }
+
+        // Sort by input index and extract values
+        inputs.sort_by_key(|(idx, _)| *idx);
+        inputs.into_iter().map(|(_, v)| v).collect()
+    }
+
+    /// Get all trainable parameters
+    pub fn parameters(&self) -> Vec<dual> {
+        let mut params = Vec::new();
+        for layer in &self.layers {
+            for gate in layer {
+                params.extend(gate.parameters());
+            }
+        }
+        params
+    }
+
+    /// Count total gates
+    pub fn num_gates(&self) -> usize {
+        self.layers.iter().map(|l| l.len()).sum()
+    }
+
+    /// Count active gates
+    pub fn num_active_gates(&self) -> usize {
+        self.layers.iter()
+            .flat_map(|l| l.iter())
+            .filter(|g| g.is_active())
+            .count()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn approx_eq(a: f64, b: f64, eps: f64) -> bool {
+        (a - b).abs() < eps
+    }
+
+    #[test]
+    fn test_soft_and() {
+        let logic = SoftLogic::new(0.1); // Low temp = sharp
+
+        // Both high → high
+        let result = logic.and(dual::constant(3.0), dual::constant(3.0));
+        assert!(result.val > 0.9);
+
+        // One low → low
+        let result = logic.and(dual::constant(3.0), dual::constant(-3.0));
+        assert!(result.val < 0.1);
+    }
+
+    #[test]
+    fn test_soft_or() {
+        let logic = SoftLogic::new(0.1);
+
+        // Both low → low
+        let result = logic.or(dual::constant(-3.0), dual::constant(-3.0));
+        assert!(result.val < 0.1);
+
+        // One high → high
+        let result = logic.or(dual::constant(3.0), dual::constant(-3.0));
+        assert!(result.val > 0.9);
+    }
+
+    #[test]
+    fn test_soft_not() {
+        let logic = SoftLogic::new(0.1);
+
+        // High → low
+        let result = logic.not(dual::constant(3.0));
+        assert!(result.val < 0.1);
+
+        // Low → high
+        let result = logic.not(dual::constant(-3.0));
+        assert!(result.val > 0.9);
+    }
+
+    #[test]
+    fn test_soft_xor() {
+        let logic = SoftLogic::new(0.1);
+
+        // Same → low
+        let result = logic.xor(dual::constant(3.0), dual::constant(3.0));
+        assert!(result.val < 0.2);
+
+        // Different → high
+        let result = logic.xor(dual::constant(3.0), dual::constant(-3.0));
+        assert!(result.val > 0.8);
+    }
+
+    #[test]
+    fn test_soft_implies() {
+        let logic = SoftLogic::new(0.1);
+
+        // True → False = False
+        let result = logic.implies(dual::constant(3.0), dual::constant(-3.0));
+        assert!(result.val < 0.2);
+
+        // False → anything = True
+        let result = logic.implies(dual::constant(-3.0), dual::constant(-3.0));
+        assert!(result.val > 0.8);
+    }
+
+    #[test]
+    fn test_gradient_flow() {
+        let logic = SoftLogic::new(0.5);
+
+        // Variables with derivatives
+        let a = dual::new(0.5, 1.0);
+        let b = dual::new(0.5, 0.0);
+
+        let result = logic.and(a, b);
+
+        // Gradient should be non-zero
+        assert!(result.der.abs() > 0.0);
+    }
+
+    #[test]
+    fn test_logic_gate() {
+        let gate = SoftLogicGate::and(2);
+
+        let inputs = vec![dual::constant(2.0), dual::constant(2.0)];
+        let output = gate.forward(&inputs);
+
+        assert!(output.val > 0.5);
+    }
+}

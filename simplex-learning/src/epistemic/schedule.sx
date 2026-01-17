@@ -1,0 +1,500 @@
+// TASK-014: Epistemic Annealing Schedule
+//
+// Temperature schedules that respond to epistemic health.
+//
+// Standard annealing: cool when confident → explore less → find less
+// disconfirming evidence → remain confident → cool further → STABLE BUT WRONG
+//
+// Epistemic annealing: temperature governed by epistemic health, not just confidence.
+// When beliefs conflict, predictions fail, or confidence grows suspiciously,
+// temperature increases to force exploration.
+
+use simplex_std::dual::dual;
+use super::monitors::EpistemicMonitors;
+use super::dissent::DissentConfig;
+
+/// Parameters for base annealing schedule
+#[derive(Clone)]
+pub struct AnnealingParams {
+    /// Initial temperature
+    pub initial_temp: f64,
+
+    /// Final temperature (after cooling)
+    pub final_temp: f64,
+
+    /// Cooling rate (how fast to cool)
+    pub cooling_rate: f64,
+
+    /// Reheat intensity (how much to heat when problems detected)
+    pub reheat_intensity: f64,
+
+    /// Minimum temperature (never go below this)
+    pub min_temp: f64,
+
+    /// Maximum temperature (never go above this)
+    pub max_temp: f64,
+}
+
+impl Default for AnnealingParams {
+    fn default() -> Self {
+        AnnealingParams {
+            initial_temp: 1.0,
+            final_temp: 0.01,
+            cooling_rate: 0.99,
+            reheat_intensity: 0.5,
+            min_temp: 0.001,
+            max_temp: 10.0,
+        }
+    }
+}
+
+/// Base learnable schedule (TASK-006 foundation)
+#[derive(Clone)]
+pub struct LearnableSchedule {
+    /// Current parameters
+    pub params: AnnealingParams,
+
+    /// Current step
+    step: u64,
+
+    /// Current temperature
+    current_temp: dual,
+
+    /// Steps since last improvement (for stagnation detection)
+    stagnation_steps: u64,
+
+    /// Best energy seen
+    best_energy: f64,
+
+    /// Learning rate for schedule parameters
+    schedule_lr: f64,
+}
+
+impl LearnableSchedule {
+    /// Create a new learnable schedule
+    pub fn new(params: AnnealingParams) -> Self {
+        LearnableSchedule {
+            current_temp: dual::variable(params.initial_temp),
+            params,
+            step: 0,
+            stagnation_steps: 0,
+            best_energy: f64::INFINITY,
+            schedule_lr: 0.001,
+        }
+    }
+
+    /// Create with default parameters
+    pub fn default_schedule() -> Self {
+        LearnableSchedule::new(AnnealingParams::default())
+    }
+
+    /// Get temperature for current step and stagnation
+    pub fn temperature(&self, step: dual, stagnation: dual) -> dual {
+        // Exponential cooling
+        let base_temp = dual::constant(self.params.initial_temp) *
+            dual::constant(self.params.cooling_rate).pow(step);
+
+        // Add reheat for stagnation
+        let stagnation_heat = stagnation * dual::constant(self.params.reheat_intensity * 0.01);
+
+        // Clamp to range
+        (base_temp + stagnation_heat)
+            .max(dual::constant(self.params.min_temp))
+            .min(dual::constant(self.params.max_temp))
+    }
+
+    /// Step the schedule
+    pub fn step(&mut self, energy: f64) {
+        self.step += 1;
+
+        // Track stagnation
+        if energy < self.best_energy - 0.001 {
+            self.best_energy = energy;
+            self.stagnation_steps = 0;
+        } else {
+            self.stagnation_steps += 1;
+        }
+
+        // Update current temperature
+        let step_dual = dual::constant(self.step as f64);
+        let stagnation_dual = dual::constant(self.stagnation_steps as f64);
+        self.current_temp = self.temperature(step_dual, stagnation_dual);
+    }
+
+    /// Get current temperature value
+    pub fn current(&self) -> f64 {
+        self.current_temp.val
+    }
+
+    /// Get current temperature as dual
+    pub fn current_dual(&self) -> dual {
+        self.current_temp
+    }
+
+    /// Reset schedule
+    pub fn reset(&mut self) {
+        self.step = 0;
+        self.stagnation_steps = 0;
+        self.best_energy = f64::INFINITY;
+        self.current_temp = dual::variable(self.params.initial_temp);
+    }
+
+    /// Get gradient of schedule parameters (for meta-learning)
+    pub fn gradient(&self) -> AnnealingParams {
+        // Return gradients w.r.t. each parameter
+        // In practice, this would be computed via automatic differentiation
+        AnnealingParams {
+            initial_temp: self.current_temp.der,
+            final_temp: 0.0,
+            cooling_rate: 0.0,
+            reheat_intensity: 0.0,
+            min_temp: 0.0,
+            max_temp: 0.0,
+        }
+    }
+
+    /// Update parameters from gradients
+    pub fn update(&mut self, grad: AnnealingParams, lr: f64) {
+        self.params.initial_temp -= lr * grad.initial_temp;
+        self.params.cooling_rate -= lr * grad.cooling_rate;
+        self.params.reheat_intensity -= lr * grad.reheat_intensity;
+
+        // Keep in valid ranges
+        self.params.initial_temp = self.params.initial_temp.max(0.01).min(10.0);
+        self.params.cooling_rate = self.params.cooling_rate.max(0.9).min(0.9999);
+        self.params.reheat_intensity = self.params.reheat_intensity.max(0.0).min(2.0);
+    }
+}
+
+/// Epistemic annealing schedule
+///
+/// Extends learnable schedule with epistemic health-based temperature modulation.
+/// Temperature increases when:
+/// - Beliefs conflict (source disagreement)
+/// - Confidence grows faster than evidence
+/// - Predictions fail
+/// - Evidence is stale
+/// - During scheduled dissent windows
+#[derive(Clone)]
+pub struct EpistemicSchedule {
+    /// Base learnable schedule
+    pub base: LearnableSchedule,
+
+    /// Dissent configuration
+    pub dissent_config: DissentConfig,
+
+    /// Weight for conflict heat
+    pub conflict_heat_weight: f64,
+
+    /// Weight for suspicious confidence heat
+    pub suspicious_confidence_weight: f64,
+
+    /// Weight for prediction failure heat
+    pub prediction_failure_weight: f64,
+
+    /// Weight for staleness heat
+    pub staleness_heat_weight: f64,
+
+    /// Threshold for suspicious confidence growth (per step)
+    pub suspicious_confidence_threshold: f64,
+
+    /// Threshold for prediction failure rate triggering heat
+    pub prediction_failure_threshold: f64,
+
+    /// Staleness threshold (steps)
+    pub staleness_threshold: f64,
+}
+
+impl EpistemicSchedule {
+    /// Create with default parameters
+    pub fn new() -> Self {
+        EpistemicSchedule {
+            base: LearnableSchedule::default_schedule(),
+            dissent_config: DissentConfig::default(),
+            conflict_heat_weight: 1.0,
+            suspicious_confidence_weight: 2.0,
+            prediction_failure_weight: 3.0,
+            staleness_heat_weight: 0.5,
+            suspicious_confidence_threshold: 0.1,
+            prediction_failure_threshold: 0.2,
+            staleness_threshold: 100.0,
+        }
+    }
+
+    /// Create with custom base parameters
+    pub fn with_params(params: AnnealingParams) -> Self {
+        EpistemicSchedule {
+            base: LearnableSchedule::new(params),
+            dissent_config: DissentConfig::default(),
+            conflict_heat_weight: 1.0,
+            suspicious_confidence_weight: 2.0,
+            prediction_failure_weight: 3.0,
+            staleness_heat_weight: 0.5,
+            suspicious_confidence_threshold: 0.1,
+            prediction_failure_threshold: 0.2,
+            staleness_threshold: 100.0,
+        }
+    }
+
+    /// Set dissent configuration
+    pub fn with_dissent(mut self, config: DissentConfig) -> Self {
+        self.dissent_config = config;
+        self
+    }
+
+    /// Compute temperature with epistemic corrections
+    pub fn temperature(&self, step: dual, stagnation: dual, health: &EpistemicMonitors) -> dual {
+        let base_temp = self.base.temperature(step, stagnation);
+
+        // HEAT when sources disagree (unresolved conflict)
+        let conflict_heat = self.conflict_heat(health.source_agreement.value);
+
+        // HEAT when confidence grows faster than evidence justifies
+        let suspicious_confidence_heat = self.suspicious_confidence_heat(
+            health.confidence_velocity.value
+        );
+
+        // HEAT when predictions fail
+        let prediction_failure_heat = self.prediction_failure_heat(
+            health.predictive_accuracy.value
+        );
+
+        // HEAT when evidence is stale
+        let staleness_heat = self.staleness_heat(health.evidence_staleness.value);
+
+        // HEAT during scheduled dissent windows
+        let scheduled_dissent_heat = self.scheduled_dissent_heat(step);
+
+        // Combine: base + all heat sources
+        let total = base_temp +
+            conflict_heat +
+            suspicious_confidence_heat +
+            prediction_failure_heat +
+            staleness_heat +
+            scheduled_dissent_heat;
+
+        // Clamp to valid range
+        total
+            .max(dual::constant(self.base.params.min_temp))
+            .min(dual::constant(self.base.params.max_temp))
+    }
+
+    /// Heat proportional to belief conflict
+    fn conflict_heat(&self, source_agreement: dual) -> dual {
+        // Low agreement → high heat
+        // agreement of 1.0 → no heat, agreement of 0.0 → max heat
+        let disagreement = dual::constant(1.0) - source_agreement;
+        disagreement * dual::constant(self.base.params.reheat_intensity * self.conflict_heat_weight)
+    }
+
+    /// Heat when confidence grows suspiciously fast
+    fn suspicious_confidence_heat(&self, confidence_velocity: dual) -> dual {
+        // If confidence is rising faster than threshold, inject heat
+        let threshold = dual::constant(self.suspicious_confidence_threshold);
+        let excess = (confidence_velocity - threshold).relu();
+        excess * dual::constant(self.suspicious_confidence_weight)
+    }
+
+    /// Heat when predictions fail
+    fn prediction_failure_heat(&self, predictive_accuracy: dual) -> dual {
+        // Low accuracy → high heat
+        let failure_rate = dual::constant(1.0) - predictive_accuracy;
+        let threshold = dual::constant(self.prediction_failure_threshold);
+        let significant_failure = (failure_rate - threshold).relu();
+        significant_failure *
+            dual::constant(self.base.params.reheat_intensity * self.prediction_failure_weight)
+    }
+
+    /// Heat when evidence is getting stale
+    fn staleness_heat(&self, evidence_staleness: dual) -> dual {
+        // Old evidence → need to re-explore
+        let threshold = dual::constant(self.staleness_threshold);
+        let excess_staleness = (evidence_staleness - threshold).relu();
+        excess_staleness * dual::constant(0.01 * self.staleness_heat_weight)
+    }
+
+    /// Periodic mandatory dissent windows
+    fn scheduled_dissent_heat(&self, step: dual) -> dual {
+        let period = self.dissent_config.dissent_period as f64;
+        let window = self.dissent_config.dissent_window as f64;
+
+        if period <= 0.0 {
+            return dual::constant(0.0);
+        }
+
+        // Compute phase within period
+        let step_mod = step.val % period;
+
+        // Are we in a dissent window?
+        if step_mod < window {
+            dual::constant(self.dissent_config.dissent_heat)
+        } else {
+            dual::constant(0.0)
+        }
+    }
+
+    /// Step the schedule with energy and epistemic health
+    pub fn step(&mut self, energy: f64, health: &EpistemicMonitors) {
+        self.base.step(energy);
+    }
+
+    /// Get current temperature (using stored state)
+    pub fn current(&self, health: &EpistemicMonitors) -> f64 {
+        let step = dual::constant(self.base.step as f64);
+        let stagnation = dual::constant(self.base.stagnation_steps as f64);
+        self.temperature(step, stagnation, health).val
+    }
+
+    /// Get current temperature as dual
+    pub fn current_dual(&self, health: &EpistemicMonitors) -> dual {
+        let step = dual::constant(self.base.step as f64);
+        let stagnation = dual::constant(self.base.stagnation_steps as f64);
+        self.temperature(step, stagnation, health)
+    }
+
+    /// Compute safe learning rate based on epistemic health
+    pub fn safe_learning_rate(&self, base_lr: f64, health: &EpistemicMonitors) -> f64 {
+        let mut lr = base_lr;
+
+        // Reduce LR when sources disagree
+        if health.source_agreement.value.val < 0.7 {
+            lr *= health.source_agreement.value.val;
+        }
+
+        // Reduce LR when predictions are failing
+        if health.predictive_accuracy.value.val < 0.8 {
+            lr *= health.predictive_accuracy.value.val;
+        }
+
+        // Reduce LR when confidence is growing suspiciously
+        if health.confidence_velocity.value.val > self.suspicious_confidence_threshold {
+            lr *= 0.5;
+        }
+
+        // Never go below minimum
+        lr.max(base_lr * 0.01)
+    }
+
+    /// Reset schedule
+    pub fn reset(&mut self) {
+        self.base.reset();
+    }
+
+    /// Get a diagnostic summary
+    pub fn diagnostic_summary(&self, health: &EpistemicMonitors) -> String {
+        let step = dual::constant(self.base.step as f64);
+        let stagnation = dual::constant(self.base.stagnation_steps as f64);
+
+        let base_temp = self.base.temperature(step, stagnation);
+        let conflict = self.conflict_heat(health.source_agreement.value);
+        let suspicious = self.suspicious_confidence_heat(health.confidence_velocity.value);
+        let failure = self.prediction_failure_heat(health.predictive_accuracy.value);
+        let staleness = self.staleness_heat(health.evidence_staleness.value);
+        let dissent = self.scheduled_dissent_heat(step);
+        let total = self.temperature(step, stagnation, health);
+
+        format!(
+            "Temperature Breakdown:\n  Base: {:.4}\n  + Conflict heat: {:.4}\n  + Suspicious confidence heat: {:.4}\n  + Prediction failure heat: {:.4}\n  + Staleness heat: {:.4}\n  + Dissent heat: {:.4}\n  = Total: {:.4}",
+            base_temp.val, conflict.val, suspicious.val, failure.val, staleness.val, dissent.val, total.val
+        )
+    }
+}
+
+impl Default for EpistemicSchedule {
+    fn default() -> Self {
+        EpistemicSchedule::new()
+    }
+}
+
+/// Soft acceptance function for annealing (Gumbel-softmax style)
+pub fn soft_accept(energy_diff: dual, temperature: dual) -> dual {
+    // Acceptance probability: exp(-delta_E / T)
+    // For soft gradient flow, use smooth approximation
+
+    let neg_ratio = energy_diff.neg() / temperature;
+
+    // Clamp for numerical stability
+    let clamped = neg_ratio.clamp(-20.0, 20.0);
+
+    // Sigmoid-like acceptance
+    clamped.exp() / (dual::constant(1.0) + clamped.exp())
+}
+
+/// Hard acceptance decision (for actual annealing)
+pub fn hard_accept(energy_diff: f64, temperature: f64, rand: f64) -> bool {
+    if energy_diff <= 0.0 {
+        // Always accept improvements
+        true
+    } else {
+        // Accept worse solutions probabilistically
+        let accept_prob = (-energy_diff / temperature).exp();
+        rand < accept_prob
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_learnable_schedule() {
+        let mut schedule = LearnableSchedule::default_schedule();
+
+        // Temperature should decrease over time
+        let temp1 = schedule.current();
+        schedule.step(1.0);
+        schedule.step(1.0);
+        schedule.step(1.0);
+        let temp2 = schedule.current();
+
+        assert!(temp2 < temp1, "Temperature should decrease");
+    }
+
+    #[test]
+    fn test_epistemic_heating() {
+        let schedule = EpistemicSchedule::new();
+
+        // Create healthy monitors
+        let mut healthy = EpistemicMonitors::new();
+        healthy.update_source_agreement(0.9);
+        healthy.update_predictive_accuracy(0.9);
+
+        // Create unhealthy monitors (disagreement)
+        let mut unhealthy = EpistemicMonitors::new();
+        unhealthy.update_source_agreement(0.3);
+        unhealthy.update_predictive_accuracy(0.5);
+
+        let step = dual::constant(10.0);
+        let stagnation = dual::constant(0.0);
+
+        let temp_healthy = schedule.temperature(step, stagnation, &healthy).val;
+        let temp_unhealthy = schedule.temperature(step, stagnation, &unhealthy).val;
+
+        assert!(
+            temp_unhealthy > temp_healthy,
+            "Temperature should be higher when epistemic health is poor"
+        );
+    }
+
+    #[test]
+    fn test_safe_learning_rate() {
+        let schedule = EpistemicSchedule::new();
+
+        let mut healthy = EpistemicMonitors::new();
+        healthy.update_source_agreement(0.95);
+        healthy.update_predictive_accuracy(0.95);
+
+        let mut unhealthy = EpistemicMonitors::new();
+        unhealthy.update_source_agreement(0.4);
+        unhealthy.update_predictive_accuracy(0.5);
+
+        let base_lr = 0.001;
+        let lr_healthy = schedule.safe_learning_rate(base_lr, &healthy);
+        let lr_unhealthy = schedule.safe_learning_rate(base_lr, &unhealthy);
+
+        assert!(
+            lr_unhealthy < lr_healthy,
+            "Learning rate should be lower when health is poor"
+        );
+    }
+}

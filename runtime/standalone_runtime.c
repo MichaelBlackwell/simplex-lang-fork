@@ -2,7 +2,7 @@
 // Standalone minimal runtime for Simplex programs
 //
 // Copyright (c) 2025-2026 Rod Higgins
-// Licensed under MIT License - see LICENSE file
+// Licensed under AGPL-3.0 - see LICENSE file
 // https://github.com/senuamedia/simplex-lang
 
 #include <stdio.h>
@@ -10,6 +10,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdatomic.h>
+#include <limits.h>
 #include <execinfo.h>
 #include <sys/time.h>
 #include <sys/stat.h>
@@ -20,6 +21,19 @@
 
 // ========================================
 // Safe Memory Allocation Helpers
+// ========================================
+
+// Note: Some safe allocation functions are provided but may not be used
+// in current implementation. They are available for future use.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+// Safe Memory Allocation Helpers
+// ========================================
+
+// Note: Some safe allocation functions are provided but may not be used
+// in current implementation. They are available for future use.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
 // ========================================
 
 // Abort on OOM with diagnostic - use for allocations that cannot fail gracefully
@@ -77,7 +91,7 @@ static char* sx_strdup(const char* s) {
 // Thread-Safe Random Number Generator
 // ========================================
 
-// Thread-local xorshift32 PRNG - much faster than mutex-protected rand()
+// Thread-local xorshift32 PRNG - much faster than mutex-protected sx_rand()
 static __thread uint32_t tls_rand_state = 0;
 
 static uint32_t sx_rand(void) {
@@ -118,11 +132,13 @@ extern int64_t simplex_main(void);
 static int program_argc;
 static char** program_argv;
 
+#ifndef SIMPLEX_RUNTIME_NO_MAIN
 int main(int argc, char** argv) {
     program_argc = argc;
     program_argv = argv;
     return (int)simplex_main();
 }
+#endif
 
 // Memory access helpers (work with 8-byte slots)
 void* store_ptr(void* base, int64_t slot, void* value) {
@@ -147,42 +163,66 @@ int64_t load_i64(void* base, int64_t slot) {
 
 // Debug trace function (can be called from LLVM IR if needed)
 void debug_trace_i64(int64_t marker, int64_t value) {
+    (void)marker; (void)value;  // Suppress unused warnings
     // No-op in release mode
 }
 
 // String functions
 SxString* intrinsic_string_new(const char* data) {
-    SxString* s = malloc(sizeof(SxString));
+    SxString* s = sx_malloc(sizeof(SxString));
     if (!data) {
         s->len = 0;
         s->cap = 1;
-        s->data = malloc(1);
+        s->data = sx_malloc(1);
         s->data[0] = '\0';
     } else {
         s->len = strlen(data);
         s->cap = s->len + 1;
-        s->data = malloc(s->cap);
+        s->data = sx_malloc(s->cap);
         memcpy(s->data, data, s->cap);
     }
     return s;
 }
 
 SxString* intrinsic_string_from_char(int64_t c) {
-    SxString* s = malloc(sizeof(SxString));
+    SxString* s = sx_malloc(sizeof(SxString));
     s->len = 1;
     s->cap = 2;
-    s->data = malloc(2);
+    s->data = sx_malloc(2);
     s->data[0] = (char)c;
     s->data[1] = '\0';
     return s;
 }
 
+// Helper to convert string pointer to i64 for passing to functions
+// When called from Simplex, the compiler wraps string literals in intrinsic_string_new first,
+// so 'data' is actually an SxString*, not a char*. We just return it as i64.
+int64_t make_sx_string(void* data) {
+    // The compiler already wrapped the string literal in intrinsic_string_new,
+    // so 'data' is an SxString*. Just return it as i64.
+    return (int64_t)data;
+}
+
+// Bitcast i64 bits to f64
+double f64_from_bits(int64_t bits) {
+    double result;
+    memcpy(&result, &bits, sizeof(double));
+    return result;
+}
+
+// Bitcast f64 to i64 bits
+int64_t f64_to_bits(double value) {
+    int64_t bits;
+    memcpy(&bits, &value, sizeof(int64_t));
+    return bits;
+}
+
 SxString* intrinsic_string_concat(SxString* a, SxString* b) {
     if (!a || !b) return intrinsic_string_new("");
-    SxString* s = malloc(sizeof(SxString));
+    SxString* s = sx_malloc(sizeof(SxString));
     s->len = a->len + b->len;
     s->cap = s->len + 1;
-    s->data = malloc(s->cap);
+    s->data = sx_malloc(s->cap);
     memcpy(s->data, a->data, a->len);
     memcpy(s->data + a->len, b->data, b->len);
     s->data[s->len] = '\0';
@@ -244,7 +284,12 @@ void intrinsic_vec_push(SxVec* vec, void* item) {
     if (!vec) return;
     if (vec->len >= vec->cap) {
         size_t new_cap = vec->cap == 0 ? 8 : vec->cap * 2;
-        vec->items = realloc(vec->items, new_cap * sizeof(void*));
+        void** new_items = realloc(vec->items, new_cap * sizeof(void*));
+        if (!new_items) {
+            fprintf(stderr, "Error: Failed to realloc vector to %zu items\n", new_cap);
+            return; // Early return on OOM
+        }
+        vec->items = new_items;
         vec->cap = new_cap;
     }
     vec->items[vec->len++] = item;
@@ -257,8 +302,25 @@ void* intrinsic_vec_get(SxVec* vec, int64_t index) {
     return vec->items[index];
 }
 
+void intrinsic_vec_set(SxVec* vec, int64_t index, void* value) {
+    if (!vec || index < 0 || (size_t)index >= vec->len) {
+        return;
+    }
+    vec->items[index] = value;
+}
+
 int64_t intrinsic_vec_len(SxVec* vec) {
     return vec ? vec->len : 0;
+}
+
+void* intrinsic_vec_pop(SxVec* vec) {
+    if (!vec || vec->len == 0) return NULL;
+    vec->len--;
+    return vec->items[vec->len];
+}
+
+void intrinsic_vec_clear(SxVec* vec) {
+    if (vec) vec->len = 0;
 }
 
 // Iterator type for Vec iteration
@@ -275,24 +337,27 @@ int64_t vec_iter(int64_t vec_ptr) {
     VecIterator* iter = malloc(sizeof(VecIterator));
     iter->vec = vec;
     iter->index = 0;
-    return (int64_t)iter;
+    return (intptr_t)iter;
 }
 
 // Get next element from iterator (returns Option<T>: 0=None, value|1=Some)
-int64_t iter_next(int64_t iter_ptr) {
+intptr_t iter_next(intptr_t iter_ptr) {
     VecIterator* iter = (VecIterator*)iter_ptr;
     if (!iter || !iter->vec || iter->index >= iter->vec->len) {
         return 0;  // None
     }
 
-    int64_t value = (int64_t)iter->vec->items[iter->index];
+    intptr_t value = (intptr_t)iter->vec->items[iter->index];
     iter->index++;
     // Return Option::Some(value) - pack value in upper bits, tag 1 in lower byte
+    // NOTE: This is the fragile tagged pointer design mentioned in TASK-010
+    // Works on current 48-bit virtual addresses but may break with 57-bit addresses
+    // TODO: Consider OptionPtr struct redesign for future portability
     return (value << 8) | 1;
 }
 
 // Free iterator
-void iter_free(int64_t iter_ptr) {
+void iter_free(intptr_t iter_ptr) {
     if (iter_ptr) free((void*)iter_ptr);
 }
 
@@ -311,18 +376,41 @@ SxString* intrinsic_read_file(SxString* path) {
     FILE* f = fopen(path->data, "rb");
     if (!f) return NULL;
 
-    fseek(f, 0, SEEK_END);
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return NULL;
+    }
+    
     long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
+    if (size == -1) {
+        fclose(f);
+        return NULL;
+    }
+    
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return NULL;
+    }
 
-    SxString* result = malloc(sizeof(SxString));
+    SxString* result = sx_malloc(sizeof(SxString));
     result->len = size;
     result->cap = size + 1;
-    result->data = malloc(size + 1);
-    fread(result->data, 1, size, f);
-    result->data[size] = '\0';
+    result->data = sx_malloc(size + 1);
+    
+    if (size > 0) {
+        size_t bytes_read = fread(result->data, 1, size, f);
+        if (bytes_read != (size_t)size) {
+            // Partial read - handle gracefully
+            result->len = bytes_read;
+            result->data[bytes_read] = '\0';
+        } else {
+            result->data[size] = '\0';
+        }
+    } else {
+        result->data[0] = '\0';
+    }
+    
     fclose(f);
-
     return result;
 }
 
@@ -356,6 +444,7 @@ void http_response_free(int64_t resp_ptr);
 
 // AI intrinsics (real implementation with fallback)
 SxString* intrinsic_ai_infer(SxString* model, SxString* prompt, int64_t temperature) {
+    (void)temperature;  // Suppress unused warning - temperature parameter for future use
     const char* api_key = getenv("ANTHROPIC_API_KEY");
     if (!api_key) api_key = getenv("OPENAI_API_KEY");
 
@@ -374,7 +463,7 @@ SxString* intrinsic_ai_infer(SxString* model, SxString* prompt, int64_t temperat
 
     // Escape prompt for JSON
     size_t plen = strlen(prompt_text);
-    char* escaped = (char*)malloc(plen * 2 + 1);
+    char* escaped = (char*)sx_malloc(plen * 2 + 1);
     char* w = escaped;
     for (const char* r = prompt_text; *r; r++) {
         switch (*r) {
@@ -388,8 +477,19 @@ SxString* intrinsic_ai_infer(SxString* model, SxString* prompt, int64_t temperat
     }
     *w = '\0';
 
-    char* body = (char*)malloc(strlen(escaped) + 512);
-    sprintf(body,
+    // Calculate exact buffer size needed
+    int needed = snprintf(NULL, 0,
+        "{\"model\":\"%s\",\"max_tokens\":1024,\"messages\":[{\"role\":\"user\",\"content\":\"%s\"}]}",
+        model_name, escaped);
+    if (needed < 0) {
+        free(escaped);
+        return intrinsic_string_new("[Error: JSON formatting failed]");
+    }
+    
+    char* body = (char*)sx_malloc(needed + 1);
+    // sx_malloc aborts on OOM, so no need to check for NULL
+    
+    snprintf(body, needed + 1,
         "{\"model\":\"%s\",\"max_tokens\":1024,\"messages\":[{\"role\":\"user\",\"content\":\"%s\"}]}",
         model_name, escaped);
     free(escaped);
@@ -398,23 +498,23 @@ SxString* intrinsic_ai_infer(SxString* model, SxString* prompt, int64_t temperat
     const char* url = "https://api.anthropic.com/v1/messages";
     SxString url_str = { .data = (char*)url, .len = strlen(url), .cap = 0 };
     SxString method_str = { .data = "POST", .len = 4, .cap = 0 };
-    int64_t req = http_request_new((int64_t)&method_str, (int64_t)&url_str);
+    int64_t req = http_request_new((intptr_t)&method_str, (intptr_t)&url_str);
 
     // Set headers
     SxString ct_name = { .data = "Content-Type", .len = 12, .cap = 0 };
     SxString ct_value = { .data = "application/json", .len = 16, .cap = 0 };
-    http_request_header(req, (int64_t)&ct_name, (int64_t)&ct_value);
+    http_request_header(req, (intptr_t)&ct_name, (intptr_t)&ct_value);
 
     SxString auth_name = { .data = "x-api-key", .len = 9, .cap = 0 };
     SxString auth_value = { .data = (char*)api_key, .len = strlen(api_key), .cap = 0 };
-    http_request_header(req, (int64_t)&auth_name, (int64_t)&auth_value);
+    http_request_header(req, (intptr_t)&auth_name, (intptr_t)&auth_value);
 
     SxString ver_name = { .data = "anthropic-version", .len = 17, .cap = 0 };
     SxString ver_value = { .data = "2023-06-01", .len = 10, .cap = 0 };
-    http_request_header(req, (int64_t)&ver_name, (int64_t)&ver_value);
+    http_request_header(req, (intptr_t)&ver_name, (intptr_t)&ver_value);
 
     SxString body_str = { .data = body, .len = strlen(body), .cap = 0 };
-    http_request_body(req, (int64_t)&body_str);
+    http_request_body(req, (intptr_t)&body_str);
 
     // Send request
     int64_t resp = http_request_send(req);
@@ -593,7 +693,7 @@ int64_t router_route(int64_t router_ptr, int64_t message_type_ptr) {
         }
 
         case ROUTER_RANDOM: {
-            int idx = rand() % router->specialist_count;
+            int idx = sx_rand() % router->specialist_count;
             result = router->specialists[idx];
             break;
         }
@@ -619,6 +719,8 @@ int64_t router_type_least_busy(void) { return ROUTER_LEAST_BUSY; }
 int64_t router_type_semantic(void) { return ROUTER_SEMANTIC; }
 
 // Close router
+// NOTE: Reference counting (TASK-010 D2) is optional and only added if use-after-free bugs are reported
+// Current implementation uses single-owner semantics which is documented
 void router_close(int64_t router_ptr) {
     HiveRouter* router = (HiveRouter*)router_ptr;
     if (!router) return;
@@ -704,6 +806,7 @@ int64_t hive_set_strategy(int64_t hive_ptr, int64_t strategy) {
 
 // Route message through hive
 int64_t hive_route(int64_t hive_ptr, int64_t message_type_ptr, int64_t message_ptr) {
+    (void)message_type_ptr; (void)message_ptr;  // Suppress unused warnings - API parameters
     Hive* hive = (Hive*)hive_ptr;
     if (!hive) return 0;
 
@@ -1102,7 +1205,12 @@ void intrinsic_sb_append(StringBuilder* sb, SxString* str) {
         while (sb->cap < needed) {
             sb->cap *= 2;
         }
-        sb->data = realloc(sb->data, sb->cap);
+        char* new_data = realloc(sb->data, sb->cap);
+        if (!new_data) {
+            fprintf(stderr, "Error: Failed to realloc string buffer to %lld bytes\n", sb->cap);
+            return; // Early return on OOM
+        }
+        sb->data = new_data;
     }
     memcpy(sb->data + sb->len, str->data, str->len);
     sb->len += str->len;
@@ -1524,7 +1632,14 @@ void* intrinsic_actor_spawn(void* init_state, void* handler) {
     if (actor->id >= actor_registry_cap) {
         int64_t new_cap = actor_registry_cap == 0 ? 64 : actor_registry_cap * 2;
         while (new_cap <= actor->id) new_cap *= 2;
-        actor_registry = realloc(actor_registry, new_cap * sizeof(ActorHandle*));
+        ActorHandle** new_registry = realloc(actor_registry, new_cap * sizeof(ActorHandle*));
+        if (!new_registry) {
+            pthread_mutex_unlock(&actor_registry_lock);
+            fprintf(stderr, "Error: Failed to realloc actor registry to %lld entries\n", new_cap);
+            free(actor);
+            return 0;
+        }
+        actor_registry = new_registry;
         for (int64_t i = actor_registry_cap; i < new_cap; i++) {
             actor_registry[i] = NULL;
         }
@@ -2171,7 +2286,7 @@ int64_t retry_policy_next_delay(int64_t rp_ptr) {
     // Add jitter
     if (rp->jitter > 0) {
         int64_t jitter_amount = (delay * rp->jitter) / 100;
-        delay += (rand() % (jitter_amount * 2 + 1)) - jitter_amount;
+        delay += (sx_rand() % (jitter_amount * 2 + 1)) - jitter_amount;
         if (delay < 0) delay = 0;
     }
 
@@ -2247,7 +2362,13 @@ int64_t actor_link(int64_t actor1, int64_t actor2) {
     // Expand registry if needed
     if (link_registry_count >= link_registry_cap) {
         int64_t new_cap = link_registry_cap == 0 ? 64 : link_registry_cap * 2;
-        link_registry = realloc(link_registry, new_cap * sizeof(LinkEntry));
+        LinkEntry* new_registry = realloc(link_registry, new_cap * sizeof(LinkEntry));
+        if (!new_registry) {
+            pthread_mutex_unlock(&link_registry_lock);
+            fprintf(stderr, "Error: Failed to realloc link registry to %lld entries\n", new_cap);
+            return 0;
+        }
+        link_registry = new_registry;
         link_registry_cap = new_cap;
     }
 
@@ -2430,6 +2551,7 @@ int64_t actor_get_links(int64_t actor, int64_t* out_array, int64_t max_count) {
 
 // Spawn and link atomically
 int64_t actor_spawn_link(int64_t parent, int64_t init_state, int64_t handler) {
+    (void)parent; (void)init_state; (void)handler;  // Suppress unused warnings - API parameters
     // This would call intrinsic_actor_spawn then actor_link
     // For now, just return 0 as placeholder
     return 0;
@@ -2456,6 +2578,7 @@ int64_t actor_get_links_count(int64_t actor) {
 
 // Send a Down message to an actor (monitor notification)
 int64_t actor_send_down(int64_t watcher, int64_t target, int64_t reason) {
+    (void)watcher; (void)target; (void)reason;  // Suppress unused warnings - API parameters
     // Create Down message
     DownMessage* msg = malloc(sizeof(DownMessage));
     msg->type = 0;  // Down message type
@@ -4813,6 +4936,63 @@ int64_t intrinsic_file_mtime(void* path_ptr) {
     return st.st_mtime;
 }
 
+// Copy file from source to destination
+int64_t file_copy(void* src_ptr, void* dst_ptr) {
+    SxString* src = (SxString*)src_ptr;
+    SxString* dst = (SxString*)dst_ptr;
+    if (!src || !src->data || !dst || !dst->data) return -1;
+
+    FILE* fsrc = fopen(src->data, "rb");
+    if (!fsrc) return -1;
+
+    FILE* fdst = fopen(dst->data, "wb");
+    if (!fdst) {
+        fclose(fsrc);
+        return -1;
+    }
+
+    char buf[8192];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), fsrc)) > 0) {
+        if (fwrite(buf, 1, n, fdst) != n) {
+            fclose(fsrc);
+            fclose(fdst);
+            return -1;
+        }
+    }
+
+    fclose(fsrc);
+    fclose(fdst);
+    return 0;
+}
+
+// Rename/move file
+int64_t file_rename(void* old_ptr, void* new_ptr) {
+    SxString* old_path = (SxString*)old_ptr;
+    SxString* new_path = (SxString*)new_ptr;
+    if (!old_path || !old_path->data || !new_path || !new_path->data) return -1;
+
+    return rename(old_path->data, new_path->data);
+}
+
+// Write string to stderr
+void stderr_write(void* str_ptr) {
+    SxString* str = (SxString*)str_ptr;
+    if (str && str->data) {
+        fprintf(stderr, "%s", str->data);
+    }
+}
+
+// Write string to stderr with newline
+void stderr_writeln(void* str_ptr) {
+    SxString* str = (SxString*)str_ptr;
+    if (str && str->data) {
+        fprintf(stderr, "%s\n", str->data);
+    } else {
+        fprintf(stderr, "\n");
+    }
+}
+
 // Create temp file and return path
 void* intrinsic_temp_file(void* suffix_ptr) {
     SxString* suffix = (SxString*)suffix_ptr;
@@ -6567,7 +6747,7 @@ int64_t scope_poll(int64_t scope_ptr) {
 // Wait for all tasks in the scope to complete
 // Returns: 1 = success, -1 = cancelled
 int64_t scope_join(int64_t scope_ptr) {
-    TaskScope* scope = (TaskScope*)scope_ptr;
+    // TaskScope* scope = (TaskScope*)scope_ptr;  // Uncommented when needed
 
     while (1) {
         int64_t result = scope_poll(scope_ptr);
@@ -7080,7 +7260,7 @@ int64_t http_request_new(int64_t method_ptr, int64_t url_ptr) {
     // Find host end (either : or / or end)
     char* host_start = p;
     char* port_start = NULL;
-    char* path_start = NULL;
+    // char* path_start = NULL;  // Uncommented as unused
     
     while (*p && *p != ':' && *p != '/') p++;
     
@@ -7298,7 +7478,7 @@ int64_t http_request_send(int64_t req_ptr) {
         int64_t ctx = tls_context_new_client();
         tls_context_use_system_ca(ctx);
         SxString hostname = { .data = req->host, .len = strlen(req->host), .cap = strlen(req->host) + 1 };
-        tls_conn = tls_connect(ctx, sock, (int64_t)&hostname);
+        tls_conn = tls_connect(ctx, sock, (intptr_t)&hostname);
         if (tls_conn <= 0) {
             free(request_str);
             close(sock);
@@ -7439,7 +7619,7 @@ void http_response_free(int64_t resp_ptr) {
 // Convenience: Simple GET request
 int64_t http_get(int64_t url_ptr) {
     SxString method = { .data = "GET", .len = 3, .cap = 4 };
-    int64_t req = http_request_new((int64_t)&method, url_ptr);
+    int64_t req = http_request_new((intptr_t)&method, url_ptr);
     if (!req) return 0;
     
     int64_t resp = http_request_send(req);
@@ -7450,14 +7630,14 @@ int64_t http_get(int64_t url_ptr) {
 // Convenience: Simple POST request
 int64_t http_post(int64_t url_ptr, int64_t body_ptr) {
     SxString method = { .data = "POST", .len = 4, .cap = 5 };
-    int64_t req = http_request_new((int64_t)&method, url_ptr);
+    int64_t req = http_request_new((intptr_t)&method, url_ptr);
     if (!req) return 0;
     
     http_request_body(req, body_ptr);
     
     SxString ct_name = { .data = "Content-Type", .len = 12, .cap = 13 };
     SxString ct_value = { .data = "application/x-www-form-urlencoded", .len = 33, .cap = 34 };
-    http_request_header(req, (int64_t)&ct_name, (int64_t)&ct_value);
+    http_request_header(req, (intptr_t)&ct_name, (intptr_t)&ct_value);
     
     int64_t resp = http_request_send(req);
     http_request_free(req);
@@ -8004,7 +8184,7 @@ static char* ws_generate_accept_key(const char* client_key) {
 static char* ws_generate_client_key(void) {
     unsigned char bytes[16];
     for (int i = 0; i < 16; i++) {
-        bytes[i] = rand() % 256;
+        bytes[i] = sx_rand() % 256;
     }
     return base64_encode(bytes, 16);
 }
@@ -8089,7 +8269,7 @@ int64_t ws_connect(int64_t url_ptr) {
         int64_t ctx = tls_context_new_client();
         tls_context_use_system_ca(ctx);
         SxString hostname = { .data = host, .len = host_len, .cap = host_len + 1 };
-        ws->tls_conn = tls_connect(ctx, sock, (int64_t)&hostname);
+        ws->tls_conn = tls_connect(ctx, sock, (intptr_t)&hostname);
         if (ws->tls_conn <= 0) {
             close(sock);
             free(ws);
@@ -8223,7 +8403,7 @@ static int ws_send_frame(WebSocketConn* ws, int opcode, const void* data, size_t
     unsigned char mask_key[4] = {0, 0, 0, 0};
     if (mask) {
         for (int i = 0; i < 4; i++) {
-            mask_key[i] = rand() % 256;
+            mask_key[i] = sx_rand() % 256;
             header[header_len++] = mask_key[i];
         }
     }
@@ -8325,7 +8505,7 @@ int64_t ws_recv(int64_t ws_ptr) {
     }
     if (n < 2) return 0;
     
-    int fin = (header[0] >> 7) & 1;
+    // int fin = (header[0] >> 7) & 1;  // Unused in current implementation
     int opcode = header[0] & 0x0F;
     int masked = (header[1] >> 7) & 1;
     size_t payload_len = header[1] & 0x7F;
@@ -8789,7 +8969,7 @@ static void* gossip_thread_func(void* arg) {
         // Periodically ping a random member
         pthread_mutex_lock(&node->lock);
         if (node->member_count > 0) {
-            int idx = rand() % node->member_count;
+            int idx = sx_rand() % node->member_count;
             ClusterMember* target = node->members;
             for (int i = 0; i < idx && target; i++) {
                 target = target->next;
@@ -9280,6 +9460,7 @@ int64_t migration_serialize_actor(int64_t actor_ptr) {
 
 // Deserialize actor state
 int64_t migration_deserialize_actor(int64_t data_ptr) {
+    (void)data_ptr;  // Suppress unused warning
     // In a real implementation, this would deserialize and recreate the actor
     // For now, return placeholder
     return 0;
@@ -10186,7 +10367,7 @@ int64_t embedding_batch_embed(int64_t model_ptr, int64_t texts_ptr) {
     
     SxVec* results = intrinsic_vec_new();
     
-    for (int i = 0; i < texts->len; i++) {
+    for (size_t i = 0; i < (size_t)texts->len; i++) {
         SxString* text = (SxString*)texts->items[i];
         int64_t emb = embedding_embed(model_ptr, (int64_t)text);
         intrinsic_vec_push(results, (void*)emb);
@@ -10289,7 +10470,7 @@ int64_t hnsw_new(void) {
 
 // Random level for new node
 static int hnsw_random_level(int M) {
-    double r = (double)rand() / RAND_MAX;
+    double r = (double)sx_rand() / UINT32_MAX;
     double ml = 1.0 / log((double)M);
     return (int)(-log(r) * ml);
 }
@@ -11373,10 +11554,11 @@ int64_t belief_query_related(int64_t bs_ptr, int64_t belief_id) {
     Belief* b = bs->beliefs[belief_id];
     if (!b) return 0;
     SxString query = { .data = b->content, .len = strlen(b->content) };
-    return belief_query(bs_ptr, (int64_t)&query, 5);
+    return belief_query(bs_ptr, (intptr_t)&query, 5);
 }
 
 int64_t belief_query_by_source(int64_t bs_ptr, int64_t source_id) {
+    (void)source_id;  // Suppress unused warning - API parameter
     BeliefStore* bs = (BeliefStore*)bs_ptr;
     if (!bs) return 0;
 
@@ -12441,30 +12623,30 @@ int64_t llm_complete(int64_t client_ptr, int64_t prompt_ptr) {
     // Create HTTP request
     SxString url_str = { .data = (char*)url, .len = strlen(url), .cap = 0 };
     SxString method_str = { .data = "POST", .len = 4, .cap = 0 };
-    int64_t req = http_request_new((int64_t)&method_str, (int64_t)&url_str);
+    int64_t req = http_request_new((intptr_t)&method_str, (intptr_t)&url_str);
 
     // Set headers
     SxString ct_name = { .data = "Content-Type", .len = 12, .cap = 0 };
     SxString ct_value = { .data = "application/json", .len = 16, .cap = 0 };
-    http_request_header(req, (int64_t)&ct_name, (int64_t)&ct_value);
+    http_request_header(req, (intptr_t)&ct_name, (intptr_t)&ct_value);
 
     // Set auth header (if required - Ollama doesn't need it)
     if (auth_header) {
         SxString auth_name = { .data = (char*)auth_header, .len = strlen(auth_header), .cap = 0 };
         SxString auth_val = { .data = auth_value, .len = strlen(auth_value), .cap = 0 };
-        http_request_header(req, (int64_t)&auth_name, (int64_t)&auth_val);
+        http_request_header(req, (intptr_t)&auth_name, (intptr_t)&auth_val);
     }
 
     // Anthropic requires version header
     if (client->provider == PROVIDER_ANTHROPIC) {
         SxString ver_name = { .data = "anthropic-version", .len = 17, .cap = 0 };
         SxString ver_value = { .data = "2023-06-01", .len = 10, .cap = 0 };
-        http_request_header(req, (int64_t)&ver_name, (int64_t)&ver_value);
+        http_request_header(req, (intptr_t)&ver_name, (intptr_t)&ver_value);
     }
 
     // Set body
     SxString body_str = { .data = body, .len = strlen(body), .cap = 0 };
-    http_request_body(req, (int64_t)&body_str);
+    http_request_body(req, (intptr_t)&body_str);
 
     // Send request
     int64_t resp = http_request_send(req);
@@ -12621,6 +12803,7 @@ int64_t specialist_memory_new(int64_t specialist_id) {
 
 // Store memory (content_ptr: string content, category_ptr: category string)
 int64_t specialist_memory_store(int64_t mem_ptr, int64_t content_ptr, int64_t category_ptr) {
+    (void)category_ptr;  // Suppress unused warning - API parameter
     SpecialistMemory* mem = (SpecialistMemory*)mem_ptr;
     SxString* content = (SxString*)content_ptr;
     if (!mem || !content) return 0;
@@ -12895,7 +13078,7 @@ int64_t individual_new(int64_t gene_count) {
     
     // Random initialization
     for (int i = 0; i < gene_count; i++) {
-        ind->genes[i] = (double)rand() / RAND_MAX;
+        ind->genes[i] = (double)sx_rand() / UINT32_MAX;
     }
     
     return (int64_t)ind;
@@ -12968,11 +13151,11 @@ int64_t selection_tournament(int64_t pop_ptr, int64_t tournament_size) {
     Population* pop = (Population*)pop_ptr;
     if (!pop || pop->size == 0) return 0;
     
-    int best_idx = rand() % pop->size;
+    int best_idx = sx_rand() % pop->size;
     double best_fitness = pop->individuals[best_idx]->fitness;
     
     for (int i = 1; i < tournament_size && i < pop->size; i++) {
-        int idx = rand() % pop->size;
+        int idx = sx_rand() % pop->size;
         if (pop->individuals[idx]->fitness > best_fitness) {
             best_idx = idx;
             best_fitness = pop->individuals[idx]->fitness;
@@ -12989,7 +13172,7 @@ int64_t crossover_single_point(int64_t parent1_ptr, int64_t parent2_ptr) {
     if (!p1 || !p2 || p1->gene_count != p2->gene_count) return 0;
     
     Individual* child = (Individual*)individual_new(p1->gene_count);
-    int crossover_point = rand() % p1->gene_count;
+    int crossover_point = sx_rand() % p1->gene_count;
     
     for (int i = 0; i < p1->gene_count; i++) {
         child->genes[i] = (i < crossover_point) ? p1->genes[i] : p2->genes[i];
@@ -13007,7 +13190,7 @@ int64_t crossover_uniform(int64_t parent1_ptr, int64_t parent2_ptr, double mix_r
     Individual* child = (Individual*)individual_new(p1->gene_count);
 
     for (int i = 0; i < p1->gene_count; i++) {
-        if ((double)rand() / RAND_MAX < mix_rate) {
+        if ((double)sx_rand() / UINT32_MAX < mix_rate) {
             child->genes[i] = p2->genes[i];
         } else {
             child->genes[i] = p1->genes[i];
@@ -13023,10 +13206,10 @@ int64_t mutation_gaussian(int64_t ind_ptr, double rate, double sigma) {
     if (!ind) return 0;
     
     for (int i = 0; i < ind->gene_count; i++) {
-        if ((double)rand() / RAND_MAX < rate) {
+        if ((double)sx_rand() / UINT32_MAX < rate) {
             // Box-Muller transform for Gaussian random
-            double u1 = (double)rand() / RAND_MAX;
-            double u2 = (double)rand() / RAND_MAX;
+            double u1 = (double)sx_rand() / UINT32_MAX;
+            double u2 = (double)sx_rand() / UINT32_MAX;
             double z = sqrt(-2.0 * log(u1)) * cos(2.0 * M_PI * u2);
             
             ind->genes[i] += z * sigma;
@@ -13132,6 +13315,7 @@ int64_t nsga_crowding_distance(int64_t pop_ptr) {
 
 // Calculate autocorrelation (simplified)
 double landscape_autocorrelation(int64_t pop_ptr, int64_t steps) {
+    (void)steps;  // Suppress unused warning - parameter for future algorithm tuning
     Population* pop = (Population*)pop_ptr;
     if (!pop || pop->size < 2) return 0.0;
     
@@ -13231,12 +13415,12 @@ int64_t selection_roulette(int64_t pop_ptr) {
 
     if (total <= 0) {
         // Random selection if no positive fitness
-        int idx = rand() % pop->size;
+        int idx = sx_rand() % pop->size;
         return (int64_t)pop->individuals[idx];
     }
 
     // Spin the wheel
-    double spin = (double)rand() / RAND_MAX * total;
+    double spin = (double)sx_rand() / UINT32_MAX * total;
     double cumulative = 0;
     for (int i = 0; i < pop->size; i++) {
         cumulative += pop->individuals[i]->fitness;
@@ -13265,7 +13449,7 @@ int64_t selection_rank(int64_t pop_ptr) {
 
     // Select based on rank (higher rank = better)
     double total = pop->size * (pop->size + 1) / 2.0;
-    double spin = (double)rand() / RAND_MAX * total;
+    double spin = (double)sx_rand() / UINT32_MAX * total;
     double cumulative = 0;
     for (int i = 0; i < pop->size; i++) {
         cumulative += (i + 1);
@@ -13285,8 +13469,8 @@ int64_t crossover_two_point(int64_t parent1_ptr, int64_t parent2_ptr) {
     Individual* child = (Individual*)individual_new(p1->gene_count);
     if (!child) return 0;
 
-    int point1 = rand() % p1->gene_count;
-    int point2 = rand() % p1->gene_count;
+    int point1 = sx_rand() % p1->gene_count;
+    int point2 = sx_rand() % p1->gene_count;
     if (point1 > point2) { int t = point1; point1 = point2; point2 = t; }
 
     for (int i = 0; i < p1->gene_count; i++) {
@@ -13306,8 +13490,8 @@ int64_t mutation_uniform(int64_t ind_ptr, double min_val, double max_val) {
 
     double mutation_rate = 0.1;  // Default 10%
     for (int i = 0; i < ind->gene_count; i++) {
-        if ((double)rand() / RAND_MAX < mutation_rate) {
-            ind->genes[i] = min_val + (double)rand() / RAND_MAX * (max_val - min_val);
+        if ((double)sx_rand() / UINT32_MAX < mutation_rate) {
+            ind->genes[i] = min_val + (double)sx_rand() / UINT32_MAX * (max_val - min_val);
         }
     }
     return 1;
@@ -13319,7 +13503,7 @@ int64_t mutation_bit_flip(int64_t ind_ptr, double rate) {
     if (!ind) return 0;
 
     for (int i = 0; i < ind->gene_count; i++) {
-        if ((double)rand() / RAND_MAX < rate) {
+        if ((double)sx_rand() / UINT32_MAX < rate) {
             // Flip gene from 0<->1 or invert in [0,1] range
             ind->genes[i] = 1.0 - ind->genes[i];
         }
@@ -13715,7 +13899,7 @@ int64_t swarm_new(int64_t size, int64_t dim) {
         
         // Random initialization
         for (int j = 0; j < dim; j++) {
-            p->position[j] = (double)rand() / RAND_MAX;
+            p->position[j] = (double)sx_rand() / UINT32_MAX;
             p->best_position[j] = p->position[j];
         }
         
@@ -13768,8 +13952,8 @@ int64_t swarm_update_particle(int64_t swarm_ptr, int64_t particle_idx) {
     Particle* p = s->particles[particle_idx];
     
     for (int d = 0; d < p->dim; d++) {
-        double r1 = (double)rand() / RAND_MAX;
-        double r2 = (double)rand() / RAND_MAX;
+        double r1 = (double)sx_rand() / UINT32_MAX;
+        double r2 = (double)sx_rand() / UINT32_MAX;
         
         p->velocity[d] = s->inertia * p->velocity[d] +
                         s->cognitive * r1 * (p->best_position[d] - p->position[d]) +
@@ -13875,6 +14059,7 @@ int64_t voting_add_option(int64_t vs_ptr, int64_t option_ptr) {
 
 // Cast vote
 int64_t voting_cast(int64_t vs_ptr, int64_t voter_id, int64_t choice) {
+    (void)voter_id;  // Suppress unused warning - API parameter
     VotingSystem* vs = (VotingSystem*)vs_ptr;
     if (!vs || choice < 0 || choice >= vs->option_count) return 0;
 
@@ -14107,8 +14292,8 @@ int64_t swarm_update(int64_t swarm_ptr) {
     for (int i = 0; i < swarm->size; i++) {
         Particle* p = swarm->particles[i];
         for (int d = 0; d < swarm->dim; d++) {
-            double r1 = (double)rand() / RAND_MAX;
-            double r2 = (double)rand() / RAND_MAX;
+            double r1 = (double)sx_rand() / UINT32_MAX;
+            double r2 = (double)sx_rand() / UINT32_MAX;
 
             p->velocity[d] = w * p->velocity[d]
                 + c1 * r1 * (p->best_position[d] - p->position[d])
@@ -16035,7 +16220,7 @@ int64_t evolution_gene_new(int64_t weight_count) {
 
     // Initialize with random weights
     for (size_t i = 0; i < gene->weight_count; i++) {
-        gene->weights[i] = ((double)rand() / RAND_MAX) * 2.0 - 1.0;  // -1 to 1
+        gene->weights[i] = ((double)sx_rand() / UINT32_MAX) * 2.0 - 1.0;  // -1 to 1
     }
 
     return (int64_t)gene;
@@ -16109,7 +16294,7 @@ int64_t evolution_population_generation(int64_t pop_ptr) {
 static EvolutionGene* evolution_tournament_select(EvolutionPopulation* pop, int tournament_size) {
     EvolutionGene* best = NULL;
     for (int i = 0; i < tournament_size; i++) {
-        EvolutionGene* candidate = pop->genes[rand() % pop->gene_count];
+        EvolutionGene* candidate = pop->genes[sx_rand() % pop->gene_count];
         if (!best || candidate->fitness > best->fitness) {
             best = candidate;
         }
@@ -16125,7 +16310,7 @@ static EvolutionGene* evolution_crossover(EvolutionGene* parent1, EvolutionGene*
     child->fitness = 0.0;
 
     // Single-point crossover
-    size_t crossover_point = rand() % child->weight_count;
+    size_t crossover_point = sx_rand() % child->weight_count;
     for (size_t i = 0; i < child->weight_count; i++) {
         child->weights[i] = (i < crossover_point) ? parent1->weights[i] : parent2->weights[i];
     }
@@ -16136,8 +16321,8 @@ static EvolutionGene* evolution_crossover(EvolutionGene* parent1, EvolutionGene*
 // Mutate an evolution gene
 static void evolution_mutate(EvolutionGene* gene, double rate) {
     for (size_t i = 0; i < gene->weight_count; i++) {
-        if ((double)rand() / RAND_MAX < rate) {
-            gene->weights[i] += ((double)rand() / RAND_MAX - 0.5) * 0.2;
+        if ((double)sx_rand() / UINT32_MAX < rate) {
+            gene->weights[i] += ((double)sx_rand() / UINT32_MAX - 0.5) * 0.2;
             // Clamp to -1 to 1
             if (gene->weights[i] > 1.0) gene->weights[i] = 1.0;
             if (gene->weights[i] < -1.0) gene->weights[i] = -1.0;
@@ -16174,7 +16359,7 @@ int64_t evolution_population_evolve(int64_t pop_ptr) {
         EvolutionGene* parent2 = evolution_tournament_select(pop, 3);
 
         EvolutionGene* child;
-        if ((double)rand() / RAND_MAX < pop->crossover_rate) {
+        if ((double)sx_rand() / UINT32_MAX < pop->crossover_rate) {
             child = evolution_crossover(parent1, parent2);
         } else {
             // Copy parent
@@ -16238,4 +16423,834 @@ void evolution_population_free(int64_t pop_ptr) {
     }
     if (pop->genes) free(pop->genes);
     free(pop);
+}
+
+// ============================================================================
+// TASK-013-A: Belief Guard Runtime Support
+// ============================================================================
+// This implements the runtime support for belief-gated receive with derivative
+// patterns. Beliefs are stored as dual numbers (confidence + derivative) for
+// automatic differentiation support.
+//
+// Syntax supported:
+//   receive Msg @ confidence("obstacle") < 0.5 => { ... }
+//   receive Msg @ confidence("obstacle").derivative < -0.1 => { ... }
+
+// Dual number structure for automatic differentiation
+typedef struct DualBelief {
+    char* name;           // Belief identifier (e.g., "obstacle", "user_intent")
+    double val;           // Confidence value [0.0, 1.0]
+    double der;           // Derivative (rate of change)
+    int64_t last_updated; // Timestamp of last update (ms)
+    struct DualBelief* next;
+} DualBelief;
+
+// Global belief registry (thread-safe with mutex)
+static DualBelief* g_dual_belief_head = NULL;
+static pthread_mutex_t g_dual_belief_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// Helper: Get current timestamp in milliseconds
+static int64_t belief_current_time_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+// Helper: Find belief by name (caller must hold mutex)
+static DualBelief* belief_find_by_name(const char* name) {
+    DualBelief* current = g_dual_belief_head;
+    while (current) {
+        if (strcmp(current->name, name) == 0) {
+            return current;
+        }
+        current = current->next;
+    }
+    return NULL;
+}
+
+// Register a new belief with dual number (confidence + derivative)
+// Returns 1 on success, 0 on failure
+int64_t belief_register(int64_t name_ptr, double confidence, double derivative) {
+    SxString* name = (SxString*)name_ptr;
+    if (!name || !name->data) return 0;
+
+    pthread_mutex_lock(&g_dual_belief_mutex);
+
+    // Check if already exists
+    DualBelief* existing = belief_find_by_name(name->data);
+    if (existing) {
+        // Update existing belief
+        existing->val = fmax(0.0, fmin(1.0, confidence));
+        existing->der = derivative;
+        existing->last_updated = belief_current_time_ms();
+        pthread_mutex_unlock(&g_dual_belief_mutex);
+        return 1;
+    }
+
+    // Create new belief
+    DualBelief* belief = (DualBelief*)malloc(sizeof(DualBelief));
+    if (!belief) {
+        pthread_mutex_unlock(&g_dual_belief_mutex);
+        return 0;
+    }
+
+    belief->name = strdup(name->data);
+    belief->val = fmax(0.0, fmin(1.0, confidence));
+    belief->der = derivative;
+    belief->last_updated = belief_current_time_ms();
+    belief->next = g_dual_belief_head;
+    g_dual_belief_head = belief;
+
+    pthread_mutex_unlock(&g_dual_belief_mutex);
+    return 1;
+}
+
+// Forward declaration for WAKE mechanism
+static void wake_check_belief(const char* belief_name);
+
+// Update an existing belief's confidence and compute derivative automatically
+// Returns 1 on success, 0 if belief not found
+int64_t belief_update(int64_t name_ptr, double new_confidence) {
+    SxString* name = (SxString*)name_ptr;
+    if (!name || !name->data) return 0;
+
+    pthread_mutex_lock(&g_dual_belief_mutex);
+
+    DualBelief* belief = belief_find_by_name(name->data);
+    if (!belief) {
+        // Auto-register if not found
+        pthread_mutex_unlock(&g_dual_belief_mutex);
+        return belief_register(name_ptr, new_confidence, 0.0);
+    }
+
+    // Compute derivative as rate of change
+    int64_t now = belief_current_time_ms();
+    int64_t dt_ms = now - belief->last_updated;
+    double dt = dt_ms / 1000.0;  // Convert to seconds
+
+    double old_val = belief->val;
+    double new_val = fmax(0.0, fmin(1.0, new_confidence));
+
+    if (dt > 0.001) {
+        belief->der = (new_val - old_val) / dt;
+    }
+    // If dt too small, keep previous derivative
+
+    belief->val = new_val;
+    belief->last_updated = now;
+
+    // Save belief name before releasing lock
+    char* belief_name_copy = strdup(name->data);
+
+    pthread_mutex_unlock(&g_dual_belief_mutex);
+
+    // Check if any suspended receives should wake (TASK-013-A WAKE mechanism)
+    if (belief_name_copy) {
+        wake_check_belief(belief_name_copy);
+        free(belief_name_copy);
+    }
+
+    return 1;
+}
+
+// Update belief with explicit derivative
+int64_t belief_update_dual(int64_t name_ptr, double confidence, double derivative) {
+    SxString* name = (SxString*)name_ptr;
+    if (!name || !name->data) return 0;
+
+    // Copy name for wake check (must happen outside mutex)
+    char* belief_name_copy = strdup(name->data);
+    if (!belief_name_copy) return 0;
+
+    pthread_mutex_lock(&g_dual_belief_mutex);
+
+    DualBelief* belief = belief_find_by_name(name->data);
+    if (!belief) {
+        // Auto-register if not found
+        pthread_mutex_unlock(&g_dual_belief_mutex);
+        free(belief_name_copy);
+        return belief_register(name_ptr, confidence, derivative);
+    }
+
+    belief->val = fmax(0.0, fmin(1.0, confidence));
+    belief->der = derivative;
+    belief->last_updated = belief_current_time_ms();
+
+    pthread_mutex_unlock(&g_dual_belief_mutex);
+
+    // Check for suspended receives to wake (WAKE transition)
+    wake_check_belief(belief_name_copy);
+    free(belief_name_copy);
+
+    return 1;
+}
+
+// Get belief confidence value as f64 bit pattern in i64
+// This is the primary function used by belief guard codegen
+// Returns 0.0 (as bits) if belief not found
+// Named belief_guard_get_confidence to avoid conflict with existing belief_get_confidence
+int64_t belief_guard_get_confidence(int64_t name_ptr) {
+    SxString* name = (SxString*)name_ptr;
+    if (!name || !name->data) {
+        double zero = 0.0;
+        int64_t result;
+        memcpy(&result, &zero, sizeof(double));
+        return result;
+    }
+
+    pthread_mutex_lock(&g_dual_belief_mutex);
+
+    DualBelief* belief = belief_find_by_name(name->data);
+    double val = belief ? belief->val : 0.0;
+
+    pthread_mutex_unlock(&g_dual_belief_mutex);
+
+    // Convert double to i64 bit pattern
+    int64_t result;
+    memcpy(&result, &val, sizeof(double));
+    return result;
+}
+
+// Get belief derivative value as f64 bit pattern in i64
+// Used for patterns like: confidence("x").derivative < -0.1
+// Returns 0.0 (as bits) if belief not found
+int64_t belief_guard_get_derivative(int64_t name_ptr) {
+    SxString* name = (SxString*)name_ptr;
+    if (!name || !name->data) {
+        double zero = 0.0;
+        int64_t result;
+        memcpy(&result, &zero, sizeof(double));
+        return result;
+    }
+
+    pthread_mutex_lock(&g_dual_belief_mutex);
+
+    DualBelief* belief = belief_find_by_name(name->data);
+    double der = belief ? belief->der : 0.0;
+
+    pthread_mutex_unlock(&g_dual_belief_mutex);
+
+    // Convert double to i64 bit pattern
+    int64_t result;
+    memcpy(&result, &der, sizeof(double));
+    return result;
+}
+
+// Get both confidence and derivative as a pair (returns pointer to 2-element array)
+int64_t belief_get_dual(int64_t name_ptr) {
+    SxString* name = (SxString*)name_ptr;
+
+    double* result = (double*)malloc(2 * sizeof(double));
+    if (!result) return 0;
+
+    if (!name || !name->data) {
+        result[0] = 0.0;
+        result[1] = 0.0;
+        return (int64_t)result;
+    }
+
+    pthread_mutex_lock(&g_dual_belief_mutex);
+
+    DualBelief* belief = belief_find_by_name(name->data);
+    result[0] = belief ? belief->val : 0.0;
+    result[1] = belief ? belief->der : 0.0;
+
+    pthread_mutex_unlock(&g_dual_belief_mutex);
+
+    return (int64_t)result;
+}
+
+// i64-based wrapper for belief_register (accepts f64 as i64 bit patterns)
+// Used when the compiler can't pass f64 parameters directly
+int64_t belief_register_i64(int64_t name_ptr, int64_t confidence_bits, int64_t derivative_bits) {
+    double confidence, derivative;
+    memcpy(&confidence, &confidence_bits, sizeof(double));
+    memcpy(&derivative, &derivative_bits, sizeof(double));
+    return belief_register(name_ptr, confidence, derivative);
+}
+
+// i64-based wrapper for belief_update (accepts f64 as i64 bit pattern)
+int64_t belief_update_i64(int64_t name_ptr, int64_t confidence_bits) {
+    double confidence;
+    memcpy(&confidence, &confidence_bits, sizeof(double));
+    return belief_update(name_ptr, confidence);
+}
+
+// i64-based wrapper for belief_update_dual (accepts f64s as i64 bit patterns)
+int64_t belief_update_dual_i64(int64_t name_ptr, int64_t confidence_bits, int64_t derivative_bits) {
+    double confidence, derivative;
+    memcpy(&confidence, &confidence_bits, sizeof(double));
+    memcpy(&derivative, &derivative_bits, sizeof(double));
+    return belief_update_dual(name_ptr, confidence, derivative);
+}
+
+// Remove a belief from the registry
+int64_t belief_unregister(int64_t name_ptr) {
+    SxString* name = (SxString*)name_ptr;
+    if (!name || !name->data) return 0;
+
+    pthread_mutex_lock(&g_dual_belief_mutex);
+
+    DualBelief* prev = NULL;
+    DualBelief* current = g_dual_belief_head;
+
+    while (current) {
+        if (strcmp(current->name, name->data) == 0) {
+            if (prev) {
+                prev->next = current->next;
+            } else {
+                g_dual_belief_head = current->next;
+            }
+            free(current->name);
+            free(current);
+            pthread_mutex_unlock(&g_dual_belief_mutex);
+            return 1;
+        }
+        prev = current;
+        current = current->next;
+    }
+
+    pthread_mutex_unlock(&g_dual_belief_mutex);
+    return 0;
+}
+
+// List all registered beliefs (returns vector of name strings)
+int64_t belief_list_all(void) {
+    pthread_mutex_lock(&g_dual_belief_mutex);
+
+    SxVec* result = intrinsic_vec_new();
+    DualBelief* current = g_dual_belief_head;
+
+    while (current) {
+        SxString* name = intrinsic_string_new(current->name);
+        intrinsic_vec_push(result, name);
+        current = current->next;
+    }
+
+    pthread_mutex_unlock(&g_dual_belief_mutex);
+    return (int64_t)result;
+}
+
+// Get count of registered beliefs
+int64_t belief_count_registered(void) {
+    pthread_mutex_lock(&g_dual_belief_mutex);
+
+    int64_t count = 0;
+    DualBelief* current = g_dual_belief_head;
+    while (current) {
+        count++;
+        current = current->next;
+    }
+
+    pthread_mutex_unlock(&g_dual_belief_mutex);
+    return count;
+}
+
+// Clear all beliefs from the registry
+void belief_clear_all(void) {
+    pthread_mutex_lock(&g_dual_belief_mutex);
+
+    DualBelief* current = g_dual_belief_head;
+    while (current) {
+        DualBelief* next = current->next;
+        free(current->name);
+        free(current);
+        current = next;
+    }
+    g_dual_belief_head = NULL;
+
+    pthread_mutex_unlock(&g_dual_belief_mutex);
+}
+
+// Check if a belief guard condition is satisfied
+// Helper for complex guards - evaluates confidence against threshold
+int64_t belief_guard_check(int64_t name_ptr, int64_t op, double threshold) {
+    // op: 0=LT, 1=LE, 2=GT, 3=GE, 4=EQ, 5=NE
+    double conf_bits;
+    int64_t bits = belief_guard_get_confidence(name_ptr);
+    memcpy(&conf_bits, &bits, sizeof(double));
+
+    int result = 0;
+    switch (op) {
+        case 0: result = conf_bits < threshold; break;
+        case 1: result = conf_bits <= threshold; break;
+        case 2: result = conf_bits > threshold; break;
+        case 3: result = conf_bits >= threshold; break;
+        case 4: result = fabs(conf_bits - threshold) < 1e-9; break;
+        case 5: result = fabs(conf_bits - threshold) >= 1e-9; break;
+    }
+    return result ? 1 : 0;
+}
+
+// Check derivative guard condition
+int64_t belief_guard_check_derivative(int64_t name_ptr, int64_t op, double threshold) {
+    double der_bits;
+    int64_t bits = belief_guard_get_derivative(name_ptr);
+    memcpy(&der_bits, &bits, sizeof(double));
+
+    int result = 0;
+    switch (op) {
+        case 0: result = der_bits < threshold; break;
+        case 1: result = der_bits <= threshold; break;
+        case 2: result = der_bits > threshold; break;
+        case 3: result = der_bits >= threshold; break;
+        case 4: result = fabs(der_bits - threshold) < 1e-9; break;
+        case 5: result = fabs(der_bits - threshold) >= 1e-9; break;
+    }
+    return result ? 1 : 0;
+}
+
+// ============================================================================
+// TASK-013-A Phase 6: WAKE Mechanism for Belief-Gated Receive
+// ============================================================================
+// This implements the WAKE transition for suspended receives. When a receive
+// handler has a belief guard that is not satisfied, it can be suspended.
+// When the belief changes and the guard becomes satisfied, the handler wakes.
+//
+// This is unique to Simplex and cannot be encoded in Erlang - it provides
+// reactive belief-aware message processing.
+
+// Guard types for suspended receives
+#define GUARD_CONFIDENCE 0
+#define GUARD_DERIVATIVE 1
+
+// Comparison operators (must match codegen)
+#define GUARD_OP_LT 0
+#define GUARD_OP_LE 1
+#define GUARD_OP_GT 2
+#define GUARD_OP_GE 3
+#define GUARD_OP_EQ 4
+#define GUARD_OP_NE 5
+
+// Callback function type for wake notifications
+typedef void (*WakeCallback)(int64_t actor_id, int64_t handler_id, void* context);
+
+// Suspended receive entry
+typedef struct SuspendedReceive {
+    int64_t id;              // Unique ID for this suspended receive
+    int64_t actor_id;        // Actor that owns this receive
+    int64_t handler_id;      // Handler identifier within the actor
+    char* belief_name;       // Belief being watched
+    int guard_type;          // GUARD_CONFIDENCE or GUARD_DERIVATIVE
+    int op;                  // Comparison operator
+    double threshold;        // Threshold value for comparison
+    WakeCallback callback;   // Function to call when guard is satisfied
+    void* context;           // User context passed to callback
+    int64_t suspended_at;    // Timestamp when suspended
+    struct SuspendedReceive* next;
+} SuspendedReceive;
+
+// Index entry for fast lookup by belief name
+typedef struct BeliefWatchEntry {
+    char* belief_name;
+    SuspendedReceive* receivers;  // Linked list of suspended receives watching this belief
+    struct BeliefWatchEntry* next;
+} BeliefWatchEntry;
+
+// Global suspended receive registry
+static SuspendedReceive* g_suspended_head = NULL;
+static BeliefWatchEntry* g_belief_watch_head = NULL;
+static int64_t g_suspended_next_id = 1;
+static pthread_mutex_t g_suspended_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// Forward declarations
+static void wake_check_belief(const char* belief_name);
+int64_t belief_cancel_suspend(int64_t suspend_id);
+
+// Helper: Find or create belief watch entry (caller must hold mutex)
+static BeliefWatchEntry* get_or_create_watch_entry(const char* belief_name) {
+    BeliefWatchEntry* entry = g_belief_watch_head;
+    while (entry) {
+        if (strcmp(entry->belief_name, belief_name) == 0) {
+            return entry;
+        }
+        entry = entry->next;
+    }
+
+    // Create new entry
+    entry = (BeliefWatchEntry*)malloc(sizeof(BeliefWatchEntry));
+    if (!entry) return NULL;
+
+    entry->belief_name = strdup(belief_name);
+    entry->receivers = NULL;
+    entry->next = g_belief_watch_head;
+    g_belief_watch_head = entry;
+
+    return entry;
+}
+
+// Helper: Check if a guard condition is satisfied
+static int check_guard_satisfied(SuspendedReceive* sr) {
+    double val;
+
+    if (sr->guard_type == GUARD_CONFIDENCE) {
+        // Get confidence value
+        pthread_mutex_lock(&g_dual_belief_mutex);
+        DualBelief* belief = belief_find_by_name(sr->belief_name);
+        val = belief ? belief->val : 0.0;
+        pthread_mutex_unlock(&g_dual_belief_mutex);
+    } else {
+        // Get derivative value
+        pthread_mutex_lock(&g_dual_belief_mutex);
+        DualBelief* belief = belief_find_by_name(sr->belief_name);
+        val = belief ? belief->der : 0.0;
+        pthread_mutex_unlock(&g_dual_belief_mutex);
+    }
+
+    // Check condition
+    switch (sr->op) {
+        case GUARD_OP_LT: return val < sr->threshold;
+        case GUARD_OP_LE: return val <= sr->threshold;
+        case GUARD_OP_GT: return val > sr->threshold;
+        case GUARD_OP_GE: return val >= sr->threshold;
+        case GUARD_OP_EQ: return fabs(val - sr->threshold) < 1e-9;
+        case GUARD_OP_NE: return fabs(val - sr->threshold) >= 1e-9;
+        default: return 0;
+    }
+}
+
+// Suspend a receive handler until belief guard is satisfied
+// Returns suspended receive ID, or 0 on failure
+int64_t belief_suspend_receive(
+    int64_t actor_id,
+    int64_t handler_id,
+    int64_t belief_name_ptr,
+    int64_t guard_type,
+    int64_t op,
+    double threshold,
+    int64_t callback_ptr,
+    int64_t context_ptr
+) {
+    SxString* name = (SxString*)belief_name_ptr;
+    if (!name || !name->data) return 0;
+
+    pthread_mutex_lock(&g_suspended_mutex);
+
+    // Create suspended receive entry
+    SuspendedReceive* sr = (SuspendedReceive*)malloc(sizeof(SuspendedReceive));
+    if (!sr) {
+        pthread_mutex_unlock(&g_suspended_mutex);
+        return 0;
+    }
+
+    sr->id = g_suspended_next_id++;
+    sr->actor_id = actor_id;
+    sr->handler_id = handler_id;
+    sr->belief_name = strdup(name->data);
+    sr->guard_type = (int)guard_type;
+    sr->op = (int)op;
+    sr->threshold = threshold;
+    sr->callback = (WakeCallback)callback_ptr;
+    sr->context = (void*)context_ptr;
+    sr->suspended_at = belief_current_time_ms();
+    sr->next = NULL;
+
+    // Add to global list
+    sr->next = g_suspended_head;
+    g_suspended_head = sr;
+
+    // Add to belief watch index for fast lookup
+    BeliefWatchEntry* watch = get_or_create_watch_entry(name->data);
+    if (watch) {
+        // Add to front of receivers list
+        SuspendedReceive* sr_copy = (SuspendedReceive*)malloc(sizeof(SuspendedReceive));
+        *sr_copy = *sr;
+        sr_copy->belief_name = strdup(sr->belief_name);  // Deep copy the string
+        sr_copy->next = watch->receivers;
+        watch->receivers = sr_copy;
+    }
+
+    int64_t result_id = sr->id;
+
+    // Check if already satisfied (wake immediately)
+    if (check_guard_satisfied(sr)) {
+        pthread_mutex_unlock(&g_suspended_mutex);
+        // Wake immediately
+        if (sr->callback) {
+            sr->callback(sr->actor_id, sr->handler_id, sr->context);
+        }
+        // Remove from suspended list
+        belief_cancel_suspend(result_id);
+        return result_id;
+    }
+
+    pthread_mutex_unlock(&g_suspended_mutex);
+    return result_id;
+}
+
+// Cancel a suspended receive
+int64_t belief_cancel_suspend(int64_t suspend_id) {
+    pthread_mutex_lock(&g_suspended_mutex);
+
+    // Remove from global list
+    SuspendedReceive* prev = NULL;
+    SuspendedReceive* current = g_suspended_head;
+
+    while (current) {
+        if (current->id == suspend_id) {
+            if (prev) {
+                prev->next = current->next;
+            } else {
+                g_suspended_head = current->next;
+            }
+
+            // Also remove from belief watch index
+            BeliefWatchEntry* watch = g_belief_watch_head;
+            while (watch) {
+                if (strcmp(watch->belief_name, current->belief_name) == 0) {
+                    SuspendedReceive* wprev = NULL;
+                    SuspendedReceive* wcurr = watch->receivers;
+                    while (wcurr) {
+                        if (wcurr->id == suspend_id) {
+                            if (wprev) {
+                                wprev->next = wcurr->next;
+                            } else {
+                                watch->receivers = wcurr->next;
+                            }
+                            free(wcurr->belief_name);
+                            free(wcurr);
+                            break;
+                        }
+                        wprev = wcurr;
+                        wcurr = wcurr->next;
+                    }
+                    break;
+                }
+                watch = watch->next;
+            }
+
+            free(current->belief_name);
+            free(current);
+            pthread_mutex_unlock(&g_suspended_mutex);
+            return 1;
+        }
+        prev = current;
+        current = current->next;
+    }
+
+    pthread_mutex_unlock(&g_suspended_mutex);
+    return 0;
+}
+
+// Check and wake suspended receives for a belief (called when belief changes)
+static void wake_check_belief(const char* belief_name) {
+    pthread_mutex_lock(&g_suspended_mutex);
+
+    // Find watch entry for this belief
+    BeliefWatchEntry* watch = g_belief_watch_head;
+    while (watch) {
+        if (strcmp(watch->belief_name, belief_name) == 0) {
+            break;
+        }
+        watch = watch->next;
+    }
+
+    if (!watch) {
+        pthread_mutex_unlock(&g_suspended_mutex);
+        return;
+    }
+
+    // Collect receivers to wake (we can't call callbacks while holding lock)
+    typedef struct WakeItem {
+        int64_t actor_id;
+        int64_t handler_id;
+        WakeCallback callback;
+        void* context;
+        int64_t suspend_id;
+        struct WakeItem* next;
+    } WakeItem;
+
+    WakeItem* to_wake = NULL;
+
+    SuspendedReceive* sr = watch->receivers;
+    while (sr) {
+        if (check_guard_satisfied(sr)) {
+            WakeItem* item = (WakeItem*)malloc(sizeof(WakeItem));
+            item->actor_id = sr->actor_id;
+            item->handler_id = sr->handler_id;
+            item->callback = sr->callback;
+            item->context = sr->context;
+            item->suspend_id = sr->id;
+            item->next = to_wake;
+            to_wake = item;
+        }
+        sr = sr->next;
+    }
+
+    pthread_mutex_unlock(&g_suspended_mutex);
+
+    // Wake the receivers (outside lock to prevent deadlock)
+    while (to_wake) {
+        WakeItem* item = to_wake;
+        to_wake = to_wake->next;
+
+        // Call the wake callback
+        if (item->callback) {
+            item->callback(item->actor_id, item->handler_id, item->context);
+        }
+
+        // Remove from suspended list
+        belief_cancel_suspend(item->suspend_id);
+
+        free(item);
+    }
+}
+
+// Get count of suspended receives
+int64_t belief_suspended_count(void) {
+    pthread_mutex_lock(&g_suspended_mutex);
+
+    int64_t count = 0;
+    SuspendedReceive* current = g_suspended_head;
+    while (current) {
+        count++;
+        current = current->next;
+    }
+
+    pthread_mutex_unlock(&g_suspended_mutex);
+    return count;
+}
+
+// Get suspended receives for an actor (returns vector of suspend IDs)
+int64_t belief_get_actor_suspends(int64_t actor_id) {
+    pthread_mutex_lock(&g_suspended_mutex);
+
+    SxVec* result = intrinsic_vec_new();
+    SuspendedReceive* current = g_suspended_head;
+
+    while (current) {
+        if (current->actor_id == actor_id) {
+            intrinsic_vec_push(result, (void*)current->id);
+        }
+        current = current->next;
+    }
+
+    pthread_mutex_unlock(&g_suspended_mutex);
+    return (int64_t)result;
+}
+
+// Clear all suspended receives for an actor (called when actor stops)
+int64_t belief_clear_actor_suspends(int64_t actor_id) {
+    pthread_mutex_lock(&g_suspended_mutex);
+
+    int64_t count = 0;
+    SuspendedReceive* prev = NULL;
+    SuspendedReceive* current = g_suspended_head;
+
+    while (current) {
+        SuspendedReceive* next = current->next;
+
+        if (current->actor_id == actor_id) {
+            if (prev) {
+                prev->next = next;
+            } else {
+                g_suspended_head = next;
+            }
+
+            // Also remove from belief watch index
+            BeliefWatchEntry* watch = g_belief_watch_head;
+            while (watch) {
+                if (strcmp(watch->belief_name, current->belief_name) == 0) {
+                    SuspendedReceive* wprev = NULL;
+                    SuspendedReceive* wcurr = watch->receivers;
+                    while (wcurr) {
+                        if (wcurr->id == current->id) {
+                            if (wprev) {
+                                wprev->next = wcurr->next;
+                            } else {
+                                watch->receivers = wcurr->next;
+                            }
+                            free(wcurr->belief_name);
+                            free(wcurr);
+                            break;
+                        }
+                        wprev = wcurr;
+                        wcurr = wcurr->next;
+                    }
+                    break;
+                }
+                watch = watch->next;
+            }
+
+            free(current->belief_name);
+            free(current);
+            count++;
+        } else {
+            prev = current;
+        }
+
+        current = next;
+    }
+
+    pthread_mutex_unlock(&g_suspended_mutex);
+    return count;
+}
+
+// Get info about a suspended receive
+int64_t belief_suspend_get_belief(int64_t suspend_id) {
+    pthread_mutex_lock(&g_suspended_mutex);
+
+    SuspendedReceive* current = g_suspended_head;
+    while (current) {
+        if (current->id == suspend_id) {
+            SxString* name = intrinsic_string_new(current->belief_name);
+            pthread_mutex_unlock(&g_suspended_mutex);
+            return (int64_t)name;
+        }
+        current = current->next;
+    }
+
+    pthread_mutex_unlock(&g_suspended_mutex);
+    return 0;
+}
+
+int64_t belief_suspend_get_actor(int64_t suspend_id) {
+    pthread_mutex_lock(&g_suspended_mutex);
+
+    SuspendedReceive* current = g_suspended_head;
+    while (current) {
+        if (current->id == suspend_id) {
+            int64_t actor_id = current->actor_id;
+            pthread_mutex_unlock(&g_suspended_mutex);
+            return actor_id;
+        }
+        current = current->next;
+    }
+
+    pthread_mutex_unlock(&g_suspended_mutex);
+    return 0;
+}
+
+double belief_suspend_get_threshold(int64_t suspend_id) {
+    pthread_mutex_lock(&g_suspended_mutex);
+
+    SuspendedReceive* current = g_suspended_head;
+    while (current) {
+        if (current->id == suspend_id) {
+            double threshold = current->threshold;
+            pthread_mutex_unlock(&g_suspended_mutex);
+            return threshold;
+        }
+        current = current->next;
+    }
+
+    pthread_mutex_unlock(&g_suspended_mutex);
+    return 0.0;
+}
+
+int64_t belief_suspend_get_duration_ms(int64_t suspend_id) {
+    pthread_mutex_lock(&g_suspended_mutex);
+
+    SuspendedReceive* current = g_suspended_head;
+    while (current) {
+        if (current->id == suspend_id) {
+            int64_t duration = belief_current_time_ms() - current->suspended_at;
+            pthread_mutex_unlock(&g_suspended_mutex);
+            return duration;
+        }
+        current = current->next;
+    }
+
+    pthread_mutex_unlock(&g_suspended_mutex);
+    return 0;
 }

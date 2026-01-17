@@ -1,0 +1,195 @@
+// Classification task data generator
+
+use simplex_std::vec::Vec;
+use simplex_std::string::String;
+use super::super::generator::{DataGenerator, TrainingExample, ExampleMetadata, Rng};
+use super::super::super::SpecialistDomain;
+
+/// Generator for classification training data
+pub struct ClassificationGenerator {
+    rng: Rng,
+    name: String,
+}
+
+impl ClassificationGenerator {
+    pub fn new() -> Self {
+        ClassificationGenerator {
+            rng: Rng::new(42),
+            name: "classification_generator".to_string(),
+        }
+    }
+
+    fn generate_intent_classification(&mut self) -> TrainingExample {
+        let examples = vec![
+            ("What's the weather like today?", "weather_inquiry", 0.95),
+            ("Book a flight to New York", "booking_request", 0.93),
+            ("How do I reset my password?", "support_request", 0.91),
+            ("Tell me a joke", "entertainment", 0.89),
+            ("What time is it in Tokyo?", "time_inquiry", 0.94),
+            ("Cancel my subscription", "cancellation_request", 0.92),
+        ];
+
+        let (text, intent, confidence) = self.rng.choice_clone(&examples);
+
+        TrainingExample {
+            prompt: format!("Classify the intent of this message:\n\n\"{}\"", text),
+            response: format!(
+                "**Intent Classification:**\n\n\
+                 - **Input:** \"{}\"\n\
+                 - **Intent:** {}\n\
+                 - **Confidence:** {:.0}%\n\n\
+                 [confidence: {:.2}]",
+                text, intent, confidence * 100.0, confidence
+            ),
+            metadata: ExampleMetadata {
+                domain: "classification".to_string(),
+                confidence_target: confidence,
+                source: "synthetic".to_string(),
+                difficulty: 0.4,
+                quality: 1.0,
+                tags: vec!["intent".to_string()],
+            },
+        }
+    }
+
+    fn generate_topic_classification(&mut self) -> TrainingExample {
+        let examples = vec![
+            ("The stock market rallied today after positive earnings reports.", "finance", 0.94),
+            ("Scientists discover new species in the Amazon rainforest.", "science", 0.92),
+            ("The team won the championship in overtime.", "sports", 0.96),
+            ("New smartphone features revolutionary battery technology.", "technology", 0.91),
+            ("Recipe for traditional Italian pasta carbonara.", "food", 0.93),
+        ];
+
+        let (text, topic, confidence) = self.rng.choice_clone(&examples);
+
+        TrainingExample {
+            prompt: format!("Classify the topic of this text:\n\n\"{}\"", text),
+            response: format!(
+                "**Topic Classification:**\n\n\
+                 - **Text:** \"{}\"\n\
+                 - **Topic:** {}\n\
+                 - **Confidence:** {:.0}%\n\n\
+                 **Key indicators:** Domain-specific vocabulary and context.\n\n\
+                 [confidence: {:.2}]",
+                text, topic, confidence * 100.0, confidence
+            ),
+            metadata: ExampleMetadata {
+                domain: "classification".to_string(),
+                confidence_target: confidence,
+                source: "synthetic".to_string(),
+                difficulty: 0.3,
+                quality: 1.0,
+                tags: vec!["topic".to_string()],
+            },
+        }
+    }
+
+    fn generate_spam_classification(&mut self) -> TrainingExample {
+        let spam_examples = vec![
+            "CONGRATULATIONS! You've won $1,000,000! Click here to claim NOW!!!",
+            "Buy cheap medications online. No prescription needed!",
+            "Make $5000/week working from home. Limited time offer!",
+        ];
+
+        let ham_examples = vec![
+            "Hi, just following up on our meeting yesterday. Let me know your thoughts.",
+            "The project deadline has been moved to next Friday. Please update your schedules.",
+            "Thanks for dinner last night! We should do it again soon.",
+        ];
+
+        let is_spam = self.rng.bernoulli(0.5);
+        let text = if is_spam {
+            self.rng.choice_clone(&spam_examples)
+        } else {
+            self.rng.choice_clone(&ham_examples)
+        };
+
+        let confidence = if is_spam { 0.97 } else { 0.94 };
+
+        TrainingExample {
+            prompt: format!("Classify this email as spam or not spam:\n\n\"{}\"", text),
+            response: format!(
+                "**Spam Classification:**\n\n\
+                 - **Classification:** {}\n\
+                 - **Confidence:** {:.0}%\n\n\
+                 **Indicators:**\n\
+                 {}\n\n\
+                 [confidence: {:.2}]",
+                if is_spam { "SPAM" } else { "NOT SPAM" },
+                confidence * 100.0,
+                if is_spam {
+                    "- Urgency language\n- Monetary claims\n- Call to action"
+                } else {
+                    "- Professional tone\n- Contextual content\n- No suspicious links"
+                },
+                confidence
+            ),
+            metadata: ExampleMetadata {
+                domain: "classification".to_string(),
+                confidence_target: confidence,
+                source: "synthetic".to_string(),
+                difficulty: 0.3,
+                quality: 1.0,
+                tags: vec!["spam".to_string()],
+            },
+        }
+    }
+
+    fn generate_language_classification(&mut self) -> TrainingExample {
+        let examples = vec![
+            ("Hello, how are you today?", "English", 0.99),
+            ("Bonjour, comment allez-vous?", "French", 0.98),
+            ("Hola, ¿cómo estás?", "Spanish", 0.98),
+            ("Guten Tag, wie geht es Ihnen?", "German", 0.97),
+            ("こんにちは、お元気ですか？", "Japanese", 0.99),
+        ];
+
+        let (text, language, confidence) = self.rng.choice_clone(&examples);
+
+        TrainingExample {
+            prompt: format!("Identify the language of this text:\n\n\"{}\"", text),
+            response: format!(
+                "**Language Detection:**\n\n\
+                 - **Text:** \"{}\"\n\
+                 - **Language:** {}\n\
+                 - **Confidence:** {:.0}%\n\n\
+                 [confidence: {:.2}]",
+                text, language, confidence * 100.0, confidence
+            ),
+            metadata: ExampleMetadata {
+                domain: "classification".to_string(),
+                confidence_target: confidence,
+                source: "synthetic".to_string(),
+                difficulty: 0.2,
+                quality: 1.0,
+                tags: vec!["language".to_string()],
+            },
+        }
+    }
+}
+
+impl DataGenerator for ClassificationGenerator {
+    fn generate(&mut self) -> TrainingExample {
+        match self.rng.int_range(0, 3) {
+            0 => self.generate_intent_classification(),
+            1 => self.generate_topic_classification(),
+            2 => self.generate_spam_classification(),
+            _ => self.generate_language_classification(),
+        }
+    }
+
+    fn domain(&self) -> SpecialistDomain {
+        SpecialistDomain::Classification
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn seed(&mut self, seed: u64) {
+        self.rng.seed(seed);
+    }
+
+    fn reset(&mut self) {}
+}

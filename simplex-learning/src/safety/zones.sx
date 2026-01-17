@@ -1,0 +1,861 @@
+// TASK-014: No-Learn Zones
+//
+// Marks regions of the parameter space that learning must not modify.
+// These are runtime enforcements that complement future compiler attributes.
+//
+// Zone Types:
+// - NoLearnZone:    Parameters that must remain frozen
+// - NoGradientZone: Regions where gradients must not flow
+// - Invariant:      Properties that must hold after any learning update
+//
+// Usage:
+//   let mut registry = ZoneRegistry::new();
+//   registry.add_no_learn("safety_weights", &[0, 1, 2, 3]); // freeze indices 0-3
+//   registry.add_invariant("output_valid", |params| params.iter().all(|p| p.is_finite()));
+//
+//   // In learning loop:
+//   if !registry.allows_update(param_index) {
+//       continue; // skip this parameter
+//   }
+//   registry.zero_gradient_if_blocked(gradients, param_index);
+//   registry.check_invariants(params)?;
+
+use std::collections::{HashMap, HashSet};
+
+// =============================================================================
+// Zone Types
+// =============================================================================
+
+/// Identifies a parameter or region
+pub type ParamId = String;
+
+/// A zone where learning is not allowed
+#[derive(Clone)]
+pub struct NoLearnZone {
+    /// Zone name (for debugging/logging)
+    pub name: String,
+
+    /// Parameter IDs in this zone
+    pub params: HashSet<ParamId>,
+
+    /// Optional reason why learning is blocked
+    pub reason: Option<String>,
+
+    /// How strictly to enforce (soft = warn, hard = block)
+    pub enforcement: ZoneEnforcement,
+
+    /// Number of times enforcement was triggered
+    pub enforcement_count: u64,
+}
+
+/// A zone where gradients must not flow
+#[derive(Clone)]
+pub struct NoGradientZone {
+    /// Zone name
+    pub name: String,
+
+    /// Parameter IDs where gradients are zeroed
+    pub params: HashSet<ParamId>,
+
+    /// Reason for gradient blocking
+    pub reason: Option<String>,
+
+    /// Number of gradients zeroed
+    pub zeroed_count: u64,
+}
+
+/// An invariant that must hold after learning
+#[derive(Clone)]
+pub struct Invariant {
+    /// Invariant name
+    pub name: String,
+
+    /// Description of what this invariant ensures
+    pub description: String,
+
+    /// Check function (returns true if invariant holds)
+    /// Takes parameter values as input
+    check: InvariantCheck,
+
+    /// What to do on violation
+    pub on_violation: InvariantAction,
+
+    /// Violation count
+    pub violations: u64,
+}
+
+/// How to check an invariant
+#[derive(Clone)]
+enum InvariantCheck {
+    /// Check that all values are finite
+    AllFinite,
+
+    /// Check that values are in range
+    InRange { min: f64, max: f64 },
+
+    /// Check that values sum to target
+    SumEquals { target: f64, tolerance: f64 },
+
+    /// Check that values are non-negative
+    NonNegative,
+
+    /// Check that L2 norm is bounded
+    NormBounded { max_norm: f64 },
+
+    /// Custom check function
+    Custom(std::sync::Arc<dyn Fn(&[f64]) -> bool + Send + Sync>),
+}
+
+impl InvariantCheck {
+    fn check(&self, values: &[f64]) -> bool {
+        match self {
+            InvariantCheck::AllFinite => values.iter().all(|v| v.is_finite()),
+            InvariantCheck::InRange { min, max } => {
+                values.iter().all(|v| v >= min && v <= max)
+            }
+            InvariantCheck::SumEquals { target, tolerance } => {
+                let sum: f64 = values.iter().sum();
+                (sum - target).abs() <= *tolerance
+            }
+            InvariantCheck::NonNegative => values.iter().all(|v| *v >= 0.0),
+            InvariantCheck::NormBounded { max_norm } => {
+                let norm_sq: f64 = values.iter().map(|v| v * v).sum();
+                norm_sq.sqrt() <= *max_norm
+            }
+            InvariantCheck::Custom(f) => f(values),
+        }
+    }
+}
+
+/// Enforcement level for zones
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ZoneEnforcement {
+    /// Log warning but allow update
+    Warn,
+
+    /// Block the update entirely
+    Block,
+
+    /// Revert to previous value after update
+    Revert,
+}
+
+/// Action to take when invariant is violated
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum InvariantAction {
+    /// Log warning and continue
+    Warn,
+
+    /// Revert parameters to pre-update state
+    Revert,
+
+    /// Clamp values to valid range
+    Clamp,
+
+    /// Panic (for critical invariants)
+    Panic,
+}
+
+// =============================================================================
+// Zone Constructors
+// =============================================================================
+
+impl NoLearnZone {
+    /// Create a no-learn zone
+    pub fn new(name: &str) -> Self {
+        NoLearnZone {
+            name: name.to_string(),
+            params: HashSet::new(),
+            reason: None,
+            enforcement: ZoneEnforcement::Block,
+            enforcement_count: 0,
+        }
+    }
+
+    /// Add parameters by ID
+    pub fn with_params(mut self, params: &[&str]) -> Self {
+        for p in params {
+            self.params.insert(p.to_string());
+        }
+        self
+    }
+
+    /// Add parameters by index (converts to string IDs)
+    pub fn with_indices(mut self, indices: &[usize]) -> Self {
+        for i in indices {
+            self.params.insert(format!("param_{}", i));
+        }
+        self
+    }
+
+    /// Set reason
+    pub fn with_reason(mut self, reason: &str) -> Self {
+        self.reason = Some(reason.to_string());
+        self
+    }
+
+    /// Set enforcement level
+    pub fn with_enforcement(mut self, level: ZoneEnforcement) -> Self {
+        self.enforcement = level;
+        self
+    }
+
+    /// Check if parameter is in this zone
+    pub fn contains(&self, param_id: &str) -> bool {
+        self.params.contains(param_id)
+    }
+
+    /// Check if index is in this zone
+    pub fn contains_index(&self, index: usize) -> bool {
+        self.params.contains(&format!("param_{}", index))
+    }
+}
+
+impl NoGradientZone {
+    /// Create a no-gradient zone
+    pub fn new(name: &str) -> Self {
+        NoGradientZone {
+            name: name.to_string(),
+            params: HashSet::new(),
+            reason: None,
+            zeroed_count: 0,
+        }
+    }
+
+    /// Add parameters
+    pub fn with_params(mut self, params: &[&str]) -> Self {
+        for p in params {
+            self.params.insert(p.to_string());
+        }
+        self
+    }
+
+    /// Add indices
+    pub fn with_indices(mut self, indices: &[usize]) -> Self {
+        for i in indices {
+            self.params.insert(format!("param_{}", i));
+        }
+        self
+    }
+
+    /// Set reason
+    pub fn with_reason(mut self, reason: &str) -> Self {
+        self.reason = Some(reason.to_string());
+        self
+    }
+
+    /// Check if gradient should be zeroed
+    pub fn should_zero(&self, param_id: &str) -> bool {
+        self.params.contains(param_id)
+    }
+
+    /// Check if gradient at index should be zeroed
+    pub fn should_zero_index(&self, index: usize) -> bool {
+        self.params.contains(&format!("param_{}", index))
+    }
+}
+
+impl Invariant {
+    /// Create an invariant that all values must be finite
+    pub fn all_finite(name: &str) -> Self {
+        Invariant {
+            name: name.to_string(),
+            description: "All parameter values must be finite (not NaN or Inf)".to_string(),
+            check: InvariantCheck::AllFinite,
+            on_violation: InvariantAction::Revert,
+            violations: 0,
+        }
+    }
+
+    /// Create an invariant that values must be in range
+    pub fn in_range(name: &str, min: f64, max: f64) -> Self {
+        Invariant {
+            name: name.to_string(),
+            description: format!("All values must be in [{}, {}]", min, max),
+            check: InvariantCheck::InRange { min, max },
+            on_violation: InvariantAction::Clamp,
+            violations: 0,
+        }
+    }
+
+    /// Create an invariant that values must sum to target
+    pub fn sum_equals(name: &str, target: f64, tolerance: f64) -> Self {
+        Invariant {
+            name: name.to_string(),
+            description: format!("Values must sum to {} (±{})", target, tolerance),
+            check: InvariantCheck::SumEquals { target, tolerance },
+            on_violation: InvariantAction::Revert,
+            violations: 0,
+        }
+    }
+
+    /// Create an invariant that values must be non-negative
+    pub fn non_negative(name: &str) -> Self {
+        Invariant {
+            name: name.to_string(),
+            description: "All values must be >= 0".to_string(),
+            check: InvariantCheck::NonNegative,
+            on_violation: InvariantAction::Clamp,
+            violations: 0,
+        }
+    }
+
+    /// Create an invariant that L2 norm must be bounded
+    pub fn norm_bounded(name: &str, max_norm: f64) -> Self {
+        Invariant {
+            name: name.to_string(),
+            description: format!("L2 norm must be <= {}", max_norm),
+            check: InvariantCheck::NormBounded { max_norm },
+            on_violation: InvariantAction::Revert,
+            violations: 0,
+        }
+    }
+
+    /// Create a custom invariant
+    pub fn custom<F>(name: &str, description: &str, check: F) -> Self
+    where
+        F: Fn(&[f64]) -> bool + Send + Sync + 'static,
+    {
+        Invariant {
+            name: name.to_string(),
+            description: description.to_string(),
+            check: InvariantCheck::Custom(std::sync::Arc::new(check)),
+            on_violation: InvariantAction::Revert,
+            violations: 0,
+        }
+    }
+
+    /// Set violation action
+    pub fn with_action(mut self, action: InvariantAction) -> Self {
+        self.on_violation = action;
+        self
+    }
+
+    /// Check if invariant holds
+    pub fn check(&mut self, values: &[f64]) -> bool {
+        let holds = self.check.check(values);
+        if !holds {
+            self.violations += 1;
+        }
+        holds
+    }
+}
+
+// =============================================================================
+// Zone Registry
+// =============================================================================
+
+/// Result of checking zones before an update
+pub struct ZoneCheckResult {
+    /// Is the update allowed?
+    pub allowed: bool,
+
+    /// Reason if not allowed
+    pub reason: Option<String>,
+
+    /// Indices where gradients should be zeroed
+    pub zero_gradient_indices: Vec<usize>,
+
+    /// Warnings generated
+    pub warnings: Vec<String>,
+}
+
+/// Result of checking invariants after an update
+pub struct InvariantCheckResult {
+    /// Do all invariants hold?
+    pub all_hold: bool,
+
+    /// Violated invariants
+    pub violations: Vec<InvariantViolation>,
+
+    /// Recommended action
+    pub action: InvariantAction,
+}
+
+/// A single invariant violation
+#[derive(Clone)]
+pub struct InvariantViolation {
+    /// Invariant name
+    pub name: String,
+
+    /// Description
+    pub description: String,
+
+    /// Recommended action
+    pub action: InvariantAction,
+}
+
+/// Registry of all zones and invariants
+pub struct ZoneRegistry {
+    /// No-learn zones
+    no_learn: Vec<NoLearnZone>,
+
+    /// No-gradient zones
+    no_gradient: Vec<NoGradientZone>,
+
+    /// Invariants
+    invariants: Vec<Invariant>,
+
+    /// Parameter backup for reversion
+    param_backup: Option<Vec<f64>>,
+
+    /// Statistics
+    stats: ZoneStats,
+
+    /// Enable verbose logging
+    verbose: bool,
+}
+
+/// Zone statistics
+#[derive(Clone, Default)]
+pub struct ZoneStats {
+    /// Updates blocked by no-learn zones
+    pub updates_blocked: u64,
+
+    /// Gradients zeroed by no-gradient zones
+    pub gradients_zeroed: u64,
+
+    /// Invariant violations
+    pub invariant_violations: u64,
+
+    /// Reversions performed
+    pub reversions: u64,
+
+    /// Clamps performed
+    pub clamps: u64,
+}
+
+impl ZoneRegistry {
+    /// Create empty registry
+    pub fn new() -> Self {
+        ZoneRegistry {
+            no_learn: Vec::new(),
+            no_gradient: Vec::new(),
+            invariants: Vec::new(),
+            param_backup: None,
+            stats: ZoneStats::default(),
+            verbose: false,
+        }
+    }
+
+    /// Enable verbose logging
+    pub fn verbose(mut self, v: bool) -> Self {
+        self.verbose = v;
+        self
+    }
+
+    // -------------------------------------------------------------------------
+    // Adding zones
+    // -------------------------------------------------------------------------
+
+    /// Add a no-learn zone
+    pub fn add_no_learn(&mut self, zone: NoLearnZone) {
+        self.no_learn.push(zone);
+    }
+
+    /// Add a no-learn zone by name and param IDs
+    pub fn no_learn_params(&mut self, name: &str, params: &[&str]) {
+        self.add_no_learn(NoLearnZone::new(name).with_params(params));
+    }
+
+    /// Add a no-learn zone by name and indices
+    pub fn no_learn_indices(&mut self, name: &str, indices: &[usize]) {
+        self.add_no_learn(NoLearnZone::new(name).with_indices(indices));
+    }
+
+    /// Add a no-gradient zone
+    pub fn add_no_gradient(&mut self, zone: NoGradientZone) {
+        self.no_gradient.push(zone);
+    }
+
+    /// Add a no-gradient zone by name and param IDs
+    pub fn no_gradient_params(&mut self, name: &str, params: &[&str]) {
+        self.add_no_gradient(NoGradientZone::new(name).with_params(params));
+    }
+
+    /// Add a no-gradient zone by name and indices
+    pub fn no_gradient_indices(&mut self, name: &str, indices: &[usize]) {
+        self.add_no_gradient(NoGradientZone::new(name).with_indices(indices));
+    }
+
+    /// Add an invariant
+    pub fn add_invariant(&mut self, invariant: Invariant) {
+        self.invariants.push(invariant);
+    }
+
+    // -------------------------------------------------------------------------
+    // Checking
+    // -------------------------------------------------------------------------
+
+    /// Check if a parameter update is allowed
+    pub fn allows_update(&self, param_id: &str) -> bool {
+        !self.no_learn.iter().any(|z| {
+            z.contains(param_id) && z.enforcement == ZoneEnforcement::Block
+        })
+    }
+
+    /// Check if a parameter index update is allowed
+    pub fn allows_update_index(&self, index: usize) -> bool {
+        self.allows_update(&format!("param_{}", index))
+    }
+
+    /// Check all zones before an update
+    pub fn check_before_update(&mut self, indices_to_update: &[usize]) -> ZoneCheckResult {
+        let mut allowed = true;
+        let mut reason = None;
+        let mut zero_gradient_indices = Vec::new();
+        let mut warnings = Vec::new();
+
+        for index in indices_to_update {
+            let param_id = format!("param_{}", index);
+
+            // Check no-learn zones
+            for zone in &mut self.no_learn {
+                if zone.contains(&param_id) {
+                    zone.enforcement_count += 1;
+                    self.stats.updates_blocked += 1;
+
+                    match zone.enforcement {
+                        ZoneEnforcement::Block => {
+                            allowed = false;
+                            reason = Some(format!(
+                                "Parameter {} is in no-learn zone '{}'{}",
+                                index,
+                                zone.name,
+                                zone.reason.as_ref().map(|r| format!(": {}", r)).unwrap_or_default()
+                            ));
+                        }
+                        ZoneEnforcement::Warn => {
+                            warnings.push(format!(
+                                "Warning: updating parameter {} in no-learn zone '{}'",
+                                index, zone.name
+                            ));
+                        }
+                        ZoneEnforcement::Revert => {
+                            // Will be handled after update
+                        }
+                    }
+                }
+            }
+
+            // Check no-gradient zones
+            for zone in &mut self.no_gradient {
+                if zone.should_zero(&param_id) {
+                    zone.zeroed_count += 1;
+                    self.stats.gradients_zeroed += 1;
+                    zero_gradient_indices.push(*index);
+                }
+            }
+        }
+
+        if self.verbose && !warnings.is_empty() {
+            for w in &warnings {
+                println!("[ZoneRegistry] {}", w);
+            }
+        }
+
+        ZoneCheckResult {
+            allowed,
+            reason,
+            zero_gradient_indices,
+            warnings,
+        }
+    }
+
+    /// Zero gradients in blocked zones
+    pub fn apply_gradient_mask(&self, gradients: &mut [f64]) {
+        for zone in &self.no_gradient {
+            for i in 0..gradients.len() {
+                if zone.should_zero_index(i) {
+                    gradients[i] = 0.0;
+                }
+            }
+        }
+    }
+
+    /// Backup parameters before update (for potential reversion)
+    pub fn backup_params(&mut self, params: &[f64]) {
+        self.param_backup = Some(params.to_vec());
+    }
+
+    /// Check invariants after update
+    pub fn check_invariants(&mut self, params: &[f64]) -> InvariantCheckResult {
+        let mut violations = Vec::new();
+        let mut worst_action = InvariantAction::Warn;
+
+        for inv in &mut self.invariants {
+            if !inv.check(params) {
+                self.stats.invariant_violations += 1;
+
+                violations.push(InvariantViolation {
+                    name: inv.name.clone(),
+                    description: inv.description.clone(),
+                    action: inv.on_violation,
+                });
+
+                // Track worst action needed
+                match inv.on_violation {
+                    InvariantAction::Panic => worst_action = InvariantAction::Panic,
+                    InvariantAction::Revert if worst_action != InvariantAction::Panic => {
+                        worst_action = InvariantAction::Revert
+                    }
+                    InvariantAction::Clamp
+                        if worst_action != InvariantAction::Panic
+                            && worst_action != InvariantAction::Revert =>
+                    {
+                        worst_action = InvariantAction::Clamp
+                    }
+                    _ => {}
+                }
+
+                if self.verbose {
+                    println!(
+                        "[ZoneRegistry] Invariant '{}' violated: {}",
+                        inv.name, inv.description
+                    );
+                }
+            }
+        }
+
+        InvariantCheckResult {
+            all_hold: violations.is_empty(),
+            violations,
+            action: worst_action,
+        }
+    }
+
+    /// Revert to backed-up parameters
+    pub fn revert(&mut self, params: &mut [f64]) -> bool {
+        if let Some(ref backup) = self.param_backup {
+            if backup.len() == params.len() {
+                params.copy_from_slice(backup);
+                self.stats.reversions += 1;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Clamp values to valid range (for in_range invariants)
+    pub fn clamp_to_range(&mut self, params: &mut [f64], min: f64, max: f64) {
+        for p in params.iter_mut() {
+            *p = p.max(min).min(max);
+        }
+        self.stats.clamps += 1;
+    }
+
+    /// Get statistics
+    pub fn stats(&self) -> &ZoneStats {
+        &self.stats
+    }
+
+    /// Get summary
+    pub fn summary(&self) -> String {
+        format!(
+            "ZoneRegistry: {} no-learn zones, {} no-gradient zones, {} invariants\n\
+             Stats: {} blocked, {} zeroed, {} violations, {} reverts, {} clamps",
+            self.no_learn.len(),
+            self.no_gradient.len(),
+            self.invariants.len(),
+            self.stats.updates_blocked,
+            self.stats.gradients_zeroed,
+            self.stats.invariant_violations,
+            self.stats.reversions,
+            self.stats.clamps
+        )
+    }
+}
+
+impl Default for ZoneRegistry {
+    fn default() -> Self {
+        ZoneRegistry::new()
+    }
+}
+
+// =============================================================================
+// Convenience: Safe Learning Guard
+// =============================================================================
+
+/// Guard that wraps learning updates with zone checking
+pub struct SafeLearningGuard<'a> {
+    registry: &'a mut ZoneRegistry,
+    params_backed_up: bool,
+}
+
+impl<'a> SafeLearningGuard<'a> {
+    /// Create a guard for a learning update
+    pub fn new(registry: &'a mut ZoneRegistry) -> Self {
+        SafeLearningGuard {
+            registry,
+            params_backed_up: false,
+        }
+    }
+
+    /// Prepare for update (backup params, check zones)
+    pub fn prepare(&mut self, params: &[f64], indices: &[usize]) -> Result<Vec<usize>, String> {
+        // Backup for potential reversion
+        self.registry.backup_params(params);
+        self.params_backed_up = true;
+
+        // Check zones
+        let check = self.registry.check_before_update(indices);
+
+        if !check.allowed {
+            return Err(check.reason.unwrap_or_else(|| "Update blocked".to_string()));
+        }
+
+        // Return indices that need gradient zeroing
+        Ok(check.zero_gradient_indices)
+    }
+
+    /// Apply gradient mask
+    pub fn mask_gradients(&self, gradients: &mut [f64]) {
+        self.registry.apply_gradient_mask(gradients);
+    }
+
+    /// Finalize update (check invariants, potentially revert)
+    pub fn finalize(&mut self, params: &mut [f64]) -> Result<(), Vec<InvariantViolation>> {
+        let check = self.registry.check_invariants(params);
+
+        if check.all_hold {
+            return Ok(());
+        }
+
+        // Handle violations
+        match check.action {
+            InvariantAction::Warn => {
+                // Just return violations as warning
+                return Err(check.violations);
+            }
+            InvariantAction::Revert => {
+                self.registry.revert(params);
+                return Err(check.violations);
+            }
+            InvariantAction::Clamp => {
+                // Find range invariants and clamp
+                for inv in &self.registry.invariants {
+                    if let InvariantCheck::InRange { min, max } = &inv.check {
+                        self.registry.clamp_to_range(params, *min, *max);
+                    }
+                }
+                // Re-check after clamping
+                let recheck = self.registry.check_invariants(params);
+                if !recheck.all_hold {
+                    return Err(recheck.violations);
+                }
+            }
+            InvariantAction::Panic => {
+                panic!(
+                    "Critical invariant violated: {:?}",
+                    check.violations.iter().map(|v| &v.name).collect::<Vec<_>>()
+                );
+            }
+        }
+
+        Ok(())
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_no_learn_zone() {
+        let mut registry = ZoneRegistry::new();
+        registry.no_learn_indices("frozen_params", &[0, 1, 2]);
+
+        assert!(!registry.allows_update_index(0));
+        assert!(!registry.allows_update_index(1));
+        assert!(!registry.allows_update_index(2));
+        assert!(registry.allows_update_index(3));
+        assert!(registry.allows_update_index(100));
+    }
+
+    #[test]
+    fn test_no_gradient_zone() {
+        let mut registry = ZoneRegistry::new();
+        registry.no_gradient_indices("blocked_grads", &[5, 6, 7]);
+
+        let mut grads = vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
+        registry.apply_gradient_mask(&mut grads);
+
+        assert_eq!(grads[4], 1.0); // Not blocked
+        assert_eq!(grads[5], 0.0); // Blocked
+        assert_eq!(grads[6], 0.0); // Blocked
+        assert_eq!(grads[7], 0.0); // Blocked
+    }
+
+    #[test]
+    fn test_invariant_all_finite() {
+        let mut inv = Invariant::all_finite("finite_check");
+
+        assert!(inv.check(&[1.0, 2.0, 3.0]));
+        assert!(!inv.check(&[1.0, f64::NAN, 3.0]));
+        assert!(!inv.check(&[1.0, f64::INFINITY, 3.0]));
+    }
+
+    #[test]
+    fn test_invariant_in_range() {
+        let mut inv = Invariant::in_range("bounded", -1.0, 1.0);
+
+        assert!(inv.check(&[0.0, 0.5, -0.5]));
+        assert!(!inv.check(&[0.0, 1.5, -0.5]));
+        assert!(!inv.check(&[-2.0, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn test_invariant_reversion() {
+        let mut registry = ZoneRegistry::new();
+        registry.add_invariant(Invariant::all_finite("no_nan").with_action(InvariantAction::Revert));
+
+        let original = vec![1.0, 2.0, 3.0];
+        let mut params = original.clone();
+
+        // Backup
+        registry.backup_params(&params);
+
+        // Corrupt params
+        params[1] = f64::NAN;
+
+        // Check invariants
+        let result = registry.check_invariants(&params);
+        assert!(!result.all_hold);
+        assert_eq!(result.action, InvariantAction::Revert);
+
+        // Revert
+        assert!(registry.revert(&mut params));
+        assert_eq!(params, original);
+    }
+
+    #[test]
+    fn test_safe_learning_guard() {
+        let mut registry = ZoneRegistry::new();
+        registry.no_learn_indices("frozen", &[0]);
+        registry.no_gradient_indices("no_grad", &[1]);
+        registry.add_invariant(Invariant::all_finite("finite"));
+
+        let params = vec![1.0, 2.0, 3.0, 4.0];
+        let mut gradients = vec![0.1, 0.2, 0.3, 0.4];
+
+        let mut guard = SafeLearningGuard::new(&mut registry);
+
+        // Try to update index 0 (blocked)
+        let result = guard.prepare(&params, &[0, 1, 2]);
+        assert!(result.is_err());
+
+        // Update only allowed indices
+        let result = guard.prepare(&params, &[1, 2, 3]);
+        assert!(result.is_ok());
+        let zero_indices = result.unwrap();
+        assert!(zero_indices.contains(&1)); // Gradient should be zeroed
+
+        // Apply gradient mask
+        guard.mask_gradients(&mut gradients);
+        assert_eq!(gradients[1], 0.0);
+    }
+}

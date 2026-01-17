@@ -1,236 +1,236 @@
-// Phase 4: Structural Pruning Tests
+// : Structural Pruning Tests
 // Tests activation tracking, weight pruning, dead path elimination, and optimization
 
 fn main() -> i64 {
-    println("=== Structural Pruning Test ===");
+ println("=== Structural Pruning Test ===");
 
-    // Pruning reason constants
-    let prune_none: i64 = 0;
-    let prune_weight: i64 = 1;
-    let prune_activation: i64 = 2;
-    let prune_gradient: i64 = 3;
-    let prune_dead: i64 = 4;
+ // Pruning reason constants
+ let prune_none: i64 = 0;
+ let prune_weight: i64 = 1;
+ let prune_activation: i64 = 2;
+ let prune_gradient: i64 = 3;
+ let prune_dead: i64 = 4;
 
-    // Test 1: Activation tracker init
-    println("Test 1: Activation tracker init");
-    activation_tracker_init();
-    let enabled: i64 = activation_tracking_enabled();
-    if enabled == 1 {
-        println("  PASS: Tracking enabled");
-    } else {
-        println("  FAIL: Tracking not enabled");
-        return 1;
-    }
+ // Test 1: Activation tracker init
+ println("Test 1: Activation tracker init");
+ activation_tracker_init();
+ let enabled: i64 = activation_tracking_enabled();
+ if enabled == 1 {
+ println(" PASS: Tracking enabled");
+ } else {
+ println(" FAIL: Tracking not enabled");
+ return 1;
+ }
 
-    // Test 2: Record activations
-    println("Test 2: Record activations");
-    activation_record(1, 0.8);
-    activation_record(1, 0.9);
-    activation_record(1, 0.7);
-    activation_record(2, 0.1);
-    activation_record(2, 0.05);
-    let count1: i64 = activation_count_get(1);
-    let count2: i64 = activation_count_get(2);
-    if count1 == 3 && count2 == 2 {
-        println("  PASS: Recorded activations");
-    } else {
-        println("  FAIL: Wrong activation counts");
-        return 1;
-    }
+ // Test 2: Record activations
+ println("Test 2: Record activations");
+ activation_record(1, 0.8);
+ activation_record(1, 0.9);
+ activation_record(1, 0.7);
+ activation_record(2, 0.1);
+ activation_record(2, 0.05);
+ let count1: i64 = activation_count_get(1);
+ let count2: i64 = activation_count_get(2);
+ if count1 == 3 && count2 == 2 {
+ println(" PASS: Recorded activations");
+ } else {
+ println(" FAIL: Wrong activation counts");
+ return 1;
+ }
 
-    // Test 3: Activation rate
-    println("Test 3: Activation rate");
-    let rate1: f64 = activation_rate_get(1);
-    let rate2: f64 = activation_rate_get(2);
-    // Gate 1: all outputs > 0.5, so rate = 1.0
-    // Gate 2: all outputs < 0.5, so rate = 0.0
-    if rate1 > 0.9 && rate2 < 0.1 {
-        println("  PASS: Activation rates correct");
-    } else {
-        println("  FAIL: Wrong activation rates");
-        return 1;
-    }
+ // Test 3: Activation rate
+ println("Test 3: Activation rate");
+ let rate1: f64 = activation_rate_get(1);
+ let rate2: f64 = activation_rate_get(2);
+ // Gate 1: all outputs > 0.5, so rate = 1.0
+ // Gate 2: all outputs < 0.5, so rate = 0.0
+ if rate1 > 0.9 && rate2 < 0.1 {
+ println(" PASS: Activation rates correct");
+ } else {
+ println(" FAIL: Wrong activation rates");
+ return 1;
+ }
 
-    // Test 4: Mean output
-    println("Test 4: Mean output");
-    let mean1: f64 = activation_mean_get(1);
-    // mean of 0.8, 0.9, 0.7 = 0.8
-    if mean1 > 0.75 && mean1 < 0.85 {
-        println("  PASS: Mean output correct");
-    } else {
-        println("  FAIL: Wrong mean output");
-        return 1;
-    }
+ // Test 4: Mean output
+ println("Test 4: Mean output");
+ let mean1: f64 = activation_mean_get(1);
+ // mean of 0.8, 0.9, 0.7 = 0.8
+ if mean1 > 0.75 && mean1 < 0.85 {
+ println(" PASS: Mean output correct");
+ } else {
+ println(" FAIL: Wrong mean output");
+ return 1;
+ }
 
-    // Test 5: Epoch tracking
-    println("Test 5: Epoch tracking");
-    let epoch0: i64 = activation_epoch_current();
-    activation_epoch_advance();
-    let epoch1: i64 = activation_epoch_current();
-    if epoch1 == epoch0 + 1 {
-        println("  PASS: Epoch advanced");
-    } else {
-        println("  FAIL: Epoch not advanced");
-        return 1;
-    }
+ // Test 5: Epoch tracking
+ println("Test 5: Epoch tracking");
+ let epoch0: i64 = activation_epoch_current();
+ activation_epoch_advance();
+ let epoch1: i64 = activation_epoch_current();
+ if epoch1 == epoch0 + 1 {
+ println(" PASS: Epoch advanced");
+ } else {
+ println(" FAIL: Epoch not advanced");
+ return 1;
+ }
 
-    // Test 6: Gate count
-    println("Test 6: Gate count");
-    let gate_count: i64 = activation_gate_count();
-    if gate_count == 2 {
-        println("  PASS: Tracking 2 gates");
-    } else {
-        println("  FAIL: Wrong gate count");
-        return 1;
-    }
+ // Test 6: Gate count
+ println("Test 6: Gate count");
+ let gate_count: i64 = activation_gate_count();
+ if gate_count == 2 {
+ println(" PASS: Tracking 2 gates");
+ } else {
+ println(" FAIL: Wrong gate count");
+ return 1;
+ }
 
-    // Test 7: Pruning context creation
-    println("Test 7: Pruning context");
-    // weight_threshold=0.1, activation_threshold=0.01, zero_gradient_epochs=5
-    let ctx: i64 = pruning_context_new(0.1, 0.01, 5);
-    if ctx != 0 {
-        println("  PASS: Created pruning context");
-    } else {
-        println("  FAIL: Could not create context");
-        return 1;
-    }
+ // Test 7: Pruning context creation
+ println("Test 7: Pruning context");
+ // weight_threshold=0.1, activation_threshold=0.01, zero_gradient_epochs=5
+ let ctx: i64 = pruning_context_new(0.1, 0.01, 5);
+ if ctx != 0 {
+ println(" PASS: Created pruning context");
+ } else {
+ println(" FAIL: Could not create context");
+ return 1;
+ }
 
-    // Test 8: Add gates with weights
-    println("Test 8: Add gates to pruning");
-    pruning_add_gate(ctx, 1, 0.5);
-    pruning_add_gate(ctx, 2, 0.05);
-    pruning_add_gate(ctx, 3, 0.8);
-    pruning_add_gate(ctx, 4, 0.01);
-    let total: i64 = pruning_total_count(ctx);
-    if total == 4 {
-        println("  PASS: Added 4 gates");
-    } else {
-        println("  FAIL: Wrong gate count");
-        return 1;
-    }
+ // Test 8: Add gates with weights
+ println("Test 8: Add gates to pruning");
+ pruning_add_gate(ctx, 1, 0.5);
+ pruning_add_gate(ctx, 2, 0.05);
+ pruning_add_gate(ctx, 3, 0.8);
+ pruning_add_gate(ctx, 4, 0.01);
+ let total: i64 = pruning_total_count(ctx);
+ if total == 4 {
+ println(" PASS: Added 4 gates");
+ } else {
+ println(" FAIL: Wrong gate count");
+ return 1;
+ }
 
-    // Test 9: Execute pruning (weight-based)
-    println("Test 9: Weight-based pruning");
-    let pruned: i64 = pruning_execute(ctx);
-    // Gates 2 (0.05) and 4 (0.01) should be pruned (weight < 0.1)
-    if pruned == 2 {
-        println("  PASS: Pruned 2 gates by weight");
-    } else {
-        println("  FAIL: Wrong number pruned");
-        return 1;
-    }
+ // Test 9: Execute pruning (weight-based)
+ println("Test 9: Weight-based pruning");
+ let pruned: i64 = pruning_execute(ctx);
+ // Gates 2 (0.05) and 4 (0.01) should be pruned (weight < 0.1)
+ if pruned == 2 {
+ println(" PASS: Pruned 2 gates by weight");
+ } else {
+ println(" FAIL: Wrong number pruned");
+ return 1;
+ }
 
-    // Test 10: Check pruning status
-    println("Test 10: Pruning status");
-    let is_pruned_1: i64 = pruning_is_pruned(ctx, 1);
-    let is_pruned_2: i64 = pruning_is_pruned(ctx, 2);
-    let is_pruned_3: i64 = pruning_is_pruned(ctx, 3);
-    let is_pruned_4: i64 = pruning_is_pruned(ctx, 4);
-    if is_pruned_1 == 0 && is_pruned_2 == 1 && is_pruned_3 == 0 && is_pruned_4 == 1 {
-        println("  PASS: Correct pruning status");
-    } else {
-        println("  FAIL: Wrong pruning status");
-        return 1;
-    }
+ // Test 10: Check pruning status
+ println("Test 10: Pruning status");
+ let is_pruned_1: i64 = pruning_is_pruned(ctx, 1);
+ let is_pruned_2: i64 = pruning_is_pruned(ctx, 2);
+ let is_pruned_3: i64 = pruning_is_pruned(ctx, 3);
+ let is_pruned_4: i64 = pruning_is_pruned(ctx, 4);
+ if is_pruned_1 == 0 && is_pruned_2 == 1 && is_pruned_3 == 0 && is_pruned_4 == 1 {
+ println(" PASS: Correct pruning status");
+ } else {
+ println(" FAIL: Wrong pruning status");
+ return 1;
+ }
 
-    // Test 11: Pruning reason
-    println("Test 11: Pruning reason");
-    let reason2: i64 = pruning_reason(ctx, 2);
-    if reason2 == prune_weight {
-        println("  PASS: Correct pruning reason");
-    } else {
-        println("  FAIL: Wrong pruning reason");
-        return 1;
-    }
+ // Test 11: Pruning reason
+ println("Test 11: Pruning reason");
+ let reason2: i64 = pruning_reason(ctx, 2);
+ if reason2 == prune_weight {
+ println(" PASS: Correct pruning reason");
+ } else {
+ println(" FAIL: Wrong pruning reason");
+ return 1;
+ }
 
-    // Test 12: Pruning ratio
-    println("Test 12: Pruning ratio");
-    let ratio: f64 = pruning_ratio(ctx);
-    // 2/4 = 0.5
-    if ratio > 0.45 && ratio < 0.55 {
-        println("  PASS: Pruning ratio ~50%");
-    } else {
-        println("  FAIL: Wrong pruning ratio");
-        return 1;
-    }
+ // Test 12: Pruning ratio
+ println("Test 12: Pruning ratio");
+ let ratio: f64 = pruning_ratio(ctx);
+ // 2/4 = 0.5
+ if ratio > 0.45 && ratio < 0.55 {
+ println(" PASS: Pruning ratio ~50%");
+ } else {
+ println(" FAIL: Wrong pruning ratio");
+ return 1;
+ }
 
-    // Test 13: Dead path analyzer
-    println("Test 13: Dead path analyzer");
-    let dpa: i64 = dead_path_analyzer_new(10);
-    if dpa != 0 {
-        println("  PASS: Created dead path analyzer");
-    } else {
-        println("  FAIL: Could not create analyzer");
-        return 1;
-    }
+ // Test 13: Dead path analyzer
+ println("Test 13: Dead path analyzer");
+ let dpa: i64 = dead_path_analyzer_new(10);
+ if dpa != 0 {
+ println(" PASS: Created dead path analyzer");
+ } else {
+ println(" FAIL: Could not create analyzer");
+ return 1;
+ }
 
-    // Test 14: Add edges and mark entry
-    println("Test 14: Add edges");
-    dead_path_add_edge(dpa, 0, 1);
-    dead_path_add_edge(dpa, 1, 2);
-    dead_path_add_edge(dpa, 0, 3);
-    dead_path_mark_entry(dpa, 0);
-    println("  PASS: Added edges and entry");
+ // Test 14: Add edges and mark entry
+ println("Test 14: Add edges");
+ dead_path_add_edge(dpa, 0, 1);
+ dead_path_add_edge(dpa, 1, 2);
+ dead_path_add_edge(dpa, 0, 3);
+ dead_path_mark_entry(dpa, 0);
+ println(" PASS: Added edges and entry");
 
-    // Test 15: Propagate reachability
-    println("Test 15: Propagate reachability");
-    dead_path_propagate(dpa);
-    let reachable: i64 = dead_path_reachable_count(dpa);
-    // Entry 0 reaches 1, 2, 3
-    if reachable == 4 {
-        println("  PASS: 4 gates reachable");
-    } else {
-        println("  PASS: Propagation complete (may vary)");
-    }
+ // Test 15: Propagate reachability
+ println("Test 15: Propagate reachability");
+ dead_path_propagate(dpa);
+ let reachable: i64 = dead_path_reachable_count(dpa);
+ // Entry 0 reaches 1, 2, 3
+ if reachable == 4 {
+ println(" PASS: 4 gates reachable");
+ } else {
+ println(" PASS: Propagation complete (may vary)");
+ }
 
-    // Test 16: Structured pruner
-    println("Test 16: Structured pruner");
-    let sp: i64 = structured_pruner_new(0.1);
-    if sp != 0 {
-        println("  PASS: Created structured pruner");
-    } else {
-        println("  FAIL: Could not create pruner");
-        return 1;
-    }
+ // Test 16: Structured pruner
+ println("Test 16: Structured pruner");
+ let sp: i64 = structured_pruner_new(0.1);
+ if sp != 0 {
+ println(" PASS: Created structured pruner");
+ } else {
+ println(" FAIL: Could not create pruner");
+ return 1;
+ }
 
-    // Test 17: Optimization stats
-    println("Test 17: Optimization stats");
-    let stats: i64 = optimization_stats_calculate(ctx, dpa, sp);
-    if stats != 0 {
-        println("  PASS: Calculated optimization stats");
-    } else {
-        println("  FAIL: Could not calculate stats");
-        return 1;
-    }
+ // Test 17: Optimization stats
+ println("Test 17: Optimization stats");
+ let stats: i64 = optimization_stats_calculate(ctx, dpa, sp);
+ if stats != 0 {
+ println(" PASS: Calculated optimization stats");
+ } else {
+ println(" FAIL: Could not calculate stats");
+ return 1;
+ }
 
-    // Test 18: Size reduction estimate
-    println("Test 18: Size reduction");
-    let reduction: f64 = optimization_size_reduction(stats);
-    if reduction > 0.0 {
-        println("  PASS: Size reduction estimated");
-    } else {
-        println("  PASS: No reduction (valid)");
-    }
+ // Test 18: Size reduction estimate
+ println("Test 18: Size reduction");
+ let reduction: f64 = optimization_size_reduction(stats);
+ if reduction > 0.0 {
+ println(" PASS: Size reduction estimated");
+ } else {
+ println(" PASS: No reduction (valid)");
+ }
 
-    // Test 19: Speedup estimate
-    println("Test 19: Speedup estimate");
-    let speedup: f64 = optimization_speedup(stats);
-    if speedup >= 1.0 {
-        println("  PASS: Speedup estimated");
-    } else {
-        println("  FAIL: Invalid speedup");
-        return 1;
-    }
+ // Test 19: Speedup estimate
+ println("Test 19: Speedup estimate");
+ let speedup: f64 = optimization_speedup(stats);
+ if speedup >= 1.0 {
+ println(" PASS: Speedup estimated");
+ } else {
+ println(" FAIL: Invalid speedup");
+ return 1;
+ }
 
-    // Test 20: Cleanup
-    println("Test 20: Cleanup");
-    pruning_context_free(ctx);
-    dead_path_analyzer_free(dpa);
-    structured_pruner_free(sp);
-    optimization_stats_free(stats);
-    println("  PASS: All resources freed");
+ // Test 20: Cleanup
+ println("Test 20: Cleanup");
+ pruning_context_free(ctx);
+ dead_path_analyzer_free(dpa);
+ structured_pruner_free(sp);
+ optimization_stats_free(stats);
+ println(" PASS: All resources freed");
 
-    println("");
-    println("=== ALL 20 TESTS PASSED ===");
-    0
+ println("");
+ println("=== ALL 20 TESTS PASSED ===");
+ 0
 }

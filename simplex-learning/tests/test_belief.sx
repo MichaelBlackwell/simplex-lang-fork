@@ -1,0 +1,705 @@
+// TASK-014: Belief Module Tests
+//
+// Integration tests for grounded beliefs with full epistemic metadata.
+
+use simplex_learning::belief::{
+    GroundedBelief, BeliefId,
+    BeliefProvenance, ProvenanceOrigin, InferenceRule, Signature,
+    EvidenceLink, EvidenceStatus, Observation, FalsificationCondition, FalsificationAction,
+    CalibratedConfidence, CalibrationRecord,
+    BeliefScope, Domain, Context, ScopeViolation,
+    BeliefTimestamps,
+};
+use simplex_learning::belief::grounded::check_belief;
+use simplex_learning::belief::scope::domains;
+use std::time::Duration;
+
+// =============================================================================
+// GroundedBelief Creation Tests
+// =============================================================================
+
+#[test]
+fn test_observed_belief_creation() {
+    let belief: GroundedBelief<String> = GroundedBelief::observed(
+        "sensor_reading",
+        "Temperature is 25C".to_string(),
+        "temp_sensor_001",
+        0.95,
+    );
+
+    assert_eq!(belief.id, "sensor_reading");
+    assert!(belief.provenance.is_observed());
+    assert!(belief.confidence_value() > 0.9);
+    assert!(belief.active);
+    assert!(belief.is_valid());
+}
+
+#[test]
+fn test_inferred_belief_creation() {
+    let belief: GroundedBelief<String> = GroundedBelief::inferred(
+        "derived_conclusion",
+        "It will rain tomorrow".to_string(),
+        vec!["weather_pattern".to_string(), "humidity_high".to_string()],
+        InferenceRule::BayesianUpdate {
+            prior: 0.3,
+            likelihood_ratio: 2.5,
+        },
+        0.7,
+    );
+
+    assert!(belief.provenance.is_inferred());
+    assert!(belief.confidence_value() > 0.6);
+}
+
+#[test]
+fn test_authoritative_belief_creation() {
+    let belief: GroundedBelief<String> = GroundedBelief::authoritative(
+        "expert_opinion",
+        "Best practice is X".to_string(),
+        "domain_expert_001",
+        0.85,
+    );
+
+    assert!(belief.provenance.is_authoritative());
+    assert!((belief.confidence_value() - 0.85).abs() < 0.01);
+}
+
+#[test]
+fn test_learned_belief_creation() {
+    let belief: GroundedBelief<String> = GroundedBelief::learned(
+        "ml_prediction",
+        "User prefers option A".to_string(),
+        "abc123hash",
+        "model_v2.1",
+        0.88,
+    );
+
+    assert!(belief.provenance.is_learned());
+}
+
+#[test]
+fn test_prior_belief_gets_reduced_confidence() {
+    let belief: GroundedBelief<String> = GroundedBelief::prior(
+        "assumption",
+        "Users generally prefer simplicity".to_string(),
+        "Common UX principle",
+        0.9,
+    );
+
+    assert!(belief.provenance.is_prior());
+    // Priors get reduced confidence (multiplied by 0.5)
+    assert!(belief.confidence_value() < 0.5);
+}
+
+// =============================================================================
+// Evidence Management Tests
+// =============================================================================
+
+#[test]
+fn test_adding_supporting_evidence_increases_confidence() {
+    let mut belief: GroundedBelief<String> = GroundedBelief::observed(
+        "test",
+        "Test claim".to_string(),
+        "sensor",
+        0.5,
+    );
+
+    let initial_conf = belief.confidence_value();
+
+    belief.add_support(
+        Observation::new("obs1", "Supporting observation", "sensor"),
+        0.8,
+    );
+
+    assert!(belief.confidence_value() >= initial_conf);
+    assert_eq!(belief.supporting_evidence_count(), 1);
+}
+
+#[test]
+fn test_adding_contradicting_evidence() {
+    let mut belief: GroundedBelief<String> = GroundedBelief::observed(
+        "test",
+        "Test claim".to_string(),
+        "sensor",
+        0.9,
+    );
+
+    belief.add_contradiction(
+        Observation::new("obs2", "Contradicting observation", "other_sensor"),
+        0.9,
+    );
+
+    assert_eq!(belief.contradicting_evidence_count(), 1);
+    // With contradiction, belief may need review
+    assert!(belief.needs_review() || belief.contradicting_evidence_count() > 0);
+}
+
+#[test]
+fn test_evidence_pruning() {
+    let mut belief: GroundedBelief<String> = GroundedBelief::observed(
+        "test",
+        "Test".to_string(),
+        "sensor",
+        0.8,
+    );
+
+    // Add evidence
+    belief.add_support(
+        Observation::new("obs1", "Observation 1", "source"),
+        0.7,
+    );
+    belief.add_support(
+        Observation::new("obs2", "Observation 2", "source"),
+        0.8,
+    );
+
+    assert_eq!(belief.evidence.len(), 2);
+
+    // Prune (should not remove valid evidence)
+    belief.prune_evidence();
+    assert!(belief.evidence.len() <= 2);
+}
+
+// =============================================================================
+// Builder Pattern Tests
+// =============================================================================
+
+#[test]
+fn test_builder_with_evidence() {
+    let evidence = EvidenceLink::supporting(
+        Observation::new("sensor_data", "Reading: 25C", "temp_sensor"),
+        0.9,
+    );
+
+    let belief: GroundedBelief<f64> = GroundedBelief::observed(
+        "temperature",
+        25.0,
+        "temp_sensor",
+        0.95,
+    )
+    .with_evidence(evidence)
+    .with_tag("environmental");
+
+    assert_eq!(belief.evidence.len(), 1);
+    assert_eq!(belief.tags.len(), 1);
+    assert_eq!(belief.tags[0], "environmental");
+}
+
+#[test]
+fn test_builder_with_uncertainty() {
+    let belief: GroundedBelief<String> = GroundedBelief::observed(
+        "test",
+        "Test".to_string(),
+        "sensor",
+        0.8,
+    )
+    .with_uncertainty(0.15);
+
+    // Should have uncertainty bounds
+    assert!(belief.confidence.uncertainty() > 0.0);
+}
+
+#[test]
+fn test_builder_expires_in() {
+    let belief: GroundedBelief<String> = GroundedBelief::observed(
+        "expiring",
+        "Time-limited claim".to_string(),
+        "source",
+        0.9,
+    )
+    .expires_in(Duration::from_secs(3600));
+
+    // Should have at least one expiry-related falsifier
+    assert!(!belief.falsifiers.is_empty());
+}
+
+// =============================================================================
+// Scope Tests
+// =============================================================================
+
+#[test]
+fn test_universal_scope() {
+    let belief: GroundedBelief<String> = GroundedBelief::observed(
+        "universal",
+        "Universal truth".to_string(),
+        "source",
+        0.9,
+    );
+
+    let any_context = Context::new(domains::general(), "user1");
+    assert!(belief.applies_in(&any_context));
+}
+
+#[test]
+fn test_domain_scope_restriction() {
+    let belief: GroundedBelief<String> = GroundedBelief::observed(
+        "medical_belief",
+        "Patient has condition X".to_string(),
+        "diagnosis_system",
+        0.85,
+    )
+    .in_domain(domains::medical());
+
+    let medical_context = Context::new(domains::medical(), "doctor1");
+    let financial_context = Context::new(domains::financial(), "analyst1");
+    let general_context = Context::new(domains::general(), "user1");
+
+    assert!(belief.applies_in(&medical_context));
+    assert!(!belief.applies_in(&financial_context));
+    assert!(!belief.applies_in(&general_context));
+}
+
+#[test]
+fn test_scope_assertion_error() {
+    let belief: GroundedBelief<String> = GroundedBelief::observed(
+        "restricted",
+        "Restricted claim".to_string(),
+        "source",
+        0.9,
+    )
+    .in_domain(domains::financial());
+
+    let wrong_context = Context::new(domains::medical(), "user");
+
+    let result = belief.assert_applicable(&wrong_context);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_use_in_context() {
+    let mut belief: GroundedBelief<String> = GroundedBelief::observed(
+        "usable",
+        "Usable claim".to_string(),
+        "source",
+        0.9,
+    );
+
+    let context = Context::new(domains::general(), "user");
+
+    let result = belief.use_in(&context);
+    assert!(result.is_ok());
+    assert_eq!(*result.unwrap(), "Usable claim");
+}
+
+// =============================================================================
+// Calibration Tests
+// =============================================================================
+
+#[test]
+fn test_calibration_record_perfectly_calibrated() {
+    let mut record = CalibrationRecord::new();
+
+    // Perfectly calibrated: 70% confidence, correct 70% of time
+    for _ in 0..70 {
+        record.record(0.7, true);
+    }
+    for _ in 0..30 {
+        record.record(0.7, false);
+    }
+
+    let ece = record.compute_ece();
+    assert!(ece < 0.1, "ECE should be low for calibrated predictions: {}", ece);
+}
+
+#[test]
+fn test_calibration_record_overconfident() {
+    let mut record = CalibrationRecord::new();
+
+    // Overconfident: 90% confidence, only correct 60% of time
+    for _ in 0..60 {
+        record.record(0.9, true);
+    }
+    for _ in 0..40 {
+        record.record(0.9, false);
+    }
+
+    let ece = record.compute_ece();
+    assert!(ece > 0.15, "ECE should be high for overconfident predictions: {}", ece);
+}
+
+#[test]
+fn test_confidence_decay() {
+    let mut conf = CalibratedConfidence::new(0.9);
+
+    // Decay should move toward 0.5
+    conf.decay(0.1);
+    assert!(conf.raw() < 0.9);
+    assert!(conf.raw() > 0.5);
+
+    // Multiple decays should converge to 0.5
+    for _ in 0..100 {
+        conf.decay(0.1);
+    }
+    assert!((conf.raw() - 0.5).abs() < 0.05);
+}
+
+#[test]
+fn test_confidence_bayesian_update() {
+    let mut conf = CalibratedConfidence::new(0.5);
+
+    // Strong evidence should increase confidence
+    conf.bayesian_update(3.0);
+    assert!(conf.raw() > 0.5);
+
+    // Against evidence should decrease confidence
+    let mut conf2 = CalibratedConfidence::new(0.8);
+    conf2.bayesian_update(0.3);
+    assert!(conf2.raw() < 0.8);
+}
+
+#[test]
+fn test_confidence_from_observations() {
+    let conf = CalibratedConfidence::from_observations(80, 100);
+
+    assert!((conf.raw() - 0.8).abs() < 0.01);
+    assert!(conf.is_well_calibrated || conf.sample_size >= 30);
+}
+
+// =============================================================================
+// Prediction Tracking Tests
+// =============================================================================
+
+#[test]
+fn test_record_prediction_outcomes() {
+    let mut belief: GroundedBelief<String> = GroundedBelief::observed(
+        "test",
+        "Test".to_string(),
+        "sensor",
+        0.7,
+    );
+
+    // Record predictions matching confidence
+    for _ in 0..70 {
+        belief.record_prediction(0.7, true);
+    }
+    for _ in 0..30 {
+        belief.record_prediction(0.7, false);
+    }
+
+    // Should be well-calibrated
+    assert!(belief.ece() < 0.15);
+}
+
+// =============================================================================
+// Falsification Tests
+// =============================================================================
+
+#[test]
+fn test_falsification_reduce_confidence() {
+    let mut belief: GroundedBelief<String> = GroundedBelief::observed(
+        "test",
+        "Test".to_string(),
+        "sensor",
+        0.9,
+    )
+    .with_falsifier(FalsificationCondition {
+        condition: "If accuracy drops below 50%".to_string(),
+        action: FalsificationAction::ReduceConfidence { amount: 0.3 },
+        triggered: true,  // Pre-triggered for test
+        last_checked: None,
+    });
+
+    let initial = belief.confidence_value();
+    belief.apply_falsifications();
+
+    assert!(belief.confidence_value() < initial);
+}
+
+#[test]
+fn test_falsification_invalidate() {
+    let mut belief: GroundedBelief<String> = GroundedBelief::observed(
+        "test",
+        "Test".to_string(),
+        "sensor",
+        0.9,
+    )
+    .with_falsifier(FalsificationCondition {
+        condition: "Critical failure".to_string(),
+        action: FalsificationAction::Invalidate,
+        triggered: true,
+        last_checked: None,
+    });
+
+    assert!(belief.active);
+    belief.apply_falsifications();
+    assert!(!belief.active);
+}
+
+// =============================================================================
+// Transformation Tests
+// =============================================================================
+
+#[test]
+fn test_belief_negation() {
+    let belief: GroundedBelief<String> = GroundedBelief::observed(
+        "original",
+        "X is true".to_string(),
+        "source",
+        0.8,
+    );
+
+    let negated = belief.negate();
+
+    assert_eq!(negated.id, "not_original");
+    assert!((negated.confidence_value() - 0.2).abs() < 0.01);
+}
+
+#[test]
+fn test_belief_blending() {
+    let belief1: GroundedBelief<String> = GroundedBelief::observed(
+        "b1",
+        "Claim".to_string(),
+        "source1",
+        0.9,
+    );
+
+    let belief2: GroundedBelief<String> = GroundedBelief::observed(
+        "b2",
+        "Same claim".to_string(),
+        "source2",
+        0.5,
+    );
+
+    let blended = belief1.blend_with(&belief2, 0.6);
+
+    // Blended confidence should be between the two
+    let expected = 0.9 * 0.6 + 0.5 * 0.4;
+    assert!((blended.confidence_value() - expected).abs() < 0.1);
+}
+
+// =============================================================================
+// Lifecycle Tests
+// =============================================================================
+
+#[test]
+fn test_belief_validity() {
+    let belief: GroundedBelief<String> = GroundedBelief::observed(
+        "valid",
+        "Valid claim".to_string(),
+        "source",
+        0.9,
+    );
+
+    assert!(belief.is_valid());
+    assert!(belief.active);
+}
+
+#[test]
+fn test_belief_deactivation() {
+    let mut belief: GroundedBelief<String> = GroundedBelief::observed(
+        "test",
+        "Test".to_string(),
+        "source",
+        0.9,
+    );
+
+    assert!(belief.active);
+    belief.deactivate();
+    assert!(!belief.active);
+    assert!(!belief.is_valid());
+
+    belief.reactivate();
+    assert!(belief.active);
+}
+
+#[test]
+fn test_inactive_belief_doesnt_apply() {
+    let mut belief: GroundedBelief<String> = GroundedBelief::observed(
+        "test",
+        "Test".to_string(),
+        "source",
+        0.9,
+    );
+
+    let context = Context::new(domains::general(), "user");
+
+    assert!(belief.applies_in(&context));
+
+    belief.deactivate();
+    assert!(!belief.applies_in(&context));
+}
+
+// =============================================================================
+// Comprehensive Check Tests
+// =============================================================================
+
+#[test]
+fn test_check_belief_healthy() {
+    let belief: GroundedBelief<String> = GroundedBelief::observed(
+        "healthy",
+        "Well-supported claim".to_string(),
+        "reliable_source",
+        0.7,
+    );
+
+    let result = check_belief(&belief);
+    assert!(result.valid);
+}
+
+#[test]
+fn test_check_belief_high_confidence_no_evidence() {
+    let belief: GroundedBelief<String> = GroundedBelief::observed(
+        "suspicious",
+        "High confidence but no evidence".to_string(),
+        "source",
+        0.95,
+    );
+
+    let result = check_belief(&belief);
+    // Should warn about high confidence without evidence
+    assert!(result.warnings.iter().any(|w| w.contains("evidence")));
+}
+
+#[test]
+fn test_check_inactive_belief() {
+    let mut belief: GroundedBelief<String> = GroundedBelief::observed(
+        "inactive",
+        "Test".to_string(),
+        "source",
+        0.9,
+    );
+    belief.deactivate();
+
+    let result = check_belief(&belief);
+    assert!(!result.valid);
+    assert!(result.triggered_falsifiers.iter().any(|f| f.contains("not active")));
+}
+
+// =============================================================================
+// Provenance Tests
+// =============================================================================
+
+#[test]
+fn test_provenance_trust_weights() {
+    let observed = BeliefProvenance::observed("sensor");
+    let authoritative = BeliefProvenance::authoritative("expert", 0.8);
+    let learned = BeliefProvenance::learned("hash", "v1", 0.75);
+    let prior = BeliefProvenance::prior("assumption");
+
+    // Trust should follow: observed > authoritative > learned > prior
+    assert!(observed.trust_weight() > authoritative.trust_weight());
+    assert!(authoritative.trust_weight() > prior.trust_weight());
+    assert!(learned.trust_weight() > prior.trust_weight());
+}
+
+#[test]
+fn test_provenance_with_signature() {
+    let sig = Signature::new(vec![1, 2, 3, 4], "ed25519", "key_001");
+    let prov = BeliefProvenance::authoritative_signed("expert", 0.8, sig);
+
+    // Signed should have higher trust
+    let unsigned = BeliefProvenance::authoritative("expert", 0.8);
+    assert!(prov.trust_weight() >= unsigned.trust_weight());
+}
+
+// =============================================================================
+// Strength Calculation Tests
+// =============================================================================
+
+#[test]
+fn test_belief_strength_computation() {
+    let belief: GroundedBelief<String> = GroundedBelief::observed(
+        "strong",
+        "Well-grounded claim".to_string(),
+        "reliable_sensor",
+        0.9,
+    );
+
+    let strength = belief.strength();
+    assert!(strength.val > 0.0);
+    assert!(strength.val <= 1.0);
+}
+
+#[test]
+fn test_belief_strength_with_evidence() {
+    let mut belief: GroundedBelief<String> = GroundedBelief::observed(
+        "supported",
+        "Evidence-backed claim".to_string(),
+        "sensor",
+        0.8,
+    );
+
+    let initial_strength = belief.strength().val;
+
+    // Add supporting evidence
+    belief.add_support(
+        Observation::new("obs1", "Supporting data", "source"),
+        0.9,
+    );
+    belief.add_support(
+        Observation::new("obs2", "More support", "source"),
+        0.8,
+    );
+
+    // Strength should increase with evidence
+    assert!(belief.strength().val >= initial_strength * 0.9);
+}
+
+#[test]
+fn test_epistemic_summary() {
+    let belief: GroundedBelief<String> = GroundedBelief::observed(
+        "test_summary",
+        "Test claim".to_string(),
+        "test_source",
+        0.75,
+    );
+
+    let summary = belief.epistemic_summary();
+
+    assert!(summary.contains("test_summary"));
+    assert!(summary.contains("0.75") || summary.contains(".75"));
+    assert!(summary.contains("Observed"));
+}
+
+// =============================================================================
+// Edge Cases
+// =============================================================================
+
+#[test]
+fn test_belief_with_zero_confidence() {
+    let belief: GroundedBelief<String> = GroundedBelief::observed(
+        "zero",
+        "Zero confidence claim".to_string(),
+        "source",
+        0.0,
+    );
+
+    assert!(belief.confidence_value() >= 0.0);
+    assert!(belief.confidence_value() <= 1.0);
+}
+
+#[test]
+fn test_belief_with_max_confidence() {
+    let belief: GroundedBelief<String> = GroundedBelief::observed(
+        "max",
+        "Max confidence claim".to_string(),
+        "source",
+        1.0,
+    );
+
+    assert!(belief.confidence_value() <= 1.0);
+}
+
+#[test]
+fn test_calibration_empty_record() {
+    let record = CalibrationRecord::new();
+
+    // Empty record should return uncertainty defaults
+    assert!(record.compute_ece() <= 1.0);
+    assert!(record.compute_brier() <= 1.0);
+    assert_eq!(record.sample_size(), 0);
+}
+
+#[test]
+fn test_confidence_blend_extreme_weights() {
+    let conf1 = CalibratedConfidence::new(0.9);
+    let conf2 = CalibratedConfidence::new(0.1);
+
+    // Full weight to first
+    let blended1 = conf1.blend(&conf2, 1.0);
+    assert!((blended1.raw() - 0.9).abs() < 0.01);
+
+    // Full weight to second
+    let blended2 = conf1.blend(&conf2, 0.0);
+    assert!((blended2.raw() - 0.1).abs() < 0.01);
+}

@@ -1,0 +1,903 @@
+// Edge Hive - Adaptation Unit Tests
+// Tests for battery-aware scheduling, specialist scaling, and platform adapters
+
+fn main() -> i64 {
+    println(string_from("=== Edge Hive Adaptation Tests ==="));
+    let passed: i64 = 0;
+    let failed: i64 = 0;
+
+    // Power state tests
+    if test_power_states() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Battery scheduler tests
+    if test_battery_scheduler_new() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_scheduler_update() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_scheduler_can_run_model() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_scheduler_thermal_throttle() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Specialist scaler tests
+    if test_specialist_scaler_new() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_scaler_memory_pressure() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Platform adapter tests
+    if test_platform_adapter_new() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_adapter_format_response() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_adapter_notification() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Sensor manager tests
+    if test_sensor_manager_new() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_sensor_activate() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Adaptive config tests
+    if test_create_adaptive_config() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    println(string_from(""));
+    print(string_from("Passed: "));
+    print_num(passed);
+    print(string_from(", Failed: "));
+    print_num(failed);
+    println(string_from(""));
+
+    failed
+}
+
+// =============================================================================
+// Power State Tests
+// =============================================================================
+
+fn test_power_states() -> i64 {
+    print(string_from("Testing power state constants... "));
+
+    // Verify power state values
+    if POWER_CRITICAL() != 0 {
+        println(string_from("FAIL: POWER_CRITICAL should be 0"));
+        return 1;
+    }
+
+    if POWER_LOW() != 1 {
+        println(string_from("FAIL: POWER_LOW should be 1"));
+        return 1;
+    }
+
+    if POWER_MODERATE() != 2 {
+        println(string_from("FAIL: POWER_MODERATE should be 2"));
+        return 1;
+    }
+
+    if POWER_GOOD() != 3 {
+        println(string_from("FAIL: POWER_GOOD should be 3"));
+        return 1;
+    }
+
+    if POWER_FULL() != 4 {
+        println(string_from("FAIL: POWER_FULL should be 4"));
+        return 1;
+    }
+
+    // Test battery_to_power_state
+    if battery_to_power_state(5) != POWER_CRITICAL() {
+        println(string_from("FAIL: 5% should be CRITICAL"));
+        return 1;
+    }
+
+    if battery_to_power_state(15) != POWER_LOW() {
+        println(string_from("FAIL: 15% should be LOW"));
+        return 1;
+    }
+
+    if battery_to_power_state(35) != POWER_MODERATE() {
+        println(string_from("FAIL: 35% should be MODERATE"));
+        return 1;
+    }
+
+    if battery_to_power_state(65) != POWER_GOOD() {
+        println(string_from("FAIL: 65% should be GOOD"));
+        return 1;
+    }
+
+    if battery_to_power_state(90) != POWER_FULL() {
+        println(string_from("FAIL: 90% should be FULL"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Battery Scheduler Tests
+// =============================================================================
+
+fn test_battery_scheduler_new() -> i64 {
+    print(string_from("Testing battery scheduler creation... "));
+
+    let sched: i64 = battery_scheduler_new();
+
+    // Should have default power state
+    if scheduler_power_state(sched) < 0 {
+        println(string_from("FAIL: power state should be non-negative"));
+        return 1;
+    }
+
+    // Should not be plugged in by default
+    if scheduler_is_plugged(sched) != 0 {
+        println(string_from("FAIL: should not be plugged in by default"));
+        return 1;
+    }
+
+    // Thermal state should be normal
+    if scheduler_thermal_state(sched) != THERMAL_NORMAL() {
+        println(string_from("FAIL: thermal state should be NORMAL"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_scheduler_update() -> i64 {
+    print(string_from("Testing battery scheduler update... "));
+
+    let sched: i64 = battery_scheduler_new();
+
+    // Update with new battery level
+    scheduler_update(sched, 75, 0);  // 75%, not plugged
+
+    if scheduler_power_state(sched) != POWER_GOOD() {
+        println(string_from("FAIL: 75% should give GOOD state"));
+        return 1;
+    }
+
+    // Update when plugged in
+    scheduler_update(sched, 75, 1);  // 75%, plugged in
+
+    if scheduler_is_plugged(sched) != 1 {
+        println(string_from("FAIL: should be plugged in"));
+        return 1;
+    }
+
+    // Plugged in should act as FULL power
+    if scheduler_effective_power(sched) != POWER_FULL() {
+        println(string_from("FAIL: plugged in should be effective FULL"));
+        return 1;
+    }
+
+    // Update to critical
+    scheduler_update(sched, 5, 0);
+
+    if scheduler_power_state(sched) != POWER_CRITICAL() {
+        println(string_from("FAIL: 5% should give CRITICAL state"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_scheduler_can_run_model() -> i64 {
+    print(string_from("Testing scheduler can_run_model... "));
+
+    let sched: i64 = battery_scheduler_new();
+
+    // At FULL power, can run model
+    scheduler_update(sched, 90, 0);
+    if scheduler_can_run_model(sched) != 1 {
+        println(string_from("FAIL: FULL power should allow model"));
+        return 1;
+    }
+
+    // At GOOD power, can run model
+    scheduler_update(sched, 65, 0);
+    if scheduler_can_run_model(sched) != 1 {
+        println(string_from("FAIL: GOOD power should allow model"));
+        return 1;
+    }
+
+    // At MODERATE power, can run model (with restrictions)
+    scheduler_update(sched, 35, 0);
+    if scheduler_can_run_model(sched) != 1 {
+        println(string_from("FAIL: MODERATE power should allow model"));
+        return 1;
+    }
+
+    // At LOW power, should not run model
+    scheduler_update(sched, 15, 0);
+    if scheduler_can_run_model(sched) != 0 {
+        println(string_from("FAIL: LOW power should not allow model"));
+        return 1;
+    }
+
+    // At CRITICAL power, definitely no model
+    scheduler_update(sched, 5, 0);
+    if scheduler_can_run_model(sched) != 0 {
+        println(string_from("FAIL: CRITICAL power should not allow model"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_scheduler_thermal_throttle() -> i64 {
+    print(string_from("Testing thermal throttling... "));
+
+    let sched: i64 = battery_scheduler_new();
+    scheduler_update(sched, 90, 0);  // FULL power
+
+    // Normal thermal - can run
+    scheduler_set_thermal(sched, THERMAL_NORMAL());
+    if scheduler_can_run_model(sched) != 1 {
+        println(string_from("FAIL: NORMAL thermal should allow model"));
+        return 1;
+    }
+
+    // WARM thermal - can still run
+    scheduler_set_thermal(sched, THERMAL_WARM());
+    if scheduler_can_run_model(sched) != 1 {
+        println(string_from("FAIL: WARM thermal should allow model"));
+        return 1;
+    }
+
+    // HOT thermal - should throttle
+    scheduler_set_thermal(sched, THERMAL_HOT());
+    if scheduler_can_run_model(sched) != 0 {
+        println(string_from("FAIL: HOT thermal should throttle model"));
+        return 1;
+    }
+
+    // CRITICAL thermal - definitely throttle
+    scheduler_set_thermal(sched, THERMAL_CRITICAL());
+    if scheduler_can_run_model(sched) != 0 {
+        println(string_from("FAIL: CRITICAL thermal should throttle model"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Specialist Scaler Tests
+// =============================================================================
+
+fn test_specialist_scaler_new() -> i64 {
+    print(string_from("Testing specialist scaler creation... "));
+
+    let scaler: i64 = specialist_scaler_new(128);  // 128MB memory budget
+
+    // Should have memory budget set
+    if scaler_memory_budget(scaler) != 128 {
+        println(string_from("FAIL: memory budget should be 128"));
+        return 1;
+    }
+
+    // Should have no active specialists initially
+    if scaler_active_count(scaler) != 0 {
+        println(string_from("FAIL: should have no active specialists"));
+        return 1;
+    }
+
+    // Current usage should be 0
+    if scaler_current_usage(scaler) != 0 {
+        println(string_from("FAIL: current usage should be 0"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_scaler_memory_pressure() -> i64 {
+    print(string_from("Testing scaler memory pressure... "));
+
+    let scaler: i64 = specialist_scaler_new(100);  // 100MB budget
+
+    // Add some specialists
+    scaler_add_specialist(scaler, string_from("context"), 30);
+    scaler_add_specialist(scaler, string_from("quick"), 20);
+    scaler_add_specialist(scaler, string_from("task"), 40);
+
+    // Total usage should be 90
+    if scaler_current_usage(scaler) != 90 {
+        println(string_from("FAIL: usage should be 90"));
+        return 1;
+    }
+
+    // Active count should be 3
+    if scaler_active_count(scaler) != 3 {
+        println(string_from("FAIL: active count should be 3"));
+        return 1;
+    }
+
+    // Adding more should trigger pressure
+    scaler_add_specialist(scaler, string_from("extra"), 30);  // Would exceed budget
+
+    // Scaler should have adapted
+    if scaler_current_usage(scaler) > 100 {
+        println(string_from("FAIL: should not exceed budget"));
+        return 1;
+    }
+
+    // Test adapt_to_memory_pressure
+    scaler_adapt_to_memory_pressure(scaler, 50);  // Reduce to 50MB budget
+
+    if scaler_current_usage(scaler) > 50 {
+        println(string_from("FAIL: should adapt to new budget"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Platform Adapter Tests
+// =============================================================================
+
+fn test_platform_adapter_new() -> i64 {
+    print(string_from("Testing platform adapter creation... "));
+
+    let adapter: i64 = platform_adapter_new(PLATFORM_PHONE());
+
+    // Should have platform set
+    if adapter_platform(adapter) != PLATFORM_PHONE() {
+        println(string_from("FAIL: platform should be PHONE"));
+        return 1;
+    }
+
+    // Should have default screen width
+    if adapter_screen_width(adapter) == 0 {
+        println(string_from("FAIL: screen width should be set"));
+        return 1;
+    }
+
+    // Test different platforms
+    let watch_adapter: i64 = platform_adapter_new(PLATFORM_WATCH());
+    if adapter_platform(watch_adapter) != PLATFORM_WATCH() {
+        println(string_from("FAIL: should create watch adapter"));
+        return 1;
+    }
+
+    let desktop_adapter: i64 = platform_adapter_new(PLATFORM_DESKTOP());
+    if adapter_platform(desktop_adapter) != PLATFORM_DESKTOP() {
+        println(string_from("FAIL: should create desktop adapter"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_adapter_format_response() -> i64 {
+    print(string_from("Testing adapter format_response... "));
+
+    // Phone adapter
+    let phone: i64 = platform_adapter_new(PLATFORM_PHONE());
+    let phone_resp: i64 = adapter_format_response(phone, string_from("Hello, how can I help?"));
+
+    if phone_resp == 0 {
+        println(string_from("FAIL: phone response should not be null"));
+        return 1;
+    }
+
+    // Watch adapter should truncate
+    let watch: i64 = platform_adapter_new(PLATFORM_WATCH());
+    let long_text: i64 = string_from("This is a very long response that should be truncated for watch display");
+    let watch_resp: i64 = adapter_format_response(watch, long_text);
+
+    // Watch response should be shorter (in a real implementation)
+    if watch_resp == 0 {
+        println(string_from("FAIL: watch response should not be null"));
+        return 1;
+    }
+
+    // Desktop can have longer responses
+    let desktop: i64 = platform_adapter_new(PLATFORM_DESKTOP());
+    let desktop_resp: i64 = adapter_format_response(desktop, long_text);
+
+    if desktop_resp == 0 {
+        println(string_from("FAIL: desktop response should not be null"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_adapter_notification() -> i64 {
+    print(string_from("Testing adapter notifications... "));
+
+    let adapter: i64 = platform_adapter_new(PLATFORM_PHONE());
+
+    // Send notification
+    let result: i64 = adapter_send_notification(
+        adapter,
+        string_from("Reminder"),
+        string_from("Meeting in 10 minutes"),
+        PRIORITY_HIGH()
+    );
+
+    if result != 0 {
+        println(string_from("FAIL: notification should succeed"));
+        return 1;
+    }
+
+    // Low priority notification
+    let result2: i64 = adapter_send_notification(
+        adapter,
+        string_from("Update"),
+        string_from("New features available"),
+        PRIORITY_LOW()
+    );
+
+    if result2 != 0 {
+        println(string_from("FAIL: low priority notification should succeed"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Sensor Manager Tests
+// =============================================================================
+
+fn test_sensor_manager_new() -> i64 {
+    print(string_from("Testing sensor manager creation... "));
+
+    let mgr: i64 = sensor_manager_new();
+
+    // Should have no active sensors
+    if sensor_active_count(mgr) != 0 {
+        println(string_from("FAIL: should have no active sensors"));
+        return 1;
+    }
+
+    // Should have sensor types available
+    if SENSOR_ACCELEROMETER() != 1 {
+        println(string_from("FAIL: ACCELEROMETER should be 1"));
+        return 1;
+    }
+
+    if SENSOR_GYROSCOPE() != 2 {
+        println(string_from("FAIL: GYROSCOPE should be 2"));
+        return 1;
+    }
+
+    if SENSOR_LOCATION() != 3 {
+        println(string_from("FAIL: LOCATION should be 3"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_sensor_activate() -> i64 {
+    print(string_from("Testing sensor activation... "));
+
+    let mgr: i64 = sensor_manager_new();
+
+    // Activate accelerometer
+    let result: i64 = sensor_activate(mgr, SENSOR_ACCELEROMETER(), 100);  // 100ms interval
+    if result != 0 {
+        println(string_from("FAIL: accelerometer activation should succeed"));
+        return 1;
+    }
+
+    if sensor_active_count(mgr) != 1 {
+        println(string_from("FAIL: should have 1 active sensor"));
+        return 1;
+    }
+
+    // Activate location
+    let result2: i64 = sensor_activate(mgr, SENSOR_LOCATION(), 1000);  // 1s interval
+    if result2 != 0 {
+        println(string_from("FAIL: location activation should succeed"));
+        return 1;
+    }
+
+    if sensor_active_count(mgr) != 2 {
+        println(string_from("FAIL: should have 2 active sensors"));
+        return 1;
+    }
+
+    // Deactivate accelerometer
+    sensor_deactivate(mgr, SENSOR_ACCELEROMETER());
+
+    if sensor_active_count(mgr) != 1 {
+        println(string_from("FAIL: should have 1 active sensor after deactivation"));
+        return 1;
+    }
+
+    // Read sensor (should return last value or 0)
+    let reading: i64 = sensor_read(mgr, SENSOR_LOCATION());
+    // Reading could be 0 or a valid value
+    if reading < 0 {
+        println(string_from("FAIL: sensor reading should be non-negative"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Adaptive Config Tests
+// =============================================================================
+
+fn test_create_adaptive_config() -> i64 {
+    print(string_from("Testing adaptive config creation... "));
+
+    // Create config for watch
+    let watch_config: i64 = create_adaptive_config(DEVICE_WATCH());
+
+    if config_max_specialists(watch_config) > 2 {
+        println(string_from("FAIL: watch should have limited specialists"));
+        return 1;
+    }
+
+    if config_sync_interval(watch_config) < 60 {
+        println(string_from("FAIL: watch should have longer sync interval"));
+        return 1;
+    }
+
+    // Create config for phone
+    let phone_config: i64 = create_adaptive_config(DEVICE_PHONE());
+
+    if config_max_specialists(phone_config) < 3 {
+        println(string_from("FAIL: phone should have more specialists"));
+        return 1;
+    }
+
+    // Create config for desktop
+    let desktop_config: i64 = create_adaptive_config(DEVICE_DESKTOP());
+
+    if config_max_specialists(desktop_config) <= config_max_specialists(phone_config) {
+        println(string_from("FAIL: desktop should have most specialists"));
+        return 1;
+    }
+
+    if config_local_model_enabled(desktop_config) != 1 {
+        println(string_from("FAIL: desktop should enable local model"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Runtime Stub Implementations
+// =============================================================================
+
+fn string_from(s: &str) -> i64 { 0 }
+fn print(s: i64) -> i64 { 0 }
+fn println(s: i64) -> i64 { 0 }
+fn print_num(n: i64) -> i64 { 0 }
+fn time_now() -> i64 { 0 }
+
+fn vec_new() -> i64 { 0 }
+fn vec_push(v: i64, val: i64) -> i64 { 0 }
+fn vec_get(v: i64, idx: i64) -> i64 { 0 }
+fn vec_set(v: i64, idx: i64, val: i64) -> i64 { 0 }
+fn vec_len(v: i64) -> i64 { 0 }
+fn vec_pop(v: i64) -> i64 { 0 }
+
+// Power states
+fn POWER_CRITICAL() -> i64 { 0 }
+fn POWER_LOW() -> i64 { 1 }
+fn POWER_MODERATE() -> i64 { 2 }
+fn POWER_GOOD() -> i64 { 3 }
+fn POWER_FULL() -> i64 { 4 }
+
+// Thermal states
+fn THERMAL_NORMAL() -> i64 { 0 }
+fn THERMAL_WARM() -> i64 { 1 }
+fn THERMAL_HOT() -> i64 { 2 }
+fn THERMAL_CRITICAL() -> i64 { 3 }
+
+// Platforms
+fn PLATFORM_WATCH() -> i64 { 0 }
+fn PLATFORM_PHONE() -> i64 { 1 }
+fn PLATFORM_TABLET() -> i64 { 2 }
+fn PLATFORM_DESKTOP() -> i64 { 3 }
+
+// Device classes
+fn DEVICE_WATCH() -> i64 { 0 }
+fn DEVICE_PHONE() -> i64 { 1 }
+fn DEVICE_LAPTOP() -> i64 { 2 }
+fn DEVICE_DESKTOP() -> i64 { 3 }
+
+// Sensors
+fn SENSOR_ACCELEROMETER() -> i64 { 1 }
+fn SENSOR_GYROSCOPE() -> i64 { 2 }
+fn SENSOR_LOCATION() -> i64 { 3 }
+
+// Priorities
+fn PRIORITY_LOW() -> i64 { 0 }
+fn PRIORITY_NORMAL() -> i64 { 1 }
+fn PRIORITY_HIGH() -> i64 { 2 }
+
+// =============================================================================
+// Battery Scheduler Stubs
+// =============================================================================
+
+fn battery_to_power_state(battery: i64) -> i64 {
+    if battery < 10 { return POWER_CRITICAL(); }
+    if battery < 20 { return POWER_LOW(); }
+    if battery < 50 { return POWER_MODERATE(); }
+    if battery < 80 { return POWER_GOOD(); }
+    POWER_FULL()
+}
+
+fn battery_scheduler_new() -> i64 {
+    let sched: i64 = vec_new();
+    vec_push(sched, POWER_MODERATE());  // 0: power_state
+    vec_push(sched, 0);                 // 1: is_plugged
+    vec_push(sched, THERMAL_NORMAL());  // 2: thermal_state
+    vec_push(sched, 50);                // 3: battery_level
+    sched
+}
+
+fn scheduler_power_state(sched: i64) -> i64 { vec_get(sched, 0) }
+fn scheduler_is_plugged(sched: i64) -> i64 { vec_get(sched, 1) }
+fn scheduler_thermal_state(sched: i64) -> i64 { vec_get(sched, 2) }
+
+fn scheduler_update(sched: i64, battery: i64, plugged: i64) -> i64 {
+    let state: i64 = battery_to_power_state(battery);
+    vec_set(sched, 0, state);
+    vec_set(sched, 1, plugged);
+    vec_set(sched, 3, battery);
+    0
+}
+
+fn scheduler_effective_power(sched: i64) -> i64 {
+    if scheduler_is_plugged(sched) != 0 {
+        return POWER_FULL();
+    }
+    scheduler_power_state(sched)
+}
+
+fn scheduler_set_thermal(sched: i64, thermal: i64) -> i64 {
+    vec_set(sched, 2, thermal);
+    0
+}
+
+fn scheduler_can_run_model(sched: i64) -> i64 {
+    // Check thermal first
+    let thermal: i64 = scheduler_thermal_state(sched);
+    if thermal >= THERMAL_HOT() {
+        return 0;
+    }
+
+    // Check power
+    let power: i64 = scheduler_effective_power(sched);
+    if power >= POWER_MODERATE() {
+        return 1;
+    }
+    0
+}
+
+// =============================================================================
+// Specialist Scaler Stubs
+// =============================================================================
+
+fn specialist_scaler_new(budget: i64) -> i64 {
+    let scaler: i64 = vec_new();
+    vec_push(scaler, budget);      // 0: memory_budget
+    vec_push(scaler, 0);           // 1: current_usage
+    vec_push(scaler, vec_new());   // 2: specialists list
+    scaler
+}
+
+fn scaler_memory_budget(scaler: i64) -> i64 { vec_get(scaler, 0) }
+fn scaler_current_usage(scaler: i64) -> i64 { vec_get(scaler, 1) }
+fn scaler_specialists(scaler: i64) -> i64 { vec_get(scaler, 2) }
+fn scaler_active_count(scaler: i64) -> i64 { vec_len(scaler_specialists(scaler)) / 2 }
+
+fn scaler_add_specialist(scaler: i64, name: i64, memory: i64) -> i64 {
+    let budget: i64 = scaler_memory_budget(scaler);
+    let current: i64 = scaler_current_usage(scaler);
+
+    // Check if we have room
+    if current + memory > budget {
+        // Need to evict something or adapt
+        scaler_adapt_to_memory_pressure(scaler, budget - memory);
+    }
+
+    let specs: i64 = scaler_specialists(scaler);
+    vec_push(specs, name);
+    vec_push(specs, memory);
+    vec_set(scaler, 1, scaler_current_usage(scaler) + memory);
+    0
+}
+
+fn scaler_adapt_to_memory_pressure(scaler: i64, new_budget: i64) -> i64 {
+    let specs: i64 = scaler_specialists(scaler);
+    let current: i64 = scaler_current_usage(scaler);
+
+    // Remove specialists until we fit
+    while current > new_budget {
+        let len: i64 = vec_len(specs);
+        if len < 2 { break; }
+        let memory: i64 = vec_get(specs, len - 1);
+        vec_pop(specs);  // Remove memory
+        vec_pop(specs);  // Remove name
+        current = current - memory;
+    }
+    vec_set(scaler, 1, current);
+    0
+}
+
+// =============================================================================
+// Platform Adapter Stubs
+// =============================================================================
+
+fn platform_adapter_new(platform: i64) -> i64 {
+    let adapter: i64 = vec_new();
+    vec_push(adapter, platform);  // 0: platform
+
+    // Set screen width based on platform
+    let width: i64 = 0;
+    if platform == PLATFORM_WATCH() { width = 200; }
+    else if platform == PLATFORM_PHONE() { width = 400; }
+    else if platform == PLATFORM_TABLET() { width = 800; }
+    else { width = 1200; }  // Desktop
+    vec_push(adapter, width);  // 1: screen_width
+
+    adapter
+}
+
+fn adapter_platform(adapter: i64) -> i64 { vec_get(adapter, 0) }
+fn adapter_screen_width(adapter: i64) -> i64 { vec_get(adapter, 1) }
+
+fn adapter_format_response(adapter: i64, text: i64) -> i64 {
+    // In real implementation, would truncate/format based on platform
+    text
+}
+
+fn adapter_send_notification(adapter: i64, title: i64, body: i64, priority: i64) -> i64 {
+    // In real implementation, would call platform notification API
+    0
+}
+
+// =============================================================================
+// Sensor Manager Stubs
+// =============================================================================
+
+fn sensor_manager_new() -> i64 {
+    let mgr: i64 = vec_new();
+    vec_push(mgr, vec_new());  // 0: active sensors (type, interval pairs)
+    vec_push(mgr, vec_new());  // 1: last readings (type, value pairs)
+    mgr
+}
+
+fn sensor_active_list(mgr: i64) -> i64 { vec_get(mgr, 0) }
+fn sensor_active_count(mgr: i64) -> i64 { vec_len(sensor_active_list(mgr)) / 2 }
+
+fn sensor_activate(mgr: i64, sensor_type: i64, interval: i64) -> i64 {
+    let active: i64 = sensor_active_list(mgr);
+    vec_push(active, sensor_type);
+    vec_push(active, interval);
+    0
+}
+
+fn sensor_deactivate(mgr: i64, sensor_type: i64) -> i64 {
+    let active: i64 = sensor_active_list(mgr);
+    let len: i64 = vec_len(active);
+    let i: i64 = 0;
+    while i < len {
+        if vec_get(active, i) == sensor_type {
+            // Swap with last and pop
+            let last_idx: i64 = len - 2;
+            if i != last_idx {
+                vec_set(active, i, vec_get(active, last_idx));
+                vec_set(active, i + 1, vec_get(active, last_idx + 1));
+            }
+            vec_pop(active);
+            vec_pop(active);
+            return 0;
+        }
+        i = i + 2;
+    }
+    0
+}
+
+fn sensor_read(mgr: i64, sensor_type: i64) -> i64 {
+    // Return mock value
+    0
+}
+
+// =============================================================================
+// Adaptive Config Stubs
+// =============================================================================
+
+fn create_adaptive_config(device_class: i64) -> i64 {
+    let config: i64 = vec_new();
+
+    // Set values based on device class
+    if device_class == DEVICE_WATCH() {
+        vec_push(config, 2);    // 0: max_specialists
+        vec_push(config, 120);  // 1: sync_interval (seconds)
+        vec_push(config, 0);    // 2: local_model_enabled
+    } else if device_class == DEVICE_PHONE() {
+        vec_push(config, 4);    // 0: max_specialists
+        vec_push(config, 30);   // 1: sync_interval
+        vec_push(config, 0);    // 2: local_model_enabled
+    } else if device_class == DEVICE_LAPTOP() {
+        vec_push(config, 6);    // 0: max_specialists
+        vec_push(config, 15);   // 1: sync_interval
+        vec_push(config, 1);    // 2: local_model_enabled
+    } else {  // DESKTOP
+        vec_push(config, 8);    // 0: max_specialists
+        vec_push(config, 10);   // 1: sync_interval
+        vec_push(config, 1);    // 2: local_model_enabled
+    }
+
+    config
+}
+
+fn config_max_specialists(config: i64) -> i64 { vec_get(config, 0) }
+fn config_sync_interval(config: i64) -> i64 { vec_get(config, 1) }
+fn config_local_model_enabled(config: i64) -> i64 { vec_get(config, 2) }

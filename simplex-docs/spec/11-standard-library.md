@@ -650,20 +650,20 @@ impl std::error::Error for VarError { ... }
 ### Example
 
 ```simplex
-use simplex_std::env::{var, set_var, current_dir, VarError};
+use simplex_std::env::{var, set_var, current_dir, VarError}
 
 // Get PATH
 match var("PATH") {
-    Ok(path) => println("PATH = {}", path),
-    Err(VarError::NotPresent) => println("PATH not set"),
-    Err(VarError::NotUnicode(s)) => println("Invalid UTF-8: {}", s),
+    Ok(path) => print("PATH = {path}"),
+    Err(VarError::NotPresent) => print("PATH not set"),
+    Err(VarError::NotUnicode(s)) => print("Invalid UTF-8: {s}"),
 }
 
 // Set custom variable
-set_var("MY_VAR", "hello");
+set_var("MY_VAR", "hello")
 
 // Get current directory
-let cwd = current_dir()?;
+let cwd = current_dir()?
 ```
 
 ---
@@ -733,12 +733,12 @@ impl Drop for SignalFuture {
 ### Example
 
 ```simplex
-use simplex_std::signal::ctrl_c;
+use simplex_std::signal::ctrl_c
 
 // Wait for Ctrl+C with graceful shutdown
-println("Press Ctrl+C to exit...");
-ctrl_c().await;
-println("Shutting down gracefully...");
+print("Press Ctrl+C to exit...")
+ctrl_c().await
+print("Shutting down gracefully...")
 ```
 
 ---
@@ -804,20 +804,20 @@ impl std::error::Error for JoinError { ... }
 ### Example
 
 ```simplex
-use simplex_std::runtime::{block_on, spawn};
+use simplex_std::runtime::{block_on, spawn}
 
 fn main() {
     block_on(async {
         let handle = spawn(async {
             // Background computation
             compute_value()
-        });
+        })
 
         // Do other work...
 
         // Wait for result
-        let result = handle.await?;
-    });
+        let result = handle.await?
+    })
 }
 ```
 
@@ -1087,8 +1087,8 @@ impl From<HttpError> for Response { ... }
 ### Example
 
 ```simplex
-use simplex_std::http::{HttpServer, Router, Request, Response};
-use simplex_std::signal::ctrl_c;
+use simplex_std::http::{HttpServer, Router, Request, Response}
+use simplex_std::signal::ctrl_c
 
 // Define handlers
 async fn health_check(_req: Request) -> Response {
@@ -1096,7 +1096,7 @@ async fn health_check(_req: Request) -> Response {
 }
 
 async fn get_user(req: Request) -> Response {
-    let id: u64 = req.param_as("id").unwrap_or(0);
+    let id: u64 = req.param_as("id").unwrap_or(0)
     Response::json(&json!({ "id": id })).unwrap()
 }
 
@@ -1105,45 +1105,45 @@ let router = Router::new()
     .get("/health", health_check)
     .get("/users/:id", get_user)
     .with(Logger::new())
-    .with(Cors::permissive());
+    .with(Cors::permissive())
 
 // Start server
 HttpServer::bind("0.0.0.0:8080")
     .router(router)
     .graceful_shutdown(ctrl_c())
     .serve()
-    .await?;
+    .await?
 ```
 
 ### Hive API Example
 
 ```simplex
-use simplex_std::http::{HttpServer, Router};
-use simplex_hive::{Hive, specialist};
+use simplex_std::http::{HttpServer, Router}
+use simplex_hive::{Hive, specialist}
 
 specialist QuerySpecialist {
     model: SLM,
-    type Input = QueryRequest;
-    type Output = QueryResponse;
+    type Input = QueryRequest
+    type Output = QueryResponse
 
     async fn process(&self, input: QueryRequest) -> QueryResponse {
-        let response = self.model.complete(&input.query).await;
+        let response = self.model.complete(&input.query).await
         QueryResponse { answer: response.text }
     }
 }
 
 let hive = Hive::builder()
     .add_specialist(QuerySpecialist::new(SLM::load("model")))
-    .build().await?;
+    .build().await?
 
 let router = Router::new()
     .post("/api/query", hive.handler::<QuerySpecialist>())
-    .with(RateLimiter::new(100, Duration::from_secs(60)));
+    .with(RateLimiter::new(100, Duration::from_secs(60)))
 
 HttpServer::bind("0.0.0.0:8080")
     .router(router)
     .with_hive(hive)
-    .serve().await?;
+    .serve().await?
 ```
 
 ---
@@ -1269,12 +1269,12 @@ enum CompressError {
 ### Example
 
 ```simplex
-use simplex_std::compress::{gzip, gunzip};
+use simplex_std::compress::{gzip, gunzip}
 
-let data = b"Hello, World!";
-let compressed = gzip(data)?;
-let decompressed = gunzip(&compressed)?;
-assert_eq!(data, &decompressed[..]);
+let data = b"Hello, World!"
+let compressed = gzip(data)?
+let decompressed = gunzip(&compressed)?
+assert_eq(data, &decompressed[..])
 ```
 
 ---
@@ -1357,20 +1357,20 @@ enum TryRecvError {
 ### Example
 
 ```simplex
-use simplex_std::sync::mpsc;
+use simplex_std::sync::mpsc
 
-let (tx, rx) = mpsc::channel::<i64>(10);
+let (tx, rx) = mpsc::channel::<i64>(10)
 
 // Producer
 spawn(async {
     for i in 0..5 {
-        tx.send(i).await.unwrap();
+        tx.send(i).await.unwrap()
     }
-});
+})
 
 // Consumer
 while let Some(value) = rx.recv().await {
-    println("Received: {}", value);
+    print("Received: {value}")
 }
 ```
 
@@ -1451,19 +1451,19 @@ enum TryRecvError {
 ### Example
 
 ```simplex
-use simplex_std::sync::oneshot;
+use simplex_std::sync::oneshot
 
 // Create oneshot channel
-let (tx, rx) = oneshot::channel::<String>();
+let (tx, rx) = oneshot::channel::<String>()
 
 // Sender sends exactly once
 spawn(async {
-    tx.send("Hello!".to_string()).unwrap();
-});
+    tx.send("Hello!".to_string()).unwrap()
+})
 
 // Receiver gets the value
-let message = rx.recv().await?;
-println("Received: {}", message);
+let message = rx.recv().await?
+print("Received: {message}")
 ```
 
 ---
@@ -1509,22 +1509,22 @@ impl std::error::Error for CryptoError { ... }
 ### Example
 
 ```simplex
-use simplex_std::crypto::{bcrypt_hash, bcrypt_verify, generate_token, CryptoError};
+use simplex_std::crypto::{bcrypt_hash, bcrypt_verify, generate_token, CryptoError}
 
 // Hash a password (cost 12 is recommended)
-let hash = bcrypt_hash("my_password", 12)?;
+let hash = bcrypt_hash("my_password", 12)?
 
 // Verify password
 match bcrypt_verify("my_password", &hash) {
-    Ok(true) => println("Password matches!"),
-    Ok(false) => println("Password incorrect"),
-    Err(CryptoError::VerifyError(msg)) => println("Error: {}", msg),
+    Ok(true) => print("Password matches!"),
+    Ok(false) => print("Password incorrect"),
+    Err(CryptoError::VerifyError(msg)) => print("Error: {msg}"),
     _ => {}
 }
 
 // Generate secure token (32 bytes = 64 hex chars)
-let token = generate_token(32);
-println("Token: {}", token);
+let token = generate_token(32)
+print("Token: {token}")
 ```
 
 ---

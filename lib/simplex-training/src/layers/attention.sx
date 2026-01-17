@@ -1,0 +1,507 @@
+// Multi-head attention layer
+//
+// Implements scaled dot-product attention with multiple heads:
+// Attention(Q, K, V) = softmax(QK^T / sqrt(d_k)) * V
+//
+// # Example
+//
+// ```simplex
+// use simplex_training::layers::MultiHeadAttention;
+//
+// let attention = MultiHeadAttention::new(512, 8); // 512 dim, 8 heads
+//
+// let output = attention.forward(&query, &key, &value, None);
+// ```
+
+use simplex_std::dual;
+use simplex_std::vec::Vec;
+use simplex_learning::tensor::DualTensor;
+use super::linear::Linear;
+
+/// Output from attention layer
+pub struct AttentionOutput {
+    /// Attention output tensor
+    pub output: DualTensor,
+
+    /// Attention weights (optional, for visualization)
+    pub weights: Option<DualTensor>,
+}
+
+/// Multi-head attention mechanism
+///
+/// Projects inputs to query, key, value spaces, computes scaled dot-product
+/// attention across multiple heads, and projects back to output space.
+pub struct MultiHeadAttention {
+    /// Number of attention heads
+    num_heads: usize,
+
+    /// Dimension per head
+    head_dim: usize,
+
+    /// Total embedding dimension
+    embed_dim: usize,
+
+    /// Query projection
+    q_proj: Linear,
+
+    /// Key projection
+    k_proj: Linear,
+
+    /// Value projection
+    v_proj: Linear,
+
+    /// Output projection
+    out_proj: Linear,
+
+    /// Scaling factor: 1 / sqrt(head_dim)
+    scale: f64,
+
+    /// Whether to return attention weights
+    return_weights: bool,
+}
+
+impl MultiHeadAttention {
+    /// Create new multi-head attention layer
+    pub fn new(embed_dim: usize, num_heads: usize) -> Self {
+        assert_eq!(embed_dim % num_heads, 0, "embed_dim must be divisible by num_heads");
+
+        let head_dim = embed_dim / num_heads;
+        let scale = 1.0 / (head_dim as f64).sqrt();
+
+        MultiHeadAttention {
+            num_heads,
+            head_dim,
+            embed_dim,
+            q_proj: Linear::new(embed_dim, embed_dim, false),
+            k_proj: Linear::new(embed_dim, embed_dim, false),
+            v_proj: Linear::new(embed_dim, embed_dim, false),
+            out_proj: Linear::new(embed_dim, embed_dim, false),
+            scale,
+            return_weights: false,
+        }
+    }
+
+    /// Set whether to return attention weights
+    pub fn set_return_weights(&mut self, return_weights: bool) {
+        self.return_weights = return_weights;
+    }
+
+    /// Forward pass
+    ///
+    /// Query, Key, Value: [batch, seq_len, embed_dim]
+    /// Mask: Optional [batch, seq_len, seq_len] or [1, seq_len, seq_len]
+    ///
+    /// Returns: AttentionOutput with [batch, seq_len, embed_dim]
+    pub fn forward(&self,
+                   query: &DualTensor,
+                   key: &DualTensor,
+                   value: &DualTensor,
+                   mask: Option<&DualTensor>) -> AttentionOutput {
+        let shape = query.shape();
+        let batch_size = shape.dims()[0];
+        let seq_len = shape.dims()[1];
+
+        // Project Q, K, V: [batch, seq, embed] -> [batch, seq, embed]
+        let q = self.q_proj.forward(query);
+        let k = self.k_proj.forward(key);
+        let v = self.v_proj.forward(value);
+
+        // Reshape for multi-head: [batch, seq, embed] -> [batch, seq, heads, head_dim]
+        // Then transpose to: [batch, heads, seq, head_dim]
+        let q_heads = self.split_heads(&q, batch_size, seq_len);
+        let k_heads = self.split_heads(&k, batch_size, seq_len);
+        let v_heads = self.split_heads(&v, batch_size, seq_len);
+
+        // Compute attention scores: Q @ K^T / sqrt(d_k)
+        // [batch, heads, seq, head_dim] @ [batch, heads, head_dim, seq] -> [batch, heads, seq, seq]
+        let k_transposed = self.transpose_last_two(&k_heads);
+        let scores = q_heads.mm(&k_transposed).mul_f64(self.scale);
+
+        // Apply mask if provided (additive mask, -inf for blocked positions)
+        let masked_scores = if let Some(m) = mask {
+            // Broadcast mask to [batch, heads, seq, seq]
+            scores.plus(m)
+        } else {
+            scores
+        };
+
+        // Softmax over last dimension
+        let weights = masked_scores.softmax();
+
+        // Apply attention: weights @ V
+        // [batch, heads, seq, seq] @ [batch, heads, seq, head_dim] -> [batch, heads, seq, head_dim]
+        let context = weights.mm(&v_heads);
+
+        // Reshape back: [batch, heads, seq, head_dim] -> [batch, seq, embed]
+        let merged = self.merge_heads(&context, batch_size, seq_len);
+
+        // Output projection
+        let output = self.out_proj.forward(&merged);
+
+        AttentionOutput {
+            output,
+            weights: if self.return_weights { Some(weights) } else { None },
+        }
+    }
+
+    /// Split embedding dimension into multiple heads
+    /// [batch, seq, embed] -> [batch, heads, seq, head_dim]
+    fn split_heads(&self, x: &DualTensor, batch_size: usize, seq_len: usize) -> DualTensor {
+        // Reshape to [batch, seq, heads, head_dim]
+        let reshaped = x.reshape_to(&[batch_size, seq_len, self.num_heads, self.head_dim]);
+
+        // Transpose to [batch, heads, seq, head_dim]
+        self.transpose_middle(&reshaped)
+    }
+
+    /// Merge heads back into single embedding dimension
+    /// [batch, heads, seq, head_dim] -> [batch, seq, embed]
+    fn merge_heads(&self, x: &DualTensor, batch_size: usize, seq_len: usize) -> DualTensor {
+        // Transpose [batch, heads, seq, head_dim] -> [batch, seq, heads, head_dim]
+        let transposed = self.transpose_middle(x);
+
+        // Reshape to [batch, seq, embed]
+        transposed.reshape_to(&[batch_size, seq_len, self.embed_dim])
+    }
+
+    /// Transpose dimensions 1 and 2: [batch, a, b, c] -> [batch, b, a, c]
+    fn transpose_middle(&self, x: &DualTensor) -> DualTensor {
+        let dims = x.shape().dims();
+        let batch = dims[0];
+        let dim1 = dims[1];
+        let dim2 = dims[2];
+        let dim3 = dims[3];
+
+        let mut new_data = Vec::with_capacity(x.numel());
+        let data = x.data();
+
+        // Reorder: [batch, dim1, dim2, dim3] -> [batch, dim2, dim1, dim3]
+        for b in 0..batch {
+            for d2 in 0..dim2 {
+                for d1 in 0..dim1 {
+                    for d3 in 0..dim3 {
+                        let old_idx = b * (dim1 * dim2 * dim3) + d1 * (dim2 * dim3) + d2 * dim3 + d3;
+                        new_data.push(data[old_idx]);
+                    }
+                }
+            }
+        }
+
+        DualTensor::from_vec(new_data, &[batch, dim2, dim1, dim3])
+    }
+
+    /// Transpose last two dimensions: [batch, heads, seq, head_dim] -> [batch, heads, head_dim, seq]
+    fn transpose_last_two(&self, x: &DualTensor) -> DualTensor {
+        let dims = x.shape().dims();
+        let batch = dims[0];
+        let heads = dims[1];
+        let seq = dims[2];
+        let head_dim = dims[3];
+
+        let mut new_data = Vec::with_capacity(x.numel());
+        let data = x.data();
+
+        for b in 0..batch {
+            for h in 0..heads {
+                for d in 0..head_dim {
+                    for s in 0..seq {
+                        let old_idx = b * (heads * seq * head_dim) + h * (seq * head_dim) + s * head_dim + d;
+                        new_data.push(data[old_idx]);
+                    }
+                }
+            }
+        }
+
+        DualTensor::from_vec(new_data, &[batch, heads, head_dim, seq])
+    }
+
+    /// Forward pass with causal mask (for autoregressive models)
+    pub fn forward_causal(&self,
+                          query: &DualTensor,
+                          key: &DualTensor,
+                          value: &DualTensor) -> AttentionOutput {
+        let seq_len = query.shape().dims()[1];
+
+        // Create causal mask: upper triangle = -inf
+        let mask = self.create_causal_mask(seq_len);
+
+        self.forward(query, key, value, Some(&mask))
+    }
+
+    /// Create causal (lower triangular) attention mask
+    fn create_causal_mask(&self, seq_len: usize) -> DualTensor {
+        let mut data = Vec::with_capacity(seq_len * seq_len);
+
+        for i in 0..seq_len {
+            for j in 0..seq_len {
+                if j > i {
+                    data.push(f64::NEG_INFINITY);
+                } else {
+                    data.push(0.0);
+                }
+            }
+        }
+
+        DualTensor::from_vals(&[1, seq_len, seq_len], &data)
+    }
+
+    /// Get all trainable parameters
+    pub fn parameters(&self) -> Vec<&DualTensor> {
+        let mut params = Vec::new();
+        params.extend(self.q_proj.parameters());
+        params.extend(self.k_proj.parameters());
+        params.extend(self.v_proj.parameters());
+        params.extend(self.out_proj.parameters());
+        params
+    }
+
+    /// Number of parameters
+    pub fn num_parameters(&self) -> usize {
+        self.q_proj.num_parameters() +
+        self.k_proj.num_parameters() +
+        self.v_proj.num_parameters() +
+        self.out_proj.num_parameters()
+    }
+
+    /// Get number of heads
+    pub fn num_heads(&self) -> usize {
+        self.num_heads
+    }
+
+    /// Get head dimension
+    pub fn head_dim(&self) -> usize {
+        self.head_dim
+    }
+}
+
+/// Grouped query attention (GQA)
+///
+/// More efficient variant where multiple query heads share key/value heads.
+/// Used in models like Llama 2 70B.
+pub struct GroupedQueryAttention {
+    /// Number of query heads
+    num_q_heads: usize,
+
+    /// Number of key/value heads (num_q_heads must be divisible by this)
+    num_kv_heads: usize,
+
+    /// Head dimension
+    head_dim: usize,
+
+    /// Query projection
+    q_proj: Linear,
+
+    /// Key projection
+    k_proj: Linear,
+
+    /// Value projection
+    v_proj: Linear,
+
+    /// Output projection
+    out_proj: Linear,
+
+    /// Scaling factor
+    scale: f64,
+}
+
+impl GroupedQueryAttention {
+    /// Create new GQA layer
+    ///
+    /// num_q_heads: Total query heads
+    /// num_kv_heads: Number of key/value heads (shared among query heads)
+    /// head_dim: Dimension per head
+    pub fn new(num_q_heads: usize, num_kv_heads: usize, head_dim: usize) -> Self {
+        assert_eq!(num_q_heads % num_kv_heads, 0,
+                   "num_q_heads must be divisible by num_kv_heads");
+
+        let q_dim = num_q_heads * head_dim;
+        let kv_dim = num_kv_heads * head_dim;
+
+        GroupedQueryAttention {
+            num_q_heads,
+            num_kv_heads,
+            head_dim,
+            q_proj: Linear::new(q_dim, q_dim, false),
+            k_proj: Linear::new(q_dim, kv_dim, false),
+            v_proj: Linear::new(q_dim, kv_dim, false),
+            out_proj: Linear::new(q_dim, q_dim, false),
+            scale: 1.0 / (head_dim as f64).sqrt(),
+        }
+    }
+
+    /// Forward pass
+    pub fn forward(&self,
+                   x: &DualTensor,
+                   mask: Option<&DualTensor>) -> DualTensor {
+        let shape = x.shape();
+        let batch_size = shape.dims()[0];
+        let seq_len = shape.dims()[1];
+
+        // Project Q, K, V
+        let q = self.q_proj.forward(x);
+        let k = self.k_proj.forward(x);
+        let v = self.v_proj.forward(x);
+
+        // Reshape Q: [batch, seq, q_dim] -> [batch, num_q_heads, seq, head_dim]
+        let q_reshaped = q.reshape_to(&[batch_size, seq_len, self.num_q_heads, self.head_dim]);
+        let q_heads = self.transpose_seq_heads(&q_reshaped);
+
+        // Reshape K, V: [batch, seq, kv_dim] -> [batch, num_kv_heads, seq, head_dim]
+        let k_reshaped = k.reshape_to(&[batch_size, seq_len, self.num_kv_heads, self.head_dim]);
+        let k_heads = self.transpose_seq_heads(&k_reshaped);
+
+        let v_reshaped = v.reshape_to(&[batch_size, seq_len, self.num_kv_heads, self.head_dim]);
+        let v_heads = self.transpose_seq_heads(&v_reshaped);
+
+        // Repeat K, V heads to match Q heads
+        // Each KV head is shared by (num_q_heads / num_kv_heads) query heads
+        let repeat_factor = self.num_q_heads / self.num_kv_heads;
+        let k_expanded = self.repeat_heads(&k_heads, repeat_factor);
+        let v_expanded = self.repeat_heads(&v_heads, repeat_factor);
+
+        // Transpose K for attention: [batch, heads, seq, head_dim] -> [batch, heads, head_dim, seq]
+        let k_transposed = self.transpose_last_two_gqa(&k_expanded);
+
+        // Compute attention scores: Q @ K^T / sqrt(d_k)
+        let scores = q_heads.mm(&k_transposed).mul_f64(self.scale);
+
+        let masked_scores = if let Some(m) = mask {
+            scores.plus(m)
+        } else {
+            scores
+        };
+
+        let weights = masked_scores.softmax();
+        let context = weights.mm(&v_expanded);
+
+        // Reshape back: [batch, num_q_heads, seq, head_dim] -> [batch, seq, q_dim]
+        let context_transposed = self.transpose_seq_heads(&context);
+        let merged = context_transposed.reshape_to(&[batch_size, seq_len, self.num_q_heads * self.head_dim]);
+
+        self.out_proj.forward(&merged)
+    }
+
+    /// Transpose [batch, seq, heads, head_dim] <-> [batch, heads, seq, head_dim]
+    fn transpose_seq_heads(&self, x: &DualTensor) -> DualTensor {
+        let dims = x.shape().dims();
+        let batch = dims[0];
+        let d1 = dims[1];
+        let d2 = dims[2];
+        let d3 = dims[3];
+
+        let mut new_data = Vec::with_capacity(x.numel());
+        let data = x.data();
+
+        for b in 0..batch {
+            for j in 0..d2 {
+                for i in 0..d1 {
+                    for k in 0..d3 {
+                        let old_idx = b * (d1 * d2 * d3) + i * (d2 * d3) + j * d3 + k;
+                        new_data.push(data[old_idx]);
+                    }
+                }
+            }
+        }
+
+        DualTensor::from_vec(new_data, &[batch, d2, d1, d3])
+    }
+
+    /// Transpose last two dims for GQA
+    fn transpose_last_two_gqa(&self, x: &DualTensor) -> DualTensor {
+        let dims = x.shape().dims();
+        let batch = dims[0];
+        let heads = dims[1];
+        let seq = dims[2];
+        let head_dim = dims[3];
+
+        let mut new_data = Vec::with_capacity(x.numel());
+        let data = x.data();
+
+        for b in 0..batch {
+            for h in 0..heads {
+                for d in 0..head_dim {
+                    for s in 0..seq {
+                        let old_idx = b * (heads * seq * head_dim) + h * (seq * head_dim) + s * head_dim + d;
+                        new_data.push(data[old_idx]);
+                    }
+                }
+            }
+        }
+
+        DualTensor::from_vec(new_data, &[batch, heads, head_dim, seq])
+    }
+
+    /// Repeat KV heads to match number of Q heads
+    fn repeat_heads(&self, x: &DualTensor, repeat_factor: usize) -> DualTensor {
+        if repeat_factor == 1 {
+            return x.clone();
+        }
+
+        let dims = x.shape().dims();
+        let batch = dims[0];
+        let kv_heads = dims[1];
+        let seq = dims[2];
+        let head_dim = dims[3];
+
+        let q_heads = kv_heads * repeat_factor;
+        let mut new_data = Vec::with_capacity(batch * q_heads * seq * head_dim);
+        let data = x.data();
+
+        for b in 0..batch {
+            for kv_h in 0..kv_heads {
+                // Repeat this KV head `repeat_factor` times
+                for _ in 0..repeat_factor {
+                    for s in 0..seq {
+                        for d in 0..head_dim {
+                            let old_idx = b * (kv_heads * seq * head_dim) + kv_h * (seq * head_dim) + s * head_dim + d;
+                            new_data.push(data[old_idx]);
+                        }
+                    }
+                }
+            }
+        }
+
+        DualTensor::from_vec(new_data, &[batch, q_heads, seq, head_dim])
+    }
+
+    /// Number of parameters
+    pub fn num_parameters(&self) -> usize {
+        self.q_proj.num_parameters() +
+        self.k_proj.num_parameters() +
+        self.v_proj.num_parameters() +
+        self.out_proj.num_parameters()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_attention_creation() {
+        let attention = MultiHeadAttention::new(512, 8);
+
+        assert_eq!(attention.num_heads, 8);
+        assert_eq!(attention.head_dim, 64);
+        assert_eq!(attention.embed_dim, 512);
+    }
+
+    #[test]
+    fn test_attention_forward() {
+        let attention = MultiHeadAttention::new(64, 4);
+
+        let x = DualTensor::randn(&[2, 8, 64]); // batch=2, seq=8
+        let output = attention.forward(&x, &x, &x, None);
+
+        assert_eq!(output.output.shape().dims(), &[2, 8, 64]);
+    }
+
+    #[test]
+    fn test_gqa_creation() {
+        let gqa = GroupedQueryAttention::new(8, 2, 64);
+
+        assert_eq!(gqa.num_q_heads, 8);
+        assert_eq!(gqa.num_kv_heads, 2);
+        assert_eq!(gqa.head_dim, 64);
+    }
+}

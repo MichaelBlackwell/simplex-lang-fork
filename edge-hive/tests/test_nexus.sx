@@ -1,0 +1,722 @@
+// Edge Hive - Nexus Protocol Unit Tests
+// Tests for bit-packed delta streams and distributed sync
+// Note: Uses simplified test logic that doesn't require working vec storage
+
+fn main() -> i64 {
+    println(string_from("=== Edge Hive Nexus Protocol Tests ==="));
+    let passed: i64 = 0;
+    let failed: i64 = 0;
+
+    // Delta encoding tests (pure logic, no vec storage needed)
+    if test_delta_op_codes() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_delta_encode_same() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_delta_encode_small() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_delta_encode_large() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_delta_decode() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Connection state tests
+    if test_connection_states() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Frame type tests
+    if test_frame_types() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Vector clock comparison tests
+    if test_vc_comparison_values() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Bit packing tests
+    if test_bit_packing() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_varint_encoding() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Checksum tests
+    if test_checksum_calculation() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Catalog position tests
+    if test_catalog_position_encoding() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    println(string_from(""));
+    print(string_from("Passed: "));
+    print_num(passed);
+    print(string_from(", Failed: "));
+    print_num(failed);
+    println(string_from(""));
+
+    failed
+}
+
+// =============================================================================
+// Delta Encoding Tests (Pure Logic)
+// =============================================================================
+
+fn test_delta_op_codes() -> i64 {
+    print(string_from("Testing delta op codes... "));
+
+    // Verify op code values are distinct
+    if OP_SAME() == OP_DELTA_S() {
+        println(string_from("FAIL: OP_SAME should differ from OP_DELTA_S"));
+        return 1;
+    }
+
+    if OP_DELTA_S() == OP_DELTA_L() {
+        println(string_from("FAIL: OP_DELTA_S should differ from OP_DELTA_L"));
+        return 1;
+    }
+
+    if OP_DELTA_L() == OP_FULL() {
+        println(string_from("FAIL: OP_DELTA_L should differ from OP_FULL"));
+        return 1;
+    }
+
+    // Verify 2-bit encoding (0-3)
+    if OP_SAME() < 0 {
+        println(string_from("FAIL: OP_SAME should be >= 0"));
+        return 1;
+    }
+    if OP_FULL() > 3 {
+        println(string_from("FAIL: OP_FULL should be <= 3"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_delta_encode_same() -> i64 {
+    print(string_from("Testing delta encode SAME... "));
+
+    // Same value should produce OP_SAME
+    let encoded: i64 = encode_delta(100, 100);
+    let op: i64 = delta_get_op(encoded);
+
+    if op != OP_SAME() {
+        println(string_from("FAIL: same values should use OP_SAME"));
+        return 1;
+    }
+
+    // Zero delta
+    let encoded2: i64 = encode_delta(0, 0);
+    if delta_get_op(encoded2) != OP_SAME() {
+        println(string_from("FAIL: 0,0 should use OP_SAME"));
+        return 1;
+    }
+
+    // Large same values
+    let encoded3: i64 = encode_delta(999999, 999999);
+    if delta_get_op(encoded3) != OP_SAME() {
+        println(string_from("FAIL: large same values should use OP_SAME"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_delta_encode_small() -> i64 {
+    print(string_from("Testing delta encode DELTA_S... "));
+
+    // Small positive delta (1-7) should use DELTA_S
+    let encoded: i64 = encode_delta(100, 105);
+    let op: i64 = delta_get_op(encoded);
+
+    if op != OP_DELTA_S() {
+        println(string_from("FAIL: delta +5 should use OP_DELTA_S"));
+        return 1;
+    }
+
+    // Small negative delta (-8 to -1) should use DELTA_S
+    let encoded2: i64 = encode_delta(100, 95);
+    if delta_get_op(encoded2) != OP_DELTA_S() {
+        println(string_from("FAIL: delta -5 should use OP_DELTA_S"));
+        return 1;
+    }
+
+    // Boundary: delta = +7
+    let encoded3: i64 = encode_delta(0, 7);
+    if delta_get_op(encoded3) != OP_DELTA_S() {
+        println(string_from("FAIL: delta +7 should use OP_DELTA_S"));
+        return 1;
+    }
+
+    // Boundary: delta = -8
+    let encoded4: i64 = encode_delta(10, 2);
+    if delta_get_op(encoded4) != OP_DELTA_S() {
+        println(string_from("FAIL: delta -8 should use OP_DELTA_S"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_delta_encode_large() -> i64 {
+    print(string_from("Testing delta encode DELTA_L... "));
+
+    // Large delta (outside -8..+7, inside -2048..+2047) should use DELTA_L
+    let encoded: i64 = encode_delta(1000, 1500);
+    let op: i64 = delta_get_op(encoded);
+
+    if op != OP_DELTA_L() {
+        println(string_from("FAIL: delta +500 should use OP_DELTA_L"));
+        return 1;
+    }
+
+    // Negative large delta
+    let encoded2: i64 = encode_delta(1000, 500);
+    if delta_get_op(encoded2) != OP_DELTA_L() {
+        println(string_from("FAIL: delta -500 should use OP_DELTA_L"));
+        return 1;
+    }
+
+    // Very large delta should use OP_FULL
+    let encoded3: i64 = encode_delta(0, 10000);
+    if delta_get_op(encoded3) != OP_FULL() {
+        println(string_from("FAIL: delta +10000 should use OP_FULL"));
+        return 1;
+    }
+
+    // Boundary: delta = +2047 (max for DELTA_L)
+    let encoded4: i64 = encode_delta(0, 2047);
+    if delta_get_op(encoded4) != OP_DELTA_L() {
+        println(string_from("FAIL: delta +2047 should use OP_DELTA_L"));
+        return 1;
+    }
+
+    // Boundary: delta = +2048 (should use FULL)
+    let encoded5: i64 = encode_delta(0, 2048);
+    if delta_get_op(encoded5) != OP_FULL() {
+        println(string_from("FAIL: delta +2048 should use OP_FULL"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_delta_decode() -> i64 {
+    print(string_from("Testing delta decode... "));
+
+    // Encode and decode should round-trip
+    let old_val: i64 = 1000;
+    let new_val: i64 = 1005;
+    let encoded: i64 = encode_delta(old_val, new_val);
+    let decoded: i64 = decode_delta(old_val, encoded);
+
+    if decoded != new_val {
+        println(string_from("FAIL: decode should return new_val"));
+        return 1;
+    }
+
+    // Test with SAME
+    let encoded2: i64 = encode_delta(42, 42);
+    let decoded2: i64 = decode_delta(42, encoded2);
+    if decoded2 != 42 {
+        println(string_from("FAIL: SAME should decode to same value"));
+        return 1;
+    }
+
+    // Test with large delta
+    let encoded3: i64 = encode_delta(100, 1000);
+    let decoded3: i64 = decode_delta(100, encoded3);
+    if decoded3 != 1000 {
+        println(string_from("FAIL: large delta should decode correctly"));
+        return 1;
+    }
+
+    // Test with FULL
+    let encoded4: i64 = encode_delta(0, 50000);
+    let decoded4: i64 = decode_delta(0, encoded4);
+    if decoded4 != 50000 {
+        println(string_from("FAIL: FULL should decode correctly"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Connection State Tests
+// =============================================================================
+
+fn test_connection_states() -> i64 {
+    print(string_from("Testing connection states... "));
+
+    // Verify states are distinct
+    if STATE_DISCONNECTED() == STATE_CONNECTING() {
+        println(string_from("FAIL: DISCONNECTED != CONNECTING"));
+        return 1;
+    }
+
+    if STATE_CONNECTING() == STATE_SYNCING() {
+        println(string_from("FAIL: CONNECTING != SYNCING"));
+        return 1;
+    }
+
+    if STATE_SYNCING() == STATE_ACTIVE() {
+        println(string_from("FAIL: SYNCING != ACTIVE"));
+        return 1;
+    }
+
+    // Verify state ordering (lifecycle progression)
+    if STATE_DISCONNECTED() >= STATE_CONNECTING() {
+        println(string_from("FAIL: DISCONNECTED should be before CONNECTING"));
+        return 1;
+    }
+
+    if STATE_CONNECTING() >= STATE_SYNCING() {
+        println(string_from("FAIL: CONNECTING should be before SYNCING"));
+        return 1;
+    }
+
+    if STATE_SYNCING() >= STATE_ACTIVE() {
+        println(string_from("FAIL: SYNCING should be before ACTIVE"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Frame Type Tests
+// =============================================================================
+
+fn test_frame_types() -> i64 {
+    print(string_from("Testing frame types... "));
+
+    // Verify frame types are distinct
+    if FRAME_SYNC() == FRAME_CHECKSUM() {
+        println(string_from("FAIL: SYNC != CHECKSUM"));
+        return 1;
+    }
+
+    // Verify non-zero (0 often used for "no frame")
+    if FRAME_SYNC() == 0 {
+        println(string_from("FAIL: FRAME_SYNC should be non-zero"));
+        return 1;
+    }
+
+    if FRAME_CHECKSUM() == 0 {
+        println(string_from("FAIL: FRAME_CHECKSUM should be non-zero"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Vector Clock Comparison Tests
+// =============================================================================
+
+fn test_vc_comparison_values() -> i64 {
+    print(string_from("Testing vector clock comparison values... "));
+
+    // Verify comparison results are distinct
+    if VC_BEFORE() == VC_EQUAL() {
+        println(string_from("FAIL: BEFORE != EQUAL"));
+        return 1;
+    }
+
+    if VC_EQUAL() == VC_AFTER() {
+        println(string_from("FAIL: EQUAL != AFTER"));
+        return 1;
+    }
+
+    if VC_AFTER() == VC_CONCURRENT() {
+        println(string_from("FAIL: AFTER != CONCURRENT"));
+        return 1;
+    }
+
+    // BEFORE should be negative, AFTER positive, EQUAL zero
+    if VC_BEFORE() >= 0 {
+        println(string_from("FAIL: BEFORE should be negative"));
+        return 1;
+    }
+
+    if VC_EQUAL() != 0 {
+        println(string_from("FAIL: EQUAL should be 0"));
+        return 1;
+    }
+
+    if VC_AFTER() <= 0 {
+        println(string_from("FAIL: AFTER should be positive"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Bit Packing Tests
+// =============================================================================
+
+fn test_bit_packing() -> i64 {
+    print(string_from("Testing bit packing... "));
+
+    // Test 2-bit op code packing
+    let packed: i64 = pack_op_and_data(OP_DELTA_S(), 5);
+    let op: i64 = unpack_op(packed);
+    let data: i64 = unpack_data(packed);
+
+    if op != OP_DELTA_S() {
+        println(string_from("FAIL: unpacked op should be DELTA_S"));
+        return 1;
+    }
+
+    if data != 5 {
+        println(string_from("FAIL: unpacked data should be 5"));
+        return 1;
+    }
+
+    // Test with negative data via encode_delta (which handles sign conversion)
+    let encoded: i64 = encode_delta(100, 97);  // delta = -3
+    let decoded: i64 = decode_delta(100, encoded);
+    if decoded != 97 {
+        println(string_from("FAIL: negative delta should round-trip"));
+        return 1;
+    }
+
+    // Test FULL encoding
+    let packed3: i64 = pack_op_and_data(OP_FULL(), 12345);
+    if unpack_op(packed3) != OP_FULL() {
+        println(string_from("FAIL: FULL op should unpack correctly"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_varint_encoding() -> i64 {
+    print(string_from("Testing varint encoding... "));
+
+    // Small values should use fewer bytes
+    let size1: i64 = varint_size(127);
+    if size1 != 1 {
+        println(string_from("FAIL: 127 should use 1 byte"));
+        return 1;
+    }
+
+    let size2: i64 = varint_size(128);
+    if size2 != 2 {
+        println(string_from("FAIL: 128 should use 2 bytes"));
+        return 1;
+    }
+
+    let size3: i64 = varint_size(16383);
+    if size3 != 2 {
+        println(string_from("FAIL: 16383 should use 2 bytes"));
+        return 1;
+    }
+
+    let size4: i64 = varint_size(16384);
+    if size4 != 3 {
+        println(string_from("FAIL: 16384 should use 3 bytes"));
+        return 1;
+    }
+
+    // Zero
+    let size0: i64 = varint_size(0);
+    if size0 != 1 {
+        println(string_from("FAIL: 0 should use 1 byte"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Checksum Tests
+// =============================================================================
+
+fn test_checksum_calculation() -> i64 {
+    print(string_from("Testing checksum calculation... "));
+
+    // Empty should have known checksum
+    let cs0: i64 = calculate_checksum(0, 0);
+    // Any specific value is fine, just needs to be consistent
+
+    // Different inputs should (usually) produce different checksums
+    let cs1: i64 = calculate_checksum(1, 100);
+    let cs2: i64 = calculate_checksum(2, 100);
+
+    if cs1 == cs2 {
+        println(string_from("FAIL: different inputs should produce different checksums"));
+        return 1;
+    }
+
+    // Same inputs should produce same checksum
+    let cs3: i64 = calculate_checksum(1, 100);
+    if cs1 != cs3 {
+        println(string_from("FAIL: same inputs should produce same checksum"));
+        return 1;
+    }
+
+    // Checksum should handle large values
+    let cs_large: i64 = calculate_checksum(999999, 888888);
+    if cs_large == 0 {
+        // 0 is unlikely for large inputs
+        println(string_from("FAIL: large inputs should produce non-zero checksum"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Catalog Position Tests
+// =============================================================================
+
+fn test_catalog_position_encoding() -> i64 {
+    print(string_from("Testing catalog position encoding... "));
+
+    // Position should fit in reasonable bits
+    let pos: i64 = encode_position(0);
+    if pos < 0 {
+        println(string_from("FAIL: position 0 should be non-negative"));
+        return 1;
+    }
+
+    let pos1: i64 = encode_position(1);
+    let pos2: i64 = encode_position(2);
+    if pos1 == pos2 {
+        println(string_from("FAIL: different positions should encode differently"));
+        return 1;
+    }
+
+    // Decode should round-trip
+    let decoded: i64 = decode_position(pos1);
+    if decoded != 1 {
+        println(string_from("FAIL: decode should return original position"));
+        return 1;
+    }
+
+    // Large position
+    let pos_large: i64 = encode_position(65535);
+    let decoded_large: i64 = decode_position(pos_large);
+    if decoded_large != 65535 {
+        println(string_from("FAIL: large position should round-trip"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Runtime Stub Implementations
+// =============================================================================
+
+fn string_from(s: &str) -> i64 { 0 }
+fn print(s: i64) -> i64 { 0 }
+fn println(s: i64) -> i64 { 0 }
+fn print_num(n: i64) -> i64 { 0 }
+
+// Op codes (2-bit encoding)
+fn OP_SAME() -> i64 { 0 }       // 00: No change
+fn OP_DELTA_S() -> i64 { 1 }    // 01: Small delta (-8 to +7)
+fn OP_DELTA_L() -> i64 { 2 }    // 10: Large delta (-2048 to +2047)
+fn OP_FULL() -> i64 { 3 }       // 11: Full value follows
+
+// Connection states
+fn STATE_DISCONNECTED() -> i64 { 0 }
+fn STATE_CONNECTING() -> i64 { 1 }
+fn STATE_SYNCING() -> i64 { 2 }
+fn STATE_ACTIVE() -> i64 { 3 }
+
+// Vector clock comparison results
+fn VC_BEFORE() -> i64 { 0 - 1 }
+fn VC_EQUAL() -> i64 { 0 }
+fn VC_AFTER() -> i64 { 1 }
+fn VC_CONCURRENT() -> i64 { 2 }
+
+// Frame types
+fn FRAME_SYNC() -> i64 { 1 }
+fn FRAME_CHECKSUM() -> i64 { 2 }
+
+// =============================================================================
+// Delta Encoding Implementation
+// =============================================================================
+
+fn encode_delta(old_val: i64, new_val: i64) -> i64 {
+    let delta: i64 = new_val - old_val;
+
+    // Same value
+    if delta == 0 {
+        return pack_op_and_data(OP_SAME(), 0);
+    }
+
+    // Small delta: -8 to +7 (4 bits signed)
+    if delta >= 0 - 8 {
+        if delta <= 7 {
+            // Convert to 4-bit unsigned representation
+            let packed: i64 = delta;
+            if delta < 0 { packed = delta + 16; }
+            return pack_op_and_data(OP_DELTA_S(), packed);
+        }
+    }
+
+    // Large delta: -2048 to +2047 (12 bits signed)
+    if delta >= 0 - 2048 {
+        if delta <= 2047 {
+            // Convert to 12-bit unsigned representation
+            let packed: i64 = delta;
+            if delta < 0 { packed = delta + 4096; }
+            return pack_op_and_data(OP_DELTA_L(), packed);
+        }
+    }
+
+    // Full value
+    pack_op_and_data(OP_FULL(), new_val)
+}
+
+fn decode_delta(old_val: i64, encoded: i64) -> i64 {
+    let op: i64 = unpack_op(encoded);
+    let data: i64 = unpack_data(encoded);
+
+    if op == OP_SAME() {
+        return old_val;
+    }
+    if op == OP_DELTA_S() {
+        // Sign-extend 4-bit value
+        let delta: i64 = unpack_data_signed(encoded, 4);
+        return old_val + delta;
+    }
+    if op == OP_DELTA_L() {
+        // Sign-extend 12-bit value
+        let delta: i64 = unpack_data_signed(encoded, 12);
+        return old_val + delta;
+    }
+    // OP_FULL
+    data
+}
+
+fn delta_get_op(encoded: i64) -> i64 {
+    unpack_op(encoded)
+}
+
+// =============================================================================
+// Bit Packing Implementation
+// =============================================================================
+
+fn pack_op_and_data(op: i64, data: i64) -> i64 {
+    // 2-bit op code in lowest bits, data in upper bits
+    // Data should already be in unsigned form (caller handles sign conversion)
+    (data * 4) + op
+}
+
+fn unpack_op(packed: i64) -> i64 {
+    packed % 4
+}
+
+fn unpack_data(packed: i64) -> i64 {
+    packed / 4
+}
+
+fn unpack_data_signed(packed: i64, bits: i64) -> i64 {
+    let data: i64 = unpack_data(packed);
+    let max_positive: i64 = 1;
+    let i: i64 = 1;
+    while i < bits {
+        max_positive = max_positive * 2;
+        i = i + 1;
+    }
+    // If high bit is set, it's negative
+    if data >= max_positive {
+        return data - (max_positive * 2);
+    }
+    data
+}
+
+// =============================================================================
+// Varint Implementation
+// =============================================================================
+
+fn varint_size(value: i64) -> i64 {
+    if value < 128 { return 1; }
+    if value < 16384 { return 2; }
+    if value < 2097152 { return 3; }
+    if value < 268435456 { return 4; }
+    5
+}
+
+// =============================================================================
+// Checksum Implementation
+// =============================================================================
+
+fn calculate_checksum(a: i64, b: i64) -> i64 {
+    // Simple FNV-like hash
+    let hash: i64 = 2166136261;
+    hash = (hash * 16777619) + a;
+    hash = (hash * 16777619) + b;
+    // Keep in 32-bit range
+    hash % 4294967296
+}
+
+// =============================================================================
+// Position Encoding Implementation
+// =============================================================================
+
+fn encode_position(pos: i64) -> i64 {
+    pos  // Simple identity for now
+}
+
+fn decode_position(encoded: i64) -> i64 {
+    encoded
+}

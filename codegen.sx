@@ -5,7 +5,7 @@
 // - struct literals and field access
 //
 // Copyright (c) 2025-2026 Rod Higgins
-// Licensed under MIT License - see LICENSE file
+// Licensed under AGPL-3.0 - see LICENSE file
 // https://github.com/senuamedia/simplex-lang
 
 // AST tags - duplicated from parser.sx for standalone compilation
@@ -80,6 +80,36 @@ fn OP_SHR() -> i64 { 17 }
 fn OP_NEG() -> i64 { 100 }
 fn OP_NOT() -> i64 { 101 }
 
+// TASK-014: Attribute flags for epistemic safety
+// These flags are stored in fn_def slot 7 as a bitmask
+fn ATTR_FLAG_NONE() -> i64 { 0 }
+fn ATTR_FLAG_NO_LEARN() -> i64 { 1 }     // #[no_learn] - cannot contain learnable params
+fn ATTR_FLAG_NO_GRADIENT() -> i64 { 2 }  // #[no_gradient] - gradients don't flow through
+fn ATTR_FLAG_INVARIANT() -> i64 { 4 }    // #[invariant] - must hold before/after learning
+
+// Get attributes from function node (stored in slot 7)
+fn fn_attrs(fn_def: i64) -> i64 {
+    load_i64(fn_def, 7)
+}
+
+// Check if function has no_learn attribute
+fn fn_has_no_learn(fn_def: i64) -> bool {
+    let attrs: i64 = fn_attrs(fn_def);
+    (attrs & ATTR_FLAG_NO_LEARN()) != 0
+}
+
+// Check if function has no_gradient attribute
+fn fn_has_no_gradient(fn_def: i64) -> bool {
+    let attrs: i64 = fn_attrs(fn_def);
+    (attrs & ATTR_FLAG_NO_GRADIENT()) != 0
+}
+
+// Check if function has invariant attribute
+fn fn_has_invariant(fn_def: i64) -> bool {
+    let attrs: i64 = fn_attrs(fn_def);
+    (attrs & ATTR_FLAG_INVARIANT()) != 0
+}
+
 // Codegen state
 fn codegen_new() -> i64 {
     // Allocate codegen: output_sb(0), temp_counter(1), label_counter(2), enums(3), locals(4), strings(5), terminated(6), structs(7), var_types(8), loop_stack(9), loop_depth(10), pre_alloca_queue(11), module_name(12), generic_fns(13), instantiated(14), pending_instantiations(15), assoc_types(16), current_impl_type(17), const_params(18), type_params(19), generic_struct_templates(20), trait_impls(21), is_async_fn(22), async_state_counter(23), async_await_points(24), async_fn_name(25), default_methods(26), trait_defs(27), vtables(28), type_aliases(29), training_mode(30), neural_gates(31), gate_temperature(32), gate_counter(33)
@@ -120,7 +150,176 @@ fn codegen_new() -> i64 {
     store_ptr(cg, 31, vec_new()); // neural_gates: vec of (name, gate_id, threshold) tuples
     store_f64(cg, 32, 1.0);       // gate_temperature: Gumbel-softmax temperature (anneals during training)
     store_i64(cg, 33, 0);         // gate_counter: unique ID counter for gates
+    // TASK-014: Epistemic safety attribute tracking
+    store_i64(cg, 34, 0);         // current_fn_attrs: attribute flags for current function being compiled
     cg
+}
+
+// TASK-014: Get/set current function attributes
+fn cg_get_current_fn_attrs(cg: i64) -> i64 {
+    load_i64(cg, 34)
+}
+
+fn cg_set_current_fn_attrs(cg: i64, attrs: i64) -> i64 {
+    store_i64(cg, 34, attrs);
+    0
+}
+
+// TASK-014: Check if we're in a no_gradient context
+fn cg_in_no_gradient_context(cg: i64) -> bool {
+    let attrs: i64 = cg_get_current_fn_attrs(cg);
+    (attrs & ATTR_FLAG_NO_GRADIENT()) != 0
+}
+
+// TASK-014: Check if we're in a no_learn context
+fn cg_in_no_learn_context(cg: i64) -> bool {
+    let attrs: i64 = cg_get_current_fn_attrs(cg);
+    (attrs & ATTR_FLAG_NO_LEARN()) != 0
+}
+
+// CRITICAL FIX: Add codegen_free function (TASK-011 B1)
+// Clean up all allocated memory in codegen structure
+fn codegen_free(cg: i64) -> i64 {
+    if cg == 0 {
+        return 0;
+    }
+    
+    // Free StringBuilder (slot 0)
+    let sb: i64 = load_ptr(cg, 0);
+    if sb != 0 {
+        sb_free(sb);
+    }
+    
+    // Free registered enums (slot 3)
+    let enums: i64 = load_ptr(cg, 3);
+    if enums != 0 {
+        // Note: vec_free should be implemented in runtime
+        // For now, this is a placeholder
+    }
+    
+    // Free local variables (slot 4)
+    let locals: i64 = load_ptr(cg, 4);
+    if locals != 0 {
+        // Note: vec_free should be implemented
+    }
+    
+    // Free string constants (slot 5)
+    let strings: i64 = load_ptr(cg, 5);
+    if strings != 0 {
+        // Note: vec_free should be implemented
+    }
+    
+    // Free registered structs (slot 7)
+    let structs: i64 = load_ptr(cg, 7);
+    if structs != 0 {
+        // Note: vec_free should be implemented
+    }
+    
+    // Free variable types (slot 8)
+    let var_types: i64 = load_ptr(cg, 8);
+    if var_types != 0 {
+        // Note: vec_free should be implemented
+    }
+    
+    // Free loop stack (slot 9)
+    let loop_stack: i64 = load_ptr(cg, 9);
+    if loop_stack != 0 {
+        // Note: vec_free should be implemented
+    }
+    
+    // Free pre-alloca queue (slot 11)
+    let pre_alloca_queue: i64 = load_ptr(cg, 11);
+    if pre_alloca_queue != 0 {
+        // Note: vec_free should be implemented
+    }
+    
+    // Free module name string (slot 12)
+    let module_name: i64 = load_ptr(cg, 12);
+    if module_name != 0 {
+        free(module_name);
+    }
+    
+    // Free generic functions (slot 13)
+    let generic_fns: i64 = load_ptr(cg, 13);
+    if generic_fns != 0 {
+        // Note: vec_free should be implemented
+    }
+    
+    // Free instantiated functions (slot 14)
+    let instantiated: i64 = load_ptr(cg, 14);
+    if instantiated != 0 {
+        // Note: vec_free should be implemented
+    }
+    
+    // Free pending instantiations (slot 15)
+    let pending: i64 = load_ptr(cg, 15);
+    if pending != 0 {
+        // Note: vec_free should be implemented
+    }
+    
+    // Free associated types (slot 16)
+    let assoc_types: i64 = load_ptr(cg, 16);
+    if assoc_types != 0 {
+        // Note: vec_free should be implemented
+    }
+    
+    // Free const params (slot 18)
+    let const_params: i64 = load_ptr(cg, 18);
+    if const_params != 0 {
+        // Note: vec_free should be implemented
+    }
+    
+    // Free type params (slot 19)
+    let type_params: i64 = load_ptr(cg, 19);
+    if type_params != 0 {
+        // Note: vec_free should be implemented
+    }
+    
+    // Free generic struct templates (slot 20)
+    let templates: i64 = load_ptr(cg, 20);
+    if templates != 0 {
+        // Note: vec_free should be implemented
+    }
+    
+    // Free trait implementations (slot 21)
+    let trait_impls: i64 = load_ptr(cg, 21);
+    if trait_impls != 0 {
+        // Note: vec_free should be implemented
+    }
+    
+    // Free default methods (slot 26)
+    let default_methods: i64 = load_ptr(cg, 26);
+    if default_methods != 0 {
+        // Note: vec_free should be implemented
+    }
+    
+    // Free trait definitions (slot 27)
+    let trait_defs: i64 = load_ptr(cg, 27);
+    if trait_defs != 0 {
+        // Note: vec_free should be implemented
+    }
+    
+    // Free vtables (slot 28)
+    let vtables: i64 = load_ptr(cg, 28);
+    if vtables != 0 {
+        // Note: vec_free should be implemented
+    }
+    
+    // Free type aliases (slot 29)
+    let type_aliases: i64 = load_ptr(cg, 29);
+    if type_aliases != 0 {
+        // Note: vec_free should be implemented
+    }
+    
+    // Free neural gates (slot 31)
+    let neural_gates: i64 = load_ptr(cg, 31);
+    if neural_gates != 0 {
+        // Note: vec_free should be implemented
+    }
+    
+    // Finally free the codegen structure itself
+    free(cg);
+    0
 }
 
 // Neural IR mode accessors
@@ -3892,6 +4091,27 @@ fn gen_fn(cg: i64, fn_def: i64) -> i64 {
     let ret_ty: i64 = load_ptr(fn_def, 4);
     let body: i64 = load_ptr(fn_def, 5);
     let is_async: i64 = load_i64(fn_def, 6);
+    let attrs: i64 = fn_attrs(fn_def);  // TASK-014: Get function attributes
+
+    // TASK-014: Set current function attributes for context-aware codegen
+    let prev_attrs: i64 = cg_get_current_fn_attrs(cg);
+    cg_set_current_fn_attrs(cg, attrs);
+
+    // TASK-014: Log if function has epistemic safety attributes
+    if fn_has_no_learn(fn_def) {
+        // Functions with #[no_learn] cannot contain learnable parameters
+        // This information can be used for semantic analysis
+        println(string_concat(string_from("[no_learn] function: "), name));
+    }
+    if fn_has_no_gradient(fn_def) {
+        // Functions with #[no_gradient] should not track gradients
+        // Codegen can use this to skip gradient instrumentation
+        println(string_concat(string_from("[no_gradient] function: "), name));
+    }
+    if fn_has_invariant(fn_def) {
+        // Functions with #[invariant] must preserve certain properties
+        println(string_concat(string_from("[invariant] function: "), name));
+    }
 
     // If this is a generic function, register it but don't generate code yet
     if type_params != 0 {
@@ -3988,6 +4208,10 @@ fn gen_fn(cg: i64, fn_def: i64) -> i64 {
 
     emit_line(cg, "}");
     emit_line(cg, "");
+
+    // TASK-014: Restore previous function attributes
+    cg_set_current_fn_attrs(cg, prev_attrs);
+
     0
 }
 

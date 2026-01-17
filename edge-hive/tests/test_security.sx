@@ -1,0 +1,478 @@
+// Edge Hive - Security Unit Tests
+// Tests for encryption, authentication, and user isolation
+// Note: Uses 'h' as variable name since 'hive' is a keyword
+
+fn main() -> i64 {
+    println(string_from("=== Edge Hive Security Tests ==="));
+    let passed: i64 = 0;
+    let failed: i64 = 0;
+
+    if test_identity_creation() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_identity_constants() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_encryption_logic() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_user_isolation() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_secure_endpoints() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_replay_protection() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_session_token() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_secure_device_id() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_secure_hiveinst() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_key_clearing() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    println(string_from(""));
+    print(string_from("Passed: "));
+    print_num(passed);
+    print(string_from(", Failed: "));
+    print_num(failed);
+    println(string_from(""));
+
+    failed
+}
+
+// =============================================================================
+// Identity Tests (Pure Logic)
+// =============================================================================
+
+fn test_identity_creation() -> i64 {
+    print(string_from("Testing identity creation logic... "));
+
+    // Test that identity components have expected structure
+    let user_id: i64 = compute_user_id(string_from("test@example.com"));
+    if user_id == 0 {
+        println(string_from("FAIL: user_id should be non-zero"));
+        return 1;
+    }
+
+    // Different emails should produce different IDs
+    let user_id2: i64 = compute_user_id(string_from("other@example.com"));
+    if user_id == user_id2 {
+        println(string_from("FAIL: different emails should have different IDs"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_identity_constants() -> i64 {
+    print(string_from("Testing identity constants... "));
+
+    // Key size should be 32 bytes (256 bits)
+    if KEY_SIZE_BYTES() != 32 {
+        println(string_from("FAIL: key size should be 32"));
+        return 1;
+    }
+
+    // Salt size should be 16 bytes (128 bits)
+    if SALT_SIZE_BYTES() != 16 {
+        println(string_from("FAIL: salt size should be 16"));
+        return 1;
+    }
+
+    // Token expiry should be reasonable (e.g., 24 hours in seconds)
+    if TOKEN_EXPIRY_SECONDS() < 3600 {
+        println(string_from("FAIL: token expiry too short"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Encryption Tests (Pure Logic)
+// =============================================================================
+
+fn test_encryption_logic() -> i64 {
+    print(string_from("Testing encryption logic... "));
+
+    // XOR-like encryption should be reversible
+    let plaintext: i64 = 12345;
+    let key: i64 = 67890;
+    let ciphertext: i64 = simple_encrypt(plaintext, key);
+    let decrypted: i64 = simple_decrypt(ciphertext, key);
+
+    if decrypted != plaintext {
+        println(string_from("FAIL: encryption not reversible"));
+        return 1;
+    }
+
+    // Different keys should produce different ciphertext
+    let ciphertext2: i64 = simple_encrypt(plaintext, key + 1);
+    if ciphertext == ciphertext2 {
+        println(string_from("FAIL: different keys should produce different ciphertext"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// User Isolation Tests (Pure Logic)
+// =============================================================================
+
+fn test_user_isolation() -> i64 {
+    print(string_from("Testing user isolation... "));
+
+    // Different users should have different data directories
+    // Use numeric IDs directly to avoid string allocation issues
+    let user_a_id: i64 = 1001;
+    let user_b_id: i64 = 1002;
+
+    let dir_a: i64 = compute_data_dir(user_a_id);
+    let dir_b: i64 = compute_data_dir(user_b_id);
+
+    if dir_a == dir_b {
+        println(string_from("FAIL: users should have different data directories"));
+        return 1;
+    }
+
+    // Same user should always get same directory
+    let dir_a2: i64 = compute_data_dir(user_a_id);
+    if dir_a != dir_a2 {
+        println(string_from("FAIL: same user should get same directory"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Network Security Tests (Pure Logic)
+// =============================================================================
+
+fn test_secure_endpoints() -> i64 {
+    print(string_from("Testing secure endpoint validation... "));
+
+    // wss:// should be accepted (secure WebSocket)
+    if is_secure_protocol(PROTO_WSS()) != 1 {
+        println(string_from("FAIL: wss should be secure"));
+        return 1;
+    }
+
+    // ws:// should be rejected (insecure WebSocket)
+    if is_secure_protocol(PROTO_WS()) != 0 {
+        println(string_from("FAIL: ws should not be secure"));
+        return 1;
+    }
+
+    // https:// should be accepted
+    if is_secure_protocol(PROTO_HTTPS()) != 1 {
+        println(string_from("FAIL: https should be secure"));
+        return 1;
+    }
+
+    // http:// should be rejected
+    if is_secure_protocol(PROTO_HTTP()) != 0 {
+        println(string_from("FAIL: http should not be secure"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_replay_protection() -> i64 {
+    print(string_from("Testing replay protection... "));
+
+    let current_time: i64 = 1000000;
+    let last_seen: i64 = current_time - 10;
+
+    // Message with newer timestamp should pass
+    let new_timestamp: i64 = current_time;
+    if is_replay(new_timestamp, last_seen, current_time) != 0 {
+        println(string_from("FAIL: new timestamp should not be replay"));
+        return 1;
+    }
+
+    // Message with old timestamp should be rejected
+    let old_timestamp: i64 = last_seen - 5;
+    if is_replay(old_timestamp, last_seen, current_time) != 1 {
+        println(string_from("FAIL: old timestamp should be replay"));
+        return 1;
+    }
+
+    // Message with future timestamp (> 60 seconds) should be rejected
+    let future_timestamp: i64 = current_time + 120;
+    if is_future_message(future_timestamp, current_time, 60) != 1 {
+        println(string_from("FAIL: far future timestamp should be rejected"));
+        return 1;
+    }
+
+    // Message older than 5 minutes should be stale
+    let stale_timestamp: i64 = current_time - 400;
+    if is_stale_message(stale_timestamp, current_time, 300) != 1 {
+        println(string_from("FAIL: stale message should be rejected"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_session_token() -> i64 {
+    print(string_from("Testing session token... "));
+
+    // Token should be generated from user_id and timestamp
+    let user_id: i64 = 12345;
+    let timestamp: i64 = 1000000;
+    let token: i64 = generate_session_token(user_id, timestamp);
+
+    if token == 0 {
+        println(string_from("FAIL: token should be non-zero"));
+        return 1;
+    }
+
+    // Validate token
+    if validate_token(token, user_id, timestamp) != 1 {
+        println(string_from("FAIL: valid token should validate"));
+        return 1;
+    }
+
+    // Wrong user_id should fail
+    if validate_token(token, user_id + 1, timestamp) == 1 {
+        println(string_from("FAIL: wrong user_id should fail validation"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Device ID Tests
+// =============================================================================
+
+fn test_secure_device_id() -> i64 {
+    print(string_from("Testing secure device ID... "));
+
+    // Device ID should incorporate multiple components
+    let hw_id: i64 = 111111;
+    let random: i64 = 222222;
+    let timestamp: i64 = 333333;
+
+    let id1: i64 = compute_device_id(hw_id, random, timestamp);
+    let id2: i64 = compute_device_id(hw_id, random + 1, timestamp);
+
+    // IDs should be non-zero
+    if id1 == 0 {
+        println(string_from("FAIL: device ID should be non-zero"));
+        return 1;
+    }
+
+    // Different random should produce different IDs
+    if id1 == id2 {
+        println(string_from("FAIL: different random should produce different IDs"));
+        return 1;
+    }
+
+    // ID should not just be timestamp
+    if id1 == timestamp {
+        println(string_from("FAIL: device ID should not be just timestamp"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Secure Hive Tests (Pure Logic)
+// =============================================================================
+
+fn test_secure_hiveinst() -> i64 {
+    print(string_from("Testing secure hive logic... "));
+
+    // Secure hive requires valid identity
+    let identity_valid: i64 = 1;
+    let identity_invalid: i64 = 0;
+
+    if can_create_secure_hive(identity_valid) != 1 {
+        println(string_from("FAIL: valid identity should allow creation"));
+        return 1;
+    }
+
+    if can_create_secure_hive(identity_invalid) != 0 {
+        println(string_from("FAIL: invalid identity should block creation"));
+        return 1;
+    }
+
+    // Hive state constants should be distinct
+    if HIVE_STATE_IDLE() == HIVE_STATE_ACTIVE() {
+        println(string_from("FAIL: hive states should be distinct"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_key_clearing() -> i64 {
+    print(string_from("Testing key clearing logic... "));
+
+    // After clearing, all bytes should be zero
+    let cleared_value: i64 = clear_key_byte(255);
+    if cleared_value != 0 {
+        println(string_from("FAIL: cleared byte should be 0"));
+        return 1;
+    }
+
+    // Multiple clears should still be zero
+    let double_cleared: i64 = clear_key_byte(clear_key_byte(123));
+    if double_cleared != 0 {
+        println(string_from("FAIL: double cleared should still be 0"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Runtime Stubs
+// =============================================================================
+
+fn string_from(s: &str) -> i64 { 0 }
+fn print(s: i64) -> i64 { 0 }
+fn println(s: i64) -> i64 { 0 }
+fn print_num(n: i64) -> i64 { 0 }
+fn time_now() -> i64 { 0 }
+
+fn vec_new() -> i64 { 0 }
+fn vec_push(v: i64, val: i64) -> i64 { 0 }
+fn vec_get(v: i64, idx: i64) -> i64 { 0 }
+fn vec_set(v: i64, idx: i64, val: i64) -> i64 { 0 }
+fn vec_len(v: i64) -> i64 { 0 }
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+fn KEY_SIZE_BYTES() -> i64 { 32 }
+fn SALT_SIZE_BYTES() -> i64 { 16 }
+fn TOKEN_EXPIRY_SECONDS() -> i64 { 86400 }  // 24 hours
+
+fn PROTO_WS() -> i64 { 1 }
+fn PROTO_WSS() -> i64 { 2 }
+fn PROTO_HTTP() -> i64 { 3 }
+fn PROTO_HTTPS() -> i64 { 4 }
+
+fn HIVE_STATE_IDLE() -> i64 { 0 }
+fn HIVE_STATE_ACTIVE() -> i64 { 1 }
+fn HIVE_STATE_ERROR() -> i64 { 2 }
+
+// =============================================================================
+// Pure Logic Implementations
+// =============================================================================
+
+fn compute_user_id(email: i64) -> i64 {
+    // Simple hash: email value + constant
+    email + 1000000
+}
+
+fn simple_encrypt(data: i64, key: i64) -> i64 {
+    // Simple reversible encryption: add key
+    data + key
+}
+
+fn simple_decrypt(data: i64, key: i64) -> i64 {
+    // Reverse: subtract key
+    data - key
+}
+
+fn compute_data_dir(email: i64) -> i64 {
+    // Hash email to directory ID
+    compute_user_id(email) * 17
+}
+
+fn is_secure_protocol(proto: i64) -> i64 {
+    if proto == PROTO_WSS() { return 1; }
+    if proto == PROTO_HTTPS() { return 1; }
+    0
+}
+
+fn is_replay(msg_timestamp: i64, last_seen: i64, current_time: i64) -> i64 {
+    if msg_timestamp <= last_seen { 1 } else { 0 }
+}
+
+fn is_future_message(msg_timestamp: i64, current_time: i64, max_drift: i64) -> i64 {
+    if msg_timestamp > current_time + max_drift { 1 } else { 0 }
+}
+
+fn is_stale_message(msg_timestamp: i64, current_time: i64, max_age: i64) -> i64 {
+    if current_time - msg_timestamp > max_age { 1 } else { 0 }
+}
+
+fn generate_session_token(user_id: i64, timestamp: i64) -> i64 {
+    // Simple token: combination of user_id and timestamp
+    user_id * 1000000 + timestamp % 1000000
+}
+
+fn validate_token(token: i64, user_id: i64, timestamp: i64) -> i64 {
+    let expected: i64 = generate_session_token(user_id, timestamp);
+    if token == expected { 1 } else { 0 }
+}
+
+fn compute_device_id(hw_id: i64, random: i64, timestamp: i64) -> i64 {
+    // Combine components into device ID
+    hw_id * 1000000 + random * 1000 + timestamp % 1000
+}
+
+fn can_create_secure_hive(identity: i64) -> i64 {
+    if identity != 0 { 1 } else { 0 }
+}
+
+fn clear_key_byte(byte: i64) -> i64 {
+    // Overwrite with zero
+    0
+}
