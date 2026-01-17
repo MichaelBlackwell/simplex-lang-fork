@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>secure_conn - Simplex API Reference</title>
+  <meta name="description" content="API documentation for the Simplex programming language">
+  <link rel="stylesheet" href="../assets/docs.css">
+  <script src="../assets/nav.js" defer></script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "secure_conn - Simplex API Reference",
+  "description": "API documentation for the Simplex programming language",
+  "programmingLanguage": {
+    "@type": "ComputerLanguage",
+    "name": "Simplex",
+    "url": "https://github.com/senuamedia/simplex"
+  },
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "Simplex Documentation",
+    "url": "https://simplex.senuamedia.com/api/"
+  },
+  "articleSection": "nexus"
+}
+</script>
+</head>
+<body>
+<div class="doc-wrapper">
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-header"><a href="../index.html">Simplex API</a></div>
+    <div class="search-box">
+      <input type="text" id="search" placeholder="Search...">
+    </div>
+    <div id="nav-content">Loading...</div>
+  </nav>
+  <main class="content">
+    <nav class="breadcrumb">
+      <a href="../index.html">API Reference</a> &raquo;       <span class="current-category">nexus</span> &raquo; secure_conn
+    </nav>
+    <h1>Module: secure_conn</h1>
+<div class="toc">
+<strong>Contents</strong>
+<ul>
+<li><a href="#SCONN_DISCONNECTED">fn SCONN_DISCONNECTED</a></li>
+<li><a href="#SCONN_CONNECTING">fn SCONN_CONNECTING</a></li>
+<li><a href="#SCONN_HELLO_SENT">fn SCONN_HELLO_SENT</a></li>
+<li><a href="#SCONN_HELLO_RECEIVED">fn SCONN_HELLO_RECEIVED</a></li>
+<li><a href="#SCONN_CHALLENGE_SENT">fn SCONN_CHALLENGE_SENT</a></li>
+<li><a href="#SCONN_CHALLENGE_RECEIVED">fn SCONN_CHALLENGE_RECEIVED</a></li>
+<li><a href="#SCONN_AUTHENTICATED">fn SCONN_AUTHENTICATED</a></li>
+<li><a href="#SCONN_SESSION_ESTABLISHED">fn SCONN_SESSION_ESTABLISHED</a></li>
+<li><a href="#SCONN_CATALOG_EXCHANGE">fn SCONN_CATALOG_EXCHANGE</a></li>
+<li><a href="#SCONN_BASELINE">fn SCONN_BASELINE</a></li>
+<li><a href="#SCONN_SYNCING">fn SCONN_SYNCING</a></li>
+<li><a href="#SCONN_IDLE">fn SCONN_IDLE</a></li>
+<li><a href="#SCONN_ERROR">fn SCONN_ERROR</a></li>
+<li><a href="#SCONN_CLOSING">fn SCONN_CLOSING</a></li>
+<li><a href="#SEC_LEVEL_NONE">fn SEC_LEVEL_NONE</a></li>
+<li><a href="#SEC_LEVEL_SIGNED">fn SEC_LEVEL_SIGNED</a></li>
+<li><a href="#SEC_LEVEL_ENCRYPTED">fn SEC_LEVEL_ENCRYPTED</a></li>
+<li><a href="#SEC_LEVEL_FULL">fn SEC_LEVEL_FULL</a></li>
+<li><a href="#secure_conn_new">fn secure_conn_new</a></li>
+<li><a href="#secure_conn_state">fn secure_conn_state</a></li>
+<li><a href="#secure_conn_local_keypair">fn secure_conn_local_keypair</a></li>
+<li><a href="#secure_conn_local_cert">fn secure_conn_local_cert</a></li>
+<li><a href="#secure_conn_remote_pubkey">fn secure_conn_remote_pubkey</a></li>
+<li><a href="#secure_conn_remote_cert">fn secure_conn_remote_cert</a></li>
+<li><a href="#secure_conn_security_level">fn secure_conn_security_level</a></li>
+<li><a href="#secure_conn_session">fn secure_conn_session</a></li>
+<li><a href="#secure_conn_frame_ctx">fn secure_conn_frame_ctx</a></li>
+<li><a href="#secure_conn_local_challenge">fn secure_conn_local_challenge</a></li>
+<li><a href="#secure_conn_remote_challenge">fn secure_conn_remote_challenge</a></li>
+<li><a href="#secure_conn_error_code">fn secure_conn_error_code</a></li>
+<li><a href="#secure_conn_error_msg">fn secure_conn_error_msg</a></li>
+<li><a href="#secure_conn_frames_sent">fn secure_conn_frames_sent</a></li>
+<li><a href="#secure_conn_frames_received">fn secure_conn_frames_received</a></li>
+<li><a href="#secure_conn_trusted_certs">fn secure_conn_trusted_certs</a></li>
+<li><a href="#secure_conn_set_state">fn secure_conn_set_state</a></li>
+<li><a href="#secure_conn_set_security_level">fn secure_conn_set_security_level</a></li>
+<li><a href="#secure_conn_set_error">fn secure_conn_set_error</a></li>
+<li><a href="#secure_conn_add_trusted_cert">fn secure_conn_add_trusted_cert</a></li>
+<li><a href="#secure_conn_gen_challenge">fn secure_conn_gen_challenge</a></li>
+<li><a href="#secure_conn_sign_challenge">fn secure_conn_sign_challenge</a></li>
+<li><a href="#secure_conn_verify_challenge">fn secure_conn_verify_challenge</a></li>
+<li><a href="#secure_hello_build">fn secure_hello_build</a></li>
+<li><a href="#secure_hello_parse">fn secure_hello_parse</a></li>
+<li><a href="#secure_welcome_build">fn secure_welcome_build</a></li>
+<li><a href="#secure_welcome_parse">fn secure_welcome_parse</a></li>
+<li><a href="#FRAME_AUTH_RESPONSE">fn FRAME_AUTH_RESPONSE</a></li>
+<li><a href="#secure_auth_response_build">fn secure_auth_response_build</a></li>
+<li><a href="#secure_auth_response_parse">fn secure_auth_response_parse</a></li>
+<li><a href="#secure_conn_establish_session">fn secure_conn_establish_session</a></li>
+<li><a href="#secure_conn_send_frame">fn secure_conn_send_frame</a></li>
+<li><a href="#secure_conn_recv_frame">fn secure_conn_recv_frame</a></li>
+<li><a href="#secure_conn_initiate">fn secure_conn_initiate</a></li>
+<li><a href="#secure_conn_respond_hello">fn secure_conn_respond_hello</a></li>
+<li><a href="#secure_conn_handle_welcome">fn secure_conn_handle_welcome</a></li>
+<li><a href="#secure_conn_handle_auth_response">fn secure_conn_handle_auth_response</a></li>
+<li><a href="#secure_conn_is_authenticated">fn secure_conn_is_authenticated</a></li>
+<li><a href="#secure_conn_is_ready">fn secure_conn_is_ready</a></li>
+<li><a href="#secure_conn_disconnect">fn secure_conn_disconnect</a></li>
+<li><a href="#secure_conn_handle_disconnect">fn secure_conn_handle_disconnect</a></li>
+<li><a href="#secure_conn_reset">fn secure_conn_reset</a></li>
+<li><a href="#secure_conn_is_cert_trusted">fn secure_conn_is_cert_trusted</a></li>
+<li><a href="#secure_conn_state_name">fn secure_conn_state_name</a></li>
+<li><a href="#secure_conn_has_error">fn secure_conn_has_error</a></li>
+<li><a href="#secure_conn_get_stats">fn secure_conn_get_stats</a></li>
+<li><a href="#secure_conn_full_handshake">fn secure_conn_full_handshake</a></li>
+</ul>
+</div>
+<h2 id="SCONN_DISCONNECTED">fn SCONN_DISCONNECTED</h2>
+<pre class="signature">fn SCONN_DISCONNECTED() -&gt; i64 { 0 }</pre>
+<h2 id="SCONN_CONNECTING">fn SCONN_CONNECTING</h2>
+<pre class="signature">fn SCONN_CONNECTING() -&gt; i64 { 1 }</pre>
+<h2 id="SCONN_HELLO_SENT">fn SCONN_HELLO_SENT</h2>
+<pre class="signature">fn SCONN_HELLO_SENT() -&gt; i64 { 2 }</pre>
+<h2 id="SCONN_HELLO_RECEIVED">fn SCONN_HELLO_RECEIVED</h2>
+<pre class="signature">fn SCONN_HELLO_RECEIVED() -&gt; i64 { 3 }</pre>
+<h2 id="SCONN_CHALLENGE_SENT">fn SCONN_CHALLENGE_SENT</h2>
+<pre class="signature">fn SCONN_CHALLENGE_SENT() -&gt; i64 { 4 }</pre>
+<h2 id="SCONN_CHALLENGE_RECEIVED">fn SCONN_CHALLENGE_RECEIVED</h2>
+<pre class="signature">fn SCONN_CHALLENGE_RECEIVED() -&gt; i64 { 5 }</pre>
+<h2 id="SCONN_AUTHENTICATED">fn SCONN_AUTHENTICATED</h2>
+<pre class="signature">fn SCONN_AUTHENTICATED() -&gt; i64 { 6 }</pre>
+<h2 id="SCONN_SESSION_ESTABLISHED">fn SCONN_SESSION_ESTABLISHED</h2>
+<pre class="signature">fn SCONN_SESSION_ESTABLISHED() -&gt; i64 { 7 }</pre>
+<h2 id="SCONN_CATALOG_EXCHANGE">fn SCONN_CATALOG_EXCHANGE</h2>
+<pre class="signature">fn SCONN_CATALOG_EXCHANGE() -&gt; i64 { 8 }</pre>
+<h2 id="SCONN_BASELINE">fn SCONN_BASELINE</h2>
+<pre class="signature">fn SCONN_BASELINE() -&gt; i64 { 9 }</pre>
+<h2 id="SCONN_SYNCING">fn SCONN_SYNCING</h2>
+<pre class="signature">fn SCONN_SYNCING() -&gt; i64 { 10 }</pre>
+<h2 id="SCONN_IDLE">fn SCONN_IDLE</h2>
+<pre class="signature">fn SCONN_IDLE() -&gt; i64 { 11 }</pre>
+<h2 id="SCONN_ERROR">fn SCONN_ERROR</h2>
+<pre class="signature">fn SCONN_ERROR() -&gt; i64 { 12 }</pre>
+<h2 id="SCONN_CLOSING">fn SCONN_CLOSING</h2>
+<pre class="signature">fn SCONN_CLOSING() -&gt; i64 { 13 }</pre>
+<h2 id="SEC_LEVEL_NONE">fn SEC_LEVEL_NONE</h2>
+<pre class="signature">fn SEC_LEVEL_NONE() -&gt; i64 { 0 }        // No security (testing only)</pre>
+<h2 id="SEC_LEVEL_SIGNED">fn SEC_LEVEL_SIGNED</h2>
+<pre class="signature">fn SEC_LEVEL_SIGNED() -&gt; i64 { 1 }      // Frames are signed</pre>
+<h2 id="SEC_LEVEL_ENCRYPTED">fn SEC_LEVEL_ENCRYPTED</h2>
+<pre class="signature">fn SEC_LEVEL_ENCRYPTED() -&gt; i64 { 2 }   // Frames are encrypted</pre>
+<h2 id="SEC_LEVEL_FULL">fn SEC_LEVEL_FULL</h2>
+<pre class="signature">fn SEC_LEVEL_FULL() -&gt; i64 { 3 }        // Signed + encrypted</pre>
+<h2 id="secure_conn_new">fn secure_conn_new</h2>
+<pre class="signature">fn secure_conn_new(local_keypair: i64, local_cert: i64) -&gt; i64 {</pre>
+<h2 id="secure_conn_state">fn secure_conn_state</h2>
+<pre class="signature">fn secure_conn_state(conn: i64) -&gt; i64 { vec_get(conn, 0) }</pre>
+<h2 id="secure_conn_local_keypair">fn secure_conn_local_keypair</h2>
+<pre class="signature">fn secure_conn_local_keypair(conn: i64) -&gt; i64 { vec_get(conn, 1) }</pre>
+<h2 id="secure_conn_local_cert">fn secure_conn_local_cert</h2>
+<pre class="signature">fn secure_conn_local_cert(conn: i64) -&gt; i64 { vec_get(conn, 2) }</pre>
+<h2 id="secure_conn_remote_pubkey">fn secure_conn_remote_pubkey</h2>
+<pre class="signature">fn secure_conn_remote_pubkey(conn: i64) -&gt; i64 { vec_get(conn, 3) }</pre>
+<h2 id="secure_conn_remote_cert">fn secure_conn_remote_cert</h2>
+<pre class="signature">fn secure_conn_remote_cert(conn: i64) -&gt; i64 { vec_get(conn, 4) }</pre>
+<h2 id="secure_conn_security_level">fn secure_conn_security_level</h2>
+<pre class="signature">fn secure_conn_security_level(conn: i64) -&gt; i64 { vec_get(conn, 5) }</pre>
+<h2 id="secure_conn_session">fn secure_conn_session</h2>
+<pre class="signature">fn secure_conn_session(conn: i64) -&gt; i64 { vec_get(conn, 6) }</pre>
+<h2 id="secure_conn_frame_ctx">fn secure_conn_frame_ctx</h2>
+<pre class="signature">fn secure_conn_frame_ctx(conn: i64) -&gt; i64 { vec_get(conn, 7) }</pre>
+<h2 id="secure_conn_local_challenge">fn secure_conn_local_challenge</h2>
+<pre class="signature">fn secure_conn_local_challenge(conn: i64) -&gt; i64 { vec_get(conn, 8) }</pre>
+<h2 id="secure_conn_remote_challenge">fn secure_conn_remote_challenge</h2>
+<pre class="signature">fn secure_conn_remote_challenge(conn: i64) -&gt; i64 { vec_get(conn, 9) }</pre>
+<h2 id="secure_conn_error_code">fn secure_conn_error_code</h2>
+<pre class="signature">fn secure_conn_error_code(conn: i64) -&gt; i64 { vec_get(conn, 12) }</pre>
+<h2 id="secure_conn_error_msg">fn secure_conn_error_msg</h2>
+<pre class="signature">fn secure_conn_error_msg(conn: i64) -&gt; i64 { vec_get(conn, 13) }</pre>
+<h2 id="secure_conn_frames_sent">fn secure_conn_frames_sent</h2>
+<pre class="signature">fn secure_conn_frames_sent(conn: i64) -&gt; i64 { vec_get(conn, 14) }</pre>
+<h2 id="secure_conn_frames_received">fn secure_conn_frames_received</h2>
+<pre class="signature">fn secure_conn_frames_received(conn: i64) -&gt; i64 { vec_get(conn, 15) }</pre>
+<h2 id="secure_conn_trusted_certs">fn secure_conn_trusted_certs</h2>
+<pre class="signature">fn secure_conn_trusted_certs(conn: i64) -&gt; i64 { vec_get(conn, 18) }</pre>
+<h2 id="secure_conn_set_state">fn secure_conn_set_state</h2>
+<pre class="signature">fn secure_conn_set_state(conn: i64, state: i64) {</pre>
+<h2 id="secure_conn_set_security_level">fn secure_conn_set_security_level</h2>
+<pre class="signature">fn secure_conn_set_security_level(conn: i64, level: i64) {</pre>
+<h2 id="secure_conn_set_error">fn secure_conn_set_error</h2>
+<pre class="signature">fn secure_conn_set_error(conn: i64, code: i64, msg: i64) {</pre>
+<h2 id="secure_conn_add_trusted_cert">fn secure_conn_add_trusted_cert</h2>
+<pre class="signature">fn secure_conn_add_trusted_cert(conn: i64, cert: i64) {</pre>
+<h2 id="secure_conn_gen_challenge">fn secure_conn_gen_challenge</h2>
+<pre class="signature">fn secure_conn_gen_challenge() -&gt; i64 {</pre>
+<h2 id="secure_conn_sign_challenge">fn secure_conn_sign_challenge</h2>
+<pre class="signature">fn secure_conn_sign_challenge(conn: i64, challenge: i64) -&gt; i64 {</pre>
+<h2 id="secure_conn_verify_challenge">fn secure_conn_verify_challenge</h2>
+<pre class="signature">fn secure_conn_verify_challenge(conn: i64, challenge: i64, signature: i64) -&gt; i64 {</pre>
+<h2 id="secure_hello_build">fn secure_hello_build</h2>
+<pre class="signature">fn secure_hello_build(conn: i64) -&gt; i64 {</pre>
+<h2 id="secure_hello_parse">fn secure_hello_parse</h2>
+<pre class="signature">fn secure_hello_parse(conn: i64, frame: i64) -&gt; i64 {</pre>
+<h2 id="secure_welcome_build">fn secure_welcome_build</h2>
+<pre class="signature">fn secure_welcome_build(conn: i64) -&gt; i64 {</pre>
+<h2 id="secure_welcome_parse">fn secure_welcome_parse</h2>
+<pre class="signature">fn secure_welcome_parse(conn: i64, frame: i64) -&gt; i64 {</pre>
+<h2 id="FRAME_AUTH_RESPONSE">fn FRAME_AUTH_RESPONSE</h2>
+<pre class="signature">fn FRAME_AUTH_RESPONSE() -&gt; i64 { 20 }</pre>
+<h2 id="secure_auth_response_build">fn secure_auth_response_build</h2>
+<pre class="signature">fn secure_auth_response_build(conn: i64) -&gt; i64 {</pre>
+<h2 id="secure_auth_response_parse">fn secure_auth_response_parse</h2>
+<pre class="signature">fn secure_auth_response_parse(conn: i64, frame: i64) -&gt; i64 {</pre>
+<h2 id="secure_conn_establish_session">fn secure_conn_establish_session</h2>
+<pre class="signature">fn secure_conn_establish_session(conn: i64) -&gt; i64 {</pre>
+<h2 id="secure_conn_send_frame">fn secure_conn_send_frame</h2>
+<pre class="signature">fn secure_conn_send_frame(conn: i64, frame: i64) -&gt; i64 {</pre>
+<h2 id="secure_conn_recv_frame">fn secure_conn_recv_frame</h2>
+<pre class="signature">fn secure_conn_recv_frame(conn: i64, secured_frame: i64) -&gt; i64 {</pre>
+<h2 id="secure_conn_initiate">fn secure_conn_initiate</h2>
+<pre class="signature">fn secure_conn_initiate(conn: i64) -&gt; i64 {</pre>
+<h2 id="secure_conn_respond_hello">fn secure_conn_respond_hello</h2>
+<pre class="signature">fn secure_conn_respond_hello(conn: i64, hello_frame: i64) -&gt; i64 {</pre>
+<h2 id="secure_conn_handle_welcome">fn secure_conn_handle_welcome</h2>
+<pre class="signature">fn secure_conn_handle_welcome(conn: i64, welcome_frame: i64) -&gt; i64 {</pre>
+<h2 id="secure_conn_handle_auth_response">fn secure_conn_handle_auth_response</h2>
+<pre class="signature">fn secure_conn_handle_auth_response(conn: i64, auth_frame: i64) -&gt; i64 {</pre>
+<h2 id="secure_conn_is_authenticated">fn secure_conn_is_authenticated</h2>
+<pre class="signature">fn secure_conn_is_authenticated(conn: i64) -&gt; i64 {</pre>
+<h2 id="secure_conn_is_ready">fn secure_conn_is_ready</h2>
+<pre class="signature">fn secure_conn_is_ready(conn: i64) -&gt; i64 {</pre>
+<h2 id="secure_conn_disconnect">fn secure_conn_disconnect</h2>
+<pre class="signature">fn secure_conn_disconnect(conn: i64) -&gt; i64 {</pre>
+<h2 id="secure_conn_handle_disconnect">fn secure_conn_handle_disconnect</h2>
+<pre class="signature">fn secure_conn_handle_disconnect(conn: i64, frame: i64) {</pre>
+<h2 id="secure_conn_reset">fn secure_conn_reset</h2>
+<pre class="signature">fn secure_conn_reset(conn: i64) {</pre>
+<h2 id="secure_conn_is_cert_trusted">fn secure_conn_is_cert_trusted</h2>
+<pre class="signature">fn secure_conn_is_cert_trusted(conn: i64, cert: i64) -&gt; i64 {</pre>
+<h2 id="secure_conn_state_name">fn secure_conn_state_name</h2>
+<pre class="signature">fn secure_conn_state_name(state: i64) -&gt; i64 {</pre>
+<h2 id="secure_conn_has_error">fn secure_conn_has_error</h2>
+<pre class="signature">fn secure_conn_has_error(conn: i64) -&gt; i64 {</pre>
+<h2 id="secure_conn_get_stats">fn secure_conn_get_stats</h2>
+<pre class="signature">fn secure_conn_get_stats(conn: i64) -&gt; i64 {</pre>
+<h2 id="secure_conn_full_handshake">fn secure_conn_full_handshake</h2>
+<pre class="signature">fn secure_conn_full_handshake(initiator: i64, responder: i64) -&gt; i64 {</pre>
+
+    <hr>
+    <p><em>Generated by sxdoc</em></p>
+  </main>
+</div>
+</body>
+</html>

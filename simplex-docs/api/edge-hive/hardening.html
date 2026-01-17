@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>hardening - Simplex API Reference</title>
+  <meta name="description" content="API documentation for the Simplex programming language">
+  <link rel="stylesheet" href="../assets/docs.css">
+  <script src="../assets/nav.js" defer></script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "hardening - Simplex API Reference",
+  "description": "API documentation for the Simplex programming language",
+  "programmingLanguage": {
+    "@type": "ComputerLanguage",
+    "name": "Simplex",
+    "url": "https://github.com/senuamedia/simplex"
+  },
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "Simplex Documentation",
+    "url": "https://simplex.senuamedia.com/api/"
+  },
+  "articleSection": "edge-hive"
+}
+</script>
+</head>
+<body>
+<div class="doc-wrapper">
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-header"><a href="../index.html">Simplex API</a></div>
+    <div class="search-box">
+      <input type="text" id="search" placeholder="Search...">
+    </div>
+    <div id="nav-content">Loading...</div>
+  </nav>
+  <main class="content">
+    <nav class="breadcrumb">
+      <a href="../index.html">API Reference</a> &raquo;       <span class="current-category">edge-hive</span> &raquo; hardening
+    </nav>
+    <h1>Module: hardening</h1>
+<div class="toc">
+<strong>Contents</strong>
+<ul>
+<li><a href="#SECURITY_MINIMAL">fn SECURITY_MINIMAL</a></li>
+<li><a href="#SECURITY_STANDARD">fn SECURITY_STANDARD</a></li>
+<li><a href="#SECURITY_ELEVATED">fn SECURITY_ELEVATED</a></li>
+<li><a href="#SECURITY_MAXIMUM">fn SECURITY_MAXIMUM</a></li>
+<li><a href="#AUDIT_LOGIN">fn AUDIT_LOGIN</a></li>
+<li><a href="#AUDIT_LOGOUT">fn AUDIT_LOGOUT</a></li>
+<li><a href="#AUDIT_REQUEST">fn AUDIT_REQUEST</a></li>
+<li><a href="#AUDIT_SYNC">fn AUDIT_SYNC</a></li>
+<li><a href="#AUDIT_BELIEF_CHANGE">fn AUDIT_BELIEF_CHANGE</a></li>
+<li><a href="#AUDIT_SECURITY_EVENT">fn AUDIT_SECURITY_EVENT</a></li>
+<li><a href="#AUDIT_ERROR">fn AUDIT_ERROR</a></li>
+<li><a href="#AUDIT_RECOVERY">fn AUDIT_RECOVERY</a></li>
+<li><a href="#PRIVACY_GDPR">fn PRIVACY_GDPR</a></li>
+<li><a href="#PRIVACY_CCPA">fn PRIVACY_CCPA</a></li>
+<li><a href="#PRIVACY_HIPAA">fn PRIVACY_HIPAA</a></li>
+<li><a href="#security_manager_new">fn security_manager_new</a></li>
+<li><a href="#security_level">fn security_level</a></li>
+<li><a href="#security_audit_log">fn security_audit_log</a></li>
+<li><a href="#security_privacy_flags">fn security_privacy_flags</a></li>
+<li><a href="#security_no_learn_types">fn security_no_learn_types</a></li>
+<li><a href="#security_failed_auth">fn security_failed_auth</a></li>
+<li><a href="#security_lockout_until">fn security_lockout_until</a></li>
+<li><a href="#security_set_level">fn security_set_level</a></li>
+<li><a href="#security_enable_privacy">fn security_enable_privacy</a></li>
+<li><a href="#security_add_no_learn_type">fn security_add_no_learn_type</a></li>
+<li><a href="#security_is_no_learn">fn security_is_no_learn</a></li>
+<li><a href="#security_audit">fn security_audit</a></li>
+<li><a href="#audit_evict_oldest">fn audit_evict_oldest</a></li>
+<li><a href="#compute_entry_hash">fn compute_entry_hash</a></li>
+<li><a href="#audit_export">fn audit_export</a></li>
+<li><a href="#security_check_rate_limit">fn security_check_rate_limit</a></li>
+<li><a href="#security_reset_rate_counter">fn security_reset_rate_counter</a></li>
+<li><a href="#security_record_auth_failure">fn security_record_auth_failure</a></li>
+<li><a href="#security_clear_auth_failures">fn security_clear_auth_failures</a></li>
+<li><a href="#checkpoint_manager_new">fn checkpoint_manager_new</a></li>
+<li><a href="#checkpoint_checkpoints">fn checkpoint_checkpoints</a></li>
+<li><a href="#checkpoint_max">fn checkpoint_max</a></li>
+<li><a href="#checkpoint_interval">fn checkpoint_interval</a></li>
+<li><a href="#checkpoint_last_time">fn checkpoint_last_time</a></li>
+<li><a href="#checkpoint_current_id">fn checkpoint_current_id</a></li>
+<li><a href="#checkpoint_should_save">fn checkpoint_should_save</a></li>
+<li><a href="#checkpoint_create">fn checkpoint_create</a></li>
+<li><a href="#checkpoint_evict_oldest">fn checkpoint_evict_oldest</a></li>
+<li><a href="#checkpoint_restore">fn checkpoint_restore</a></li>
+<li><a href="#checkpoint_restore_latest">fn checkpoint_restore_latest</a></li>
+<li><a href="#encrypt_checkpoint">fn encrypt_checkpoint</a></li>
+<li><a href="#decrypt_checkpoint">fn decrypt_checkpoint</a></li>
+<li><a href="#update_manager_new">fn update_manager_new</a></li>
+<li><a href="#update_current_version">fn update_current_version</a></li>
+<li><a href="#update_trusted_keys">fn update_trusted_keys</a></li>
+<li><a href="#update_pending">fn update_pending</a></li>
+<li><a href="#update_add_trusted_key">fn update_add_trusted_key</a></li>
+<li><a href="#update_verify_signature">fn update_verify_signature</a></li>
+<li><a href="#update_check_and_apply">fn update_check_and_apply</a></li>
+<li><a href="#update_apply_pending">fn update_apply_pending</a></li>
+<li><a href="#HUMAN_SIGN_REQUIRED">fn HUMAN_SIGN_REQUIRED</a></li>
+<li><a href="#HUMAN_SIGN_APPROVED">fn HUMAN_SIGN_APPROVED</a></li>
+<li><a href="#HUMAN_SIGN_REJECTED">fn HUMAN_SIGN_REJECTED</a></li>
+<li><a href="#human_signed_belief_new">fn human_signed_belief_new</a></li>
+<li><a href="#hsb_belief">fn hsb_belief</a></li>
+<li><a href="#hsb_requires_human">fn hsb_requires_human</a></li>
+<li><a href="#hsb_status">fn hsb_status</a></li>
+<li><a href="#hsb_signed_by">fn hsb_signed_by</a></li>
+<li><a href="#hsb_signed_at">fn hsb_signed_at</a></li>
+<li><a href="#hsb_signature">fn hsb_signature</a></li>
+<li><a href="#hsb_is_valid">fn hsb_is_valid</a></li>
+<li><a href="#hsb_approve">fn hsb_approve</a></li>
+<li><a href="#hsb_reject">fn hsb_reject</a></li>
+<li><a href="#performance_monitor_new">fn performance_monitor_new</a></li>
+<li><a href="#perf_record_allocation">fn perf_record_allocation</a></li>
+<li><a href="#perf_record_deallocation">fn perf_record_deallocation</a></li>
+<li><a href="#perf_record_response_time">fn perf_record_response_time</a></li>
+<li><a href="#perf_record_error">fn perf_record_error</a></li>
+<li><a href="#perf_avg_response_time">fn perf_avg_response_time</a></li>
+<li><a href="#perf_p99_response_time">fn perf_p99_response_time</a></li>
+<li><a href="#perf_memory_leak_check">fn perf_memory_leak_check</a></li>
+<li><a href="#perf_print_stats">fn perf_print_stats</a></li>
+<li><a href="#privacy_is_pii">fn privacy_is_pii</a></li>
+<li><a href="#privacy_can_store">fn privacy_can_store</a></li>
+<li><a href="#privacy_anonymize">fn privacy_anonymize</a></li>
+<li><a href="#privacy_export_user_data">fn privacy_export_user_data</a></li>
+<li><a href="#privacy_delete_user_data">fn privacy_delete_user_data</a></li>
+<li><a href="#DATA_TYPE_NAME">fn DATA_TYPE_NAME</a></li>
+<li><a href="#DATA_TYPE_EMAIL">fn DATA_TYPE_EMAIL</a></li>
+<li><a href="#DATA_TYPE_PHONE">fn DATA_TYPE_PHONE</a></li>
+<li><a href="#DATA_TYPE_ADDRESS">fn DATA_TYPE_ADDRESS</a></li>
+<li><a href="#DATA_TYPE_LOCATION">fn DATA_TYPE_LOCATION</a></li>
+<li><a href="#DATA_TYPE_HEALTH">fn DATA_TYPE_HEALTH</a></li>
+<li><a href="#DATA_TYPE_FINANCIAL">fn DATA_TYPE_FINANCIAL</a></li>
+<li><a href="#DATA_TYPE_PREFERENCE">fn DATA_TYPE_PREFERENCE</a></li>
+<li><a href="#DATA_TYPE_BEHAVIOR">fn DATA_TYPE_BEHAVIOR</a></li>
+<li><a href="#security_print_status">fn security_print_status</a></li>
+</ul>
+</div>
+<h2 id="SECURITY_MINIMAL">fn SECURITY_MINIMAL</h2>
+<pre class="signature">fn SECURITY_MINIMAL() -&gt; i64 { 0 }     // Development only</pre>
+<h2 id="SECURITY_STANDARD">fn SECURITY_STANDARD</h2>
+<pre class="signature">fn SECURITY_STANDARD() -&gt; i64 { 1 }    // Normal user operation</pre>
+<h2 id="SECURITY_ELEVATED">fn SECURITY_ELEVATED</h2>
+<pre class="signature">fn SECURITY_ELEVATED() -&gt; i64 { 2 }    // Sensitive data handling</pre>
+<h2 id="SECURITY_MAXIMUM">fn SECURITY_MAXIMUM</h2>
+<pre class="signature">fn SECURITY_MAXIMUM() -&gt; i64 { 3 }     // Financial/health data</pre>
+<h2 id="AUDIT_LOGIN">fn AUDIT_LOGIN</h2>
+<pre class="signature">fn AUDIT_LOGIN() -&gt; i64 { 1 }</pre>
+<h2 id="AUDIT_LOGOUT">fn AUDIT_LOGOUT</h2>
+<pre class="signature">fn AUDIT_LOGOUT() -&gt; i64 { 2 }</pre>
+<h2 id="AUDIT_REQUEST">fn AUDIT_REQUEST</h2>
+<pre class="signature">fn AUDIT_REQUEST() -&gt; i64 { 3 }</pre>
+<h2 id="AUDIT_SYNC">fn AUDIT_SYNC</h2>
+<pre class="signature">fn AUDIT_SYNC() -&gt; i64 { 4 }</pre>
+<h2 id="AUDIT_BELIEF_CHANGE">fn AUDIT_BELIEF_CHANGE</h2>
+<pre class="signature">fn AUDIT_BELIEF_CHANGE() -&gt; i64 { 5 }</pre>
+<h2 id="AUDIT_SECURITY_EVENT">fn AUDIT_SECURITY_EVENT</h2>
+<pre class="signature">fn AUDIT_SECURITY_EVENT() -&gt; i64 { 6 }</pre>
+<h2 id="AUDIT_ERROR">fn AUDIT_ERROR</h2>
+<pre class="signature">fn AUDIT_ERROR() -&gt; i64 { 7 }</pre>
+<h2 id="AUDIT_RECOVERY">fn AUDIT_RECOVERY</h2>
+<pre class="signature">fn AUDIT_RECOVERY() -&gt; i64 { 8 }</pre>
+<h2 id="PRIVACY_GDPR">fn PRIVACY_GDPR</h2>
+<pre class="signature">fn PRIVACY_GDPR() -&gt; i64 { 1 }</pre>
+<h2 id="PRIVACY_CCPA">fn PRIVACY_CCPA</h2>
+<pre class="signature">fn PRIVACY_CCPA() -&gt; i64 { 2 }</pre>
+<h2 id="PRIVACY_HIPAA">fn PRIVACY_HIPAA</h2>
+<pre class="signature">fn PRIVACY_HIPAA() -&gt; i64 { 4 }</pre>
+<h2 id="security_manager_new">fn security_manager_new</h2>
+<pre class="signature">fn security_manager_new(level: i64) -&gt; i64 {</pre>
+<h2 id="security_level">fn security_level</h2>
+<pre class="signature">fn security_level(sm: i64) -&gt; i64 { vec_get(sm, 0) }</pre>
+<h2 id="security_audit_log">fn security_audit_log</h2>
+<pre class="signature">fn security_audit_log(sm: i64) -&gt; i64 { vec_get(sm, 1) }</pre>
+<h2 id="security_privacy_flags">fn security_privacy_flags</h2>
+<pre class="signature">fn security_privacy_flags(sm: i64) -&gt; i64 { vec_get(sm, 3) }</pre>
+<h2 id="security_no_learn_types">fn security_no_learn_types</h2>
+<pre class="signature">fn security_no_learn_types(sm: i64) -&gt; i64 { vec_get(sm, 4) }</pre>
+<h2 id="security_failed_auth">fn security_failed_auth</h2>
+<pre class="signature">fn security_failed_auth(sm: i64) -&gt; i64 { vec_get(sm, 8) }</pre>
+<h2 id="security_lockout_until">fn security_lockout_until</h2>
+<pre class="signature">fn security_lockout_until(sm: i64) -&gt; i64 { vec_get(sm, 9) }</pre>
+<h2 id="security_set_level">fn security_set_level</h2>
+<pre class="signature">fn security_set_level(sm: i64, level: i64) -&gt; i64 {</pre>
+<h2 id="security_enable_privacy">fn security_enable_privacy</h2>
+<pre class="signature">fn security_enable_privacy(sm: i64, flag: i64) -&gt; i64 {</pre>
+<h2 id="security_add_no_learn_type">fn security_add_no_learn_type</h2>
+<pre class="signature">fn security_add_no_learn_type(sm: i64, belief_type: i64) -&gt; i64 {</pre>
+<h2 id="security_is_no_learn">fn security_is_no_learn</h2>
+<pre class="signature">fn security_is_no_learn(sm: i64, belief_type: i64) -&gt; i64 {</pre>
+<h2 id="security_audit">fn security_audit</h2>
+<pre class="signature">fn security_audit(sm: i64, event_type: i64, details: i64) -&gt; i64 {</pre>
+<h2 id="audit_evict_oldest">fn audit_evict_oldest</h2>
+<pre class="signature">fn audit_evict_oldest(log: i64) -&gt; i64 {</pre>
+<h2 id="compute_entry_hash">fn compute_entry_hash</h2>
+<pre class="signature">fn compute_entry_hash(event_type: i64, details: i64) -&gt; i64 {</pre>
+<h2 id="audit_export">fn audit_export</h2>
+<pre class="signature">fn audit_export(sm: i64) -&gt; i64 {</pre>
+<h2 id="security_check_rate_limit">fn security_check_rate_limit</h2>
+<pre class="signature">fn security_check_rate_limit(sm: i64) -&gt; i64 {</pre>
+<h2 id="security_reset_rate_counter">fn security_reset_rate_counter</h2>
+<pre class="signature">fn security_reset_rate_counter(sm: i64) -&gt; i64 {</pre>
+<h2 id="security_record_auth_failure">fn security_record_auth_failure</h2>
+<pre class="signature">fn security_record_auth_failure(sm: i64) -&gt; i64 {</pre>
+<h2 id="security_clear_auth_failures">fn security_clear_auth_failures</h2>
+<pre class="signature">fn security_clear_auth_failures(sm: i64) -&gt; i64 {</pre>
+<h2 id="checkpoint_manager_new">fn checkpoint_manager_new</h2>
+<pre class="signature">fn checkpoint_manager_new() -&gt; i64 {</pre>
+<h2 id="checkpoint_checkpoints">fn checkpoint_checkpoints</h2>
+<pre class="signature">fn checkpoint_checkpoints(cm: i64) -&gt; i64 { vec_get(cm, 0) }</pre>
+<h2 id="checkpoint_max">fn checkpoint_max</h2>
+<pre class="signature">fn checkpoint_max(cm: i64) -&gt; i64 { vec_get(cm, 1) }</pre>
+<h2 id="checkpoint_interval">fn checkpoint_interval</h2>
+<pre class="signature">fn checkpoint_interval(cm: i64) -&gt; i64 { vec_get(cm, 2) }</pre>
+<h2 id="checkpoint_last_time">fn checkpoint_last_time</h2>
+<pre class="signature">fn checkpoint_last_time(cm: i64) -&gt; i64 { vec_get(cm, 3) }</pre>
+<h2 id="checkpoint_current_id">fn checkpoint_current_id</h2>
+<pre class="signature">fn checkpoint_current_id(cm: i64) -&gt; i64 { vec_get(cm, 4) }</pre>
+<h2 id="checkpoint_should_save">fn checkpoint_should_save</h2>
+<pre class="signature">fn checkpoint_should_save(cm: i64) -&gt; i64 {</pre>
+<h2 id="checkpoint_create">fn checkpoint_create</h2>
+<pre class="signature">fn checkpoint_create(cm: i64, belief_store: i64, identity: i64) -&gt; i64 {</pre>
+<h2 id="checkpoint_evict_oldest">fn checkpoint_evict_oldest</h2>
+<pre class="signature">fn checkpoint_evict_oldest(checkpoints: i64) -&gt; i64 {</pre>
+<h2 id="checkpoint_restore">fn checkpoint_restore</h2>
+<pre class="signature">fn checkpoint_restore(cm: i64, checkpoint_id: i64, belief_store: i64, identity: i64) -&gt; i64 {</pre>
+<h2 id="checkpoint_restore_latest">fn checkpoint_restore_latest</h2>
+<pre class="signature">fn checkpoint_restore_latest(cm: i64, belief_store: i64, identity: i64) -&gt; i64 {</pre>
+<h2 id="encrypt_checkpoint">fn encrypt_checkpoint</h2>
+<pre class="signature">fn encrypt_checkpoint(checkpoint: i64, identity: i64) -&gt; i64 {</pre>
+<h2 id="decrypt_checkpoint">fn decrypt_checkpoint</h2>
+<pre class="signature">fn decrypt_checkpoint(encrypted: i64, identity: i64) -&gt; i64 {</pre>
+<h2 id="update_manager_new">fn update_manager_new</h2>
+<pre class="signature">fn update_manager_new(version: i64) -&gt; i64 {</pre>
+<h2 id="update_current_version">fn update_current_version</h2>
+<pre class="signature">fn update_current_version(um: i64) -&gt; i64 { vec_get(um, 0) }</pre>
+<h2 id="update_trusted_keys">fn update_trusted_keys</h2>
+<pre class="signature">fn update_trusted_keys(um: i64) -&gt; i64 { vec_get(um, 1) }</pre>
+<h2 id="update_pending">fn update_pending</h2>
+<pre class="signature">fn update_pending(um: i64) -&gt; i64 { vec_get(um, 2) }</pre>
+<h2 id="update_add_trusted_key">fn update_add_trusted_key</h2>
+<pre class="signature">fn update_add_trusted_key(um: i64, public_key: i64) -&gt; i64 {</pre>
+<h2 id="update_verify_signature">fn update_verify_signature</h2>
+<pre class="signature">fn update_verify_signature(um: i64, data: i64, signature: i64) -&gt; i64 {</pre>
+<h2 id="update_check_and_apply">fn update_check_and_apply</h2>
+<pre class="signature">fn update_check_and_apply(um: i64, update_data: i64, signature: i64) -&gt; i64 {</pre>
+<h2 id="update_apply_pending">fn update_apply_pending</h2>
+<pre class="signature">fn update_apply_pending(um: i64) -&gt; i64 {</pre>
+<h2 id="HUMAN_SIGN_REQUIRED">fn HUMAN_SIGN_REQUIRED</h2>
+<pre class="signature">fn HUMAN_SIGN_REQUIRED() -&gt; i64 { 1 }</pre>
+<h2 id="HUMAN_SIGN_APPROVED">fn HUMAN_SIGN_APPROVED</h2>
+<pre class="signature">fn HUMAN_SIGN_APPROVED() -&gt; i64 { 2 }</pre>
+<h2 id="HUMAN_SIGN_REJECTED">fn HUMAN_SIGN_REJECTED</h2>
+<pre class="signature">fn HUMAN_SIGN_REJECTED() -&gt; i64 { 3 }</pre>
+<h2 id="human_signed_belief_new">fn human_signed_belief_new</h2>
+<pre class="signature">fn human_signed_belief_new(belief: i64, requires_human: i64) -&gt; i64 {</pre>
+<h2 id="hsb_belief">fn hsb_belief</h2>
+<pre class="signature">fn hsb_belief(hsb: i64) -&gt; i64 { vec_get(hsb, 0) }</pre>
+<h2 id="hsb_requires_human">fn hsb_requires_human</h2>
+<pre class="signature">fn hsb_requires_human(hsb: i64) -&gt; i64 { vec_get(hsb, 1) }</pre>
+<h2 id="hsb_status">fn hsb_status</h2>
+<pre class="signature">fn hsb_status(hsb: i64) -&gt; i64 { vec_get(hsb, 2) }</pre>
+<h2 id="hsb_signed_by">fn hsb_signed_by</h2>
+<pre class="signature">fn hsb_signed_by(hsb: i64) -&gt; i64 { vec_get(hsb, 3) }</pre>
+<h2 id="hsb_signed_at">fn hsb_signed_at</h2>
+<pre class="signature">fn hsb_signed_at(hsb: i64) -&gt; i64 { vec_get(hsb, 4) }</pre>
+<h2 id="hsb_signature">fn hsb_signature</h2>
+<pre class="signature">fn hsb_signature(hsb: i64) -&gt; i64 { vec_get(hsb, 5) }</pre>
+<h2 id="hsb_is_valid">fn hsb_is_valid</h2>
+<pre class="signature">fn hsb_is_valid(hsb: i64) -&gt; i64 {</pre>
+<h2 id="hsb_approve">fn hsb_approve</h2>
+<pre class="signature">fn hsb_approve(hsb: i64, user_id: i64, signature: i64) -&gt; i64 {</pre>
+<h2 id="hsb_reject">fn hsb_reject</h2>
+<pre class="signature">fn hsb_reject(hsb: i64, user_id: i64, reason: i64) -&gt; i64 {</pre>
+<h2 id="performance_monitor_new">fn performance_monitor_new</h2>
+<pre class="signature">fn performance_monitor_new() -&gt; i64 {</pre>
+<h2 id="perf_record_allocation">fn perf_record_allocation</h2>
+<pre class="signature">fn perf_record_allocation(pm: i64, size_bytes: i64) -&gt; i64 {</pre>
+<h2 id="perf_record_deallocation">fn perf_record_deallocation</h2>
+<pre class="signature">fn perf_record_deallocation(pm: i64, size_bytes: i64) -&gt; i64 {</pre>
+<h2 id="perf_record_response_time">fn perf_record_response_time</h2>
+<pre class="signature">fn perf_record_response_time(pm: i64, duration_ms: i64) -&gt; i64 {</pre>
+<h2 id="perf_record_error">fn perf_record_error</h2>
+<pre class="signature">fn perf_record_error(pm: i64) -&gt; i64 {</pre>
+<h2 id="perf_avg_response_time">fn perf_avg_response_time</h2>
+<pre class="signature">fn perf_avg_response_time(pm: i64) -&gt; i64 {</pre>
+<h2 id="perf_p99_response_time">fn perf_p99_response_time</h2>
+<pre class="signature">fn perf_p99_response_time(pm: i64) -&gt; i64 {</pre>
+<h2 id="perf_memory_leak_check">fn perf_memory_leak_check</h2>
+<pre class="signature">fn perf_memory_leak_check(pm: i64) -&gt; i64 {</pre>
+<h2 id="perf_print_stats">fn perf_print_stats</h2>
+<pre class="signature">fn perf_print_stats(pm: i64) -&gt; i64 {</pre>
+<h2 id="privacy_is_pii">fn privacy_is_pii</h2>
+<pre class="signature">fn privacy_is_pii(data_type: i64) -&gt; i64 {</pre>
+<h2 id="privacy_can_store">fn privacy_can_store</h2>
+<pre class="signature">fn privacy_can_store(sm: i64, data_type: i64) -&gt; i64 {</pre>
+<h2 id="privacy_anonymize">fn privacy_anonymize</h2>
+<pre class="signature">fn privacy_anonymize(data: i64, data_type: i64) -&gt; i64 {</pre>
+<h2 id="privacy_export_user_data">fn privacy_export_user_data</h2>
+<pre class="signature">fn privacy_export_user_data(sm: i64, belief_store: i64) -&gt; i64 {</pre>
+<h2 id="privacy_delete_user_data">fn privacy_delete_user_data</h2>
+<pre class="signature">fn privacy_delete_user_data(sm: i64, belief_store: i64) -&gt; i64 {</pre>
+<h2 id="DATA_TYPE_NAME">fn DATA_TYPE_NAME</h2>
+<pre class="signature">fn DATA_TYPE_NAME() -&gt; i64 { 1 }</pre>
+<h2 id="DATA_TYPE_EMAIL">fn DATA_TYPE_EMAIL</h2>
+<pre class="signature">fn DATA_TYPE_EMAIL() -&gt; i64 { 2 }</pre>
+<h2 id="DATA_TYPE_PHONE">fn DATA_TYPE_PHONE</h2>
+<pre class="signature">fn DATA_TYPE_PHONE() -&gt; i64 { 3 }</pre>
+<h2 id="DATA_TYPE_ADDRESS">fn DATA_TYPE_ADDRESS</h2>
+<pre class="signature">fn DATA_TYPE_ADDRESS() -&gt; i64 { 4 }</pre>
+<h2 id="DATA_TYPE_LOCATION">fn DATA_TYPE_LOCATION</h2>
+<pre class="signature">fn DATA_TYPE_LOCATION() -&gt; i64 { 5 }</pre>
+<h2 id="DATA_TYPE_HEALTH">fn DATA_TYPE_HEALTH</h2>
+<pre class="signature">fn DATA_TYPE_HEALTH() -&gt; i64 { 6 }</pre>
+<h2 id="DATA_TYPE_FINANCIAL">fn DATA_TYPE_FINANCIAL</h2>
+<pre class="signature">fn DATA_TYPE_FINANCIAL() -&gt; i64 { 7 }</pre>
+<h2 id="DATA_TYPE_PREFERENCE">fn DATA_TYPE_PREFERENCE</h2>
+<pre class="signature">fn DATA_TYPE_PREFERENCE() -&gt; i64 { 8 }</pre>
+<h2 id="DATA_TYPE_BEHAVIOR">fn DATA_TYPE_BEHAVIOR</h2>
+<pre class="signature">fn DATA_TYPE_BEHAVIOR() -&gt; i64 { 9 }</pre>
+<h2 id="security_print_status">fn security_print_status</h2>
+<pre class="signature">fn security_print_status(sm: i64, cm: i64, pm: i64) -&gt; i64 {</pre>
+
+    <hr>
+    <p><em>Generated by sxdoc</em></p>
+  </main>
+</div>
+</body>
+</html>

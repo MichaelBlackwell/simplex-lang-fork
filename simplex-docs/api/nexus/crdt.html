@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>crdt - Simplex API Reference</title>
+  <meta name="description" content="API documentation for the Simplex programming language">
+  <link rel="stylesheet" href="../assets/docs.css">
+  <script src="../assets/nav.js" defer></script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "crdt - Simplex API Reference",
+  "description": "API documentation for the Simplex programming language",
+  "programmingLanguage": {
+    "@type": "ComputerLanguage",
+    "name": "Simplex",
+    "url": "https://github.com/senuamedia/simplex"
+  },
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "Simplex Documentation",
+    "url": "https://simplex.senuamedia.com/api/"
+  },
+  "articleSection": "nexus"
+}
+</script>
+</head>
+<body>
+<div class="doc-wrapper">
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-header"><a href="../index.html">Simplex API</a></div>
+    <div class="search-box">
+      <input type="text" id="search" placeholder="Search...">
+    </div>
+    <div id="nav-content">Loading...</div>
+  </nav>
+  <main class="content">
+    <nav class="breadcrumb">
+      <a href="../index.html">API Reference</a> &raquo;       <span class="current-category">nexus</span> &raquo; crdt
+    </nav>
+    <h1>Module: crdt</h1>
+<div class="toc">
+<strong>Contents</strong>
+<ul>
+<li><a href="#CRDT_OP_INCREMENT">fn CRDT_OP_INCREMENT</a></li>
+<li><a href="#CRDT_OP_DECREMENT">fn CRDT_OP_DECREMENT</a></li>
+<li><a href="#CRDT_OP_SET">fn CRDT_OP_SET</a></li>
+<li><a href="#CRDT_OP_ADD">fn CRDT_OP_ADD</a></li>
+<li><a href="#CRDT_OP_REMOVE">fn CRDT_OP_REMOVE</a></li>
+<li><a href="#CRDT_OP_MERGE">fn CRDT_OP_MERGE</a></li>
+<li><a href="#CRDT_TYPE_GCOUNTER">fn CRDT_TYPE_GCOUNTER</a></li>
+<li><a href="#CRDT_TYPE_PNCOUNTER">fn CRDT_TYPE_PNCOUNTER</a></li>
+<li><a href="#CRDT_TYPE_LWW_REGISTER">fn CRDT_TYPE_LWW_REGISTER</a></li>
+<li><a href="#CRDT_TYPE_OR_SET">fn CRDT_TYPE_OR_SET</a></li>
+<li><a href="#crdt_delta_new">fn crdt_delta_new</a></li>
+<li><a href="#crdt_delta_type">fn crdt_delta_type</a></li>
+<li><a href="#crdt_delta_op">fn crdt_delta_op</a></li>
+<li><a href="#crdt_delta_node">fn crdt_delta_node</a></li>
+<li><a href="#crdt_delta_timestamp">fn crdt_delta_timestamp</a></li>
+<li><a href="#crdt_delta_key">fn crdt_delta_key</a></li>
+<li><a href="#crdt_delta_value">fn crdt_delta_value</a></li>
+<li><a href="#crdt_delta_set_key">fn crdt_delta_set_key</a></li>
+<li><a href="#crdt_delta_set_value">fn crdt_delta_set_value</a></li>
+<li><a href="#crdt_delta_encode">fn crdt_delta_encode</a></li>
+<li><a href="#crdt_delta_decode">fn crdt_delta_decode</a></li>
+<li><a href="#gcounter_new">fn gcounter_new</a></li>
+<li><a href="#gcounter_local_node">fn gcounter_local_node</a></li>
+<li><a href="#gcounter_counters">fn gcounter_counters</a></li>
+<li><a href="#gcounter_get_node">fn gcounter_get_node</a></li>
+<li><a href="#gcounter_set_node">fn gcounter_set_node</a></li>
+<li><a href="#gcounter_value">fn gcounter_value</a></li>
+<li><a href="#gcounter_increment">fn gcounter_increment</a></li>
+<li><a href="#gcounter_merge">fn gcounter_merge</a></li>
+<li><a href="#gcounter_apply_delta">fn gcounter_apply_delta</a></li>
+<li><a href="#pncounter_new">fn pncounter_new</a></li>
+<li><a href="#pncounter_positive">fn pncounter_positive</a></li>
+<li><a href="#pncounter_negative">fn pncounter_negative</a></li>
+<li><a href="#pncounter_value">fn pncounter_value</a></li>
+<li><a href="#pncounter_increment">fn pncounter_increment</a></li>
+<li><a href="#pncounter_decrement">fn pncounter_decrement</a></li>
+<li><a href="#pncounter_merge">fn pncounter_merge</a></li>
+<li><a href="#lww_register_new">fn lww_register_new</a></li>
+<li><a href="#lww_register_local_node">fn lww_register_local_node</a></li>
+<li><a href="#lww_register_timestamp">fn lww_register_timestamp</a></li>
+<li><a href="#lww_register_value">fn lww_register_value</a></li>
+<li><a href="#lww_register_set">fn lww_register_set</a></li>
+<li><a href="#lww_register_merge">fn lww_register_merge</a></li>
+<li><a href="#lww_register_apply_delta">fn lww_register_apply_delta</a></li>
+<li><a href="#or_set_new">fn or_set_new</a></li>
+<li><a href="#or_set_local_node">fn or_set_local_node</a></li>
+<li><a href="#or_set_next_tag">fn or_set_next_tag</a></li>
+<li><a href="#or_set_elements">fn or_set_elements</a></li>
+<li><a href="#or_set_gen_tag">fn or_set_gen_tag</a></li>
+<li><a href="#or_set_contains">fn or_set_contains</a></li>
+<li><a href="#or_set_add">fn or_set_add</a></li>
+<li><a href="#or_set_remove">fn or_set_remove</a></li>
+<li><a href="#or_set_values">fn or_set_values</a></li>
+<li><a href="#or_set_apply_delta">fn or_set_apply_delta</a></li>
+<li><a href="#crdt_delta_print">fn crdt_delta_print</a></li>
+<li><a href="#gcounter_print">fn gcounter_print</a></li>
+<li><a href="#or_set_print">fn or_set_print</a></li>
+</ul>
+</div>
+<h2 id="CRDT_OP_INCREMENT">fn CRDT_OP_INCREMENT</h2>
+<pre class="signature">fn CRDT_OP_INCREMENT() -&gt; i64 { 1 }</pre>
+<h2 id="CRDT_OP_DECREMENT">fn CRDT_OP_DECREMENT</h2>
+<pre class="signature">fn CRDT_OP_DECREMENT() -&gt; i64 { 2 }</pre>
+<h2 id="CRDT_OP_SET">fn CRDT_OP_SET</h2>
+<pre class="signature">fn CRDT_OP_SET() -&gt; i64 { 3 }</pre>
+<h2 id="CRDT_OP_ADD">fn CRDT_OP_ADD</h2>
+<pre class="signature">fn CRDT_OP_ADD() -&gt; i64 { 4 }</pre>
+<h2 id="CRDT_OP_REMOVE">fn CRDT_OP_REMOVE</h2>
+<pre class="signature">fn CRDT_OP_REMOVE() -&gt; i64 { 5 }</pre>
+<h2 id="CRDT_OP_MERGE">fn CRDT_OP_MERGE</h2>
+<pre class="signature">fn CRDT_OP_MERGE() -&gt; i64 { 6 }</pre>
+<h2 id="CRDT_TYPE_GCOUNTER">fn CRDT_TYPE_GCOUNTER</h2>
+<pre class="signature">fn CRDT_TYPE_GCOUNTER() -&gt; i64 { 1 }</pre>
+<h2 id="CRDT_TYPE_PNCOUNTER">fn CRDT_TYPE_PNCOUNTER</h2>
+<pre class="signature">fn CRDT_TYPE_PNCOUNTER() -&gt; i64 { 2 }</pre>
+<h2 id="CRDT_TYPE_LWW_REGISTER">fn CRDT_TYPE_LWW_REGISTER</h2>
+<pre class="signature">fn CRDT_TYPE_LWW_REGISTER() -&gt; i64 { 3 }</pre>
+<h2 id="CRDT_TYPE_OR_SET">fn CRDT_TYPE_OR_SET</h2>
+<pre class="signature">fn CRDT_TYPE_OR_SET() -&gt; i64 { 4 }</pre>
+<h2 id="crdt_delta_new">fn crdt_delta_new</h2>
+<pre class="signature">fn crdt_delta_new(crdt_type: i64, op_type: i64, node_id: i64, timestamp: i64) -&gt; i64 {</pre>
+<h2 id="crdt_delta_type">fn crdt_delta_type</h2>
+<pre class="signature">fn crdt_delta_type(delta: i64) -&gt; i64 { vec_get(delta, 0) }</pre>
+<h2 id="crdt_delta_op">fn crdt_delta_op</h2>
+<pre class="signature">fn crdt_delta_op(delta: i64) -&gt; i64 { vec_get(delta, 1) }</pre>
+<h2 id="crdt_delta_node">fn crdt_delta_node</h2>
+<pre class="signature">fn crdt_delta_node(delta: i64) -&gt; i64 { vec_get(delta, 2) }</pre>
+<h2 id="crdt_delta_timestamp">fn crdt_delta_timestamp</h2>
+<pre class="signature">fn crdt_delta_timestamp(delta: i64) -&gt; i64 { vec_get(delta, 3) }</pre>
+<h2 id="crdt_delta_key">fn crdt_delta_key</h2>
+<pre class="signature">fn crdt_delta_key(delta: i64) -&gt; i64 { vec_get(delta, 4) }</pre>
+<h2 id="crdt_delta_value">fn crdt_delta_value</h2>
+<pre class="signature">fn crdt_delta_value(delta: i64) -&gt; i64 { vec_get(delta, 5) }</pre>
+<h2 id="crdt_delta_set_key">fn crdt_delta_set_key</h2>
+<pre class="signature">fn crdt_delta_set_key(delta: i64, key: i64) -&gt; i64 {</pre>
+<h2 id="crdt_delta_set_value">fn crdt_delta_set_value</h2>
+<pre class="signature">fn crdt_delta_set_value(delta: i64, value: i64) -&gt; i64 {</pre>
+<h2 id="crdt_delta_encode">fn crdt_delta_encode</h2>
+<pre class="signature">fn crdt_delta_encode(delta: i64) -&gt; i64 {</pre>
+<h2 id="crdt_delta_decode">fn crdt_delta_decode</h2>
+<pre class="signature">fn crdt_delta_decode(bytes: i64, offset: i64) -&gt; i64 {</pre>
+<h2 id="gcounter_new">fn gcounter_new</h2>
+<pre class="signature">fn gcounter_new(local_node: i64) -&gt; i64 {</pre>
+<h2 id="gcounter_local_node">fn gcounter_local_node</h2>
+<pre class="signature">fn gcounter_local_node(gc: i64) -&gt; i64 { vec_get(gc, 0) }</pre>
+<h2 id="gcounter_counters">fn gcounter_counters</h2>
+<pre class="signature">fn gcounter_counters(gc: i64) -&gt; i64 { vec_get(gc, 1) }</pre>
+<h2 id="gcounter_get_node">fn gcounter_get_node</h2>
+<pre class="signature">fn gcounter_get_node(gc: i64, node_id: i64) -&gt; i64 {</pre>
+<h2 id="gcounter_set_node">fn gcounter_set_node</h2>
+<pre class="signature">fn gcounter_set_node(gc: i64, node_id: i64, value: i64) -&gt; i64 {</pre>
+<h2 id="gcounter_value">fn gcounter_value</h2>
+<pre class="signature">fn gcounter_value(gc: i64) -&gt; i64 {</pre>
+<h2 id="gcounter_increment">fn gcounter_increment</h2>
+<pre class="signature">fn gcounter_increment(gc: i64, amount: i64) -&gt; i64 {</pre>
+<h2 id="gcounter_merge">fn gcounter_merge</h2>
+<pre class="signature">fn gcounter_merge(gc: i64, other: i64) -&gt; i64 {</pre>
+<h2 id="gcounter_apply_delta">fn gcounter_apply_delta</h2>
+<pre class="signature">fn gcounter_apply_delta(gc: i64, delta: i64) -&gt; i64 {</pre>
+<h2 id="pncounter_new">fn pncounter_new</h2>
+<pre class="signature">fn pncounter_new(local_node: i64) -&gt; i64 {</pre>
+<h2 id="pncounter_positive">fn pncounter_positive</h2>
+<pre class="signature">fn pncounter_positive(pn: i64) -&gt; i64 { vec_get(pn, 0) }</pre>
+<h2 id="pncounter_negative">fn pncounter_negative</h2>
+<pre class="signature">fn pncounter_negative(pn: i64) -&gt; i64 { vec_get(pn, 1) }</pre>
+<h2 id="pncounter_value">fn pncounter_value</h2>
+<pre class="signature">fn pncounter_value(pn: i64) -&gt; i64 {</pre>
+<h2 id="pncounter_increment">fn pncounter_increment</h2>
+<pre class="signature">fn pncounter_increment(pn: i64, amount: i64) -&gt; i64 {</pre>
+<h2 id="pncounter_decrement">fn pncounter_decrement</h2>
+<pre class="signature">fn pncounter_decrement(pn: i64, amount: i64) -&gt; i64 {</pre>
+<h2 id="pncounter_merge">fn pncounter_merge</h2>
+<pre class="signature">fn pncounter_merge(pn: i64, other: i64) -&gt; i64 {</pre>
+<h2 id="lww_register_new">fn lww_register_new</h2>
+<pre class="signature">fn lww_register_new(local_node: i64) -&gt; i64 {</pre>
+<h2 id="lww_register_local_node">fn lww_register_local_node</h2>
+<pre class="signature">fn lww_register_local_node(reg: i64) -&gt; i64 { vec_get(reg, 0) }</pre>
+<h2 id="lww_register_timestamp">fn lww_register_timestamp</h2>
+<pre class="signature">fn lww_register_timestamp(reg: i64) -&gt; i64 { vec_get(reg, 1) }</pre>
+<h2 id="lww_register_value">fn lww_register_value</h2>
+<pre class="signature">fn lww_register_value(reg: i64) -&gt; i64 { vec_get(reg, 2) }</pre>
+<h2 id="lww_register_set">fn lww_register_set</h2>
+<pre class="signature">fn lww_register_set(reg: i64, value: i64, timestamp: i64) -&gt; i64 {</pre>
+<h2 id="lww_register_merge">fn lww_register_merge</h2>
+<pre class="signature">fn lww_register_merge(reg: i64, other: i64) -&gt; i64 {</pre>
+<h2 id="lww_register_apply_delta">fn lww_register_apply_delta</h2>
+<pre class="signature">fn lww_register_apply_delta(reg: i64, delta: i64) -&gt; i64 {</pre>
+<h2 id="or_set_new">fn or_set_new</h2>
+<pre class="signature">fn or_set_new(local_node: i64) -&gt; i64 {</pre>
+<h2 id="or_set_local_node">fn or_set_local_node</h2>
+<pre class="signature">fn or_set_local_node(set: i64) -&gt; i64 { vec_get(set, 0) }</pre>
+<h2 id="or_set_next_tag">fn or_set_next_tag</h2>
+<pre class="signature">fn or_set_next_tag(set: i64) -&gt; i64 { vec_get(set, 1) }</pre>
+<h2 id="or_set_elements">fn or_set_elements</h2>
+<pre class="signature">fn or_set_elements(set: i64) -&gt; i64 { vec_get(set, 2) }</pre>
+<h2 id="or_set_gen_tag">fn or_set_gen_tag</h2>
+<pre class="signature">fn or_set_gen_tag(set: i64) -&gt; i64 {</pre>
+<h2 id="or_set_contains">fn or_set_contains</h2>
+<pre class="signature">fn or_set_contains(set: i64, value: i64) -&gt; i64 {</pre>
+<h2 id="or_set_add">fn or_set_add</h2>
+<pre class="signature">fn or_set_add(set: i64, value: i64) -&gt; i64 {</pre>
+<h2 id="or_set_remove">fn or_set_remove</h2>
+<pre class="signature">fn or_set_remove(set: i64, value: i64) -&gt; i64 {</pre>
+<h2 id="or_set_values">fn or_set_values</h2>
+<pre class="signature">fn or_set_values(set: i64) -&gt; i64 {</pre>
+<h2 id="or_set_apply_delta">fn or_set_apply_delta</h2>
+<pre class="signature">fn or_set_apply_delta(set: i64, delta: i64) -&gt; i64 {</pre>
+<h2 id="crdt_delta_print">fn crdt_delta_print</h2>
+<pre class="signature">fn crdt_delta_print(delta: i64) -&gt; i64 {</pre>
+<h2 id="gcounter_print">fn gcounter_print</h2>
+<pre class="signature">fn gcounter_print(gc: i64) -&gt; i64 {</pre>
+<h2 id="or_set_print">fn or_set_print</h2>
+<pre class="signature">fn or_set_print(set: i64) -&gt; i64 {</pre>
+
+    <hr>
+    <p><em>Generated by sxdoc</em></p>
+  </main>
+</div>
+</body>
+</html>

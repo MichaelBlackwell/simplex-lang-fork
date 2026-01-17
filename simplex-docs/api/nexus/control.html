@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>control - Simplex API Reference</title>
+  <meta name="description" content="API documentation for the Simplex programming language">
+  <link rel="stylesheet" href="../assets/docs.css">
+  <script src="../assets/nav.js" defer></script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "control - Simplex API Reference",
+  "description": "API documentation for the Simplex programming language",
+  "programmingLanguage": {
+    "@type": "ComputerLanguage",
+    "name": "Simplex",
+    "url": "https://github.com/senuamedia/simplex"
+  },
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "Simplex Documentation",
+    "url": "https://simplex.senuamedia.com/api/"
+  },
+  "articleSection": "nexus"
+}
+</script>
+</head>
+<body>
+<div class="doc-wrapper">
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-header"><a href="../index.html">Simplex API</a></div>
+    <div class="search-box">
+      <input type="text" id="search" placeholder="Search...">
+    </div>
+    <div id="nav-content">Loading...</div>
+  </nav>
+  <main class="content">
+    <nav class="breadcrumb">
+      <a href="../index.html">API Reference</a> &raquo;       <span class="current-category">nexus</span> &raquo; control
+    </nav>
+    <h1>Module: control</h1>
+<div class="toc">
+<strong>Contents</strong>
+<ul>
+<li><a href="#define_payload_new">fn define_payload_new</a></li>
+<li><a href="#define_payload_parse">fn define_payload_parse</a></li>
+<li><a href="#frame_new_define">fn frame_new_define</a></li>
+<li><a href="#control_create_define">fn control_create_define</a></li>
+<li><a href="#tombstone_payload_new">fn tombstone_payload_new</a></li>
+<li><a href="#tombstone_payload_parse">fn tombstone_payload_parse</a></li>
+<li><a href="#frame_new_tombstone">fn frame_new_tombstone</a></li>
+<li><a href="#control_create_tombstone">fn control_create_tombstone</a></li>
+<li><a href="#ping_payload_new">fn ping_payload_new</a></li>
+<li><a href="#ping_payload_parse">fn ping_payload_parse</a></li>
+<li><a href="#control_create_ping">fn control_create_ping</a></li>
+<li><a href="#control_create_pong">fn control_create_pong</a></li>
+<li><a href="#checksum_payload_new">fn checksum_payload_new</a></li>
+<li><a href="#checksum_payload_parse">fn checksum_payload_parse</a></li>
+<li><a href="#control_create_checksum">fn control_create_checksum</a></li>
+<li><a href="#RESYNC_CHECKSUM_MISMATCH">fn RESYNC_CHECKSUM_MISMATCH</a></li>
+<li><a href="#RESYNC_MISSING_FRAMES">fn RESYNC_MISSING_FRAMES</a></li>
+<li><a href="#RESYNC_PROTOCOL_ERROR">fn RESYNC_PROTOCOL_ERROR</a></li>
+<li><a href="#RESYNC_RECONNECT">fn RESYNC_RECONNECT</a></li>
+<li><a href="#full_sync_payload_new">fn full_sync_payload_new</a></li>
+<li><a href="#full_sync_payload_parse">fn full_sync_payload_parse</a></li>
+<li><a href="#frame_new_full_sync">fn frame_new_full_sync</a></li>
+<li><a href="#control_create_full_sync">fn control_create_full_sync</a></li>
+<li><a href="#DISCONNECT_NORMAL">fn DISCONNECT_NORMAL</a></li>
+<li><a href="#DISCONNECT_GOING_AWAY">fn DISCONNECT_GOING_AWAY</a></li>
+<li><a href="#DISCONNECT_PROTOCOL_ERROR">fn DISCONNECT_PROTOCOL_ERROR</a></li>
+<li><a href="#DISCONNECT_INVALID_DATA">fn DISCONNECT_INVALID_DATA</a></li>
+<li><a href="#DISCONNECT_POLICY">fn DISCONNECT_POLICY</a></li>
+<li><a href="#DISCONNECT_OVERLOAD">fn DISCONNECT_OVERLOAD</a></li>
+<li><a href="#DISCONNECT_MAINTENANCE">fn DISCONNECT_MAINTENANCE</a></li>
+<li><a href="#DISCONNECT_RESTART">fn DISCONNECT_RESTART</a></li>
+<li><a href="#disconnect_payload_new">fn disconnect_payload_new</a></li>
+<li><a href="#disconnect_payload_parse">fn disconnect_payload_parse</a></li>
+<li><a href="#frame_new_disconnect">fn frame_new_disconnect</a></li>
+<li><a href="#control_create_disconnect">fn control_create_disconnect</a></li>
+<li><a href="#FLOW_DEFAULT_WINDOW">fn FLOW_DEFAULT_WINDOW</a></li>
+<li><a href="#FLOW_MAX_WINDOW">fn FLOW_MAX_WINDOW</a></li>
+<li><a href="#FLOW_MIN_WINDOW">fn FLOW_MIN_WINDOW</a></li>
+<li><a href="#flow_control_new">fn flow_control_new</a></li>
+<li><a href="#flow_control_window">fn flow_control_window</a></li>
+<li><a href="#flow_control_in_flight">fn flow_control_in_flight</a></li>
+<li><a href="#flow_control_last_ack">fn flow_control_last_ack</a></li>
+<li><a href="#flow_control_congestion_count">fn flow_control_congestion_count</a></li>
+<li><a href="#flow_control_can_send">fn flow_control_can_send</a></li>
+<li><a href="#flow_control_on_send">fn flow_control_on_send</a></li>
+<li><a href="#flow_control_on_ack">fn flow_control_on_ack</a></li>
+<li><a href="#flow_control_on_congestion">fn flow_control_on_congestion</a></li>
+<li><a href="#flow_control_reset">fn flow_control_reset</a></li>
+<li><a href="#CTRL_STATE_ACTIVE">fn CTRL_STATE_ACTIVE</a></li>
+<li><a href="#CTRL_STATE_CHECKSUM_PENDING">fn CTRL_STATE_CHECKSUM_PENDING</a></li>
+<li><a href="#CTRL_STATE_RESYNC_REQUESTED">fn CTRL_STATE_RESYNC_REQUESTED</a></li>
+<li><a href="#CTRL_STATE_DISCONNECTING">fn CTRL_STATE_DISCONNECTING</a></li>
+<li><a href="#control_session_new">fn control_session_new</a></li>
+<li><a href="#control_session_flow">fn control_session_flow</a></li>
+<li><a href="#control_session_rtt">fn control_session_rtt</a></li>
+<li><a href="#control_session_state">fn control_session_state</a></li>
+<li><a href="#control_session_can_send">fn control_session_can_send</a></li>
+<li><a href="#control_session_on_frame_sent">fn control_session_on_frame_sent</a></li>
+<li><a href="#control_session_needs_checksum">fn control_session_needs_checksum</a></li>
+<li><a href="#control_session_reset_checksum_counter">fn control_session_reset_checksum_counter</a></li>
+<li><a href="#control_session_send_ping">fn control_session_send_ping</a></li>
+<li><a href="#control_session_handle_pong">fn control_session_handle_pong</a></li>
+<li><a href="#control_session_handle_ping">fn control_session_handle_ping</a></li>
+<li><a href="#control_session_queue_define">fn control_session_queue_define</a></li>
+<li><a href="#control_session_queue_tombstone">fn control_session_queue_tombstone</a></li>
+<li><a href="#control_session_pending_defines">fn control_session_pending_defines</a></li>
+<li><a href="#control_session_pending_tombstones">fn control_session_pending_tombstones</a></li>
+<li><a href="#control_session_clear_pending">fn control_session_clear_pending</a></li>
+<li><a href="#control_session_request_resync">fn control_session_request_resync</a></li>
+<li><a href="#control_session_disconnect">fn control_session_disconnect</a></li>
+<li><a href="#control_session_is_active">fn control_session_is_active</a></li>
+<li><a href="#control_verify_checksum">fn control_verify_checksum</a></li>
+<li><a href="#control_handle_frame">fn control_handle_frame</a></li>
+<li><a href="#control_session_print_stats">fn control_session_print_stats</a></li>
+</ul>
+</div>
+<h2 id="define_payload_new">fn define_payload_new</h2>
+<pre class="signature">fn define_payload_new(belief_index: i64, initial_value: i64) -&gt; i64 {</pre>
+<h2 id="define_payload_parse">fn define_payload_parse</h2>
+<pre class="signature">fn define_payload_parse(payload: i64) -&gt; i64 {</pre>
+<h2 id="frame_new_define">fn frame_new_define</h2>
+<pre class="signature">fn frame_new_define(belief_index: i64, initial_value: i64) -&gt; i64 {</pre>
+<h2 id="control_create_define">fn control_create_define</h2>
+<pre class="signature">fn control_create_define(belief_index: i64, initial_value: i64) -&gt; i64 {</pre>
+<h2 id="tombstone_payload_new">fn tombstone_payload_new</h2>
+<pre class="signature">fn tombstone_payload_new(belief_index: i64, tick: i64) -&gt; i64 {</pre>
+<h2 id="tombstone_payload_parse">fn tombstone_payload_parse</h2>
+<pre class="signature">fn tombstone_payload_parse(payload: i64) -&gt; i64 {</pre>
+<h2 id="frame_new_tombstone">fn frame_new_tombstone</h2>
+<pre class="signature">fn frame_new_tombstone(belief_index: i64, tick: i64) -&gt; i64 {</pre>
+<h2 id="control_create_tombstone">fn control_create_tombstone</h2>
+<pre class="signature">fn control_create_tombstone(belief_index: i64, tick: i64) -&gt; i64 {</pre>
+<h2 id="ping_payload_new">fn ping_payload_new</h2>
+<pre class="signature">fn ping_payload_new(sequence: i64, timestamp: i64) -&gt; i64 {</pre>
+<h2 id="ping_payload_parse">fn ping_payload_parse</h2>
+<pre class="signature">fn ping_payload_parse(payload: i64) -&gt; i64 {</pre>
+<h2 id="control_create_ping">fn control_create_ping</h2>
+<pre class="signature">fn control_create_ping(sequence: i64, timestamp: i64) -&gt; i64 {</pre>
+<h2 id="control_create_pong">fn control_create_pong</h2>
+<pre class="signature">fn control_create_pong(sequence: i64, timestamp: i64) -&gt; i64 {</pre>
+<h2 id="checksum_payload_new">fn checksum_payload_new</h2>
+<pre class="signature">fn checksum_payload_new(tick: i64, checksum: i64, belief_count: i64) -&gt; i64 {</pre>
+<h2 id="checksum_payload_parse">fn checksum_payload_parse</h2>
+<pre class="signature">fn checksum_payload_parse(payload: i64) -&gt; i64 {</pre>
+<h2 id="control_create_checksum">fn control_create_checksum</h2>
+<pre class="signature">fn control_create_checksum(tick: i64, checksum: i64, belief_count: i64) -&gt; i64 {</pre>
+<h2 id="RESYNC_CHECKSUM_MISMATCH">fn RESYNC_CHECKSUM_MISMATCH</h2>
+<pre class="signature">fn RESYNC_CHECKSUM_MISMATCH() -&gt; i64 { 1 }</pre>
+<h2 id="RESYNC_MISSING_FRAMES">fn RESYNC_MISSING_FRAMES</h2>
+<pre class="signature">fn RESYNC_MISSING_FRAMES() -&gt; i64 { 2 }</pre>
+<h2 id="RESYNC_PROTOCOL_ERROR">fn RESYNC_PROTOCOL_ERROR</h2>
+<pre class="signature">fn RESYNC_PROTOCOL_ERROR() -&gt; i64 { 3 }</pre>
+<h2 id="RESYNC_RECONNECT">fn RESYNC_RECONNECT</h2>
+<pre class="signature">fn RESYNC_RECONNECT() -&gt; i64 { 4 }</pre>
+<h2 id="full_sync_payload_new">fn full_sync_payload_new</h2>
+<pre class="signature">fn full_sync_payload_new(expected_tick: i64, reason: i64, local_checksum: i64) -&gt; i64 {</pre>
+<h2 id="full_sync_payload_parse">fn full_sync_payload_parse</h2>
+<pre class="signature">fn full_sync_payload_parse(payload: i64) -&gt; i64 {</pre>
+<h2 id="frame_new_full_sync">fn frame_new_full_sync</h2>
+<pre class="signature">fn frame_new_full_sync(expected_tick: i64, reason: i64, local_checksum: i64) -&gt; i64 {</pre>
+<h2 id="control_create_full_sync">fn control_create_full_sync</h2>
+<pre class="signature">fn control_create_full_sync(expected_tick: i64, reason: i64, local_checksum: i64) -&gt; i64 {</pre>
+<h2 id="DISCONNECT_NORMAL">fn DISCONNECT_NORMAL</h2>
+<pre class="signature">fn DISCONNECT_NORMAL() -&gt; i64 { 0 }</pre>
+<h2 id="DISCONNECT_GOING_AWAY">fn DISCONNECT_GOING_AWAY</h2>
+<pre class="signature">fn DISCONNECT_GOING_AWAY() -&gt; i64 { 1 }</pre>
+<h2 id="DISCONNECT_PROTOCOL_ERROR">fn DISCONNECT_PROTOCOL_ERROR</h2>
+<pre class="signature">fn DISCONNECT_PROTOCOL_ERROR() -&gt; i64 { 2 }</pre>
+<h2 id="DISCONNECT_INVALID_DATA">fn DISCONNECT_INVALID_DATA</h2>
+<pre class="signature">fn DISCONNECT_INVALID_DATA() -&gt; i64 { 3 }</pre>
+<h2 id="DISCONNECT_POLICY">fn DISCONNECT_POLICY</h2>
+<pre class="signature">fn DISCONNECT_POLICY() -&gt; i64 { 4 }</pre>
+<h2 id="DISCONNECT_OVERLOAD">fn DISCONNECT_OVERLOAD</h2>
+<pre class="signature">fn DISCONNECT_OVERLOAD() -&gt; i64 { 5 }</pre>
+<h2 id="DISCONNECT_MAINTENANCE">fn DISCONNECT_MAINTENANCE</h2>
+<pre class="signature">fn DISCONNECT_MAINTENANCE() -&gt; i64 { 6 }</pre>
+<h2 id="DISCONNECT_RESTART">fn DISCONNECT_RESTART</h2>
+<pre class="signature">fn DISCONNECT_RESTART() -&gt; i64 { 7 }</pre>
+<h2 id="disconnect_payload_new">fn disconnect_payload_new</h2>
+<pre class="signature">fn disconnect_payload_new(reason: i64, final_tick: i64) -&gt; i64 {</pre>
+<h2 id="disconnect_payload_parse">fn disconnect_payload_parse</h2>
+<pre class="signature">fn disconnect_payload_parse(payload: i64) -&gt; i64 {</pre>
+<h2 id="frame_new_disconnect">fn frame_new_disconnect</h2>
+<pre class="signature">fn frame_new_disconnect(reason: i64, final_tick: i64) -&gt; i64 {</pre>
+<h2 id="control_create_disconnect">fn control_create_disconnect</h2>
+<pre class="signature">fn control_create_disconnect(reason: i64, final_tick: i64) -&gt; i64 {</pre>
+<h2 id="FLOW_DEFAULT_WINDOW">fn FLOW_DEFAULT_WINDOW</h2>
+<pre class="signature">fn FLOW_DEFAULT_WINDOW() -&gt; i64 { 32 }</pre>
+<h2 id="FLOW_MAX_WINDOW">fn FLOW_MAX_WINDOW</h2>
+<pre class="signature">fn FLOW_MAX_WINDOW() -&gt; i64 { 256 }</pre>
+<h2 id="FLOW_MIN_WINDOW">fn FLOW_MIN_WINDOW</h2>
+<pre class="signature">fn FLOW_MIN_WINDOW() -&gt; i64 { 4 }</pre>
+<h2 id="flow_control_new">fn flow_control_new</h2>
+<pre class="signature">fn flow_control_new() -&gt; i64 {</pre>
+<h2 id="flow_control_window">fn flow_control_window</h2>
+<pre class="signature">fn flow_control_window(fc: i64) -&gt; i64 { vec_get(fc, 0) }</pre>
+<h2 id="flow_control_in_flight">fn flow_control_in_flight</h2>
+<pre class="signature">fn flow_control_in_flight(fc: i64) -&gt; i64 { vec_get(fc, 1) }</pre>
+<h2 id="flow_control_last_ack">fn flow_control_last_ack</h2>
+<pre class="signature">fn flow_control_last_ack(fc: i64) -&gt; i64 { vec_get(fc, 2) }</pre>
+<h2 id="flow_control_congestion_count">fn flow_control_congestion_count</h2>
+<pre class="signature">fn flow_control_congestion_count(fc: i64) -&gt; i64 { vec_get(fc, 5) }</pre>
+<h2 id="flow_control_can_send">fn flow_control_can_send</h2>
+<pre class="signature">fn flow_control_can_send(fc: i64) -&gt; i64 {</pre>
+<h2 id="flow_control_on_send">fn flow_control_on_send</h2>
+<pre class="signature">fn flow_control_on_send(fc: i64) -&gt; i64 {</pre>
+<h2 id="flow_control_on_ack">fn flow_control_on_ack</h2>
+<pre class="signature">fn flow_control_on_ack(fc: i64, tick: i64) -&gt; i64 {</pre>
+<h2 id="flow_control_on_congestion">fn flow_control_on_congestion</h2>
+<pre class="signature">fn flow_control_on_congestion(fc: i64) -&gt; i64 {</pre>
+<h2 id="flow_control_reset">fn flow_control_reset</h2>
+<pre class="signature">fn flow_control_reset(fc: i64) -&gt; i64 {</pre>
+<h2 id="CTRL_STATE_ACTIVE">fn CTRL_STATE_ACTIVE</h2>
+<pre class="signature">fn CTRL_STATE_ACTIVE() -&gt; i64 { 0 }</pre>
+<h2 id="CTRL_STATE_CHECKSUM_PENDING">fn CTRL_STATE_CHECKSUM_PENDING</h2>
+<pre class="signature">fn CTRL_STATE_CHECKSUM_PENDING() -&gt; i64 { 1 }</pre>
+<h2 id="CTRL_STATE_RESYNC_REQUESTED">fn CTRL_STATE_RESYNC_REQUESTED</h2>
+<pre class="signature">fn CTRL_STATE_RESYNC_REQUESTED() -&gt; i64 { 2 }</pre>
+<h2 id="CTRL_STATE_DISCONNECTING">fn CTRL_STATE_DISCONNECTING</h2>
+<pre class="signature">fn CTRL_STATE_DISCONNECTING() -&gt; i64 { 3 }</pre>
+<h2 id="control_session_new">fn control_session_new</h2>
+<pre class="signature">fn control_session_new(checksum_interval: i64) -&gt; i64 {</pre>
+<h2 id="control_session_flow">fn control_session_flow</h2>
+<pre class="signature">fn control_session_flow(session: i64) -&gt; i64 { vec_get(session, 0) }</pre>
+<h2 id="control_session_rtt">fn control_session_rtt</h2>
+<pre class="signature">fn control_session_rtt(session: i64) -&gt; i64 { vec_get(session, 4) }</pre>
+<h2 id="control_session_state">fn control_session_state</h2>
+<pre class="signature">fn control_session_state(session: i64) -&gt; i64 { vec_get(session, 9) }</pre>
+<h2 id="control_session_can_send">fn control_session_can_send</h2>
+<pre class="signature">fn control_session_can_send(session: i64) -&gt; i64 {</pre>
+<h2 id="control_session_on_frame_sent">fn control_session_on_frame_sent</h2>
+<pre class="signature">fn control_session_on_frame_sent(session: i64) -&gt; i64 {</pre>
+<h2 id="control_session_needs_checksum">fn control_session_needs_checksum</h2>
+<pre class="signature">fn control_session_needs_checksum(session: i64) -&gt; i64 {</pre>
+<h2 id="control_session_reset_checksum_counter">fn control_session_reset_checksum_counter</h2>
+<pre class="signature">fn control_session_reset_checksum_counter(session: i64) -&gt; i64 {</pre>
+<h2 id="control_session_send_ping">fn control_session_send_ping</h2>
+<pre class="signature">fn control_session_send_ping(session: i64, current_time: i64) -&gt; i64 {</pre>
+<h2 id="control_session_handle_pong">fn control_session_handle_pong</h2>
+<pre class="signature">fn control_session_handle_pong(session: i64, frame_bytes: i64, current_time: i64) -&gt; i64 {</pre>
+<h2 id="control_session_handle_ping">fn control_session_handle_ping</h2>
+<pre class="signature">fn control_session_handle_ping(session: i64, frame_bytes: i64) -&gt; i64 {</pre>
+<h2 id="control_session_queue_define">fn control_session_queue_define</h2>
+<pre class="signature">fn control_session_queue_define(session: i64, belief_index: i64, initial_value: i64) -&gt; i64 {</pre>
+<h2 id="control_session_queue_tombstone">fn control_session_queue_tombstone</h2>
+<pre class="signature">fn control_session_queue_tombstone(session: i64, belief_index: i64, tick: i64) -&gt; i64 {</pre>
+<h2 id="control_session_pending_defines">fn control_session_pending_defines</h2>
+<pre class="signature">fn control_session_pending_defines(session: i64) -&gt; i64 {</pre>
+<h2 id="control_session_pending_tombstones">fn control_session_pending_tombstones</h2>
+<pre class="signature">fn control_session_pending_tombstones(session: i64) -&gt; i64 {</pre>
+<h2 id="control_session_clear_pending">fn control_session_clear_pending</h2>
+<pre class="signature">fn control_session_clear_pending(session: i64) -&gt; i64 {</pre>
+<h2 id="control_session_request_resync">fn control_session_request_resync</h2>
+<pre class="signature">fn control_session_request_resync(session: i64, tick: i64, reason: i64, checksum: i64) -&gt; i64 {</pre>
+<h2 id="control_session_disconnect">fn control_session_disconnect</h2>
+<pre class="signature">fn control_session_disconnect(session: i64, reason: i64, final_tick: i64) -&gt; i64 {</pre>
+<h2 id="control_session_is_active">fn control_session_is_active</h2>
+<pre class="signature">fn control_session_is_active(session: i64) -&gt; i64 {</pre>
+<h2 id="control_verify_checksum">fn control_verify_checksum</h2>
+<pre class="signature">fn control_verify_checksum(session: i64, decoder: i64, frame_bytes: i64) -&gt; i64 {</pre>
+<h2 id="control_handle_frame">fn control_handle_frame</h2>
+<pre class="signature">fn control_handle_frame(session: i64, decoder: i64, frame_bytes: i64, current_time: i64) -&gt; i64 {</pre>
+<h2 id="control_session_print_stats">fn control_session_print_stats</h2>
+<pre class="signature">fn control_session_print_stats(session: i64) -&gt; i64 {</pre>
+
+    <hr>
+    <p><em>Generated by sxdoc</em></p>
+  </main>
+</div>
+</body>
+</html>

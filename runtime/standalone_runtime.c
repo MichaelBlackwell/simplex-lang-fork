@@ -280,19 +280,20 @@ SxVec* intrinsic_vec_new(void) {
     return v;
 }
 
-void intrinsic_vec_push(SxVec* vec, void* item) {
-    if (!vec) return;
+int64_t intrinsic_vec_push(SxVec* vec, void* item) {
+    if (!vec) return 0;
     if (vec->len >= vec->cap) {
         size_t new_cap = vec->cap == 0 ? 8 : vec->cap * 2;
         void** new_items = realloc(vec->items, new_cap * sizeof(void*));
         if (!new_items) {
             fprintf(stderr, "Error: Failed to realloc vector to %zu items\n", new_cap);
-            return; // Early return on OOM
+            return 0; // Early return on OOM
         }
         vec->items = new_items;
         vec->cap = new_cap;
     }
     vec->items[vec->len++] = item;
+    return 0;
 }
 
 void* intrinsic_vec_get(SxVec* vec, int64_t index) {
@@ -302,11 +303,12 @@ void* intrinsic_vec_get(SxVec* vec, int64_t index) {
     return vec->items[index];
 }
 
-void intrinsic_vec_set(SxVec* vec, int64_t index, void* value) {
+int64_t intrinsic_vec_set(SxVec* vec, int64_t index, void* value) {
     if (!vec || index < 0 || (size_t)index >= vec->len) {
-        return;
+        return 0;
     }
     vec->items[index] = value;
+    return 0;
 }
 
 int64_t intrinsic_vec_len(SxVec* vec) {
@@ -319,8 +321,9 @@ void* intrinsic_vec_pop(SxVec* vec) {
     return vec->items[vec->len];
 }
 
-void intrinsic_vec_clear(SxVec* vec) {
+int64_t intrinsic_vec_clear(SxVec* vec) {
     if (vec) vec->len = 0;
+    return 0;
 }
 
 // Iterator type for Vec iteration
@@ -357,17 +360,19 @@ intptr_t iter_next(intptr_t iter_ptr) {
 }
 
 // Free iterator
-void iter_free(intptr_t iter_ptr) {
+int64_t iter_free(intptr_t iter_ptr) {
     if (iter_ptr) free((void*)iter_ptr);
+    return 0;
 }
 
 // IO functions
-void intrinsic_println(SxString* str) {
+int64_t intrinsic_println(SxString* str) {
     if (str && str->data) {
         printf("%s\n", str->data);
     } else {
         printf("\n");
     }
+    return 0;
 }
 
 SxString* intrinsic_read_file(SxString* path) {
@@ -414,14 +419,15 @@ SxString* intrinsic_read_file(SxString* path) {
     return result;
 }
 
-void intrinsic_write_file(SxString* path, SxString* content) {
-    if (!path || !path->data || !content || !content->data) return;
+int64_t intrinsic_write_file(SxString* path, SxString* content) {
+    if (!path || !path->data || !content || !content->data) return 0;
 
     FILE* f = fopen(path->data, "wb");
-    if (!f) return;
+    if (!f) return 0;
 
     fwrite(content->data, 1, content->len, f);
     fclose(f);
+    return 0;
 }
 
 SxVec* intrinsic_get_args(void) {
@@ -434,13 +440,13 @@ SxVec* intrinsic_get_args(void) {
 
 // Forward declarations for AI functions
 int64_t http_request_new(int64_t method_ptr, int64_t url_ptr);
-void http_request_header(int64_t req_ptr, int64_t name_ptr, int64_t value_ptr);
-void http_request_body(int64_t req_ptr, int64_t body_ptr);
+int64_t http_request_header(int64_t req_ptr, int64_t name_ptr, int64_t value_ptr);
+int64_t http_request_body(int64_t req_ptr, int64_t body_ptr);
 int64_t http_request_send(int64_t req_ptr);
-void http_request_free(int64_t req_ptr);
+int64_t http_request_free(int64_t req_ptr);
 int64_t http_response_status(int64_t resp_ptr);
 int64_t http_response_body(int64_t resp_ptr);
-void http_response_free(int64_t resp_ptr);
+int64_t http_response_free(int64_t resp_ptr);
 
 // AI intrinsics (real implementation with fallback)
 SxString* intrinsic_ai_infer(SxString* model, SxString* prompt, int64_t temperature) {
@@ -848,15 +854,16 @@ int64_t router_type_least_busy(void) { return ROUTER_LEAST_BUSY; }
 int64_t router_type_semantic(void) { return ROUTER_SEMANTIC; }
 
 // Decrement load count for specialist (call when message processing completes)
-void router_decrement_load(int64_t router_ptr, int64_t specialist_idx) {
+int64_t router_decrement_load(int64_t router_ptr, int64_t specialist_idx) {
     HiveRouter* router = (HiveRouter*)router_ptr;
-    if (!router || specialist_idx < 0 || specialist_idx >= router->specialist_count) return;
+    if (!router || specialist_idx < 0 || specialist_idx >= router->specialist_count) return 0;
 
     pthread_mutex_lock(&router->lock);
     if (router->load_counts[specialist_idx] > 0) {
         router->load_counts[specialist_idx]--;
     }
     pthread_mutex_unlock(&router->lock);
+    return 0;
 }
 
 // Set specialist embedding for semantic routing (description is specialist's capability description)
@@ -913,9 +920,9 @@ int64_t router_set_specialist_embedding(int64_t router_ptr, int64_t idx, int64_t
 // Close router
 // NOTE: Reference counting is optional and only added if use-after-free bugs are reported
 // Current implementation uses single-owner semantics which is documented
-void router_close(int64_t router_ptr) {
+int64_t router_close(int64_t router_ptr) {
     HiveRouter* router = (HiveRouter*)router_ptr;
-    if (!router) return;
+    if (!router) return 0;
 
     pthread_mutex_lock(&router->lock);
 
@@ -942,6 +949,7 @@ void router_close(int64_t router_ptr) {
     pthread_mutex_unlock(&router->lock);
     pthread_mutex_destroy(&router->lock);
     free(router);
+    return 0;
 }
 
 // ========================================
@@ -1041,9 +1049,9 @@ int64_t hive_specialist_count(int64_t hive_ptr) {
 }
 
 // Close hive
-void hive_close(int64_t hive_ptr) {
+int64_t hive_close(int64_t hive_ptr) {
     Hive* hive = (Hive*)hive_ptr;
-    if (!hive) return;
+    if (!hive) return 0;
 
     pthread_mutex_lock(&hive->lock);
 
@@ -1056,6 +1064,7 @@ void hive_close(int64_t hive_ptr) {
     pthread_mutex_unlock(&hive->lock);
     pthread_mutex_destroy(&hive->lock);
     free(hive);
+    return 0;
 }
 
 // ========================================
@@ -1298,9 +1307,9 @@ int64_t shared_store_count(int64_t store_ptr) {
 }
 
 // Close store
-void shared_store_close(int64_t store_ptr) {
+int64_t shared_store_close(int64_t store_ptr) {
     SharedVectorStore* store = (SharedVectorStore*)store_ptr;
-    if (!store) return;
+    if (!store) return 0;
 
     pthread_mutex_lock(&store->lock);
 
@@ -1318,6 +1327,7 @@ void shared_store_close(int64_t store_ptr) {
     pthread_mutex_unlock(&store->lock);
     pthread_mutex_destroy(&store->lock);
     free(store);
+    return 0;
 }
 
 // Timing intrinsics for performance measurement
@@ -1357,15 +1367,17 @@ void* intrinsic_arena_alloc(Arena* a, int64_t size) {
     return ptr;
 }
 
-void intrinsic_arena_reset(Arena* a) {
+int64_t intrinsic_arena_reset(Arena* a) {
     if (a) a->offset = 0;
+    return 0;
 }
 
-void intrinsic_arena_free(Arena* a) {
+int64_t intrinsic_arena_free(Arena* a) {
     if (a) {
         free(a->base);
         free(a);
     }
+    return 0;
 }
 
 int64_t intrinsic_arena_used(Arena* a) {
@@ -1398,8 +1410,8 @@ StringBuilder* intrinsic_sb_new_cap(int64_t initial_cap) {
     return sb;
 }
 
-void intrinsic_sb_append(StringBuilder* sb, SxString* str) {
-    if (!sb || !str || !str->data) return;
+int64_t intrinsic_sb_append(StringBuilder* sb, SxString* str) {
+    if (!sb || !str || !str->data) return 0;
 
     int64_t needed = sb->len + str->len + 1;
     if (needed > sb->cap) {
@@ -1410,17 +1422,18 @@ void intrinsic_sb_append(StringBuilder* sb, SxString* str) {
         char* new_data = realloc(sb->data, sb->cap);
         if (!new_data) {
             fprintf(stderr, "Error: Failed to realloc string buffer to %lld bytes\n", sb->cap);
-            return; // Early return on OOM
+            return 0; // Early return on OOM
         }
         sb->data = new_data;
     }
     memcpy(sb->data + sb->len, str->data, str->len);
     sb->len += str->len;
     sb->data[sb->len] = '\0';
+    return 0;
 }
 
-void intrinsic_sb_append_cstr(StringBuilder* sb, const char* cstr) {
-    if (!sb || !cstr) return;
+int64_t intrinsic_sb_append_cstr(StringBuilder* sb, const char* cstr) {
+    if (!sb || !cstr) return 0;
 
     int64_t slen = strlen(cstr);
     int64_t needed = sb->len + slen + 1;
@@ -1433,10 +1446,11 @@ void intrinsic_sb_append_cstr(StringBuilder* sb, const char* cstr) {
     memcpy(sb->data + sb->len, cstr, slen);
     sb->len += slen;
     sb->data[sb->len] = '\0';
+    return 0;
 }
 
-void intrinsic_sb_append_char(StringBuilder* sb, int64_t c) {
-    if (!sb) return;
+int64_t intrinsic_sb_append_char(StringBuilder* sb, int64_t c) {
+    if (!sb) return 0;
 
     if (sb->len + 2 > sb->cap) {
         sb->cap *= 2;
@@ -1444,6 +1458,7 @@ void intrinsic_sb_append_char(StringBuilder* sb, int64_t c) {
     }
     sb->data[sb->len++] = (char)c;
     sb->data[sb->len] = '\0';
+    return 0;
 }
 
 void intrinsic_sb_append_i64(StringBuilder* sb, int64_t value) {
@@ -1475,18 +1490,20 @@ SxString* intrinsic_sb_to_string(StringBuilder* sb) {
     return result;
 }
 
-void intrinsic_sb_clear(StringBuilder* sb) {
+int64_t intrinsic_sb_clear(StringBuilder* sb) {
     if (sb) {
         sb->len = 0;
         sb->data[0] = '\0';
     }
+    return 0;
 }
 
-void intrinsic_sb_free(StringBuilder* sb) {
+int64_t intrinsic_sb_free(StringBuilder* sb) {
     if (sb) {
         free(sb->data);
         free(sb);
     }
+    return 0;
 }
 
 int64_t intrinsic_sb_len(StringBuilder* sb) {
@@ -1494,14 +1511,14 @@ int64_t intrinsic_sb_len(StringBuilder* sb) {
 }
 
 // Print stack trace
-void intrinsic_print_stack_trace(void) {
+int64_t intrinsic_print_stack_trace(void) {
     void* buffer[64];
     int nptrs = backtrace(buffer, 64);
     char** symbols = backtrace_symbols(buffer, nptrs);
 
     if (symbols == NULL) {
         fprintf(stderr, "  (stack trace unavailable)\n");
-        return;
+        return 0;
     }
 
     fprintf(stderr, "Stack trace:\n");
@@ -1509,10 +1526,11 @@ void intrinsic_print_stack_trace(void) {
         fprintf(stderr, "  %s\n", symbols[i]);
     }
     free(symbols);
+    return 0;
 }
 
 // Panic function for unrecoverable errors
-void intrinsic_panic(SxString* message) {
+int64_t intrinsic_panic(SxString* message) {
     if (message && message->data) {
         fprintf(stderr, "PANIC: %s\n", message->data);
     } else {
@@ -1523,7 +1541,7 @@ void intrinsic_panic(SxString* message) {
 }
 
 // Panic with file and line info
-void intrinsic_panic_at(SxString* message, SxString* file, int64_t line) {
+int64_t intrinsic_panic_at(SxString* message, SxString* file, int64_t line) {
     fprintf(stderr, "PANIC at %s:%lld: %s\n",
             file ? file->data : "unknown",
             line,
@@ -1543,11 +1561,12 @@ SxString* intrinsic_string_concat_tracked(SxString* a, SxString* b) {
     return intrinsic_string_concat(a, b);
 }
 
-void intrinsic_print_perf_stats(void) {
+int64_t intrinsic_print_perf_stats(void) {
     printf("=== Performance Stats ===\n");
     printf("String concats: %lld\n", (long long)string_concat_count);
     printf("Bytes copied: %lld\n", (long long)string_concat_bytes);
     printf("store_i64 calls: %d\n", store_i64_count);
+    return 0;
 }
 
 // ========================================
@@ -1582,12 +1601,13 @@ void* intrinsic_thread_spawn(void* fn, void* arg) {
     return handle;
 }
 
-void intrinsic_thread_join(void* handle) {
+int64_t intrinsic_thread_join(void* handle) {
     if (handle) {
         ThreadHandle* h = (ThreadHandle*)handle;
         pthread_join(h->thread, NULL);
         free(h);
     }
+    return 0;
 }
 
 int64_t intrinsic_thread_id(void* handle) {
@@ -1604,23 +1624,26 @@ void* intrinsic_mutex_new(void) {
     return mutex;
 }
 
-void intrinsic_mutex_lock(void* mutex) {
+int64_t intrinsic_mutex_lock(void* mutex) {
     if (mutex) {
         pthread_mutex_lock((pthread_mutex_t*)mutex);
     }
+    return 0;
 }
 
-void intrinsic_mutex_unlock(void* mutex) {
+int64_t intrinsic_mutex_unlock(void* mutex) {
     if (mutex) {
         pthread_mutex_unlock((pthread_mutex_t*)mutex);
     }
+    return 0;
 }
 
-void intrinsic_mutex_free(void* mutex) {
+int64_t intrinsic_mutex_free(void* mutex) {
     if (mutex) {
         pthread_mutex_destroy((pthread_mutex_t*)mutex);
         free(mutex);
     }
+    return 0;
 }
 
 // Condition variable primitives
@@ -1630,29 +1653,33 @@ void* intrinsic_condvar_new(void) {
     return cond;
 }
 
-void intrinsic_condvar_wait(void* cond, void* mutex) {
+int64_t intrinsic_condvar_wait(void* cond, void* mutex) {
     if (cond && mutex) {
         pthread_cond_wait((pthread_cond_t*)cond, (pthread_mutex_t*)mutex);
     }
+    return 0;
 }
 
-void intrinsic_condvar_signal(void* cond) {
+int64_t intrinsic_condvar_signal(void* cond) {
     if (cond) {
         pthread_cond_signal((pthread_cond_t*)cond);
     }
+    return 0;
 }
 
-void intrinsic_condvar_broadcast(void* cond) {
+int64_t intrinsic_condvar_broadcast(void* cond) {
     if (cond) {
         pthread_cond_broadcast((pthread_cond_t*)cond);
     }
+    return 0;
 }
 
-void intrinsic_condvar_free(void* cond) {
+int64_t intrinsic_condvar_free(void* cond) {
     if (cond) {
         pthread_cond_destroy((pthread_cond_t*)cond);
         free(cond);
     }
+    return 0;
 }
 
 // Atomic operations for lock-free structures (using GCC builtins for portability)
@@ -1660,8 +1687,9 @@ int64_t intrinsic_atomic_load(int64_t* ptr) {
     return __atomic_load_n(ptr, __ATOMIC_ACQUIRE);
 }
 
-void intrinsic_atomic_store(int64_t* ptr, int64_t value) {
+int64_t intrinsic_atomic_store(int64_t* ptr, int64_t value) {
     __atomic_store_n(ptr, value, __ATOMIC_RELEASE);
+    return 0;
 }
 
 int64_t intrinsic_atomic_add(int64_t* ptr, int64_t value) {
@@ -1680,8 +1708,9 @@ void* intrinsic_atomic_load_ptr(void** ptr) {
     return __atomic_load_n(ptr, __ATOMIC_ACQUIRE);
 }
 
-void intrinsic_atomic_store_ptr(void** ptr, void* value) {
+int64_t intrinsic_atomic_store_ptr(void** ptr, void* value) {
     __atomic_store_n(ptr, value, __ATOMIC_RELEASE);
+    return 0;
 }
 
 int8_t intrinsic_atomic_cas_ptr(void** ptr, void* expected, void* desired) {
@@ -1713,8 +1742,8 @@ void* intrinsic_mailbox_new(void) {
     return mb;
 }
 
-void intrinsic_mailbox_send(void* mailbox, void* message) {
-    if (!mailbox) return;
+int64_t intrinsic_mailbox_send(void* mailbox, void* message) {
+    if (!mailbox) return 0;
     Mailbox* mb = (Mailbox*)mailbox;
 
     MailboxNode* node = malloc(sizeof(MailboxNode));
@@ -1730,6 +1759,7 @@ void intrinsic_mailbox_send(void* mailbox, void* message) {
     mb->tail = node;
     mb->count++;
     pthread_mutex_unlock(&mb->lock);
+    return 0;
 }
 
 void* intrinsic_mailbox_recv(void* mailbox) {
@@ -1773,8 +1803,8 @@ int64_t intrinsic_mailbox_len(void* mailbox) {
     return result;
 }
 
-void intrinsic_mailbox_free(void* mailbox) {
-    if (!mailbox) return;
+int64_t intrinsic_mailbox_free(void* mailbox) {
+    if (!mailbox) return 0;
     Mailbox* mb = (Mailbox*)mailbox;
 
     // Drain remaining messages
@@ -1788,6 +1818,7 @@ void intrinsic_mailbox_free(void* mailbox) {
     pthread_mutex_unlock(&mb->lock);
     pthread_mutex_destroy(&mb->lock);
     free(mb);
+    return 0;
 }
 
 // ========================================
@@ -1860,27 +1891,30 @@ void* intrinsic_actor_spawn(void* init_state, void* handler) {
 }
 
 // Set lifecycle hooks
-void intrinsic_actor_set_on_start(void* actor_handle, void* hook) {
-    if (!actor_handle) return;
+int64_t intrinsic_actor_set_on_start(void* actor_handle, void* hook) {
+    if (!actor_handle) return 0;
     ((ActorHandle*)actor_handle)->on_start = hook;
+    return 0;
 }
 
-void intrinsic_actor_set_on_stop(void* actor_handle, void* hook) {
-    if (!actor_handle) return;
+int64_t intrinsic_actor_set_on_stop(void* actor_handle, void* hook) {
+    if (!actor_handle) return 0;
     ((ActorHandle*)actor_handle)->on_stop = hook;
+    return 0;
 }
 
-void intrinsic_actor_set_on_error(void* actor_handle, void* hook) {
-    if (!actor_handle) return;
+int64_t intrinsic_actor_set_on_error(void* actor_handle, void* hook) {
+    if (!actor_handle) return 0;
     ((ActorHandle*)actor_handle)->on_error = hook;
+    return 0;
 }
 
 // Stop actor with lifecycle hook
-void intrinsic_actor_stop(void* actor_handle) {
-    if (!actor_handle) return;
+int64_t intrinsic_actor_stop(void* actor_handle) {
+    if (!actor_handle) return 0;
     ActorHandle* actor = (ActorHandle*)actor_handle;
 
-    if (!actor->running) return;
+    if (!actor->running) return 0;
 
     // Call on_stop hook
     if (actor->on_stop) {
@@ -1896,6 +1930,7 @@ void intrinsic_actor_stop(void* actor_handle) {
         actor_registry[actor->id] = NULL;
     }
     pthread_mutex_unlock(&actor_registry_lock);
+    return 0;
 }
 
 // Check if actor is running
@@ -1906,10 +1941,11 @@ int8_t intrinsic_actor_is_running(void* actor_handle) {
 
 // Note: Supervisor implementation is in Phase 23.1 Supervision Trees section
 
-void intrinsic_actor_send(void* actor_handle, void* message) {
-    if (!actor_handle) return;
+int64_t intrinsic_actor_send(void* actor_handle, void* message) {
+    if (!actor_handle) return 0;
     ActorHandle* actor = (ActorHandle*)actor_handle;
     intrinsic_mailbox_send(actor->mailbox, message);
+    return 0;
 }
 
 void* intrinsic_actor_state(void* actor_handle) {
@@ -1917,9 +1953,10 @@ void* intrinsic_actor_state(void* actor_handle) {
     return ((ActorHandle*)actor_handle)->state;
 }
 
-void intrinsic_actor_set_state(void* actor_handle, void* state) {
-    if (!actor_handle) return;
+int64_t intrinsic_actor_set_state(void* actor_handle, void* state) {
+    if (!actor_handle) return 0;
     ((ActorHandle*)actor_handle)->state = state;
+    return 0;
 }
 
 void* intrinsic_actor_mailbox(void* actor_handle) {
@@ -1955,13 +1992,15 @@ void* intrinsic_actor_ask(void* actor_handle, void* message) {
 }
 
 // Sleep for milliseconds
-void intrinsic_sleep_ms(int64_t ms) {
+int64_t intrinsic_sleep_ms(int64_t ms) {
     usleep(ms * 1000);
+    return 0;
 }
 
 // Yield to other threads
-void intrinsic_thread_yield(void) {
+int64_t intrinsic_thread_yield(void) {
     sched_yield();
+    return 0;
 }
 
 // ========================================
@@ -2208,18 +2247,19 @@ int64_t actor_get_error_code(int64_t actor_ptr) {
 }
 
 // Set actor error
-void actor_set_error(int64_t actor_ptr, int64_t code, int64_t message_ptr) {
-    if (actor_ptr == 0) return;
+int64_t actor_set_error(int64_t actor_ptr, int64_t code, int64_t message_ptr) {
+    if (actor_ptr == 0) return 0;
     ActorHandleEx* actor = (ActorHandleEx*)actor_ptr;
     actor->status = ACTOR_CRASHED;
     actor->exit_reason = EXIT_ERROR;
     actor->error_code = code;
     actor->error_message = (char*)message_ptr;
+    return 0;
 }
 
 // Stop actor normally
-void actor_stop(int64_t actor_ptr) {
-    if (actor_ptr == 0) return;
+int64_t actor_stop(int64_t actor_ptr) {
+    if (actor_ptr == 0) return 0;
     ActorHandleEx* actor = (ActorHandleEx*)actor_ptr;
     actor->status = ACTOR_STOPPED;
     actor->exit_reason = EXIT_NORMAL;
@@ -2231,11 +2271,12 @@ void actor_stop(int64_t actor_ptr) {
         ExitHandler fn = (ExitHandler)actor->on_exit;
         fn(actor_ptr, EXIT_NORMAL);
     }
+    return 0;
 }
 
 // Kill actor forcefully
-void actor_kill(int64_t actor_ptr) {
-    if (actor_ptr == 0) return;
+int64_t actor_kill(int64_t actor_ptr) {
+    if (actor_ptr == 0) return 0;
     ActorHandleEx* actor = (ActorHandleEx*)actor_ptr;
     actor->status = ACTOR_STOPPED;
     actor->exit_reason = EXIT_KILLED;
@@ -2246,11 +2287,12 @@ void actor_kill(int64_t actor_ptr) {
         ExitHandler fn = (ExitHandler)actor->on_exit;
         fn(actor_ptr, EXIT_KILLED);
     }
+    return 0;
 }
 
 // Crash actor with error
-void actor_crash(int64_t actor_ptr, int64_t error_code, int64_t message_ptr) {
-    if (actor_ptr == 0) return;
+int64_t actor_crash(int64_t actor_ptr, int64_t error_code, int64_t message_ptr) {
+    if (actor_ptr == 0) return 0;
     ActorHandleEx* actor = (ActorHandleEx*)actor_ptr;
     actor->status = ACTOR_CRASHED;
     actor->exit_reason = EXIT_ERROR;
@@ -2271,27 +2313,31 @@ void actor_crash(int64_t actor_ptr, int64_t error_code, int64_t message_ptr) {
         ExitHandler fn = (ExitHandler)actor->on_exit;
         fn(actor_ptr, EXIT_ERROR);
     }
+    return 0;
 }
 
 // Set error callback
-void actor_set_on_error(int64_t actor_ptr, int64_t callback) {
-    if (actor_ptr == 0) return;
+int64_t actor_set_on_error(int64_t actor_ptr, int64_t callback) {
+    if (actor_ptr == 0) return 0;
     ActorHandleEx* actor = (ActorHandleEx*)actor_ptr;
     actor->on_error = (void*)callback;
+    return 0;
 }
 
 // Set exit callback
-void actor_set_on_exit(int64_t actor_ptr, int64_t callback) {
-    if (actor_ptr == 0) return;
+int64_t actor_set_on_exit(int64_t actor_ptr, int64_t callback) {
+    if (actor_ptr == 0) return 0;
     ActorHandleEx* actor = (ActorHandleEx*)actor_ptr;
     actor->on_exit = (void*)callback;
+    return 0;
 }
 
 // Set supervisor
-void actor_set_supervisor(int64_t actor_ptr, int64_t supervisor_ptr) {
-    if (actor_ptr == 0) return;
+int64_t actor_set_supervisor(int64_t actor_ptr, int64_t supervisor_ptr) {
+    if (actor_ptr == 0) return 0;
     ActorHandleEx* actor = (ActorHandleEx*)actor_ptr;
     actor->supervisor = (void*)supervisor_ptr;
+    return 0;
 }
 
 // Get supervisor
@@ -2309,11 +2355,12 @@ int64_t actor_get_restart_count(int64_t actor_ptr) {
 }
 
 // Increment restart count
-void actor_increment_restart(int64_t actor_ptr) {
-    if (actor_ptr == 0) return;
+int64_t actor_increment_restart(int64_t actor_ptr) {
+    if (actor_ptr == 0) return 0;
     ActorHandleEx* actor = (ActorHandleEx*)actor_ptr;
     actor->restart_count++;
     actor->last_restart_time = time_now_ms();
+    return 0;
 }
 
 // Check if actor is alive
@@ -2379,7 +2426,7 @@ int64_t circuit_breaker_allow(int64_t cb_ptr) {
 }
 
 // Record success
-void circuit_breaker_success(int64_t cb_ptr) {
+int64_t circuit_breaker_success(int64_t cb_ptr) {
     CircuitBreaker* cb = (CircuitBreaker*)cb_ptr;
 
     if (cb->state == CB_HALF_OPEN) {
@@ -2391,10 +2438,11 @@ void circuit_breaker_success(int64_t cb_ptr) {
     } else if (cb->state == CB_CLOSED) {
         cb->failure_count = 0;  // Reset on success
     }
+    return 0;
 }
 
 // Record failure
-void circuit_breaker_failure(int64_t cb_ptr) {
+int64_t circuit_breaker_failure(int64_t cb_ptr) {
     CircuitBreaker* cb = (CircuitBreaker*)cb_ptr;
 
     cb->failure_count++;
@@ -2407,6 +2455,7 @@ void circuit_breaker_failure(int64_t cb_ptr) {
             cb->state = CB_OPEN;
         }
     }
+    return 0;
 }
 
 // Get circuit breaker state
@@ -2416,11 +2465,12 @@ int64_t circuit_breaker_state(int64_t cb_ptr) {
 }
 
 // Reset circuit breaker
-void circuit_breaker_reset(int64_t cb_ptr) {
+int64_t circuit_breaker_reset(int64_t cb_ptr) {
     CircuitBreaker* cb = (CircuitBreaker*)cb_ptr;
     cb->state = CB_CLOSED;
     cb->failure_count = 0;
     cb->success_count = 0;
+    return 0;
 }
 
 // ========================================
@@ -2454,9 +2504,10 @@ int64_t retry_policy_new(int64_t strategy, int64_t max_retries, int64_t base_del
 }
 
 // Set jitter percentage
-void retry_policy_set_jitter(int64_t rp_ptr, int64_t jitter_percent) {
+int64_t retry_policy_set_jitter(int64_t rp_ptr, int64_t jitter_percent) {
     RetryPolicy* rp = (RetryPolicy*)rp_ptr;
     rp->jitter = jitter_percent;
+    return 0;
 }
 
 // Check if should retry
@@ -2497,9 +2548,10 @@ int64_t retry_policy_next_delay(int64_t rp_ptr) {
 }
 
 // Reset retry count
-void retry_policy_reset(int64_t rp_ptr) {
+int64_t retry_policy_reset(int64_t rp_ptr) {
     RetryPolicy* rp = (RetryPolicy*)rp_ptr;
     rp->current_retry = 0;
+    return 0;
 }
 
 // Get current retry count
@@ -2585,8 +2637,8 @@ int64_t actor_link(int64_t actor1, int64_t actor2) {
 }
 
 // Remove a link between two actors
-void actor_unlink(int64_t actor1, int64_t actor2) {
-    if (actor1 == 0 || actor2 == 0) return;
+int64_t actor_unlink(int64_t actor1, int64_t actor2) {
+    if (actor1 == 0 || actor2 == 0) return 0;
 
     pthread_mutex_lock(&link_registry_lock);
 
@@ -2600,6 +2652,7 @@ void actor_unlink(int64_t actor1, int64_t actor2) {
     }
 
     pthread_mutex_unlock(&link_registry_lock);
+    return 0;
 }
 
 // Start monitoring an actor (unidirectional)
@@ -2630,8 +2683,8 @@ int64_t actor_monitor(int64_t watcher, int64_t target) {
 }
 
 // Stop monitoring an actor
-void actor_demonitor(int64_t ref) {
-    if (ref == 0) return;
+int64_t actor_demonitor(int64_t ref) {
+    if (ref == 0) return 0;
 
     pthread_mutex_lock(&monitor_registry_lock);
 
@@ -2643,6 +2696,7 @@ void actor_demonitor(int64_t ref) {
     }
 
     pthread_mutex_unlock(&monitor_registry_lock);
+    return 0;
 }
 
 // Down message structure for monitor notifications
@@ -2654,8 +2708,8 @@ typedef struct {
 } DownMessage;
 
 // Send exit signal to linked actors when an actor exits
-void actor_propagate_exit(int64_t actor, int64_t reason) {
-    if (actor == 0) return;
+int64_t actor_propagate_exit(int64_t actor, int64_t reason) {
+    if (actor == 0) return 0;
 
     pthread_mutex_lock(&link_registry_lock);
 
@@ -2707,6 +2761,7 @@ void actor_propagate_exit(int64_t actor, int64_t reason) {
     }
 
     pthread_mutex_unlock(&monitor_registry_lock);
+    return 0;
 }
 
 // Check if two actors are linked
@@ -2944,8 +2999,8 @@ static void supervisor_stop_child_internal(Supervisor* sup, int64_t idx) {
 }
 
 // Stop all children
-void supervisor_stop(int64_t sup_ptr) {
-    if (sup_ptr == 0) return;
+int64_t supervisor_stop(int64_t sup_ptr) {
+    if (sup_ptr == 0) return 0;
     Supervisor* sup = (Supervisor*)sup_ptr;
 
     pthread_mutex_lock(&sup->lock);
@@ -2957,6 +3012,7 @@ void supervisor_stop(int64_t sup_ptr) {
     }
 
     pthread_mutex_unlock(&sup->lock);
+    return 0;
 }
 
 // Check if we've exceeded restart intensity
@@ -3087,14 +3143,15 @@ int64_t supervisor_child_handle(int64_t sup_ptr, int64_t idx) {
 }
 
 // Free supervisor
-void supervisor_free(int64_t sup_ptr) {
-    if (sup_ptr == 0) return;
+int64_t supervisor_free(int64_t sup_ptr) {
+    if (sup_ptr == 0) return 0;
     Supervisor* sup = (Supervisor*)sup_ptr;
 
     supervisor_stop(sup_ptr);
     pthread_mutex_destroy(&sup->lock);
     if (sup->children) free(sup->children);
     free(sup);
+    return 0;
 }
 
 // Strategy constants accessors for Simplex
@@ -3388,8 +3445,8 @@ int64_t scheduler_submit_local(int64_t sched_ptr, int64_t worker_id, int64_t tas
 }
 
 // Stop scheduler
-void scheduler_stop(int64_t sched_ptr) {
-    if (sched_ptr == 0) return;
+int64_t scheduler_stop(int64_t sched_ptr) {
+    if (sched_ptr == 0) return 0;
     WorkStealingScheduler* sched = (WorkStealingScheduler*)sched_ptr;
 
     sched->shutdown = 1;
@@ -3406,11 +3463,12 @@ void scheduler_stop(int64_t sched_ptr) {
             sched->workers[i].running = 0;
         }
     }
+    return 0;
 }
 
 // Free scheduler
-void scheduler_free(int64_t sched_ptr) {
-    if (sched_ptr == 0) return;
+int64_t scheduler_free(int64_t sched_ptr) {
+    if (sched_ptr == 0) return 0;
     WorkStealingScheduler* sched = (WorkStealingScheduler*)sched_ptr;
 
     scheduler_stop(sched_ptr);
@@ -3430,6 +3488,7 @@ void scheduler_free(int64_t sched_ptr) {
     pthread_mutex_destroy(&sched->global_lock);
     pthread_cond_destroy(&sched->work_available);
     free(sched);
+    return 0;
 }
 
 // Get worker count
@@ -3608,10 +3667,11 @@ int64_t mailbox_full(int64_t mb_ptr) {
 }
 
 // Close mailbox (no more sends)
-void mailbox_close(int64_t mb_ptr) {
-    if (mb_ptr == 0) return;
+int64_t mailbox_close(int64_t mb_ptr) {
+    if (mb_ptr == 0) return 0;
     LockFreeMailbox* mb = (LockFreeMailbox*)mb_ptr;
     mb->closed = 1;
+    return 0;
 }
 
 // Check if closed
@@ -3622,8 +3682,8 @@ int64_t mailbox_is_closed(int64_t mb_ptr) {
 }
 
 // Free mailbox
-void mailbox_free(int64_t mb_ptr) {
-    if (mb_ptr == 0) return;
+int64_t mailbox_free(int64_t mb_ptr) {
+    if (mb_ptr == 0) return 0;
     LockFreeMailbox* mb = (LockFreeMailbox*)mb_ptr;
 
     // Drain remaining messages
@@ -3635,6 +3695,7 @@ void mailbox_free(int64_t mb_ptr) {
     // Free final sentinel
     free((void*)mb->head);
     free(mb);
+    return 0;
 }
 
 // ========================================
@@ -3722,8 +3783,8 @@ int64_t registry_register(int64_t name_ptr, int64_t actor_handle) {
 }
 
 // Unregister an actor
-void registry_unregister(int64_t name_ptr) {
-    if (name_ptr == 0 || !global_registry) return;
+int64_t registry_unregister(int64_t name_ptr) {
+    if (name_ptr == 0 || !global_registry) return 0;
     SxString* str = (SxString*)name_ptr;
     char* name = str->data;
 
@@ -3741,6 +3802,7 @@ void registry_unregister(int64_t name_ptr) {
     }
 
     pthread_rwlock_unlock(&global_registry->lock);
+    return 0;
 }
 
 // Look up an actor by name
@@ -3915,8 +3977,8 @@ int64_t flow_acquire(int64_t fc_ptr) {
 }
 
 // Release after processing
-void flow_release(int64_t fc_ptr) {
-    if (fc_ptr == 0) return;
+int64_t flow_release(int64_t fc_ptr) {
+    if (fc_ptr == 0) return 0;
     FlowController* fc = (FlowController*)fc_ptr;
 
     pthread_mutex_lock(&fc->lock);
@@ -3931,6 +3993,7 @@ void flow_release(int64_t fc_ptr) {
     }
 
     pthread_mutex_unlock(&fc->lock);
+    return 0;
 }
 
 // Check if backpressure is signaled
@@ -3962,8 +4025,8 @@ int64_t flow_low_watermark(int64_t fc_ptr) {
 }
 
 // Reset flow controller
-void flow_reset(int64_t fc_ptr) {
-    if (fc_ptr == 0) return;
+int64_t flow_reset(int64_t fc_ptr) {
+    if (fc_ptr == 0) return 0;
     FlowController* fc = (FlowController*)fc_ptr;
 
     pthread_mutex_lock(&fc->lock);
@@ -3971,16 +4034,18 @@ void flow_reset(int64_t fc_ptr) {
     fc->signaling = 0;
     pthread_cond_broadcast(&fc->not_full);
     pthread_mutex_unlock(&fc->lock);
+    return 0;
 }
 
 // Free flow controller
-void flow_free(int64_t fc_ptr) {
-    if (fc_ptr == 0) return;
+int64_t flow_free(int64_t fc_ptr) {
+    if (fc_ptr == 0) return 0;
     FlowController* fc = (FlowController*)fc_ptr;
 
     pthread_mutex_destroy(&fc->lock);
     pthread_cond_destroy(&fc->not_full);
     free(fc);
+    return 0;
 }
 
 // Flow mode accessors
@@ -4017,38 +4082,42 @@ void* intrinsic_io_driver_new(void) {
     return driver;
 }
 
-void intrinsic_io_driver_init(void) {
+int64_t intrinsic_io_driver_init(void) {
     if (!global_io_driver) {
         global_io_driver = intrinsic_io_driver_new();
     }
+    return 0;
 }
 
-void intrinsic_io_driver_register_read(void* driver_ptr, int64_t fd, void* waker) {
+int64_t intrinsic_io_driver_register_read(void* driver_ptr, int64_t fd, void* waker) {
     IoDriver* driver = driver_ptr ? driver_ptr : global_io_driver;
-    if (!driver) return;
+    if (!driver) return 0;
 
     struct kevent ev;
     EV_SET(&ev, fd, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, waker);
     kevent(driver->kq, &ev, 1, NULL, 0, NULL);
+    return 0;
 }
 
-void intrinsic_io_driver_register_write(void* driver_ptr, int64_t fd, void* waker) {
+int64_t intrinsic_io_driver_register_write(void* driver_ptr, int64_t fd, void* waker) {
     IoDriver* driver = driver_ptr ? driver_ptr : global_io_driver;
-    if (!driver) return;
+    if (!driver) return 0;
 
     struct kevent ev;
     EV_SET(&ev, fd, EVFILT_WRITE, EV_ADD | EV_ENABLE, 0, 0, waker);
     kevent(driver->kq, &ev, 1, NULL, 0, NULL);
+    return 0;
 }
 
-void intrinsic_io_driver_unregister(void* driver_ptr, int64_t fd) {
+int64_t intrinsic_io_driver_unregister(void* driver_ptr, int64_t fd) {
     IoDriver* driver = driver_ptr ? driver_ptr : global_io_driver;
-    if (!driver) return;
+    if (!driver) return 0;
 
     struct kevent ev[2];
     EV_SET(&ev[0], fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
     EV_SET(&ev[1], fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
     kevent(driver->kq, ev, 2, NULL, 0, NULL);
+    return 0;
 }
 
 int64_t intrinsic_io_driver_poll(void* driver_ptr, int64_t timeout_ms) {
@@ -4068,11 +4137,12 @@ int64_t intrinsic_io_driver_poll(void* driver_ptr, int64_t timeout_ms) {
     return driver->num_events;
 }
 
-void intrinsic_io_driver_free(void* driver_ptr) {
-    if (!driver_ptr) return;
+int64_t intrinsic_io_driver_free(void* driver_ptr) {
+    if (!driver_ptr) return 0;
     IoDriver* driver = (IoDriver*)driver_ptr;
     close(driver->kq);
     free(driver);
+    return 0;
 }
 
 #else
@@ -4094,37 +4164,41 @@ void* intrinsic_io_driver_new(void) {
     return driver;
 }
 
-void intrinsic_io_driver_init(void) {
+int64_t intrinsic_io_driver_init(void) {
     if (!global_io_driver) {
         global_io_driver = intrinsic_io_driver_new();
     }
+    return 0;
 }
 
-void intrinsic_io_driver_register_read(void* driver_ptr, int64_t fd, void* waker) {
+int64_t intrinsic_io_driver_register_read(void* driver_ptr, int64_t fd, void* waker) {
     IoDriver* driver = driver_ptr ? driver_ptr : global_io_driver;
-    if (!driver) return;
+    if (!driver) return 0;
 
     struct epoll_event ev;
     ev.events = EPOLLIN;
     ev.data.ptr = waker;
     epoll_ctl(driver->epfd, EPOLL_CTL_ADD, fd, &ev);
+    return 0;
 }
 
-void intrinsic_io_driver_register_write(void* driver_ptr, int64_t fd, void* waker) {
+int64_t intrinsic_io_driver_register_write(void* driver_ptr, int64_t fd, void* waker) {
     IoDriver* driver = driver_ptr ? driver_ptr : global_io_driver;
-    if (!driver) return;
+    if (!driver) return 0;
 
     struct epoll_event ev;
     ev.events = EPOLLOUT;
     ev.data.ptr = waker;
     epoll_ctl(driver->epfd, EPOLL_CTL_ADD, fd, &ev);
+    return 0;
 }
 
-void intrinsic_io_driver_unregister(void* driver_ptr, int64_t fd) {
+int64_t intrinsic_io_driver_unregister(void* driver_ptr, int64_t fd) {
     IoDriver* driver = driver_ptr ? driver_ptr : global_io_driver;
-    if (!driver) return;
+    if (!driver) return 0;
 
     epoll_ctl(driver->epfd, EPOLL_CTL_DEL, fd, NULL);
+    return 0;
 }
 
 int64_t intrinsic_io_driver_poll(void* driver_ptr, int64_t timeout_ms) {
@@ -4137,11 +4211,12 @@ int64_t intrinsic_io_driver_poll(void* driver_ptr, int64_t timeout_ms) {
     return driver->num_events;
 }
 
-void intrinsic_io_driver_free(void* driver_ptr) {
-    if (!driver_ptr) return;
+int64_t intrinsic_io_driver_free(void* driver_ptr) {
+    if (!driver_ptr) return 0;
     IoDriver* driver = (IoDriver*)driver_ptr;
     close(driver->epfd);
     free(driver);
+    return 0;
 }
 
 #endif
@@ -4176,15 +4251,16 @@ void* intrinsic_timer_wheel_new(void) {
     return wheel;
 }
 
-void intrinsic_timer_wheel_init(void) {
+int64_t intrinsic_timer_wheel_init(void) {
     if (!global_timer_wheel) {
         global_timer_wheel = intrinsic_timer_wheel_new();
     }
+    return 0;
 }
 
-void intrinsic_timer_register(void* wheel_ptr, int64_t deadline_ms, void* waker) {
+int64_t intrinsic_timer_register(void* wheel_ptr, int64_t deadline_ms, void* waker) {
     TimerWheel* wheel = wheel_ptr ? wheel_ptr : global_timer_wheel;
-    if (!wheel) return;
+    if (!wheel) return 0;
 
     TimerEntry* entry = malloc(sizeof(TimerEntry));
     entry->deadline_ms = deadline_ms;
@@ -4195,6 +4271,7 @@ void intrinsic_timer_register(void* wheel_ptr, int64_t deadline_ms, void* waker)
     wheel->entries = entry;
     wheel->count++;
     pthread_mutex_unlock(&wheel->lock);
+    return 0;
 }
 
 int64_t intrinsic_timer_check(void* wheel_ptr) {
@@ -4241,8 +4318,8 @@ int64_t intrinsic_timer_next_deadline(void* wheel_ptr) {
     return min_deadline;
 }
 
-void intrinsic_timer_wheel_free(void* wheel_ptr) {
-    if (!wheel_ptr) return;
+int64_t intrinsic_timer_wheel_free(void* wheel_ptr) {
+    if (!wheel_ptr) return 0;
     TimerWheel* wheel = (TimerWheel*)wheel_ptr;
 
     pthread_mutex_lock(&wheel->lock);
@@ -4255,6 +4332,7 @@ void intrinsic_timer_wheel_free(void* wheel_ptr) {
     pthread_mutex_unlock(&wheel->lock);
     pthread_mutex_destroy(&wheel->lock);
     free(wheel);
+    return 0;
 }
 
 // ========================================
@@ -4289,12 +4367,13 @@ void* intrinsic_executor_new(void) {
     return exec;
 }
 
-void intrinsic_executor_init(void) {
+int64_t intrinsic_executor_init(void) {
     if (!global_executor) {
         global_executor = intrinsic_executor_new();
     }
     intrinsic_io_driver_init();
     intrinsic_timer_wheel_init();
+    return 0;
 }
 
 int64_t intrinsic_executor_spawn(void* exec_ptr, void* future, void* poll_fn) {
@@ -4315,9 +4394,9 @@ int64_t intrinsic_executor_spawn(void* exec_ptr, void* future, void* poll_fn) {
     return task->id;
 }
 
-void intrinsic_executor_wake(void* exec_ptr, int64_t task_id) {
+int64_t intrinsic_executor_wake(void* exec_ptr, int64_t task_id) {
     Executor* exec = exec_ptr ? exec_ptr : global_executor;
-    if (!exec) return;
+    if (!exec) return 0;
 
     pthread_mutex_lock(&exec->lock);
     for (TaskNode* t = exec->tasks; t; t = t->next) {
@@ -4328,12 +4407,13 @@ void intrinsic_executor_wake(void* exec_ptr, int64_t task_id) {
         }
     }
     pthread_mutex_unlock(&exec->lock);
+    return 0;
 }
 
 // Run executor until all tasks complete
-void intrinsic_executor_run(void* exec_ptr) {
+int64_t intrinsic_executor_run(void* exec_ptr) {
     Executor* exec = exec_ptr ? exec_ptr : global_executor;
-    if (!exec) return;
+    if (!exec) return 0;
 
     exec->running = 1;
     while (exec->running) {
@@ -4356,15 +4436,17 @@ void intrinsic_executor_run(void* exec_ptr) {
         // Poll I/O with small timeout
         intrinsic_io_driver_poll(NULL, 10);
     }
+    return 0;
 }
 
-void intrinsic_executor_stop(void* exec_ptr) {
+int64_t intrinsic_executor_stop(void* exec_ptr) {
     Executor* exec = exec_ptr ? exec_ptr : global_executor;
     if (exec) exec->running = 0;
+    return 0;
 }
 
-void intrinsic_executor_free(void* exec_ptr) {
-    if (!exec_ptr) return;
+int64_t intrinsic_executor_free(void* exec_ptr) {
+    if (!exec_ptr) return 0;
     Executor* exec = (Executor*)exec_ptr;
 
     pthread_mutex_lock(&exec->lock);
@@ -4377,6 +4459,7 @@ void intrinsic_executor_free(void* exec_ptr) {
     pthread_mutex_unlock(&exec->lock);
     pthread_mutex_destroy(&exec->lock);
     free(exec);
+    return 0;
 }
 
 // Get current time in milliseconds (for async timeouts)
@@ -4402,14 +4485,16 @@ int64_t intrinsic_socket_create(int64_t domain, int64_t type) {
 }
 
 // Socket options
-void intrinsic_socket_set_nonblocking(int64_t fd) {
+int64_t intrinsic_socket_set_nonblocking(int64_t fd) {
     int flags = fcntl(fd, F_GETFL, 0);
     fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    return 0;
 }
 
-void intrinsic_socket_set_reuseaddr(int64_t fd) {
+int64_t intrinsic_socket_set_reuseaddr(int64_t fd) {
     int opt = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    return 0;
 }
 
 // Socket bind
@@ -4485,8 +4570,9 @@ int64_t intrinsic_socket_write(int64_t fd, void* buf, int64_t len) {
 }
 
 // Socket close
-void intrinsic_socket_close(int64_t fd) {
+int64_t intrinsic_socket_close(int64_t fd) {
     close(fd);
+    return 0;
 }
 
 // Get socket error
@@ -4606,9 +4692,10 @@ double intrinsic_tanh(double x) { return tanh(x); }
 // Random number generator (xorshift64*)
 static uint64_t rng_state = 0;
 
-void intrinsic_random_seed(int64_t seed) {
+int64_t intrinsic_random_seed(int64_t seed) {
     rng_state = (uint64_t)seed;
     if (rng_state == 0) rng_state = 1;
+    return 0;
 }
 
 int64_t intrinsic_random_i64(void) {
@@ -4648,11 +4735,12 @@ void* intrinsic_getenv(void* name_ptr) {
 }
 
 // Set environment variable
-void intrinsic_setenv(void* name_ptr, void* value_ptr) {
+int64_t intrinsic_setenv(void* name_ptr, void* value_ptr) {
     SxString* name = (SxString*)name_ptr;
     SxString* value = (SxString*)value_ptr;
-    if (!name || !name->data || !value || !value->data) return;
+    if (!name || !name->data || !value || !value->data) return 0;
     setenv(name->data, value->data, 1);
+    return 0;
 }
 
 // =============================================================================
@@ -4704,21 +4792,23 @@ void intrinsic_ser_write_i64(void* writer_ptr, int64_t value) {
     intrinsic_ser_write_u32(writer_ptr, value & 0xFFFFFFFF);
 }
 
-void intrinsic_ser_write_bytes(void* writer_ptr, void* data, int64_t len) {
+int64_t intrinsic_ser_write_bytes(void* writer_ptr, void* data, int64_t len) {
     SerWriter* w = (SerWriter*)writer_ptr;
     intrinsic_ser_write_i64(writer_ptr, len);
     writer_ensure_capacity(w, len);
     memcpy(w->buffer + w->len, data, len);
     w->len += len;
+    return 0;
 }
 
-void intrinsic_ser_write_string(void* writer_ptr, void* str_ptr) {
+int64_t intrinsic_ser_write_string(void* writer_ptr, void* str_ptr) {
     SxString* str = (SxString*)str_ptr;
     if (!str || !str->data) {
         intrinsic_ser_write_i64(writer_ptr, 0);
-        return;
+        return 0;
     }
     intrinsic_ser_write_bytes(writer_ptr, str->data, str->len);
+    return 0;
 }
 
 void* intrinsic_ser_writer_bytes(void* writer_ptr) {
@@ -4737,12 +4827,13 @@ int64_t intrinsic_ser_writer_len(void* writer_ptr) {
     return w->len;
 }
 
-void intrinsic_ser_writer_free(void* writer_ptr) {
+int64_t intrinsic_ser_writer_free(void* writer_ptr) {
     SerWriter* w = (SerWriter*)writer_ptr;
     if (w) {
         free(w->buffer);
         free(w);
     }
+    return 0;
 }
 
 // Serialization Reader
@@ -4821,8 +4912,9 @@ int64_t intrinsic_ser_reader_remaining(void* reader_ptr) {
     return r->len - r->pos;
 }
 
-void intrinsic_ser_reader_free(void* reader_ptr) {
+int64_t intrinsic_ser_reader_free(void* reader_ptr) {
     free(reader_ptr);
+    return 0;
 }
 
 // Simple SHA256 implementation (for content-addressed code)
@@ -5195,21 +5287,23 @@ int64_t file_rename(void* old_ptr, void* new_ptr) {
 }
 
 // Write string to stderr
-void stderr_write(void* str_ptr) {
+int64_t stderr_write(void* str_ptr) {
     SxString* str = (SxString*)str_ptr;
     if (str && str->data) {
         fprintf(stderr, "%s", str->data);
     }
+    return 0;
 }
 
 // Write string to stderr with newline
-void stderr_writeln(void* str_ptr) {
+int64_t stderr_writeln(void* str_ptr) {
     SxString* str = (SxString*)str_ptr;
     if (str && str->data) {
         fprintf(stderr, "%s\n", str->data);
     } else {
         fprintf(stderr, "\n");
     }
+    return 0;
 }
 
 // Create temp file and return path
@@ -5350,7 +5444,7 @@ void* intrinsic_list_dir(void* path_ptr) {
 }
 
 // Assertion helpers
-void intrinsic_assert_fail(void* msg_ptr, void* file_ptr, int64_t line) {
+int64_t intrinsic_assert_fail(void* msg_ptr, void* file_ptr, int64_t line) {
     SxString* msg = (SxString*)msg_ptr;
     SxString* file = (SxString*)file_ptr;
 
@@ -5370,7 +5464,7 @@ void intrinsic_assert_eq_i64(int64_t left, int64_t right, void* file_ptr, int64_
     }
 }
 
-void intrinsic_assert_eq_str(void* left_ptr, void* right_ptr, void* file_ptr, int64_t line) {
+int64_t intrinsic_assert_eq_str(void* left_ptr, void* right_ptr, void* file_ptr, int64_t line) {
     SxString* left = (SxString*)left_ptr;
     SxString* right = (SxString*)right_ptr;
     SxString* file = (SxString*)file_ptr;
@@ -5383,15 +5477,17 @@ void intrinsic_assert_eq_str(void* left_ptr, void* right_ptr, void* file_ptr, in
                 l, r, file ? file->data : "unknown", line);
         exit(1);
     }
+    return 0;
 }
 
 // Command line argument access
 static int g_argc = 0;
 static char** g_argv = NULL;
 
-void intrinsic_set_args(int argc, char** argv) {
+int64_t intrinsic_set_args(int argc, char** argv) {
     g_argc = argc;
     g_argv = argv;
+    return 0;
 }
 
 int64_t intrinsic_args_count(void) {
@@ -5519,7 +5615,7 @@ int64_t intrinsic_forget(int64_t memory_id) {
 }
 
 // Forget all - clear all memories
-void intrinsic_forget_all(void) {
+int64_t intrinsic_forget_all(void) {
     MemoryEntry* entry = g_memory_head;
     while (entry) {
         MemoryEntry* next = entry->next;
@@ -5529,6 +5625,7 @@ void intrinsic_forget_all(void) {
     }
     g_memory_head = NULL;
     g_memory_count = 0;
+    return 0;
 }
 
 // Memory count
@@ -5567,12 +5664,13 @@ int64_t intrinsic_memory_prune(void) {
 }
 
 // Decay importance of all memories
-void intrinsic_memory_decay(int64_t factor) {
+int64_t intrinsic_memory_decay(int64_t factor) {
     MemoryEntry* entry = g_memory_head;
     while (entry) {
         entry->importance *= factor;
         entry = entry->next;
     }
+    return 0;
 }
 
 // Get memory importance
@@ -5588,15 +5686,16 @@ int64_t intrinsic_memory_importance(int64_t memory_id) {
 }
 
 // Set memory importance
-void intrinsic_memory_set_importance(int64_t memory_id, int64_t importance) {
+int64_t intrinsic_memory_set_importance(int64_t memory_id, int64_t importance) {
     MemoryEntry* entry = g_memory_head;
     while (entry) {
         if (entry->id == memory_id) {
             entry->importance = importance;
-            return;
+            return 0;
         }
         entry = entry->next;
     }
+    return 0;
 }
 
 // =============================================================================
@@ -5763,7 +5862,7 @@ int64_t intrinsic_belief_truth(int64_t belief_id) {
 }
 
 // Update belief confidence
-void intrinsic_update_belief(int64_t belief_id, int64_t new_confidence) {
+int64_t intrinsic_update_belief(int64_t belief_id, int64_t new_confidence) {
     BeliefEntry* entry = g_belief_head;
     while (entry) {
         if (entry->id == belief_id) {
@@ -5771,10 +5870,11 @@ void intrinsic_update_belief(int64_t belief_id, int64_t new_confidence) {
             struct timeval tv;
             gettimeofday(&tv, NULL);
             entry->last_validated = tv.tv_sec * 1000 + tv.tv_usec / 1000;
-            return;
+            return 0;
         }
         entry = entry->next;
     }
+    return 0;
 }
 
 // Revoke belief
@@ -5807,7 +5907,7 @@ int64_t intrinsic_belief_count(void) {
 }
 
 // Decay beliefs based on truth category
-void intrinsic_decay_beliefs(void) {
+int64_t intrinsic_decay_beliefs(void) {
     BeliefEntry* prev = NULL;
     BeliefEntry* entry = g_belief_head;
 
@@ -5840,6 +5940,7 @@ void intrinsic_decay_beliefs(void) {
         }
         entry = next;
     }
+    return 0;
 }
 
 // =============================================================================
@@ -5901,15 +6002,16 @@ int64_t intrinsic_goal_status(int64_t goal_id) {
 }
 
 // Set goal status
-void intrinsic_set_goal_status(int64_t goal_id, int64_t status) {
+int64_t intrinsic_set_goal_status(int64_t goal_id, int64_t status) {
     GoalEntry* entry = g_goal_head;
     while (entry) {
         if (entry->id == goal_id) {
             entry->status = status;
-            return;
+            return 0;
         }
         entry = entry->next;
     }
+    return 0;
 }
 
 // Get highest priority pending goal
@@ -5977,16 +6079,17 @@ int64_t intrinsic_intention_step(int64_t intention_id) {
 }
 
 // Fail intention
-void intrinsic_fail_intention(int64_t intention_id) {
+int64_t intrinsic_fail_intention(int64_t intention_id) {
     IntentionEntry* entry = g_intention_head;
     while (entry) {
         if (entry->id == intention_id) {
             entry->status = 3;  // failed
             intrinsic_set_goal_status(entry->goal_id, 0);  // back to pending
-            return;
+            return 0;
         }
         entry = entry->next;
     }
+    return 0;
 }
 
 // Get current step of intention
@@ -6061,17 +6164,18 @@ int64_t intrinsic_create_specialist(void* name_ptr, void* model_ptr, void* domai
 }
 
 // Configure specialist memory
-void intrinsic_specialist_set_memory(int64_t id, int64_t short_term, int64_t long_term, int64_t persistent) {
+int64_t intrinsic_specialist_set_memory(int64_t id, int64_t short_term, int64_t long_term, int64_t persistent) {
     SpecialistConfig* cfg = g_specialist_head;
     while (cfg) {
         if (cfg->id == id) {
             cfg->short_term_limit = short_term;
             cfg->long_term_limit = long_term;
             cfg->persistent = persistent;
-            return;
+            return 0;
         }
         cfg = cfg->next;
     }
+    return 0;
 }
 
 // Get specialist config
@@ -6149,15 +6253,16 @@ int64_t intrinsic_add_trait(void* name_ptr, int64_t initial_value) {
 }
 
 // Set trait weight for fitness calculation
-void intrinsic_set_trait_weight(int64_t trait_id, double weight) {
+int64_t intrinsic_set_trait_weight(int64_t trait_id, double weight) {
     TraitEntry* entry = g_trait_head;
     while (entry) {
         if (entry->id == trait_id) {
             entry->weight = weight;
-            return;
+            return 0;
         }
         entry = entry->next;
     }
+    return 0;
 }
 
 // Get trait weight
@@ -6171,15 +6276,17 @@ double intrinsic_get_trait_weight(int64_t trait_id) {
 }
 
 // Configure fitness function type
-void intrinsic_set_fitness_function(int64_t func_type) {
+int64_t intrinsic_set_fitness_function(int64_t func_type) {
     if (func_type >= 0 && func_type <= FITNESS_HARMONIC_MEAN) {
         g_fitness_function = (FitnessFunctionType)func_type;
     }
+    return 0;
 }
 
 // Set fitness scaling factor
-void intrinsic_set_fitness_scale(double scale) {
+int64_t intrinsic_set_fitness_scale(double scale) {
     g_fitness_scale = scale;
+    return 0;
 }
 
 // Fitness function type constants
@@ -6199,7 +6306,7 @@ int64_t intrinsic_trait_value(int64_t trait_id) {
 }
 
 // Mutate trait (random variation)
-void intrinsic_mutate_trait(int64_t trait_id, int64_t mutation_rate) {
+int64_t intrinsic_mutate_trait(int64_t trait_id, int64_t mutation_rate) {
     TraitEntry* entry = g_trait_head;
     while (entry) {
         if (entry->id == trait_id) {
@@ -6209,10 +6316,11 @@ void intrinsic_mutate_trait(int64_t trait_id, int64_t mutation_rate) {
             if (entry->value < 0) entry->value = 0;
             if (entry->value > 100) entry->value = 100;
             entry->generation = g_generation;
-            return;
+            return 0;
         }
         entry = entry->next;
     }
+    return 0;
 }
 
 // Advance generation
@@ -6428,11 +6536,12 @@ SxString* intrinsic_read_line(void) {
 }
 
 // Print without newline (for REPL prompt)
-void intrinsic_print(SxString* str) {
+int64_t intrinsic_print(SxString* str) {
     if (str && str->data) {
         printf("%s", str->data);
         fflush(stdout);
     }
+    return 0;
 }
 
 // Check if stdin has data (non-blocking check)
@@ -6670,13 +6779,14 @@ int64_t executor_spawn(int64_t future_ptr) {
 }
 
 // Simple executor_run (polls until complete)
-void executor_run(int64_t main_future) {
-    if (main_future == 0) return;
+int64_t executor_run(int64_t main_future) {
+    if (main_future == 0) return 0;
 
     while (1) {
         int64_t result = future_poll(main_future);
         if (ASYNC_IS_READY(result)) break;
     }
+    return 0;
 }
 
 // ============================================================================
@@ -6959,21 +7069,23 @@ int64_t pin_is_pinned(int64_t pin_ptr) {
 }
 
 // Increment pin reference count
-void pin_ref(int64_t pin_ptr) {
-    if (pin_ptr == 0) return;
+int64_t pin_ref(int64_t pin_ptr) {
+    if (pin_ptr == 0) return 0;
     PinHeader* header = ((PinHeader*)pin_ptr) - 1;
     header->ref_count++;
+    return 0;
 }
 
 // Decrement pin reference count and free if zero
-void pin_unref(int64_t pin_ptr) {
-    if (pin_ptr == 0) return;
+int64_t pin_unref(int64_t pin_ptr) {
+    if (pin_ptr == 0) return 0;
     PinHeader* header = ((PinHeader*)pin_ptr) - 1;
     header->ref_count--;
     if (header->ref_count <= 0) {
         header->pinned = 0;
         free(header);
     }
+    return 0;
 }
 
 // Self-referential future support
@@ -6982,10 +7094,11 @@ void pin_unref(int64_t pin_ptr) {
 // Set a self-reference within a pinned future
 // pin_ptr: the pinned future
 // offset: byte offset where the self-pointer should be stored
-void pin_set_self_ref(int64_t pin_ptr, int64_t offset) {
-    if (pin_ptr == 0) return;
+int64_t pin_set_self_ref(int64_t pin_ptr, int64_t offset) {
+    if (pin_ptr == 0) return 0;
     int64_t* self_ref = (int64_t*)(pin_ptr + offset);
     *self_ref = pin_ptr;  // Store pointer to self
+    return 0;
 }
 
 // Validate that a self-reference is still valid
@@ -7107,9 +7220,10 @@ int64_t scope_get_result(int64_t scope_ptr, int64_t idx) {
 }
 
 // Cancel all pending tasks in the scope
-void scope_cancel(int64_t scope_ptr) {
+int64_t scope_cancel(int64_t scope_ptr) {
     TaskScope* scope = (TaskScope*)scope_ptr;
     scope->cancelled = 1;
+    return 0;
 }
 
 // Get number of tasks in scope
@@ -7125,8 +7239,9 @@ int64_t scope_completed(int64_t scope_ptr) {
 }
 
 // Free the scope (tasks should be joined first)
-void scope_free(int64_t scope_ptr) {
+int64_t scope_free(int64_t scope_ptr) {
     free((void*)scope_ptr);
+    return 0;
 }
 
 // Nursery pattern: create scope, run callback with scope, join all
@@ -7346,24 +7461,26 @@ int64_t tls_context_use_system_ca(int64_t ctx_ptr) {
 }
 
 // Set verification mode (0=none, 1=peer, 2=fail if no peer cert)
-void tls_context_set_verify(int64_t ctx_ptr, int64_t mode) {
+int64_t tls_context_set_verify(int64_t ctx_ptr, int64_t mode) {
     TlsContext* ctx = (TlsContext*)ctx_ptr;
-    if (!ctx) return;
+    if (!ctx) return 0;
     
     int ssl_mode = SSL_VERIFY_NONE;
     if (mode == 1) ssl_mode = SSL_VERIFY_PEER;
     if (mode == 2) ssl_mode = SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT;
     
     SSL_CTX_set_verify(ctx->ctx, ssl_mode, NULL);
+    return 0;
 }
 
 // Free TLS context
-void tls_context_free(int64_t ctx_ptr) {
+int64_t tls_context_free(int64_t ctx_ptr) {
     TlsContext* ctx = (TlsContext*)ctx_ptr;
-    if (!ctx) return;
+    if (!ctx) return 0;
     
     if (ctx->ctx) SSL_CTX_free(ctx->ctx);
     free(ctx);
+    return 0;
 }
 
 // Connect to a TLS server (wraps existing socket)
@@ -7468,22 +7585,24 @@ int64_t tls_write(int64_t conn_ptr, int64_t buf_ptr, int64_t len) {
 }
 
 // Shutdown TLS connection gracefully
-void tls_shutdown(int64_t conn_ptr) {
+int64_t tls_shutdown(int64_t conn_ptr) {
     TlsConnection* conn = (TlsConnection*)conn_ptr;
-    if (!conn) return;
+    if (!conn) return 0;
     
     SSL_shutdown(conn->ssl);
+    return 0;
 }
 
 // Close and free TLS connection
-void tls_close(int64_t conn_ptr) {
+int64_t tls_close(int64_t conn_ptr) {
     TlsConnection* conn = (TlsConnection*)conn_ptr;
-    if (!conn) return;
+    if (!conn) return 0;
     
     SSL_shutdown(conn->ssl);
     SSL_free(conn->ssl);
     close(conn->fd);
     free(conn);
+    return 0;
 }
 
 // Get peer certificate info (returns subject as string)
@@ -7629,30 +7748,32 @@ int64_t http_request_new(int64_t method_ptr, int64_t url_ptr) {
 }
 
 // Add header to request
-void http_request_header(int64_t req_ptr, int64_t name_ptr, int64_t value_ptr) {
+int64_t http_request_header(int64_t req_ptr, int64_t name_ptr, int64_t value_ptr) {
     HttpRequest* req = (HttpRequest*)req_ptr;
     SxString* name = (SxString*)name_ptr;
     SxString* value = (SxString*)value_ptr;
     
-    if (!req || !name || !value || !name->data || !value->data) return;
+    if (!req || !name || !value || !name->data || !value->data) return 0;
     
     HttpHeader* h = malloc(sizeof(HttpHeader));
     h->name = strdup(name->data);
     h->value = strdup(value->data);
     h->next = req->headers;
     req->headers = h;
+    return 0;
 }
 
 // Set request body
-void http_request_body(int64_t req_ptr, int64_t body_ptr) {
+int64_t http_request_body(int64_t req_ptr, int64_t body_ptr) {
     HttpRequest* req = (HttpRequest*)req_ptr;
     SxString* body = (SxString*)body_ptr;
     
-    if (!req || !body || !body->data) return;
+    if (!req || !body || !body->data) return 0;
     
     if (req->body) free(req->body);
     req->body = strdup(body->data);
     req->body_len = body->len;
+    return 0;
 }
 
 // Build HTTP request string
@@ -7918,9 +8039,9 @@ int64_t http_response_body_len(int64_t resp_ptr) {
 }
 
 // Free request
-void http_request_free(int64_t req_ptr) {
+int64_t http_request_free(int64_t req_ptr) {
     HttpRequest* req = (HttpRequest*)req_ptr;
-    if (!req) return;
+    if (!req) return 0;
     
     free(req->method);
     free(req->url);
@@ -7937,12 +8058,13 @@ void http_request_free(int64_t req_ptr) {
         h = next;
     }
     free(req);
+    return 0;
 }
 
 // Free response
-void http_response_free(int64_t resp_ptr) {
+int64_t http_response_free(int64_t resp_ptr) {
     HttpResponse* resp = (HttpResponse*)resp_ptr;
-    if (!resp) return;
+    if (!resp) return 0;
     
     free(resp->status_text);
     free(resp->body);
@@ -7956,6 +8078,7 @@ void http_response_free(int64_t resp_ptr) {
         h = next;
     }
     free(resp);
+    return 0;
 }
 
 // Convenience: Simple GET request
@@ -8051,19 +8174,20 @@ int64_t http_server_tls(int64_t server_ptr, int64_t cert_path_ptr, int64_t key_p
 }
 
 // Add route to server
-void http_server_route(int64_t server_ptr, int64_t method_ptr, int64_t path_ptr, int64_t handler_fn) {
+int64_t http_server_route(int64_t server_ptr, int64_t method_ptr, int64_t path_ptr, int64_t handler_fn) {
     HttpServer* server = (HttpServer*)server_ptr;
     SxString* method = (SxString*)method_ptr;
     SxString* path = (SxString*)path_ptr;
-    
-    if (!server || !method || !path || !method->data || !path->data) return;
-    
+
+    if (!server || !method || !path || !method->data || !path->data) return 0;
+
     HttpRoute* route = malloc(sizeof(HttpRoute));
     route->method = strdup(method->data);
     route->path = strdup(path->data);
     route->handler_fn = handler_fn;
     route->next = server->routes;
     server->routes = route;
+    return 1;
 }
 
 // Create server response
@@ -8075,39 +8199,41 @@ int64_t http_server_response_new(void) {
 }
 
 // Set response status
-void http_server_response_status(int64_t resp_ptr, int64_t code, int64_t text_ptr) {
+int64_t http_server_response_status(int64_t resp_ptr, int64_t code, int64_t text_ptr) {
     HttpServerResponse* resp = (HttpServerResponse*)resp_ptr;
     SxString* text = (SxString*)text_ptr;
-    
-    if (!resp) return;
-    
+
+    if (!resp) return 0;
+
     resp->status_code = (int)code;
     if (resp->status_text) free(resp->status_text);
     resp->status_text = text && text->data ? strdup(text->data) : strdup("OK");
+    return 1;
 }
 
 // Add response header
-void http_server_response_header(int64_t resp_ptr, int64_t name_ptr, int64_t value_ptr) {
+int64_t http_server_response_header(int64_t resp_ptr, int64_t name_ptr, int64_t value_ptr) {
     HttpServerResponse* resp = (HttpServerResponse*)resp_ptr;
     SxString* name = (SxString*)name_ptr;
     SxString* value = (SxString*)value_ptr;
-    
-    if (!resp || !name || !value || !name->data || !value->data) return;
-    
+
+    if (!resp || !name || !value || !name->data || !value->data) return 0;
+
     HttpHeader* h = malloc(sizeof(HttpHeader));
     h->name = strdup(name->data);
     h->value = strdup(value->data);
     h->next = resp->headers;
     resp->headers = h;
+    return 1;
 }
 
 // Set response body
-void http_server_response_body(int64_t resp_ptr, int64_t body_ptr) {
+int64_t http_server_response_body(int64_t resp_ptr, int64_t body_ptr) {
     HttpServerResponse* resp = (HttpServerResponse*)resp_ptr;
     SxString* body = (SxString*)body_ptr;
-    
-    if (!resp) return;
-    
+
+    if (!resp) return 0;
+
     if (resp->body) free(resp->body);
     if (body && body->data) {
         resp->body = strdup(body->data);
@@ -8116,6 +8242,7 @@ void http_server_response_body(int64_t resp_ptr, int64_t body_ptr) {
         resp->body = NULL;
         resp->body_len = 0;
     }
+    return 1;
 }
 
 // Build HTTP response string
@@ -8262,7 +8389,7 @@ static void http_handle_client(HttpServer* server, int client_fd) {
         return;
     }
     buf[n] = '\0';
-    
+
     // Parse request
     HttpRequest* req = http_parse_request(buf, n);
     if (!req) {
@@ -8384,20 +8511,21 @@ int64_t http_server_run(int64_t server_ptr, int64_t max_requests) {
 }
 
 // Stop server
-void http_server_stop(int64_t server_ptr) {
+int64_t http_server_stop(int64_t server_ptr) {
     HttpServer* server = (HttpServer*)server_ptr;
     if (server) server->running = 0;
+    return 1;
 }
 
 // Close server
-void http_server_close(int64_t server_ptr) {
+int64_t http_server_close(int64_t server_ptr) {
     HttpServer* server = (HttpServer*)server_ptr;
-    if (!server) return;
-    
+    if (!server) return 0;
+
     if (server->listen_fd >= 0) {
         close(server->listen_fd);
     }
-    
+
     // Free routes
     HttpRoute* route = server->routes;
     while (route) {
@@ -8407,12 +8535,13 @@ void http_server_close(int64_t server_ptr) {
         free(route);
         route = next;
     }
-    
+
     if (server->tls_ctx) {
         tls_context_free(server->tls_ctx);
     }
-    
+
     free(server);
+    return 1;
 }
 
 // Get server port
@@ -8957,9 +9086,9 @@ int64_t ws_msg_data(int64_t result) {
 }
 
 // Close WebSocket connection
-void ws_close(int64_t ws_ptr) {
+int64_t ws_close(int64_t ws_ptr) {
     WebSocketConn* ws = (WebSocketConn*)ws_ptr;
-    if (!ws) return;
+    if (!ws) return 0;
     
     if (ws->connected) {
         // Send close frame
@@ -8974,6 +9103,7 @@ void ws_close(int64_t ws_ptr) {
         close(ws->fd);
     }
     free(ws);
+    return 0;
 }
 
 // Check if connected
@@ -9454,9 +9584,9 @@ int64_t cluster_self_id(int64_t cluster_ptr) {
 }
 
 // Close cluster
-void cluster_close(int64_t cluster_ptr) {
+int64_t cluster_close(int64_t cluster_ptr) {
     ClusterNode* node = (ClusterNode*)cluster_ptr;
-    if (!node) return;
+    if (!node) return 0;
     
     if (node->running) {
         cluster_stop(cluster_ptr);
@@ -9481,6 +9611,7 @@ void cluster_close(int64_t cluster_ptr) {
     free(node);
     
     if (g_cluster == node) g_cluster = NULL;
+    return 0;
 }
 
 // --------------------------------------------------------------------------
@@ -9738,9 +9869,9 @@ int64_t dht_delete(int64_t dht_ptr, int64_t key_ptr) {
 }
 
 // Close DHT
-void dht_close(int64_t dht_ptr) {
+int64_t dht_close(int64_t dht_ptr) {
     DHTNode* dht = (DHTNode*)dht_ptr;
-    if (!dht) return;
+    if (!dht) return 0;
     
     pthread_mutex_lock(&dht->lock);
     
@@ -9769,6 +9900,7 @@ void dht_close(int64_t dht_ptr) {
     pthread_mutex_unlock(&dht->lock);
     pthread_mutex_destroy(&dht->lock);
     free(dht);
+    return 0;
 }
 
 // --------------------------------------------------------------------------
@@ -10038,9 +10170,9 @@ int64_t migration_rollback(int64_t migration_ptr) {
 }
 
 // Close migration
-void migration_close(int64_t migration_ptr) {
+int64_t migration_close(int64_t migration_ptr) {
     MigrationState* mig = (MigrationState*)migration_ptr;
-    if (!mig) return;
+    if (!mig) return 0;
     
     free(mig->actor_id);
     free(mig->source_node);
@@ -10048,6 +10180,7 @@ void migration_close(int64_t migration_ptr) {
     if (mig->state_data) free(mig->state_data);
     pthread_mutex_destroy(&mig->lock);
     free(mig);
+    return 0;
 }
 
 // --------------------------------------------------------------------------
@@ -10225,9 +10358,9 @@ int64_t code_store_get_ast(int64_t store_ptr, int64_t hash_ptr) {
 }
 
 // Close code store
-void code_store_close(int64_t store_ptr) {
+int64_t code_store_close(int64_t store_ptr) {
     CodeStore* store = (CodeStore*)store_ptr;
-    if (!store) return;
+    if (!store) return 0;
     
     pthread_mutex_lock(&store->lock);
     
@@ -10248,6 +10381,7 @@ void code_store_close(int64_t store_ptr) {
     free(store);
     
     if (g_code_store == store) g_code_store = NULL;
+    return 0;
 }
 
 // --------------------------------------------------------------------------
@@ -10369,12 +10503,13 @@ int64_t partition_reachable_count(int64_t pd_ptr) {
 }
 
 // Close partition detector
-void partition_detector_close(int64_t pd_ptr) {
+int64_t partition_detector_close(int64_t pd_ptr) {
     PartitionDetector* pd = (PartitionDetector*)pd_ptr;
-    if (!pd) return;
+    if (!pd) return 0;
     
     pthread_mutex_destroy(&pd->lock);
     free(pd);
+    return 0;
 }
 
 // --------------------------------------------------------------------------
@@ -10551,9 +10686,9 @@ int64_t vclock_merge(int64_t vc_a_ptr, int64_t vc_b_ptr) {
 }
 
 // Close vector clock
-void vclock_close(int64_t vc_ptr) {
+int64_t vclock_close(int64_t vc_ptr) {
     VectorClock* vc = (VectorClock*)vc_ptr;
-    if (!vc) return;
+    if (!vc) return 0;
     
     pthread_mutex_lock(&vc->lock);
     for (int i = 0; i < vc->count; i++) {
@@ -10564,6 +10699,7 @@ void vclock_close(int64_t vc_ptr) {
     pthread_mutex_unlock(&vc->lock);
     pthread_mutex_destroy(&vc->lock);
     free(vc);
+    return 0;
 }
 
 // --------------------------------------------------------------------------
@@ -10747,26 +10883,28 @@ int64_t node_auth_accept(int64_t auth_ptr, int64_t listen_fd) {
 }
 
 // Close authenticated connection
-void node_auth_close_conn(int64_t ssl_ptr) {
+int64_t node_auth_close_conn(int64_t ssl_ptr) {
     SSL* ssl = (SSL*)ssl_ptr;
-    if (!ssl) return;
+    if (!ssl) return 0;
     
     int fd = SSL_get_fd(ssl);
     SSL_shutdown(ssl);
     SSL_free(ssl);
     if (fd >= 0) close(fd);
+    return 0;
 }
 
 // Close authenticator
-void node_auth_close(int64_t auth_ptr) {
+int64_t node_auth_close(int64_t auth_ptr) {
     NodeAuth* auth = (NodeAuth*)auth_ptr;
-    if (!auth) return;
+    if (!auth) return 0;
     
     if (auth->ctx) SSL_CTX_free(auth->ctx);
     if (auth->cert_path) free(auth->cert_path);
     if (auth->key_path) free(auth->key_path);
     if (auth->ca_path) free(auth->ca_path);
     free(auth);
+    return 0;
 }
 
 
@@ -10997,20 +11135,22 @@ double embedding_cosine_similarity(int64_t emb1_ptr, int64_t emb2_ptr) {
 }
 
 // Free embedding
-void embedding_free(int64_t emb_ptr) {
+int64_t embedding_free(int64_t emb_ptr) {
     Embedding* emb = (Embedding*)emb_ptr;
-    if (!emb) return;
+    if (!emb) return 0;
     if (emb->values) free(emb->values);
     free(emb);
+    return 0;
 }
 
 // Close model
-void embedding_model_close(int64_t model_ptr) {
+int64_t embedding_model_close(int64_t model_ptr) {
     EmbeddingModel* model = (EmbeddingModel*)model_ptr;
-    if (!model) return;
+    if (!model) return 0;
     if (model->model_path) free(model->model_path);
     pthread_mutex_destroy(&model->lock);
     free(model);
+    return 0;
 }
 
 // --------------------------------------------------------------------------
@@ -11257,9 +11397,9 @@ int64_t hnsw_get_data(int64_t idx_ptr, int64_t node_id) {
 }
 
 // Close HNSW
-void hnsw_close(int64_t idx_ptr) {
+int64_t hnsw_close(int64_t idx_ptr) {
     HNSW* idx = (HNSW*)idx_ptr;
-    if (!idx) return;
+    if (!idx) return 0;
     
     pthread_mutex_lock(&idx->lock);
     
@@ -11276,6 +11416,7 @@ void hnsw_close(int64_t idx_ptr) {
     pthread_mutex_unlock(&idx->lock);
     pthread_mutex_destroy(&idx->lock);
     free(idx);
+    return 0;
 }
 
 // --------------------------------------------------------------------------
@@ -11479,9 +11620,9 @@ int64_t memdb_count(int64_t mdb_ptr) {
 }
 
 // Close database
-void memdb_close(int64_t mdb_ptr) {
+int64_t memdb_close(int64_t mdb_ptr) {
     MemoryDB* mdb = (MemoryDB*)mdb_ptr;
-    if (!mdb) return;
+    if (!mdb) return 0;
     
     pthread_mutex_lock(&mdb->lock);
     sqlite3_close(mdb->db);
@@ -11489,6 +11630,7 @@ void memdb_close(int64_t mdb_ptr) {
     pthread_mutex_unlock(&mdb->lock);
     pthread_mutex_destroy(&mdb->lock);
     free(mdb);
+    return 0;
 }
 
 // --------------------------------------------------------------------------
@@ -11620,9 +11762,9 @@ int64_t cluster_member_count_cm(int64_t cm_ptr, int64_t cluster_id) {
 }
 
 // Close cluster manager
-void cluster_manager_close(int64_t cm_ptr) {
+int64_t cluster_manager_close(int64_t cm_ptr) {
     ClusterManager* cm = (ClusterManager*)cm_ptr;
-    if (!cm) return;
+    if (!cm) return 0;
     
     pthread_mutex_lock(&cm->lock);
     
@@ -11640,6 +11782,7 @@ void cluster_manager_close(int64_t cm_ptr) {
     pthread_mutex_unlock(&cm->lock);
     pthread_mutex_destroy(&cm->lock);
     free(cm);
+    return 0;
 }
 
 // --------------------------------------------------------------------------
@@ -11725,9 +11868,10 @@ int64_t prune_execute(int64_t mdb_ptr, int64_t cfg_ptr) {
 }
 
 // Free config
-void prune_config_free(int64_t cfg_ptr) {
+int64_t prune_config_free(int64_t cfg_ptr) {
     PruneConfig* cfg = (PruneConfig*)cfg_ptr;
     if (cfg) free(cfg);
+    return 0;
 }
 
 // --------------------------------------------------------------------------
@@ -12040,9 +12184,9 @@ int64_t belief_count(int64_t bs_ptr) {
 }
 
 // Close belief store
-void belief_store_close(int64_t bs_ptr) {
+int64_t belief_store_close(int64_t bs_ptr) {
     BeliefStore* bs = (BeliefStore*)bs_ptr;
-    if (!bs) return;
+    if (!bs) return 0;
     
     pthread_mutex_lock(&bs->lock);
     
@@ -12061,6 +12205,7 @@ void belief_store_close(int64_t bs_ptr) {
     pthread_mutex_unlock(&bs->lock);
     pthread_mutex_destroy(&bs->lock);
     free(bs);
+    return 0;
 }
 
 // Wrapper functions to match declarations
@@ -12298,12 +12443,13 @@ int64_t goal_is_achieved(int64_t goal_ptr) {
     return goal->status == GOAL_ACHIEVED ? 1 : 0;
 }
 
-void goal_free(int64_t goal_ptr) {
+int64_t goal_free(int64_t goal_ptr) {
     Goal* goal = (Goal*)goal_ptr;
-    if (!goal) return;
+    if (!goal) return 0;
     if (goal->description) free(goal->description);
     if (goal->subgoals) free(goal->subgoals);
     free(goal);
+    return 0;
 }
 
 // --------------------------------------------------------------------------
@@ -12373,9 +12519,9 @@ int64_t plan_check_precondition(int64_t plan_ptr, int64_t state_ptr) {
     return 1;
 }
 
-void plan_free(int64_t plan_ptr) {
+int64_t plan_free(int64_t plan_ptr) {
     Plan* plan = (Plan*)plan_ptr;
-    if (!plan) return;
+    if (!plan) return 0;
     if (plan->name) free(plan->name);
     for (int i = 0; i < plan->step_count; i++) {
         PlanStep* step = plan->steps[i];
@@ -12388,6 +12534,7 @@ void plan_free(int64_t plan_ptr) {
     }
     if (plan->steps) free(plan->steps);
     free(plan);
+    return 0;
 }
 
 // --------------------------------------------------------------------------
@@ -12450,11 +12597,12 @@ int64_t intention_resume(int64_t intent_ptr) {
     return 1;
 }
 
-void intention_free(int64_t intent_ptr) {
+int64_t intention_free(int64_t intent_ptr) {
     Intention* intent = (Intention*)intent_ptr;
-    if (!intent) return;
+    if (!intent) return 0;
     // Note: Don't free goal/plan - they may be shared
     free(intent);
+    return 0;
 }
 
 typedef struct BDIAgent {
@@ -12713,9 +12861,9 @@ int64_t bdi_intention_count(int64_t agent_ptr) {
 }
 
 // Close BDI agent
-void bdi_agent_close(int64_t agent_ptr) {
+int64_t bdi_agent_close(int64_t agent_ptr) {
     BDIAgent* agent = (BDIAgent*)agent_ptr;
-    if (!agent) return;
+    if (!agent) return 0;
     
     pthread_mutex_lock(&agent->lock);
     
@@ -12758,6 +12906,7 @@ void bdi_agent_close(int64_t agent_ptr) {
     pthread_mutex_unlock(&agent->lock);
     pthread_mutex_destroy(&agent->lock);
     free(agent);
+    return 0;
 }
 
 // Wrapper functions to match declarations
@@ -13337,9 +13486,9 @@ double llm_get_cost(int64_t client_ptr) {
 }
 
 // Close client
-void llm_client_close(int64_t client_ptr) {
+int64_t llm_client_close(int64_t client_ptr) {
     LLMClient* client = (LLMClient*)client_ptr;
-    if (!client) return;
+    if (!client) return 0;
 
     pthread_mutex_lock(&client->lock);
     if (client->api_key) free(client->api_key);
@@ -13351,6 +13500,7 @@ void llm_client_close(int64_t client_ptr) {
     pthread_mutex_unlock(&client->lock);
     pthread_mutex_destroy(&client->lock);
     free(client);
+    return 0;
 }
 
 // Provider constants
@@ -13464,9 +13614,9 @@ int64_t specialist_memory_forget(int64_t mem_ptr, int64_t memory_id) {
     return memdb_set_importance((int64_t)mem->db, memory_id, -1.0);
 }
 
-void specialist_memory_close(int64_t mem_ptr) {
+int64_t specialist_memory_close(int64_t mem_ptr) {
     SpecialistMemory* mem = (SpecialistMemory*)mem_ptr;
-    if (!mem) return;
+    if (!mem) return 0;
 
     pthread_mutex_lock(&mem->lock);
     free(mem->specialist_id);
@@ -13476,6 +13626,7 @@ void specialist_memory_close(int64_t mem_ptr) {
     pthread_mutex_unlock(&mem->lock);
     pthread_mutex_destroy(&mem->lock);
     free(mem);
+    return 0;
 }
 
 // --------------------------------------------------------------------------
@@ -13610,9 +13761,9 @@ int64_t tool_invoke(int64_t reg_ptr, int64_t name_ptr, int64_t args_ptr) {
     return (int64_t)intrinsic_string_new(result);
 }
 
-void tool_registry_close(int64_t reg_ptr) {
+int64_t tool_registry_close(int64_t reg_ptr) {
     ToolRegistry* reg = (ToolRegistry*)reg_ptr;
-    if (!reg) return;
+    if (!reg) return 0;
 
     pthread_mutex_lock(&reg->lock);
 
@@ -13628,6 +13779,7 @@ void tool_registry_close(int64_t reg_ptr) {
     pthread_mutex_unlock(&reg->lock);
     pthread_mutex_destroy(&reg->lock);
     free(reg);
+    return 0;
 }
 
 // ============================================================================
@@ -13703,11 +13855,12 @@ double individual_get_fitness(int64_t ind_ptr) {
 }
 
 // Free individual
-void individual_free(int64_t ind_ptr) {
+int64_t individual_free(int64_t ind_ptr) {
     Individual* ind = (Individual*)ind_ptr;
-    if (!ind) return;
+    if (!ind) return 0;
     if (ind->genes) free(ind->genes);
     free(ind);
+    return 0;
 }
 
 // Create population
@@ -13818,9 +13971,9 @@ int64_t population_size(int64_t pop_ptr) {
 }
 
 // Close population
-void population_close(int64_t pop_ptr) {
+int64_t population_close(int64_t pop_ptr) {
     Population* pop = (Population*)pop_ptr;
-    if (!pop) return;
+    if (!pop) return 0;
     
     pthread_mutex_lock(&pop->lock);
     for (int i = 0; i < pop->size; i++) {
@@ -13830,6 +13983,7 @@ void population_close(int64_t pop_ptr) {
     pthread_mutex_unlock(&pop->lock);
     pthread_mutex_destroy(&pop->lock);
     free(pop);
+    return 0;
 }
 
 // --------------------------------------------------------------------------
@@ -14163,9 +14317,9 @@ int64_t nsga2_pareto_front(int64_t nsga_ptr) {
 }
 
 // Close NSGA-II
-void nsga2_close(int64_t nsga_ptr) {
+int64_t nsga2_close(int64_t nsga_ptr) {
     NSGA2* nsga = (NSGA2*)nsga_ptr;
-    if (!nsga) return;
+    if (!nsga) return 0;
 
     pthread_mutex_lock(&nsga->lock);
     if (nsga->population) population_close((int64_t)nsga->population);
@@ -14173,6 +14327,7 @@ void nsga2_close(int64_t nsga_ptr) {
     pthread_mutex_unlock(&nsga->lock);
     pthread_mutex_destroy(&nsga->lock);
     free(nsga);
+    return 0;
 }
 
 // ============================================================================
@@ -14350,9 +14505,9 @@ int64_t raft_candidate(void) { return RAFT_CANDIDATE; }
 int64_t raft_leader(void) { return RAFT_LEADER; }
 
 // Close consensus node
-void consensus_close(int64_t node_ptr) {
+int64_t consensus_close(int64_t node_ptr) {
     ConsensusNode* node = (ConsensusNode*)node_ptr;
-    if (!node) return;
+    if (!node) return 0;
     
     pthread_mutex_lock(&node->lock);
     free(node->node_id);
@@ -14366,6 +14521,7 @@ void consensus_close(int64_t node_ptr) {
     pthread_mutex_unlock(&node->lock);
     pthread_mutex_destroy(&node->lock);
     free(node);
+    return 0;
 }
 
 // --------------------------------------------------------------------------
@@ -14428,15 +14584,16 @@ int64_t pheromone_evaporate(int64_t p_ptr) {
 }
 
 // Close pheromone grid
-void pheromone_close(int64_t p_ptr) {
+int64_t pheromone_close(int64_t p_ptr) {
     Pheromone* p = (Pheromone*)p_ptr;
-    if (!p) return;
+    if (!p) return 0;
     
     pthread_mutex_lock(&p->lock);
     free(p->grid);
     pthread_mutex_unlock(&p->lock);
     pthread_mutex_destroy(&p->lock);
     free(p);
+    return 0;
 }
 
 // --------------------------------------------------------------------------
@@ -14572,9 +14729,9 @@ int64_t swarm_size(int64_t swarm_ptr) {
 }
 
 // Close swarm
-void swarm_close(int64_t swarm_ptr) {
+int64_t swarm_close(int64_t swarm_ptr) {
     Swarm* s = (Swarm*)swarm_ptr;
-    if (!s) return;
+    if (!s) return 0;
     
     pthread_mutex_lock(&s->lock);
     
@@ -14591,6 +14748,7 @@ void swarm_close(int64_t swarm_ptr) {
     pthread_mutex_unlock(&s->lock);
     pthread_mutex_destroy(&s->lock);
     free(s);
+    return 0;
 }
 
 // --------------------------------------------------------------------------
@@ -14767,9 +14925,9 @@ int64_t voting_result(int64_t vs_ptr, int64_t option_id) {
 }
 
 // Close voting system
-void voting_close(int64_t vs_ptr) {
+int64_t voting_close(int64_t vs_ptr) {
     VotingSystem* vs = (VotingSystem*)vs_ptr;
-    if (!vs) return;
+    if (!vs) return 0;
 
     pthread_mutex_lock(&vs->lock);
 
@@ -14789,6 +14947,7 @@ void voting_close(int64_t vs_ptr) {
     pthread_mutex_unlock(&vs->lock);
     pthread_mutex_destroy(&vs->lock);
     free(vs);
+    return 0;
 }
 
 // ==========================================================================
@@ -15018,15 +15177,16 @@ int64_t generator_count(int64_t gen_ptr) {
 }
 
 // Close/free generator
-void generator_close(int64_t gen_ptr) {
+int64_t generator_close(int64_t gen_ptr) {
     Generator* gen = (Generator*)gen_ptr;
-    if (!gen) return;
+    if (!gen) return 0;
 
     pthread_mutex_lock(&gen->lock);
     if (gen->values) free(gen->values);
     pthread_mutex_unlock(&gen->lock);
     pthread_mutex_destroy(&gen->lock);
     free(gen);
+    return 0;
 }
 
 // ============================================================================
@@ -15171,9 +15331,9 @@ int64_t test_runner_set_verbose(int64_t runner_ptr, int64_t verbose) {
 }
 
 // Close test runner
-void test_runner_close(int64_t runner_ptr) {
+int64_t test_runner_close(int64_t runner_ptr) {
     TestRunner* runner = (TestRunner*)runner_ptr;
-    if (!runner) return;
+    if (!runner) return 0;
 
     for (int64_t i = 0; i < runner->count; i++) {
         TestCase* test = runner->tests[i];
@@ -15183,6 +15343,7 @@ void test_runner_close(int64_t runner_ptr) {
     }
     free(runner->tests);
     free(runner);
+    return 0;
 }
 
 // Assertion helpers that return error codes instead of exiting
@@ -15609,9 +15770,9 @@ int64_t debugger_current_line(int64_t dbg_ptr) {
 }
 
 // Close debugger
-void debugger_close(int64_t dbg_ptr) {
+int64_t debugger_close(int64_t dbg_ptr) {
     Debugger* dbg = (Debugger*)dbg_ptr;
-    if (!dbg) return;
+    if (!dbg) return 0;
 
     // Free breakpoints
     for (int64_t i = 0; i < dbg->bp_count; i++) {
@@ -15641,6 +15802,7 @@ void debugger_close(int64_t dbg_ptr) {
     free(dbg);
 
     if (g_debugger == dbg) g_debugger = NULL;
+    return 0;
 }
 
 // ============================================================================
@@ -16111,9 +16273,9 @@ int64_t vm_reset(int64_t vm_ptr) {
 }
 
 // Close VM
-void vm_close(int64_t vm_ptr) {
+int64_t vm_close(int64_t vm_ptr) {
     CursusVm* vm = (CursusVm*)vm_ptr;
-    if (!vm) return;
+    if (!vm) return 0;
 
     if (vm->code) free(vm->code);
     if (vm->stack) free(vm->stack);
@@ -16121,6 +16283,7 @@ void vm_close(int64_t vm_ptr) {
     if (vm->globals) free(vm->globals);
     if (vm->frames) free(vm->frames);
     free(vm);
+    return 0;
 }
 
 // Opcode constants for bytecode generation
@@ -16343,11 +16506,12 @@ int64_t target_data_layout(int64_t target_ptr) {
 }
 
 // Close target
-void target_close(int64_t target_ptr) {
+int64_t target_close(int64_t target_ptr) {
     Target* target = (Target*)target_ptr;
-    if (!target) return;
+    if (!target) return 0;
     if (target->triple) free(target->triple);
     free(target);
+    return 0;
 }
 
 // Get host target
@@ -16551,27 +16715,29 @@ int64_t distributed_node_id(int64_t node_ptr) {
 }
 
 // Stop distributed node
-void distributed_node_stop(int64_t node_ptr) {
+int64_t distributed_node_stop(int64_t node_ptr) {
     DistributedNode* node = (DistributedNode*)node_ptr;
-    if (!node) return;
+    if (!node) return 0;
 
     if (node->socket_fd >= 0) {
         close(node->socket_fd);
         node->socket_fd = -1;
     }
     node->connected = 0;
+    return 0;
 }
 
 // Free distributed node
-void distributed_node_free(int64_t node_ptr) {
+int64_t distributed_node_free(int64_t node_ptr) {
     DistributedNode* node = (DistributedNode*)node_ptr;
-    if (!node) return;
+    if (!node) return 0;
 
     distributed_node_stop(node_ptr);
     if (node->address) free(node->address);
     pthread_mutex_destroy(&node->lock);
     if (node->remote_actors) free(node->remote_actors);
     free(node);
+    return 0;
 }
 
 // ============================================================================
@@ -16679,9 +16845,9 @@ int64_t swim_member_state(int64_t cluster_ptr, int64_t node_id) {
 }
 
 // Mark member as suspect
-void swim_suspect_member(int64_t cluster_ptr, int64_t node_id) {
+int64_t swim_suspect_member(int64_t cluster_ptr, int64_t node_id) {
     SwimCluster* cluster = (SwimCluster*)cluster_ptr;
-    if (!cluster) return;
+    if (!cluster) return 0;
 
     pthread_mutex_lock(&cluster->lock);
 
@@ -16693,12 +16859,13 @@ void swim_suspect_member(int64_t cluster_ptr, int64_t node_id) {
     }
 
     pthread_mutex_unlock(&cluster->lock);
+    return 0;
 }
 
 // Mark member as dead
-void swim_dead_member(int64_t cluster_ptr, int64_t node_id) {
+int64_t swim_dead_member(int64_t cluster_ptr, int64_t node_id) {
     SwimCluster* cluster = (SwimCluster*)cluster_ptr;
-    if (!cluster) return;
+    if (!cluster) return 0;
 
     pthread_mutex_lock(&cluster->lock);
 
@@ -16710,6 +16877,7 @@ void swim_dead_member(int64_t cluster_ptr, int64_t node_id) {
     }
 
     pthread_mutex_unlock(&cluster->lock);
+    return 0;
 }
 
 // Get member count
@@ -16748,17 +16916,18 @@ int64_t swim_start(int64_t cluster_ptr) {
 }
 
 // Stop SWIM protocol
-void swim_stop(int64_t cluster_ptr) {
+int64_t swim_stop(int64_t cluster_ptr) {
     SwimCluster* cluster = (SwimCluster*)cluster_ptr;
-    if (!cluster) return;
+    if (!cluster) return 0;
 
     cluster->running = 0;
+    return 0;
 }
 
 // Free SWIM cluster
-void swim_cluster_free(int64_t cluster_ptr) {
+int64_t swim_cluster_free(int64_t cluster_ptr) {
     SwimCluster* cluster = (SwimCluster*)cluster_ptr;
-    if (!cluster) return;
+    if (!cluster) return 0;
 
     swim_stop(cluster_ptr);
 
@@ -16770,6 +16939,7 @@ void swim_cluster_free(int64_t cluster_ptr) {
 
     pthread_mutex_destroy(&cluster->lock);
     free(cluster);
+    return 0;
 }
 
 // SWIM state constants
@@ -16823,10 +16993,11 @@ double evolution_gene_weight(int64_t gene_ptr, int64_t index) {
 }
 
 // Set evolution gene weight
-void evolution_gene_set_weight(int64_t gene_ptr, int64_t index, double value) {
+int64_t evolution_gene_set_weight(int64_t gene_ptr, int64_t index, double value) {
     EvolutionGene* gene = (EvolutionGene*)gene_ptr;
-    if (!gene || index < 0 || (size_t)index >= gene->weight_count) return;
+    if (!gene || index < 0 || (size_t)index >= gene->weight_count) return 0;
     gene->weights[index] = value;
+    return 0;
 }
 
 // Get evolution gene fitness
@@ -16836,9 +17007,10 @@ double evolution_gene_fitness(int64_t gene_ptr) {
 }
 
 // Set evolution gene fitness
-void evolution_gene_set_fitness(int64_t gene_ptr, double fitness) {
+int64_t evolution_gene_set_fitness(int64_t gene_ptr, double fitness) {
     EvolutionGene* gene = (EvolutionGene*)gene_ptr;
     if (gene) gene->fitness = fitness;
+    return 0;
 }
 
 // Create an evolution population
@@ -16992,17 +17164,18 @@ int64_t evolution_population_best(int64_t pop_ptr) {
 }
 
 // Free evolution gene
-void evolution_gene_free(int64_t gene_ptr) {
+int64_t evolution_gene_free(int64_t gene_ptr) {
     EvolutionGene* gene = (EvolutionGene*)gene_ptr;
-    if (!gene) return;
+    if (!gene) return 0;
     if (gene->weights) free(gene->weights);
     free(gene);
+    return 0;
 }
 
 // Free evolution population
-void evolution_population_free(int64_t pop_ptr) {
+int64_t evolution_population_free(int64_t pop_ptr) {
     EvolutionPopulation* pop = (EvolutionPopulation*)pop_ptr;
-    if (!pop) return;
+    if (!pop) return 0;
 
     for (size_t i = 0; i < pop->gene_count; i++) {
         if (pop->genes[i]) {
@@ -17012,6 +17185,7 @@ void evolution_population_free(int64_t pop_ptr) {
     }
     if (pop->genes) free(pop->genes);
     free(pop);
+    return 0;
 }
 
 // ============================================================================
@@ -17336,7 +17510,7 @@ int64_t belief_count_registered(void) {
 }
 
 // Clear all beliefs from the registry
-void belief_clear_all(void) {
+int64_t belief_clear_all(void) {
     pthread_mutex_lock(&g_dual_belief_mutex);
 
     DualBelief* current = g_dual_belief_head;
@@ -17349,6 +17523,7 @@ void belief_clear_all(void) {
     g_dual_belief_head = NULL;
 
     pthread_mutex_unlock(&g_dual_belief_mutex);
+    return 0;
 }
 
 // Check if a belief guard condition is satisfied

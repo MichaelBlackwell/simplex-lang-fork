@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>trajectory - Simplex API Reference</title>
+  <meta name="description" content="API documentation for the Simplex programming language">
+  <link rel="stylesheet" href="../assets/docs.css">
+  <script src="../assets/nav.js" defer></script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "trajectory - Simplex API Reference",
+  "description": "API documentation for the Simplex programming language",
+  "programmingLanguage": {
+    "@type": "ComputerLanguage",
+    "name": "Simplex",
+    "url": "https://github.com/senuamedia/simplex"
+  },
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "Simplex Documentation",
+    "url": "https://simplex.senuamedia.com/api/"
+  },
+  "articleSection": "nexus"
+}
+</script>
+</head>
+<body>
+<div class="doc-wrapper">
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-header"><a href="../index.html">Simplex API</a></div>
+    <div class="search-box">
+      <input type="text" id="search" placeholder="Search...">
+    </div>
+    <div id="nav-content">Loading...</div>
+  </nav>
+  <main class="content">
+    <nav class="breadcrumb">
+      <a href="../index.html">API Reference</a> &raquo;       <span class="current-category">nexus</span> &raquo; trajectory
+    </nav>
+    <h1>Module: trajectory</h1>
+<div class="toc">
+<strong>Contents</strong>
+<ul>
+<li><a href="#TRAJECTORY_DEFAULT_HISTORY_SIZE">fn TRAJECTORY_DEFAULT_HISTORY_SIZE</a></li>
+<li><a href="#TRAJECTORY_MIN_SAMPLES">fn TRAJECTORY_MIN_SAMPLES</a></li>
+<li><a href="#TRAJECTORY_DEFAULT_SMOOTHING">fn TRAJECTORY_DEFAULT_SMOOTHING</a></li>
+<li><a href="#TRAJECTORY_MAX_GAP_MS">fn TRAJECTORY_MAX_GAP_MS</a></li>
+<li><a href="#TRAJECTORY_DERIV_SIMPLE">fn TRAJECTORY_DERIV_SIMPLE</a></li>
+<li><a href="#TRAJECTORY_DERIV_EMA">fn TRAJECTORY_DERIV_EMA</a></li>
+<li><a href="#TRAJECTORY_DERIV_WEIGHTED">fn TRAJECTORY_DERIV_WEIGHTED</a></li>
+<li><a href="#TRAJECTORY_DERIV_REGRESSION">fn TRAJECTORY_DERIV_REGRESSION</a></li>
+<li><a href="#DELTA_ENTRY_SIZE">fn DELTA_ENTRY_SIZE</a></li>
+<li><a href="#DELTA_OFFSET_TIMESTAMP">fn DELTA_OFFSET_TIMESTAMP</a></li>
+<li><a href="#DELTA_OFFSET_OLD_VALUE">fn DELTA_OFFSET_OLD_VALUE</a></li>
+<li><a href="#DELTA_OFFSET_NEW_VALUE">fn DELTA_OFFSET_NEW_VALUE</a></li>
+<li><a href="#DELTA_OFFSET_DELTA">fn DELTA_OFFSET_DELTA</a></li>
+<li><a href="#DELTA_OFFSET_DT_MS">fn DELTA_OFFSET_DT_MS</a></li>
+<li><a href="#DELTA_OFFSET_RATE">fn DELTA_OFFSET_RATE</a></li>
+<li><a href="#delta_entry_new">fn delta_entry_new</a></li>
+<li><a href="#delta_entry_free">fn delta_entry_free</a></li>
+<li><a href="#delta_timestamp">fn delta_timestamp</a></li>
+<li><a href="#delta_old_value">fn delta_old_value</a></li>
+<li><a href="#delta_new_value">fn delta_new_value</a></li>
+<li><a href="#delta_delta">fn delta_delta</a></li>
+<li><a href="#delta_dt_ms">fn delta_dt_ms</a></li>
+<li><a href="#delta_rate">fn delta_rate</a></li>
+<li><a href="#TRAJECTORY_SIZE">fn TRAJECTORY_SIZE</a></li>
+<li><a href="#TRAJ_OFFSET_BELIEF_ID">fn TRAJ_OFFSET_BELIEF_ID</a></li>
+<li><a href="#TRAJ_OFFSET_HISTORY">fn TRAJ_OFFSET_HISTORY</a></li>
+<li><a href="#TRAJ_OFFSET_HISTORY_SIZE">fn TRAJ_OFFSET_HISTORY_SIZE</a></li>
+<li><a href="#TRAJ_OFFSET_COUNT">fn TRAJ_OFFSET_COUNT</a></li>
+<li><a href="#TRAJ_OFFSET_HEAD">fn TRAJ_OFFSET_HEAD</a></li>
+<li><a href="#TRAJ_OFFSET_TAIL">fn TRAJ_OFFSET_TAIL</a></li>
+<li><a href="#TRAJ_OFFSET_CURRENT_VALUE">fn TRAJ_OFFSET_CURRENT_VALUE</a></li>
+<li><a href="#TRAJ_OFFSET_LAST_UPDATE">fn TRAJ_OFFSET_LAST_UPDATE</a></li>
+<li><a href="#TRAJ_OFFSET_DERIVATIVE">fn TRAJ_OFFSET_DERIVATIVE</a></li>
+<li><a href="#TRAJ_OFFSET_DERIV_MODE">fn TRAJ_OFFSET_DERIV_MODE</a></li>
+<li><a href="#TRAJ_OFFSET_SMOOTHING">fn TRAJ_OFFSET_SMOOTHING</a></li>
+<li><a href="#TRAJ_OFFSET_SUM_DELTA">fn TRAJ_OFFSET_SUM_DELTA</a></li>
+<li><a href="#TRAJ_OFFSET_SUM_DT">fn TRAJ_OFFSET_SUM_DT</a></li>
+<li><a href="#TRAJ_OFFSET_SUM_WEIGHTED_RATE">fn TRAJ_OFFSET_SUM_WEIGHTED_RATE</a></li>
+<li><a href="#TRAJ_OFFSET_TOTAL_SAMPLES">fn TRAJ_OFFSET_TOTAL_SAMPLES</a></li>
+<li><a href="#TRAJ_OFFSET_FLAGS">fn TRAJ_OFFSET_FLAGS</a></li>
+<li><a href="#TRAJ_FLAG_ENABLED">fn TRAJ_FLAG_ENABLED</a></li>
+<li><a href="#TRAJ_FLAG_STABLE">fn TRAJ_FLAG_STABLE</a></li>
+<li><a href="#TRAJ_FLAG_INCREASING">fn TRAJ_FLAG_INCREASING</a></li>
+<li><a href="#TRAJ_FLAG_DECREASING">fn TRAJ_FLAG_DECREASING</a></li>
+<li><a href="#TRAJ_FLAG_SATURATED">fn TRAJ_FLAG_SATURATED</a></li>
+<li><a href="#trajectory_new">fn trajectory_new</a></li>
+<li><a href="#trajectory_new_with_size">fn trajectory_new_with_size</a></li>
+<li><a href="#trajectory_free">fn trajectory_free</a></li>
+<li><a href="#trajectory_belief_id">fn trajectory_belief_id</a></li>
+<li><a href="#trajectory_count">fn trajectory_count</a></li>
+<li><a href="#trajectory_current_value">fn trajectory_current_value</a></li>
+<li><a href="#trajectory_last_update">fn trajectory_last_update</a></li>
+<li><a href="#trajectory_derivative">fn trajectory_derivative</a></li>
+<li><a href="#trajectory_deriv_mode">fn trajectory_deriv_mode</a></li>
+<li><a href="#trajectory_smoothing">fn trajectory_smoothing</a></li>
+<li><a href="#trajectory_total_samples">fn trajectory_total_samples</a></li>
+<li><a href="#trajectory_flags">fn trajectory_flags</a></li>
+<li><a href="#trajectory_set_deriv_mode">fn trajectory_set_deriv_mode</a></li>
+<li><a href="#trajectory_set_smoothing">fn trajectory_set_smoothing</a></li>
+<li><a href="#trajectory_is_enabled">fn trajectory_is_enabled</a></li>
+<li><a href="#trajectory_is_stable">fn trajectory_is_stable</a></li>
+<li><a href="#trajectory_is_increasing">fn trajectory_is_increasing</a></li>
+<li><a href="#trajectory_is_decreasing">fn trajectory_is_decreasing</a></li>
+<li><a href="#trajectory_is_saturated">fn trajectory_is_saturated</a></li>
+<li><a href="#trajectory_observe">fn trajectory_observe</a></li>
+<li><a href="#trajectory_add_entry">fn trajectory_add_entry</a></li>
+<li><a href="#trajectory_reset">fn trajectory_reset</a></li>
+<li><a href="#trajectory_recalculate_derivative">fn trajectory_recalculate_derivative</a></li>
+<li><a href="#trajectory_calc_simple_derivative">fn trajectory_calc_simple_derivative</a></li>
+<li><a href="#trajectory_calc_ema_derivative">fn trajectory_calc_ema_derivative</a></li>
+<li><a href="#trajectory_calc_weighted_derivative">fn trajectory_calc_weighted_derivative</a></li>
+<li><a href="#trajectory_calc_regression_derivative">fn trajectory_calc_regression_derivative</a></li>
+<li><a href="#trajectory_update_trend_flags">fn trajectory_update_trend_flags</a></li>
+<li><a href="#trajectory_to_dual">fn trajectory_to_dual</a></li>
+<li><a href="#trajectory_to_dual_scaled">fn trajectory_to_dual_scaled</a></li>
+<li><a href="#trajectory_predict">fn trajectory_predict</a></li>
+<li><a href="#trajectory_predict_when">fn trajectory_predict_when</a></li>
+<li><a href="#trajectory_latest_rate">fn trajectory_latest_rate</a></li>
+<li><a href="#trajectory_average_rate">fn trajectory_average_rate</a></li>
+<li><a href="#trajectory_rate_variance">fn trajectory_rate_variance</a></li>
+<li><a href="#trajectory_time_span">fn trajectory_time_span</a></li>
+<li><a href="#trajectory_get_entry">fn trajectory_get_entry</a></li>
+<li><a href="#TRAJ_MANAGER_SIZE">fn TRAJ_MANAGER_SIZE</a></li>
+<li><a href="#TRAJM_OFFSET_TRAJECTORIES">fn TRAJM_OFFSET_TRAJECTORIES</a></li>
+<li><a href="#TRAJM_OFFSET_INDEX">fn TRAJM_OFFSET_INDEX</a></li>
+<li><a href="#TRAJM_OFFSET_COUNT">fn TRAJM_OFFSET_COUNT</a></li>
+<li><a href="#TRAJM_OFFSET_DEFAULT_HISTORY">fn TRAJM_OFFSET_DEFAULT_HISTORY</a></li>
+<li><a href="#TRAJM_OFFSET_DEFAULT_MODE">fn TRAJM_OFFSET_DEFAULT_MODE</a></li>
+<li><a href="#trajectory_manager_new">fn trajectory_manager_new</a></li>
+<li><a href="#trajectory_manager_free">fn trajectory_manager_free</a></li>
+<li><a href="#trajectory_manager_count">fn trajectory_manager_count</a></li>
+<li><a href="#trajectory_manager_get">fn trajectory_manager_get</a></li>
+<li><a href="#trajectory_manager_observe">fn trajectory_manager_observe</a></li>
+<li><a href="#trajectory_manager_get_dual">fn trajectory_manager_get_dual</a></li>
+<li><a href="#trajectory_manager_predict">fn trajectory_manager_predict</a></li>
+<li><a href="#trajectory_manager_remove">fn trajectory_manager_remove</a></li>
+<li><a href="#trajectory_manager_set_defaults">fn trajectory_manager_set_defaults</a></li>
+</ul>
+</div>
+<h2 id="TRAJECTORY_DEFAULT_HISTORY_SIZE">fn TRAJECTORY_DEFAULT_HISTORY_SIZE</h2>
+<pre class="signature">fn TRAJECTORY_DEFAULT_HISTORY_SIZE() -&gt; i64 { 16 }</pre>
+<h2 id="TRAJECTORY_MIN_SAMPLES">fn TRAJECTORY_MIN_SAMPLES</h2>
+<pre class="signature">fn TRAJECTORY_MIN_SAMPLES() -&gt; i64 { 2 }</pre>
+<h2 id="TRAJECTORY_DEFAULT_SMOOTHING">fn TRAJECTORY_DEFAULT_SMOOTHING</h2>
+<pre class="signature">fn TRAJECTORY_DEFAULT_SMOOTHING() -&gt; i64 { 200 }</pre>
+<h2 id="TRAJECTORY_MAX_GAP_MS">fn TRAJECTORY_MAX_GAP_MS</h2>
+<pre class="signature">fn TRAJECTORY_MAX_GAP_MS() -&gt; i64 { 60000 }  // 1 minute</pre>
+<h2 id="TRAJECTORY_DERIV_SIMPLE">fn TRAJECTORY_DERIV_SIMPLE</h2>
+<pre class="signature">fn TRAJECTORY_DERIV_SIMPLE() -&gt; i64 { 0 }      // Simple finite difference</pre>
+<h2 id="TRAJECTORY_DERIV_EMA">fn TRAJECTORY_DERIV_EMA</h2>
+<pre class="signature">fn TRAJECTORY_DERIV_EMA() -&gt; i64 { 1 }         // Exponential moving average</pre>
+<h2 id="TRAJECTORY_DERIV_WEIGHTED">fn TRAJECTORY_DERIV_WEIGHTED</h2>
+<pre class="signature">fn TRAJECTORY_DERIV_WEIGHTED() -&gt; i64 { 2 }    // Time-weighted average</pre>
+<h2 id="TRAJECTORY_DERIV_REGRESSION">fn TRAJECTORY_DERIV_REGRESSION</h2>
+<pre class="signature">fn TRAJECTORY_DERIV_REGRESSION() -&gt; i64 { 3 }  // Linear regression</pre>
+<h2 id="DELTA_ENTRY_SIZE">fn DELTA_ENTRY_SIZE</h2>
+<pre class="signature">fn DELTA_ENTRY_SIZE() -&gt; i64 { 48 }</pre>
+<h2 id="DELTA_OFFSET_TIMESTAMP">fn DELTA_OFFSET_TIMESTAMP</h2>
+<pre class="signature">fn DELTA_OFFSET_TIMESTAMP() -&gt; i64 { 0 }</pre>
+<h2 id="DELTA_OFFSET_OLD_VALUE">fn DELTA_OFFSET_OLD_VALUE</h2>
+<pre class="signature">fn DELTA_OFFSET_OLD_VALUE() -&gt; i64 { 8 }</pre>
+<h2 id="DELTA_OFFSET_NEW_VALUE">fn DELTA_OFFSET_NEW_VALUE</h2>
+<pre class="signature">fn DELTA_OFFSET_NEW_VALUE() -&gt; i64 { 16 }</pre>
+<h2 id="DELTA_OFFSET_DELTA">fn DELTA_OFFSET_DELTA</h2>
+<pre class="signature">fn DELTA_OFFSET_DELTA() -&gt; i64 { 24 }</pre>
+<h2 id="DELTA_OFFSET_DT_MS">fn DELTA_OFFSET_DT_MS</h2>
+<pre class="signature">fn DELTA_OFFSET_DT_MS() -&gt; i64 { 32 }</pre>
+<h2 id="DELTA_OFFSET_RATE">fn DELTA_OFFSET_RATE</h2>
+<pre class="signature">fn DELTA_OFFSET_RATE() -&gt; i64 { 40 }</pre>
+<h2 id="delta_entry_new">fn delta_entry_new</h2>
+<pre class="signature">fn delta_entry_new(timestamp: i64, old_value: i64, new_value: i64, dt_ms: i64) -&gt; i64 {</pre>
+<h2 id="delta_entry_free">fn delta_entry_free</h2>
+<pre class="signature">fn delta_entry_free(e: i64) {</pre>
+<h2 id="delta_timestamp">fn delta_timestamp</h2>
+<pre class="signature">fn delta_timestamp(e: i64) -&gt; i64 { load64(e + DELTA_OFFSET_TIMESTAMP()) }</pre>
+<h2 id="delta_old_value">fn delta_old_value</h2>
+<pre class="signature">fn delta_old_value(e: i64) -&gt; i64 { load64(e + DELTA_OFFSET_OLD_VALUE()) }</pre>
+<h2 id="delta_new_value">fn delta_new_value</h2>
+<pre class="signature">fn delta_new_value(e: i64) -&gt; i64 { load64(e + DELTA_OFFSET_NEW_VALUE()) }</pre>
+<h2 id="delta_delta">fn delta_delta</h2>
+<pre class="signature">fn delta_delta(e: i64) -&gt; i64 { load64(e + DELTA_OFFSET_DELTA()) }</pre>
+<h2 id="delta_dt_ms">fn delta_dt_ms</h2>
+<pre class="signature">fn delta_dt_ms(e: i64) -&gt; i64 { load64(e + DELTA_OFFSET_DT_MS()) }</pre>
+<h2 id="delta_rate">fn delta_rate</h2>
+<pre class="signature">fn delta_rate(e: i64) -&gt; i64 { load64(e + DELTA_OFFSET_RATE()) }</pre>
+<h2 id="TRAJECTORY_SIZE">fn TRAJECTORY_SIZE</h2>
+<pre class="signature">fn TRAJECTORY_SIZE() -&gt; i64 { 128 }</pre>
+<h2 id="TRAJ_OFFSET_BELIEF_ID">fn TRAJ_OFFSET_BELIEF_ID</h2>
+<pre class="signature">fn TRAJ_OFFSET_BELIEF_ID() -&gt; i64 { 0 }</pre>
+<h2 id="TRAJ_OFFSET_HISTORY">fn TRAJ_OFFSET_HISTORY</h2>
+<pre class="signature">fn TRAJ_OFFSET_HISTORY() -&gt; i64 { 8 }</pre>
+<h2 id="TRAJ_OFFSET_HISTORY_SIZE">fn TRAJ_OFFSET_HISTORY_SIZE</h2>
+<pre class="signature">fn TRAJ_OFFSET_HISTORY_SIZE() -&gt; i64 { 16 }</pre>
+<h2 id="TRAJ_OFFSET_COUNT">fn TRAJ_OFFSET_COUNT</h2>
+<pre class="signature">fn TRAJ_OFFSET_COUNT() -&gt; i64 { 24 }</pre>
+<h2 id="TRAJ_OFFSET_HEAD">fn TRAJ_OFFSET_HEAD</h2>
+<pre class="signature">fn TRAJ_OFFSET_HEAD() -&gt; i64 { 32 }</pre>
+<h2 id="TRAJ_OFFSET_TAIL">fn TRAJ_OFFSET_TAIL</h2>
+<pre class="signature">fn TRAJ_OFFSET_TAIL() -&gt; i64 { 40 }</pre>
+<h2 id="TRAJ_OFFSET_CURRENT_VALUE">fn TRAJ_OFFSET_CURRENT_VALUE</h2>
+<pre class="signature">fn TRAJ_OFFSET_CURRENT_VALUE() -&gt; i64 { 48 }</pre>
+<h2 id="TRAJ_OFFSET_LAST_UPDATE">fn TRAJ_OFFSET_LAST_UPDATE</h2>
+<pre class="signature">fn TRAJ_OFFSET_LAST_UPDATE() -&gt; i64 { 56 }</pre>
+<h2 id="TRAJ_OFFSET_DERIVATIVE">fn TRAJ_OFFSET_DERIVATIVE</h2>
+<pre class="signature">fn TRAJ_OFFSET_DERIVATIVE() -&gt; i64 { 64 }</pre>
+<h2 id="TRAJ_OFFSET_DERIV_MODE">fn TRAJ_OFFSET_DERIV_MODE</h2>
+<pre class="signature">fn TRAJ_OFFSET_DERIV_MODE() -&gt; i64 { 72 }</pre>
+<h2 id="TRAJ_OFFSET_SMOOTHING">fn TRAJ_OFFSET_SMOOTHING</h2>
+<pre class="signature">fn TRAJ_OFFSET_SMOOTHING() -&gt; i64 { 80 }</pre>
+<h2 id="TRAJ_OFFSET_SUM_DELTA">fn TRAJ_OFFSET_SUM_DELTA</h2>
+<pre class="signature">fn TRAJ_OFFSET_SUM_DELTA() -&gt; i64 { 88 }</pre>
+<h2 id="TRAJ_OFFSET_SUM_DT">fn TRAJ_OFFSET_SUM_DT</h2>
+<pre class="signature">fn TRAJ_OFFSET_SUM_DT() -&gt; i64 { 96 }</pre>
+<h2 id="TRAJ_OFFSET_SUM_WEIGHTED_RATE">fn TRAJ_OFFSET_SUM_WEIGHTED_RATE</h2>
+<pre class="signature">fn TRAJ_OFFSET_SUM_WEIGHTED_RATE() -&gt; i64 { 104 }</pre>
+<h2 id="TRAJ_OFFSET_TOTAL_SAMPLES">fn TRAJ_OFFSET_TOTAL_SAMPLES</h2>
+<pre class="signature">fn TRAJ_OFFSET_TOTAL_SAMPLES() -&gt; i64 { 112 }</pre>
+<h2 id="TRAJ_OFFSET_FLAGS">fn TRAJ_OFFSET_FLAGS</h2>
+<pre class="signature">fn TRAJ_OFFSET_FLAGS() -&gt; i64 { 120 }</pre>
+<h2 id="TRAJ_FLAG_ENABLED">fn TRAJ_FLAG_ENABLED</h2>
+<pre class="signature">fn TRAJ_FLAG_ENABLED() -&gt; i64 { 1 }</pre>
+<h2 id="TRAJ_FLAG_STABLE">fn TRAJ_FLAG_STABLE</h2>
+<pre class="signature">fn TRAJ_FLAG_STABLE() -&gt; i64 { 2 }       // Derivative is stable</pre>
+<h2 id="TRAJ_FLAG_INCREASING">fn TRAJ_FLAG_INCREASING</h2>
+<pre class="signature">fn TRAJ_FLAG_INCREASING() -&gt; i64 { 4 }   // Trend is increasing</pre>
+<h2 id="TRAJ_FLAG_DECREASING">fn TRAJ_FLAG_DECREASING</h2>
+<pre class="signature">fn TRAJ_FLAG_DECREASING() -&gt; i64 { 8 }   // Trend is decreasing</pre>
+<h2 id="TRAJ_FLAG_SATURATED">fn TRAJ_FLAG_SATURATED</h2>
+<pre class="signature">fn TRAJ_FLAG_SATURATED() -&gt; i64 { 16 }   // History buffer is full</pre>
+<h2 id="trajectory_new">fn trajectory_new</h2>
+<pre class="signature">fn trajectory_new(belief_id: i64) -&gt; i64 {</pre>
+<h2 id="trajectory_new_with_size">fn trajectory_new_with_size</h2>
+<pre class="signature">fn trajectory_new_with_size(belief_id: i64, history_size: i64) -&gt; i64 {</pre>
+<h2 id="trajectory_free">fn trajectory_free</h2>
+<pre class="signature">fn trajectory_free(t: i64) {</pre>
+<h2 id="trajectory_belief_id">fn trajectory_belief_id</h2>
+<pre class="signature">fn trajectory_belief_id(t: i64) -&gt; i64 { load64(t + TRAJ_OFFSET_BELIEF_ID()) }</pre>
+<h2 id="trajectory_count">fn trajectory_count</h2>
+<pre class="signature">fn trajectory_count(t: i64) -&gt; i64 { load64(t + TRAJ_OFFSET_COUNT()) }</pre>
+<h2 id="trajectory_current_value">fn trajectory_current_value</h2>
+<pre class="signature">fn trajectory_current_value(t: i64) -&gt; i64 { load64(t + TRAJ_OFFSET_CURRENT_VALUE()) }</pre>
+<h2 id="trajectory_last_update">fn trajectory_last_update</h2>
+<pre class="signature">fn trajectory_last_update(t: i64) -&gt; i64 { load64(t + TRAJ_OFFSET_LAST_UPDATE()) }</pre>
+<h2 id="trajectory_derivative">fn trajectory_derivative</h2>
+<pre class="signature">fn trajectory_derivative(t: i64) -&gt; i64 { load64(t + TRAJ_OFFSET_DERIVATIVE()) }</pre>
+<h2 id="trajectory_deriv_mode">fn trajectory_deriv_mode</h2>
+<pre class="signature">fn trajectory_deriv_mode(t: i64) -&gt; i64 { load64(t + TRAJ_OFFSET_DERIV_MODE()) }</pre>
+<h2 id="trajectory_smoothing">fn trajectory_smoothing</h2>
+<pre class="signature">fn trajectory_smoothing(t: i64) -&gt; i64 { load64(t + TRAJ_OFFSET_SMOOTHING()) }</pre>
+<h2 id="trajectory_total_samples">fn trajectory_total_samples</h2>
+<pre class="signature">fn trajectory_total_samples(t: i64) -&gt; i64 { load64(t + TRAJ_OFFSET_TOTAL_SAMPLES()) }</pre>
+<h2 id="trajectory_flags">fn trajectory_flags</h2>
+<pre class="signature">fn trajectory_flags(t: i64) -&gt; i64 { load64(t + TRAJ_OFFSET_FLAGS()) }</pre>
+<h2 id="trajectory_set_deriv_mode">fn trajectory_set_deriv_mode</h2>
+<pre class="signature">fn trajectory_set_deriv_mode(t: i64, mode: i64) {</pre>
+<h2 id="trajectory_set_smoothing">fn trajectory_set_smoothing</h2>
+<pre class="signature">fn trajectory_set_smoothing(t: i64, smoothing: i64) {</pre>
+<h2 id="trajectory_is_enabled">fn trajectory_is_enabled</h2>
+<pre class="signature">fn trajectory_is_enabled(t: i64) -&gt; i64 {</pre>
+<h2 id="trajectory_is_stable">fn trajectory_is_stable</h2>
+<pre class="signature">fn trajectory_is_stable(t: i64) -&gt; i64 {</pre>
+<h2 id="trajectory_is_increasing">fn trajectory_is_increasing</h2>
+<pre class="signature">fn trajectory_is_increasing(t: i64) -&gt; i64 {</pre>
+<h2 id="trajectory_is_decreasing">fn trajectory_is_decreasing</h2>
+<pre class="signature">fn trajectory_is_decreasing(t: i64) -&gt; i64 {</pre>
+<h2 id="trajectory_is_saturated">fn trajectory_is_saturated</h2>
+<pre class="signature">fn trajectory_is_saturated(t: i64) -&gt; i64 {</pre>
+<h2 id="trajectory_observe">fn trajectory_observe</h2>
+<pre class="signature">fn trajectory_observe(t: i64, new_value: i64, timestamp: i64) -&gt; i64 {</pre>
+<h2 id="trajectory_add_entry">fn trajectory_add_entry</h2>
+<pre class="signature">fn trajectory_add_entry(t: i64, entry: i64) {</pre>
+<h2 id="trajectory_reset">fn trajectory_reset</h2>
+<pre class="signature">fn trajectory_reset(t: i64) {</pre>
+<h2 id="trajectory_recalculate_derivative">fn trajectory_recalculate_derivative</h2>
+<pre class="signature">fn trajectory_recalculate_derivative(t: i64) {</pre>
+<h2 id="trajectory_calc_simple_derivative">fn trajectory_calc_simple_derivative</h2>
+<pre class="signature">fn trajectory_calc_simple_derivative(t: i64) -&gt; i64 {</pre>
+<h2 id="trajectory_calc_ema_derivative">fn trajectory_calc_ema_derivative</h2>
+<pre class="signature">fn trajectory_calc_ema_derivative(t: i64) -&gt; i64 {</pre>
+<h2 id="trajectory_calc_weighted_derivative">fn trajectory_calc_weighted_derivative</h2>
+<pre class="signature">fn trajectory_calc_weighted_derivative(t: i64) -&gt; i64 {</pre>
+<h2 id="trajectory_calc_regression_derivative">fn trajectory_calc_regression_derivative</h2>
+<pre class="signature">fn trajectory_calc_regression_derivative(t: i64) -&gt; i64 {</pre>
+<h2 id="trajectory_update_trend_flags">fn trajectory_update_trend_flags</h2>
+<pre class="signature">fn trajectory_update_trend_flags(t: i64, derivative: i64) {</pre>
+<h2 id="trajectory_to_dual">fn trajectory_to_dual</h2>
+<pre class="signature">fn trajectory_to_dual(t: i64) -&gt; i64 {</pre>
+<h2 id="trajectory_to_dual_scaled">fn trajectory_to_dual_scaled</h2>
+<pre class="signature">fn trajectory_to_dual_scaled(t: i64) -&gt; i64 {</pre>
+<h2 id="trajectory_predict">fn trajectory_predict</h2>
+<pre class="signature">fn trajectory_predict(t: i64, future_time: i64) -&gt; i64 {</pre>
+<h2 id="trajectory_predict_when">fn trajectory_predict_when</h2>
+<pre class="signature">fn trajectory_predict_when(t: i64, target_value: i64) -&gt; i64 {</pre>
+<h2 id="trajectory_latest_rate">fn trajectory_latest_rate</h2>
+<pre class="signature">fn trajectory_latest_rate(t: i64) -&gt; i64 {</pre>
+<h2 id="trajectory_average_rate">fn trajectory_average_rate</h2>
+<pre class="signature">fn trajectory_average_rate(t: i64) -&gt; i64 {</pre>
+<h2 id="trajectory_rate_variance">fn trajectory_rate_variance</h2>
+<pre class="signature">fn trajectory_rate_variance(t: i64) -&gt; i64 {</pre>
+<h2 id="trajectory_time_span">fn trajectory_time_span</h2>
+<pre class="signature">fn trajectory_time_span(t: i64) -&gt; i64 {</pre>
+<h2 id="trajectory_get_entry">fn trajectory_get_entry</h2>
+<pre class="signature">fn trajectory_get_entry(t: i64, index: i64) -&gt; i64 {</pre>
+<h2 id="TRAJ_MANAGER_SIZE">fn TRAJ_MANAGER_SIZE</h2>
+<pre class="signature">fn TRAJ_MANAGER_SIZE() -&gt; i64 { 40 }</pre>
+<h2 id="TRAJM_OFFSET_TRAJECTORIES">fn TRAJM_OFFSET_TRAJECTORIES</h2>
+<pre class="signature">fn TRAJM_OFFSET_TRAJECTORIES() -&gt; i64 { 0 }</pre>
+<h2 id="TRAJM_OFFSET_INDEX">fn TRAJM_OFFSET_INDEX</h2>
+<pre class="signature">fn TRAJM_OFFSET_INDEX() -&gt; i64 { 8 }</pre>
+<h2 id="TRAJM_OFFSET_COUNT">fn TRAJM_OFFSET_COUNT</h2>
+<pre class="signature">fn TRAJM_OFFSET_COUNT() -&gt; i64 { 16 }</pre>
+<h2 id="TRAJM_OFFSET_DEFAULT_HISTORY">fn TRAJM_OFFSET_DEFAULT_HISTORY</h2>
+<pre class="signature">fn TRAJM_OFFSET_DEFAULT_HISTORY() -&gt; i64 { 24 }</pre>
+<h2 id="TRAJM_OFFSET_DEFAULT_MODE">fn TRAJM_OFFSET_DEFAULT_MODE</h2>
+<pre class="signature">fn TRAJM_OFFSET_DEFAULT_MODE() -&gt; i64 { 32 }</pre>
+<h2 id="trajectory_manager_new">fn trajectory_manager_new</h2>
+<pre class="signature">fn trajectory_manager_new() -&gt; i64 {</pre>
+<h2 id="trajectory_manager_free">fn trajectory_manager_free</h2>
+<pre class="signature">fn trajectory_manager_free(m: i64) {</pre>
+<h2 id="trajectory_manager_count">fn trajectory_manager_count</h2>
+<pre class="signature">fn trajectory_manager_count(m: i64) -&gt; i64 {</pre>
+<h2 id="trajectory_manager_get">fn trajectory_manager_get</h2>
+<pre class="signature">fn trajectory_manager_get(m: i64, belief_id: i64) -&gt; i64 {</pre>
+<h2 id="trajectory_manager_observe">fn trajectory_manager_observe</h2>
+<pre class="signature">fn trajectory_manager_observe(m: i64, belief_id: i64, value: i64, timestamp: i64) -&gt; i64 {</pre>
+<h2 id="trajectory_manager_get_dual">fn trajectory_manager_get_dual</h2>
+<pre class="signature">fn trajectory_manager_get_dual(m: i64, belief_id: i64) -&gt; i64 {</pre>
+<h2 id="trajectory_manager_predict">fn trajectory_manager_predict</h2>
+<pre class="signature">fn trajectory_manager_predict(m: i64, belief_id: i64, future_time: i64) -&gt; i64 {</pre>
+<h2 id="trajectory_manager_remove">fn trajectory_manager_remove</h2>
+<pre class="signature">fn trajectory_manager_remove(m: i64, belief_id: i64) {</pre>
+<h2 id="trajectory_manager_set_defaults">fn trajectory_manager_set_defaults</h2>
+<pre class="signature">fn trajectory_manager_set_defaults(m: i64, history_size: i64, deriv_mode: i64) {</pre>
+
+    <hr>
+    <p><em>Generated by sxdoc</em></p>
+  </main>
+</div>
+</body>
+</html>

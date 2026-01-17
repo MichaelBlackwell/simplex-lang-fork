@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>nexus - Simplex API Reference</title>
+  <meta name="description" content="API documentation for the Simplex programming language">
+  <link rel="stylesheet" href="../assets/docs.css">
+  <script src="../assets/nav.js" defer></script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "nexus - Simplex API Reference",
+  "description": "API documentation for the Simplex programming language",
+  "programmingLanguage": {
+    "@type": "ComputerLanguage",
+    "name": "Simplex",
+    "url": "https://github.com/senuamedia/simplex"
+  },
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "Simplex Documentation",
+    "url": "https://simplex.senuamedia.com/api/"
+  },
+  "articleSection": "edge-hive"
+}
+</script>
+</head>
+<body>
+<div class="doc-wrapper">
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-header"><a href="../index.html">Simplex API</a></div>
+    <div class="search-box">
+      <input type="text" id="search" placeholder="Search...">
+    </div>
+    <div id="nav-content">Loading...</div>
+  </nav>
+  <main class="content">
+    <nav class="breadcrumb">
+      <a href="../index.html">API Reference</a> &raquo;       <span class="current-category">edge-hive</span> &raquo; nexus
+    </nav>
+    <h1>Module: nexus</h1>
+<div class="toc">
+<strong>Contents</strong>
+<ul>
+<li><a href="#OP_SAME">fn OP_SAME</a></li>
+<li><a href="#OP_DELTA_S">fn OP_DELTA_S</a></li>
+<li><a href="#OP_DELTA_L">fn OP_DELTA_L</a></li>
+<li><a href="#OP_FULL">fn OP_FULL</a></li>
+<li><a href="#FRAME_HELLO">fn FRAME_HELLO</a></li>
+<li><a href="#FRAME_WELCOME">fn FRAME_WELCOME</a></li>
+<li><a href="#FRAME_CATALOG">fn FRAME_CATALOG</a></li>
+<li><a href="#FRAME_BASELINE">fn FRAME_BASELINE</a></li>
+<li><a href="#FRAME_SYNC">fn FRAME_SYNC</a></li>
+<li><a href="#FRAME_CHECKSUM">fn FRAME_CHECKSUM</a></li>
+<li><a href="#FRAME_DEFINE">fn FRAME_DEFINE</a></li>
+<li><a href="#FRAME_TOMBSTONE">fn FRAME_TOMBSTONE</a></li>
+<li><a href="#FRAME_ACK">fn FRAME_ACK</a></li>
+<li><a href="#FRAME_NACK">fn FRAME_NACK</a></li>
+<li><a href="#NEXUS_DISCONNECTED">fn NEXUS_DISCONNECTED</a></li>
+<li><a href="#NEXUS_CONNECTING">fn NEXUS_CONNECTING</a></li>
+<li><a href="#NEXUS_HANDSHAKING">fn NEXUS_HANDSHAKING</a></li>
+<li><a href="#NEXUS_CATALOG_EXCHANGE">fn NEXUS_CATALOG_EXCHANGE</a></li>
+<li><a href="#NEXUS_BASELINE_SYNC">fn NEXUS_BASELINE_SYNC</a></li>
+<li><a href="#NEXUS_ACTIVE">fn NEXUS_ACTIVE</a></li>
+<li><a href="#NEXUS_ERROR">fn NEXUS_ERROR</a></li>
+<li><a href="#nexus_connection_new">fn nexus_connection_new</a></li>
+<li><a href="#nexus_state">fn nexus_state</a></li>
+<li><a href="#nexus_endpoint">fn nexus_endpoint</a></li>
+<li><a href="#nexus_device_id">fn nexus_device_id</a></li>
+<li><a href="#nexus_identity">fn nexus_identity</a></li>
+<li><a href="#nexus_vector_clock">fn nexus_vector_clock</a></li>
+<li><a href="#nexus_belief_catalog">fn nexus_belief_catalog</a></li>
+<li><a href="#nexus_last_baseline">fn nexus_last_baseline</a></li>
+<li><a href="#nexus_pending_frames">fn nexus_pending_frames</a></li>
+<li><a href="#nexus_last_tick">fn nexus_last_tick</a></li>
+<li><a href="#nexus_checksum_interval">fn nexus_checksum_interval</a></li>
+<li><a href="#nexus_stats">fn nexus_stats</a></li>
+<li><a href="#nexus_set_state">fn nexus_set_state</a></li>
+<li><a href="#nexus_set_baseline">fn nexus_set_baseline</a></li>
+<li><a href="#nexus_set_last_tick">fn nexus_set_last_tick</a></li>
+<li><a href="#nexus_is_active">fn nexus_is_active</a></li>
+<li><a href="#vector_clock_new">fn vector_clock_new</a></li>
+<li><a href="#vector_clock_get">fn vector_clock_get</a></li>
+<li><a href="#vector_clock_set">fn vector_clock_set</a></li>
+<li><a href="#vector_clock_increment">fn vector_clock_increment</a></li>
+<li><a href="#vector_clock_merge">fn vector_clock_merge</a></li>
+<li><a href="#vector_clock_serialize">fn vector_clock_serialize</a></li>
+<li><a href="#vector_clock_deserialize">fn vector_clock_deserialize</a></li>
+<li><a href="#belief_catalog_new">fn belief_catalog_new</a></li>
+<li><a href="#catalog_entries">fn catalog_entries</a></li>
+<li><a href="#catalog_next_position">fn catalog_next_position</a></li>
+<li><a href="#catalog_get_position">fn catalog_get_position</a></li>
+<li><a href="#catalog_add">fn catalog_add</a></li>
+<li><a href="#catalog_remove">fn catalog_remove</a></li>
+<li><a href="#delta_stream_new">fn delta_stream_new</a></li>
+<li><a href="#delta_stream_write_op">fn delta_stream_write_op</a></li>
+<li><a href="#delta_stream_write_bits">fn delta_stream_write_bits</a></li>
+<li><a href="#delta_stream_flush">fn delta_stream_flush</a></li>
+<li><a href="#delta_stream_write_delta_s">fn delta_stream_write_delta_s</a></li>
+<li><a href="#delta_stream_write_delta_l">fn delta_stream_write_delta_l</a></li>
+<li><a href="#delta_stream_write_varint">fn delta_stream_write_varint</a></li>
+<li><a href="#create_sync_frame">fn create_sync_frame</a></li>
+<li><a href="#create_checksum_frame">fn create_checksum_frame</a></li>
+<li><a href="#create_define_frame">fn create_define_frame</a></li>
+<li><a href="#create_tombstone_frame">fn create_tombstone_frame</a></li>
+<li><a href="#nexus_connect">fn nexus_connect</a></li>
+<li><a href="#create_hello_frame">fn create_hello_frame</a></li>
+<li><a href="#handle_welcome_frame">fn handle_welcome_frame</a></li>
+<li><a href="#create_catalog_frame">fn create_catalog_frame</a></li>
+<li><a href="#handle_catalog_frame">fn handle_catalog_frame</a></li>
+<li><a href="#create_baseline_frame">fn create_baseline_frame</a></li>
+<li><a href="#handle_baseline_frame">fn handle_baseline_frame</a></li>
+<li><a href="#nexus_sync_beliefs">fn nexus_sync_beliefs</a></li>
+<li><a href="#handle_sync_frame">fn handle_sync_frame</a></li>
+<li><a href="#handle_checksum_frame">fn handle_checksum_frame</a></li>
+<li><a href="#nexus_queue_frame">fn nexus_queue_frame</a></li>
+<li><a href="#nexus_flush_frames">fn nexus_flush_frames</a></li>
+<li><a href="#get_belief_value_by_hash">fn get_belief_value_by_hash</a></li>
+<li><a href="#set_belief_value_by_hash">fn set_belief_value_by_hash</a></li>
+<li><a href="#get_baseline_value">fn get_baseline_value</a></li>
+<li><a href="#compute_belief_checksum">fn compute_belief_checksum</a></li>
+<li><a href="#read_varint">fn read_varint</a></li>
+<li><a href="#varint_size">fn varint_size</a></li>
+<li><a href="#read_bits">fn read_bits</a></li>
+<li><a href="#nexus_print_stats">fn nexus_print_stats</a></li>
+</ul>
+</div>
+<h2 id="OP_SAME">fn OP_SAME</h2>
+<pre class="signature">fn OP_SAME() -&gt; i64 { 0 }       // 00: No change since last sync</pre>
+<h2 id="OP_DELTA_S">fn OP_DELTA_S</h2>
+<pre class="signature">fn OP_DELTA_S() -&gt; i64 { 1 }    // 01: Small delta (-8 to +7, 4 bits)</pre>
+<h2 id="OP_DELTA_L">fn OP_DELTA_L</h2>
+<pre class="signature">fn OP_DELTA_L() -&gt; i64 { 2 }    // 10: Large delta (-2048 to +2047, 12 bits)</pre>
+<h2 id="OP_FULL">fn OP_FULL</h2>
+<pre class="signature">fn OP_FULL() -&gt; i64 { 3 }       // 11: Full value follows (varint)</pre>
+<h2 id="FRAME_HELLO">fn FRAME_HELLO</h2>
+<pre class="signature">fn FRAME_HELLO() -&gt; i64 { 0x01 }</pre>
+<h2 id="FRAME_WELCOME">fn FRAME_WELCOME</h2>
+<pre class="signature">fn FRAME_WELCOME() -&gt; i64 { 0x02 }</pre>
+<h2 id="FRAME_CATALOG">fn FRAME_CATALOG</h2>
+<pre class="signature">fn FRAME_CATALOG() -&gt; i64 { 0x03 }</pre>
+<h2 id="FRAME_BASELINE">fn FRAME_BASELINE</h2>
+<pre class="signature">fn FRAME_BASELINE() -&gt; i64 { 0x04 }</pre>
+<h2 id="FRAME_SYNC">fn FRAME_SYNC</h2>
+<pre class="signature">fn FRAME_SYNC() -&gt; i64 { 0x10 }</pre>
+<h2 id="FRAME_CHECKSUM">fn FRAME_CHECKSUM</h2>
+<pre class="signature">fn FRAME_CHECKSUM() -&gt; i64 { 0x11 }</pre>
+<h2 id="FRAME_DEFINE">fn FRAME_DEFINE</h2>
+<pre class="signature">fn FRAME_DEFINE() -&gt; i64 { 0x20 }</pre>
+<h2 id="FRAME_TOMBSTONE">fn FRAME_TOMBSTONE</h2>
+<pre class="signature">fn FRAME_TOMBSTONE() -&gt; i64 { 0x21 }</pre>
+<h2 id="FRAME_ACK">fn FRAME_ACK</h2>
+<pre class="signature">fn FRAME_ACK() -&gt; i64 { 0x30 }</pre>
+<h2 id="FRAME_NACK">fn FRAME_NACK</h2>
+<pre class="signature">fn FRAME_NACK() -&gt; i64 { 0x31 }</pre>
+<h2 id="NEXUS_DISCONNECTED">fn NEXUS_DISCONNECTED</h2>
+<pre class="signature">fn NEXUS_DISCONNECTED() -&gt; i64 { 0 }</pre>
+<h2 id="NEXUS_CONNECTING">fn NEXUS_CONNECTING</h2>
+<pre class="signature">fn NEXUS_CONNECTING() -&gt; i64 { 1 }</pre>
+<h2 id="NEXUS_HANDSHAKING">fn NEXUS_HANDSHAKING</h2>
+<pre class="signature">fn NEXUS_HANDSHAKING() -&gt; i64 { 2 }</pre>
+<h2 id="NEXUS_CATALOG_EXCHANGE">fn NEXUS_CATALOG_EXCHANGE</h2>
+<pre class="signature">fn NEXUS_CATALOG_EXCHANGE() -&gt; i64 { 3 }</pre>
+<h2 id="NEXUS_BASELINE_SYNC">fn NEXUS_BASELINE_SYNC</h2>
+<pre class="signature">fn NEXUS_BASELINE_SYNC() -&gt; i64 { 4 }</pre>
+<h2 id="NEXUS_ACTIVE">fn NEXUS_ACTIVE</h2>
+<pre class="signature">fn NEXUS_ACTIVE() -&gt; i64 { 5 }</pre>
+<h2 id="NEXUS_ERROR">fn NEXUS_ERROR</h2>
+<pre class="signature">fn NEXUS_ERROR() -&gt; i64 { 6 }</pre>
+<h2 id="nexus_connection_new">fn nexus_connection_new</h2>
+<pre class="signature">fn nexus_connection_new(endpoint: i64, device_id: i64, identity: i64) -&gt; i64 {</pre>
+<h2 id="nexus_state">fn nexus_state</h2>
+<pre class="signature">fn nexus_state(conn: i64) -&gt; i64 { vec_get(conn, 0) }</pre>
+<h2 id="nexus_endpoint">fn nexus_endpoint</h2>
+<pre class="signature">fn nexus_endpoint(conn: i64) -&gt; i64 { vec_get(conn, 1) }</pre>
+<h2 id="nexus_device_id">fn nexus_device_id</h2>
+<pre class="signature">fn nexus_device_id(conn: i64) -&gt; i64 { vec_get(conn, 2) }</pre>
+<h2 id="nexus_identity">fn nexus_identity</h2>
+<pre class="signature">fn nexus_identity(conn: i64) -&gt; i64 { vec_get(conn, 3) }</pre>
+<h2 id="nexus_vector_clock">fn nexus_vector_clock</h2>
+<pre class="signature">fn nexus_vector_clock(conn: i64) -&gt; i64 { vec_get(conn, 4) }</pre>
+<h2 id="nexus_belief_catalog">fn nexus_belief_catalog</h2>
+<pre class="signature">fn nexus_belief_catalog(conn: i64) -&gt; i64 { vec_get(conn, 5) }</pre>
+<h2 id="nexus_last_baseline">fn nexus_last_baseline</h2>
+<pre class="signature">fn nexus_last_baseline(conn: i64) -&gt; i64 { vec_get(conn, 6) }</pre>
+<h2 id="nexus_pending_frames">fn nexus_pending_frames</h2>
+<pre class="signature">fn nexus_pending_frames(conn: i64) -&gt; i64 { vec_get(conn, 7) }</pre>
+<h2 id="nexus_last_tick">fn nexus_last_tick</h2>
+<pre class="signature">fn nexus_last_tick(conn: i64) -&gt; i64 { vec_get(conn, 8) }</pre>
+<h2 id="nexus_checksum_interval">fn nexus_checksum_interval</h2>
+<pre class="signature">fn nexus_checksum_interval(conn: i64) -&gt; i64 { vec_get(conn, 9) }</pre>
+<h2 id="nexus_stats">fn nexus_stats</h2>
+<pre class="signature">fn nexus_stats(conn: i64) -&gt; i64 { vec_get(conn, 10) }</pre>
+<h2 id="nexus_set_state">fn nexus_set_state</h2>
+<pre class="signature">fn nexus_set_state(conn: i64, state: i64) -&gt; i64 {</pre>
+<h2 id="nexus_set_baseline">fn nexus_set_baseline</h2>
+<pre class="signature">fn nexus_set_baseline(conn: i64, baseline: i64) -&gt; i64 {</pre>
+<h2 id="nexus_set_last_tick">fn nexus_set_last_tick</h2>
+<pre class="signature">fn nexus_set_last_tick(conn: i64, tick: i64) -&gt; i64 {</pre>
+<h2 id="nexus_is_active">fn nexus_is_active</h2>
+<pre class="signature">fn nexus_is_active(conn: i64) -&gt; i64 {</pre>
+<h2 id="vector_clock_new">fn vector_clock_new</h2>
+<pre class="signature">fn vector_clock_new() -&gt; i64 {</pre>
+<h2 id="vector_clock_get">fn vector_clock_get</h2>
+<pre class="signature">fn vector_clock_get(clock: i64, device_id: i64) -&gt; i64 {</pre>
+<h2 id="vector_clock_set">fn vector_clock_set</h2>
+<pre class="signature">fn vector_clock_set(clock: i64, device_id: i64, tick: i64) -&gt; i64 {</pre>
+<h2 id="vector_clock_increment">fn vector_clock_increment</h2>
+<pre class="signature">fn vector_clock_increment(clock: i64, device_id: i64) -&gt; i64 {</pre>
+<h2 id="vector_clock_merge">fn vector_clock_merge</h2>
+<pre class="signature">fn vector_clock_merge(local: i64, remote: i64) -&gt; i64 {</pre>
+<h2 id="vector_clock_serialize">fn vector_clock_serialize</h2>
+<pre class="signature">fn vector_clock_serialize(clock: i64) -&gt; i64 {</pre>
+<h2 id="vector_clock_deserialize">fn vector_clock_deserialize</h2>
+<pre class="signature">fn vector_clock_deserialize(buf: i64) -&gt; i64 {</pre>
+<h2 id="belief_catalog_new">fn belief_catalog_new</h2>
+<pre class="signature">fn belief_catalog_new() -&gt; i64 {</pre>
+<h2 id="catalog_entries">fn catalog_entries</h2>
+<pre class="signature">fn catalog_entries(catalog: i64) -&gt; i64 { vec_get(catalog, 0) }</pre>
+<h2 id="catalog_next_position">fn catalog_next_position</h2>
+<pre class="signature">fn catalog_next_position(catalog: i64) -&gt; i64 { vec_get(catalog, 1) }</pre>
+<h2 id="catalog_get_position">fn catalog_get_position</h2>
+<pre class="signature">fn catalog_get_position(catalog: i64, uuid_hash: i64) -&gt; i64 {</pre>
+<h2 id="catalog_add">fn catalog_add</h2>
+<pre class="signature">fn catalog_add(catalog: i64, uuid_hash: i64) -&gt; i64 {</pre>
+<h2 id="catalog_remove">fn catalog_remove</h2>
+<pre class="signature">fn catalog_remove(catalog: i64, uuid_hash: i64) -&gt; i64 {</pre>
+<h2 id="delta_stream_new">fn delta_stream_new</h2>
+<pre class="signature">fn delta_stream_new() -&gt; i64 {</pre>
+<h2 id="delta_stream_write_op">fn delta_stream_write_op</h2>
+<pre class="signature">fn delta_stream_write_op(stream: i64, op: i64) -&gt; i64 {</pre>
+<h2 id="delta_stream_write_bits">fn delta_stream_write_bits</h2>
+<pre class="signature">fn delta_stream_write_bits(stream: i64, value: i64, num_bits: i64) -&gt; i64 {</pre>
+<h2 id="delta_stream_flush">fn delta_stream_flush</h2>
+<pre class="signature">fn delta_stream_flush(stream: i64) -&gt; i64 {</pre>
+<h2 id="delta_stream_write_delta_s">fn delta_stream_write_delta_s</h2>
+<pre class="signature">fn delta_stream_write_delta_s(stream: i64, delta: i64) -&gt; i64 {</pre>
+<h2 id="delta_stream_write_delta_l">fn delta_stream_write_delta_l</h2>
+<pre class="signature">fn delta_stream_write_delta_l(stream: i64, delta: i64) -&gt; i64 {</pre>
+<h2 id="delta_stream_write_varint">fn delta_stream_write_varint</h2>
+<pre class="signature">fn delta_stream_write_varint(stream: i64, value: i64) -&gt; i64 {</pre>
+<h2 id="create_sync_frame">fn create_sync_frame</h2>
+<pre class="signature">fn create_sync_frame(conn: i64, beliefs: i64, baseline: i64) -&gt; i64 {</pre>
+<h2 id="create_checksum_frame">fn create_checksum_frame</h2>
+<pre class="signature">fn create_checksum_frame(conn: i64, beliefs: i64) -&gt; i64 {</pre>
+<h2 id="create_define_frame">fn create_define_frame</h2>
+<pre class="signature">fn create_define_frame(conn: i64, uuid_hash: i64, belief_type: i64, initial_value: i64) -&gt; i64 {</pre>
+<h2 id="create_tombstone_frame">fn create_tombstone_frame</h2>
+<pre class="signature">fn create_tombstone_frame(conn: i64, uuid_hash: i64) -&gt; i64 {</pre>
+<h2 id="nexus_connect">fn nexus_connect</h2>
+<pre class="signature">fn nexus_connect(conn: i64) -&gt; i64 {</pre>
+<h2 id="create_hello_frame">fn create_hello_frame</h2>
+<pre class="signature">fn create_hello_frame(conn: i64) -&gt; i64 {</pre>
+<h2 id="handle_welcome_frame">fn handle_welcome_frame</h2>
+<pre class="signature">fn handle_welcome_frame(conn: i64, frame: i64) -&gt; i64 {</pre>
+<h2 id="create_catalog_frame">fn create_catalog_frame</h2>
+<pre class="signature">fn create_catalog_frame(conn: i64) -&gt; i64 {</pre>
+<h2 id="handle_catalog_frame">fn handle_catalog_frame</h2>
+<pre class="signature">fn handle_catalog_frame(conn: i64, frame: i64) -&gt; i64 {</pre>
+<h2 id="create_baseline_frame">fn create_baseline_frame</h2>
+<pre class="signature">fn create_baseline_frame(conn: i64, beliefs: i64) -&gt; i64 {</pre>
+<h2 id="handle_baseline_frame">fn handle_baseline_frame</h2>
+<pre class="signature">fn handle_baseline_frame(conn: i64, beliefs: i64, frame: i64) -&gt; i64 {</pre>
+<h2 id="nexus_sync_beliefs">fn nexus_sync_beliefs</h2>
+<pre class="signature">fn nexus_sync_beliefs(conn: i64, beliefs: i64) -&gt; i64 {</pre>
+<h2 id="handle_sync_frame">fn handle_sync_frame</h2>
+<pre class="signature">fn handle_sync_frame(conn: i64, beliefs: i64, baseline: i64, frame: i64) -&gt; i64 {</pre>
+<h2 id="handle_checksum_frame">fn handle_checksum_frame</h2>
+<pre class="signature">fn handle_checksum_frame(conn: i64, beliefs: i64, frame: i64) -&gt; i64 {</pre>
+<h2 id="nexus_queue_frame">fn nexus_queue_frame</h2>
+<pre class="signature">fn nexus_queue_frame(conn: i64, frame: i64) -&gt; i64 {</pre>
+<h2 id="nexus_flush_frames">fn nexus_flush_frames</h2>
+<pre class="signature">fn nexus_flush_frames(conn: i64) -&gt; i64 {</pre>
+<h2 id="get_belief_value_by_hash">fn get_belief_value_by_hash</h2>
+<pre class="signature">fn get_belief_value_by_hash(beliefs: i64, uuid_hash: i64) -&gt; i64 {</pre>
+<h2 id="set_belief_value_by_hash">fn set_belief_value_by_hash</h2>
+<pre class="signature">fn set_belief_value_by_hash(beliefs: i64, uuid_hash: i64, value: i64) -&gt; i64 {</pre>
+<h2 id="get_baseline_value">fn get_baseline_value</h2>
+<pre class="signature">fn get_baseline_value(baseline: i64, position: i64) -&gt; i64 {</pre>
+<h2 id="compute_belief_checksum">fn compute_belief_checksum</h2>
+<pre class="signature">fn compute_belief_checksum(beliefs: i64) -&gt; i64 {</pre>
+<h2 id="read_varint">fn read_varint</h2>
+<pre class="signature">fn read_varint(buf: i64, offset: i64) -&gt; i64 {</pre>
+<h2 id="varint_size">fn varint_size</h2>
+<pre class="signature">fn varint_size(value: i64) -&gt; i64 {</pre>
+<h2 id="read_bits">fn read_bits</h2>
+<pre class="signature">fn read_bits(buf: i64, bit_offset: i64, num_bits: i64) -&gt; i64 {</pre>
+<h2 id="nexus_print_stats">fn nexus_print_stats</h2>
+<pre class="signature">fn nexus_print_stats(conn: i64) -&gt; i64 {</pre>
+
+    <hr>
+    <p><em>Generated by sxdoc</em></p>
+  </main>
+</div>
+</body>
+</html>

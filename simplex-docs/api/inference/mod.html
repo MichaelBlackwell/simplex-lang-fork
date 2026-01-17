@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>mod - Simplex API Reference</title>
+  <meta name="description" content="Unique identifier for deduplication">
+  <link rel="stylesheet" href="../assets/docs.css">
+  <script src="../assets/nav.js" defer></script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "mod - Simplex API Reference",
+  "description": "Unique identifier for deduplication",
+  "programmingLanguage": {
+    "@type": "ComputerLanguage",
+    "name": "Simplex",
+    "url": "https://github.com/senuamedia/simplex"
+  },
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "Simplex Documentation",
+    "url": "https://simplex.senuamedia.com/api/"
+  },
+  "articleSection": "inference"
+}
+</script>
+</head>
+<body>
+<div class="doc-wrapper">
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-header"><a href="../index.html">Simplex API</a></div>
+    <div class="search-box">
+      <input type="text" id="search" placeholder="Search...">
+    </div>
+    <div id="nav-content">Loading...</div>
+  </nav>
+  <main class="content">
+    <nav class="breadcrumb">
+      <a href="../index.html">API Reference</a> &raquo;       <span class="current-category">inference</span> &raquo; mod
+    </nav>
+    <h1>Module: mod</h1>
+<div class="toc">
+<strong>Contents</strong>
+<ul>
+<li><a href="#batch_key">fn batch_key</a></li>
+<li><a href="#priority">fn priority</a></li>
+<li><a href="#max_wait_ms">fn max_wait_ms</a></li>
+<li><a href="#infer_batch">fn infer_batch</a></li>
+<li><a href="#max_batch_size">fn max_batch_size</a></li>
+<li><a href="#supports_streaming">fn supports_streaming</a></li>
+<li><a href="#cache_key">fn cache_key</a></li>
+<li><a href="#is_cacheable">fn is_cacheable</a></li>
+<li><a href="#ttl_ms">fn ttl_ms</a></li>
+<li><a href="#analyze">fn analyze</a></li>
+<li><a href="#select_tier">fn select_tier</a></li>
+<li><a href="#slm_model_load">fn slm_model_load</a></li>
+<li><a href="#slm_model_unload">fn slm_model_unload</a></li>
+<li><a href="#slm_batch_infer">fn slm_batch_infer</a></li>
+<li><a href="#slm_stream_infer">fn slm_stream_infer</a></li>
+<li><a href="#slm_tokenize">fn slm_tokenize</a></li>
+<li><a href="#slm_detokenize">fn slm_detokenize</a></li>
+<li><a href="#slm_model_info">fn slm_model_info</a></li>
+<li><a href="#default">fn default</a></li>
+<li><a href="#default">fn default</a></li>
+<li><a href="#fmt">fn fmt</a></li>
+</ul>
+</div>
+<h2 id="batch_key">fn batch_key</h2>
+<pre class="signature">fn batch_key(&amp;self) -&gt; String;</pre>
+<p class="doc">Unique identifier for deduplication</p>
+<h2 id="priority">fn priority</h2>
+<pre class="signature">fn priority(&amp;self) -&gt; u32 { 0 }</pre>
+<p class="doc">Priority for ordering within batch (higher = first)</p>
+<h2 id="max_wait_ms">fn max_wait_ms</h2>
+<pre class="signature">fn max_wait_ms(&amp;self) -&gt; u64 { 1000 }</pre>
+<p class="doc">Maximum time this request can wait in queue (ms)</p>
+<h2 id="infer_batch">fn infer_batch</h2>
+<pre class="signature">fn infer_batch(&amp;self, requests: Vec&lt;Self::Request&gt;) -&gt; Result&lt;Vec&lt;Self::Response&gt;, Self::Error&gt;;</pre>
+<p class="doc">Process a batch of requests</p>
+<h2 id="max_batch_size">fn max_batch_size</h2>
+<pre class="signature">fn max_batch_size(&amp;self) -&gt; usize { 8 }</pre>
+<p class="doc">Maximum batch size supported by this backend</p>
+<h2 id="supports_streaming">fn supports_streaming</h2>
+<pre class="signature">fn supports_streaming(&amp;self) -&gt; bool { false }</pre>
+<p class="doc">Whether this backend supports streaming output</p>
+<h2 id="cache_key">fn cache_key</h2>
+<pre class="signature">fn cache_key(&amp;self) -&gt; String;</pre>
+<p class="doc">Compute cache key from request</p>
+<h2 id="is_cacheable">fn is_cacheable</h2>
+<pre class="signature">fn is_cacheable(&amp;self) -&gt; bool { true }</pre>
+<p class="doc">Whether this response should be cached</p>
+<h2 id="ttl_ms">fn ttl_ms</h2>
+<pre class="signature">fn ttl_ms(&amp;self) -&gt; Option&lt;u64&gt; { None }</pre>
+<p class="doc">TTL override for this specific response (None = use default)</p>
+<h2 id="analyze">fn analyze</h2>
+<pre class="signature">fn analyze(&amp;self, query: &amp;Self::Query) -&gt; f32;</pre>
+<p class="doc">Analyze query and return complexity score (0.0 - 1.0)</p>
+<h2 id="select_tier">fn select_tier</h2>
+<pre class="signature">fn select_tier(&amp;self, complexity: f32) -&gt; ModelTier {</pre>
+<p class="doc">Determine model tier based on complexity</p>
+<h2 id="slm_model_load">fn slm_model_load</h2>
+<pre class="signature">fn slm_model_load(path: &amp;str, config: &amp;ModelLoadConfig) -&gt; Result&lt;ModelHandle, SlmError&gt;;</pre>
+<p class="doc">Create a new model instance</p>
+<h2 id="slm_model_unload">fn slm_model_unload</h2>
+<pre class="signature">fn slm_model_unload(handle: ModelHandle);</pre>
+<p class="doc">Unload a model and free resources</p>
+<h2 id="slm_batch_infer">fn slm_batch_infer</h2>
+<pre class="signature">fn slm_batch_infer(</pre>
+<p class="doc">Run batch inference</p>
+<h2 id="slm_stream_infer">fn slm_stream_infer</h2>
+<pre class="signature">fn slm_stream_infer(</pre>
+<p class="doc">Run streaming inference (single request)</p>
+<h2 id="slm_tokenize">fn slm_tokenize</h2>
+<pre class="signature">fn slm_tokenize(handle: ModelHandle, text: &amp;str) -&gt; Result&lt;Vec&lt;i32&gt;, SlmError&gt;;</pre>
+<p class="doc">Tokenize a prompt (for caching)</p>
+<h2 id="slm_detokenize">fn slm_detokenize</h2>
+<pre class="signature">fn slm_detokenize(handle: ModelHandle, tokens: &amp;[i32]) -&gt; Result&lt;String, SlmError&gt;;</pre>
+<p class="doc">Detokenize tokens back to text</p>
+<h2 id="slm_model_info">fn slm_model_info</h2>
+<pre class="signature">fn slm_model_info(handle: ModelHandle) -&gt; ModelInfo;</pre>
+<p class="doc">Get model metadata</p>
+<h2 id="default">fn default</h2>
+<pre class="signature">fn default() -&gt; Self {</pre>
+<h2 id="default">fn default</h2>
+<pre class="signature">fn default() -&gt; Self {</pre>
+<h2 id="fmt">fn fmt</h2>
+<pre class="signature">fn fmt(&amp;self, f: &amp;mut std::fmt::Formatter&lt;'_&gt;) -&gt; std::fmt::Result {</pre>
+
+    <hr>
+    <p><em>Generated by sxdoc</em></p>
+  </main>
+</div>
+</body>
+</html>

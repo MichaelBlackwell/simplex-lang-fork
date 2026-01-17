@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>cli - Simplex API Reference</title>
+  <meta name="description" content="Get the number of command-line arguments (including program name).">
+  <link rel="stylesheet" href="../assets/docs.css">
+  <script src="../assets/nav.js" defer></script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "cli - Simplex API Reference",
+  "description": "Get the number of command-line arguments (including program name).",
+  "programmingLanguage": {
+    "@type": "ComputerLanguage",
+    "name": "Simplex",
+    "url": "https://github.com/senuamedia/simplex"
+  },
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "Simplex Documentation",
+    "url": "https://simplex.senuamedia.com/api/"
+  },
+  "articleSection": "std"
+}
+</script>
+</head>
+<body>
+<div class="doc-wrapper">
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-header"><a href="../index.html">Simplex API</a></div>
+    <div class="search-box">
+      <input type="text" id="search" placeholder="Search...">
+    </div>
+    <div id="nav-content">Loading...</div>
+  </nav>
+  <main class="content">
+    <nav class="breadcrumb">
+      <a href="../index.html">API Reference</a> &raquo;       <span class="current-category">std</span> &raquo; cli
+    </nav>
+    <h1>Module: cli</h1>
+<div class="toc">
+<strong>Contents</strong>
+<ul>
+<li><a href="#arg_count">fn arg_count</a></li>
+<li><a href="#get_arg">fn get_arg</a></li>
+<li><a href="#program_name">fn program_name</a></li>
+<li><a href="#args">fn args</a></li>
+<li><a href="#positional_args">fn positional_args</a></li>
+<li><a href="#has_flag">fn has_flag</a></li>
+<li><a href="#get_option">fn get_option</a></li>
+<li><a href="#get_option_or">fn get_option_or</a></li>
+<li><a href="#get_option_i64">fn get_option_i64</a></li>
+<li><a href="#get_option_i64_or">fn get_option_i64_or</a></li>
+<li><a href="#getenv">fn getenv</a></li>
+<li><a href="#getenv_or">fn getenv_or</a></li>
+<li><a href="#has_env">fn has_env</a></li>
+<li><a href="#setenv">fn setenv</a></li>
+<li><a href="#unsetenv">fn unsetenv</a></li>
+<li><a href="#cwd">fn cwd</a></li>
+<li><a href="#chdir">fn chdir</a></li>
+<li><a href="#exit">fn exit</a></li>
+<li><a href="#pid">fn pid</a></li>
+<li><a href="#FlagDef">struct FlagDef</a></li>
+</ul>
+</div>
+<h2 id="arg_count">fn arg_count</h2>
+<pre class="signature">fn arg_count() -&gt; i64 {</pre>
+<p class="doc">Get the number of command-line arguments (including program name).</p>
+<h2 id="get_arg">fn get_arg</h2>
+<pre class="signature">fn get_arg(index: i64) -&gt; String {</pre>
+<p class="doc">Get a command-line argument by index.
+
+Index 0 is the program name.</p>
+<h2 id="program_name">fn program_name</h2>
+<pre class="signature">fn program_name() -&gt; String {</pre>
+<p class="doc">Get the program name (first argument).</p>
+<h2 id="args">fn args</h2>
+<pre class="signature">fn args() -&gt; Vec&lt;String&gt; {</pre>
+<p class="doc">Get all command-line arguments as a vector.</p>
+<h2 id="positional_args">fn positional_args</h2>
+<pre class="signature">fn positional_args() -&gt; Vec&lt;String&gt; {</pre>
+<p class="doc">Get positional arguments (excludes flags and their values).
+
+Flags start with `-` or `--`.</p>
+<h2 id="has_flag">fn has_flag</h2>
+<pre class="signature">fn has_flag(flag: &amp;str) -&gt; bool {</pre>
+<p class="doc">Check if a flag exists in the arguments.
+
+Supports both `--flag` and `-f` formats.
+
+# Example
+```simplex
+if has_flag("--verbose") || has_flag("-v") {
+    enable_verbose();
+}
+```</p>
+<h2 id="get_option">fn get_option</h2>
+<pre class="signature">fn get_option(name: &amp;str) -&gt; Option&lt;String&gt; {</pre>
+<p class="doc">Get an option value from the arguments.
+
+Supports both `--name=value` and `--name value` formats.
+Returns None if the option is not found.
+
+# Example
+```simplex
+if let Some(file) = get_option("--output") {
+    write_to_file(&amp;file);
+}
+```</p>
+<h2 id="get_option_or">fn get_option_or</h2>
+<pre class="signature">fn get_option_or(name: &amp;str, default: &amp;str) -&gt; String {</pre>
+<p class="doc">Get an option value with a default fallback.
+
+# Example
+```simplex
+let port = get_option_or("--port", "8080");
+```</p>
+<h2 id="get_option_i64">fn get_option_i64</h2>
+<pre class="signature">fn get_option_i64(name: &amp;str) -&gt; Option&lt;i64&gt; {</pre>
+<p class="doc">Get an option value as an integer.</p>
+<h2 id="get_option_i64_or">fn get_option_i64_or</h2>
+<pre class="signature">fn get_option_i64_or(name: &amp;str, default: i64) -&gt; i64 {</pre>
+<p class="doc">Get an option value as an integer with default.</p>
+<h2 id="getenv">fn getenv</h2>
+<pre class="signature">fn getenv(name: &amp;str) -&gt; Option&lt;String&gt; {</pre>
+<p class="doc">Get an environment variable value.
+
+Returns None if the variable is not set.
+
+# Example
+```simplex
+if let Some(home) = getenv("HOME") {
+    println(&amp;format!("Home directory: {}", home));
+}
+```</p>
+<h2 id="getenv_or">fn getenv_or</h2>
+<pre class="signature">fn getenv_or(name: &amp;str, default: &amp;str) -&gt; String {</pre>
+<p class="doc">Get an environment variable with a default value.
+
+# Example
+```simplex
+let editor = getenv_or("EDITOR", "vim");
+```</p>
+<h2 id="has_env">fn has_env</h2>
+<pre class="signature">fn has_env(name: &amp;str) -&gt; bool {</pre>
+<p class="doc">Check if an environment variable is set.</p>
+<h2 id="setenv">fn setenv</h2>
+<pre class="signature">fn setenv(name: &amp;str, value: &amp;str) -&gt; bool {</pre>
+<p class="doc">Set an environment variable.
+
+Returns true on success, false on failure.
+
+# Example
+```simplex
+setenv("MY_VAR", "value");
+```</p>
+<h2 id="unsetenv">fn unsetenv</h2>
+<pre class="signature">fn unsetenv(name: &amp;str) -&gt; bool {</pre>
+<p class="doc">Unset an environment variable.</p>
+<h2 id="cwd">fn cwd</h2>
+<pre class="signature">fn cwd() -&gt; String {</pre>
+<p class="doc">Get the current working directory.</p>
+<h2 id="chdir">fn chdir</h2>
+<pre class="signature">fn chdir(path: &amp;str) -&gt; bool {</pre>
+<p class="doc">Change the current working directory.
+
+Returns true on success.</p>
+<h2 id="exit">fn exit</h2>
+<pre class="signature">fn exit(code: i64) -&gt; ! {</pre>
+<p class="doc">Exit the program with the specified exit code.
+
+This function does not return.
+
+# Example
+```simplex
+if error_occurred {
+    eprintln("Error!");
+    exit(1);
+}
+```</p>
+<h2 id="pid">fn pid</h2>
+<pre class="signature">fn pid() -&gt; i64 {</pre>
+<p class="doc">Get the process ID.</p>
+<h2 id="FlagDef">struct FlagDef</h2>
+<h3>Fields</h3>
+<ul>
+<li class="field"><code>short</code></li>
+<li class="field"><code>long</code></li>
+<li class="field"><code>help</code></li>
+</ul>
+
+    <hr>
+    <p><em>Generated by sxdoc</em></p>
+  </main>
+</div>
+</body>
+</html>

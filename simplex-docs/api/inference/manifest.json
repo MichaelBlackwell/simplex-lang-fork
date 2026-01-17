@@ -1,0 +1,107 @@
+{
+  "category": "inference",
+  "modules": [
+    {
+      "name": "metrics",
+      "file": "metrics.html",
+      "items": [
+        {"kind": "struct", "name": "MetricsInner"}
+      ]
+    },
+    {
+      "name": "cache",
+      "file": "cache.html",
+      "items": [
+        {"kind": "fn", "name": "default", "signature": "fn default() -> Self {"},
+        {"kind": "fn", "name": "short_lived", "signature": "fn short_lived() -> Self {", "doc": "Config for short-lived cache (e.g., deduplication within a batch)"},
+        {"kind": "fn", "name": "long_lived", "signature": "fn long_lived() -> Self {", "doc": "Config for long-lived cache (e.g., common queries)"},
+        {"kind": "fn", "name": "unlimited", "signature": "fn unlimited() -> Self {", "doc": "Config for unlimited cache (be careful with memory!)"},
+        {"kind": "struct", "name": "LruNode", "doc": "Doubly-linked list node for LRU ordering"}
+      ]
+    },
+    {
+      "name": "pipeline",
+      "file": "pipeline.html",
+      "items": [
+        {"kind": "fn", "name": "new", "signature": "fn new() -> Self {", "doc": "Create a new builder with no optimizations enabled"},
+        {"kind": "fn", "name": "with_batching", "signature": "fn with_batching(mut self, config: BatchConfig) -> Self {", "doc": "Enable request batching"},
+        {"kind": "fn", "name": "with_prompt_cache", "signature": "fn with_prompt_cache(mut self, capacity: usize) -> Self {", "doc": "Enable prompt caching with the given capacity"},
+        {"kind": "fn", "name": "with_response_cache", "signature": "fn with_response_cache(mut self, config: CacheConfig) -> Self {", "doc": "Enable response caching"},
+        {"kind": "fn", "name": "with_routing", "signature": "fn with_routing(mut self, config: RouterConfig) -> Self {", "doc": "Enable smart routing"},
+        {"kind": "fn", "name": "with_pool", "signature": "fn with_pool(mut self, config: PoolConfig) -> Self {", "doc": "Enable model pooling"},
+        {"kind": "fn", "name": "with_all_defaults", "signature": "fn with_all_defaults(self) -> Self {", "doc": "Enable all optimizations with default configs"},
+        {"kind": "fn", "name": "build", "signature": "fn build<F>(self, inference_fn: F) -> InferencePipeline<F>", "doc": "Build the pipeline with a custom inference function"},
+        {"kind": "struct", "name": "BatchedInferRequest"}
+      ]
+    },
+    {
+      "name": "router",
+      "file": "router.html",
+      "items": [
+        {"kind": "fn", "name": "typical_latency_ms", "signature": "fn typical_latency_ms(&self) -> u32 {", "doc": "Typical latency in milliseconds for this tier"},
+        {"kind": "fn", "name": "cost_factor", "signature": "fn cost_factor(&self) -> f32 {", "doc": "Relative cost factor (1.0 = base)"},
+        {"kind": "fn", "name": "model_name", "signature": "fn model_name(&self) -> &'static str {", "doc": "Model name for this tier"},
+        {"kind": "fn", "name": "score", "signature": "fn score(&self) -> f32 {", "doc": "Numeric score (0.0 - 1.0)"},
+        {"kind": "fn", "name": "suggested_tier", "signature": "fn suggested_tier(&self) -> ModelTier {", "doc": "Suggested model tier for this complexity"},
+        {"kind": "fn", "name": "default", "signature": "fn default() -> Self {"},
+        {"kind": "fn", "name": "no_routing", "signature": "fn no_routing() -> Self {", "doc": "Config that always uses the full model (no routing)"},
+        {"kind": "fn", "name": "cost_optimized", "signature": "fn cost_optimized() -> Self {", "doc": "Config optimized for cost savings"},
+        {"kind": "fn", "name": "quality_optimized", "signature": "fn quality_optimized() -> Self {", "doc": "Config optimized for quality"},
+        {"kind": "fn", "name": "new", "signature": "fn new(config: RouterConfig) -> Self {", "doc": "Create a new router with the given configuration"},
+        {"kind": "fn", "name": "explain_decision", "signature": "fn explain_decision(&self, query: &str, complexity: QueryComplexity, tier: ModelTier) -> String {"},
+        {"kind": "struct", "name": "PatternMatcher"}
+      ]
+    },
+    {
+      "name": "pool",
+      "file": "pool.html",
+      "items": [
+        {"kind": "fn", "name": "default", "signature": "fn default() -> Self {"},
+        {"kind": "fn", "name": "single", "signature": "fn single() -> Self {", "doc": "Single instance (no pooling)"},
+        {"kind": "fn", "name": "small", "signature": "fn small() -> Self {", "doc": "Small pool for moderate traffic"},
+        {"kind": "fn", "name": "medium", "signature": "fn medium() -> Self {", "doc": "Medium pool for higher traffic"},
+        {"kind": "fn", "name": "large", "signature": "fn large() -> Self {", "doc": "Large pool for maximum throughput"},
+        {"kind": "fn", "name": "is_valid", "signature": "fn is_valid(&self) -> bool {", "doc": "Check if handle is valid"},
+        {"kind": "struct", "name": "PooledInstance"}
+      ]
+    },
+    {
+      "name": "mod",
+      "file": "mod.html",
+      "items": [
+        {"kind": "fn", "name": "batch_key", "signature": "fn batch_key(&self) -> String;", "doc": "Unique identifier for deduplication"},
+        {"kind": "fn", "name": "priority", "signature": "fn priority(&self) -> u32 { 0 }", "doc": "Priority for ordering within batch (higher = first)"},
+        {"kind": "fn", "name": "max_wait_ms", "signature": "fn max_wait_ms(&self) -> u64 { 1000 }", "doc": "Maximum time this request can wait in queue (ms)"},
+        {"kind": "fn", "name": "infer_batch", "signature": "fn infer_batch(&self, requests: Vec<Self::Request>) -> Result<Vec<Self::Response>, Self::Error>;", "doc": "Process a batch of requests"},
+        {"kind": "fn", "name": "max_batch_size", "signature": "fn max_batch_size(&self) -> usize { 8 }", "doc": "Maximum batch size supported by this backend"},
+        {"kind": "fn", "name": "supports_streaming", "signature": "fn supports_streaming(&self) -> bool { false }", "doc": "Whether this backend supports streaming output"},
+        {"kind": "fn", "name": "cache_key", "signature": "fn cache_key(&self) -> String;", "doc": "Compute cache key from request"},
+        {"kind": "fn", "name": "is_cacheable", "signature": "fn is_cacheable(&self) -> bool { true }", "doc": "Whether this response should be cached"},
+        {"kind": "fn", "name": "ttl_ms", "signature": "fn ttl_ms(&self) -> Option<u64> { None }", "doc": "TTL override for this specific response (None = use default)"},
+        {"kind": "fn", "name": "analyze", "signature": "fn analyze(&self, query: &Self::Query) -> f32;", "doc": "Analyze query and return complexity score (0.0 - 1.0)"},
+        {"kind": "fn", "name": "select_tier", "signature": "fn select_tier(&self, complexity: f32) -> ModelTier {", "doc": "Determine model tier based on complexity"},
+        {"kind": "fn", "name": "slm_model_load", "signature": "fn slm_model_load(path: &str, config: &ModelLoadConfig) -> Result<ModelHandle, SlmError>;", "doc": "Create a new model instance"},
+        {"kind": "fn", "name": "slm_model_unload", "signature": "fn slm_model_unload(handle: ModelHandle);", "doc": "Unload a model and free resources"},
+        {"kind": "fn", "name": "slm_batch_infer", "signature": "fn slm_batch_infer(", "doc": "Run batch inference"},
+        {"kind": "fn", "name": "slm_stream_infer", "signature": "fn slm_stream_infer(", "doc": "Run streaming inference (single request)"},
+        {"kind": "fn", "name": "slm_tokenize", "signature": "fn slm_tokenize(handle: ModelHandle, text: &str) -> Result<Vec<i32>, SlmError>;", "doc": "Tokenize a prompt (for caching)"},
+        {"kind": "fn", "name": "slm_detokenize", "signature": "fn slm_detokenize(handle: ModelHandle, tokens: &[i32]) -> Result<String, SlmError>;", "doc": "Detokenize tokens back to text"},
+        {"kind": "fn", "name": "slm_model_info", "signature": "fn slm_model_info(handle: ModelHandle) -> ModelInfo;", "doc": "Get model metadata"},
+        {"kind": "fn", "name": "default", "signature": "fn default() -> Self {"},
+        {"kind": "fn", "name": "default", "signature": "fn default() -> Self {"},
+        {"kind": "fn", "name": "fmt", "signature": "fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {"}
+      ]
+    },
+    {
+      "name": "batcher",
+      "file": "batcher.html",
+      "items": [
+        {"kind": "fn", "name": "default", "signature": "fn default() -> Self {"},
+        {"kind": "fn", "name": "low_latency", "signature": "fn low_latency() -> Self {", "doc": "Create config optimized for latency"},
+        {"kind": "fn", "name": "high_throughput", "signature": "fn high_throughput() -> Self {", "doc": "Create config optimized for throughput"},
+        {"kind": "fn", "name": "no_batching", "signature": "fn no_batching() -> Self {", "doc": "Create config for single-request mode (no batching)"},
+        {"kind": "struct", "name": "SubmitRequest"}
+      ]
+    }
+  ]
+}

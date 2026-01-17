@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>address - Simplex API Reference</title>
+  <meta name="description" content="API documentation for the Simplex programming language">
+  <link rel="stylesheet" href="../assets/docs.css">
+  <script src="../assets/nav.js" defer></script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "address - Simplex API Reference",
+  "description": "API documentation for the Simplex programming language",
+  "programmingLanguage": {
+    "@type": "ComputerLanguage",
+    "name": "Simplex",
+    "url": "https://github.com/senuamedia/simplex"
+  },
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "Simplex Documentation",
+    "url": "https://simplex.senuamedia.com/api/"
+  },
+  "articleSection": "nexus"
+}
+</script>
+</head>
+<body>
+<div class="doc-wrapper">
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-header"><a href="../index.html">Simplex API</a></div>
+    <div class="search-box">
+      <input type="text" id="search" placeholder="Search...">
+    </div>
+    <div id="nav-content">Loading...</div>
+  </nav>
+  <main class="content">
+    <nav class="breadcrumb">
+      <a href="../index.html">API Reference</a> &raquo;       <span class="current-category">nexus</span> &raquo; address
+    </nav>
+    <h1>Module: address</h1>
+<div class="toc">
+<strong>Contents</strong>
+<ul>
+<li><a href="#ADDR_TYPE_UNKNOWN">fn ADDR_TYPE_UNKNOWN</a></li>
+<li><a href="#ADDR_TYPE_HIVE">fn ADDR_TYPE_HIVE</a></li>
+<li><a href="#ADDR_TYPE_ACTOR">fn ADDR_TYPE_ACTOR</a></li>
+<li><a href="#ADDR_TYPE_SERVICE">fn ADDR_TYPE_SERVICE</a></li>
+<li><a href="#ADDR_TYPE_MULTICAST">fn ADDR_TYPE_MULTICAST</a></li>
+<li><a href="#RESOLVE_OK">fn RESOLVE_OK</a></li>
+<li><a href="#RESOLVE_NOT_FOUND">fn RESOLVE_NOT_FOUND</a></li>
+<li><a href="#RESOLVE_TIMEOUT">fn RESOLVE_TIMEOUT</a></li>
+<li><a href="#RESOLVE_ERROR">fn RESOLVE_ERROR</a></li>
+<li><a href="#RESOLVE_CACHED">fn RESOLVE_CACHED</a></li>
+<li><a href="#ADDR_CACHE_TTL">fn ADDR_CACHE_TTL</a></li>
+<li><a href="#ADDR_CACHE_NEGATIVE_TTL">fn ADDR_CACHE_NEGATIVE_TTL</a></li>
+<li><a href="#ADDR_CACHE_MAX_SIZE">fn ADDR_CACHE_MAX_SIZE</a></li>
+<li><a href="#net_hive_addr_new">fn net_hive_addr_new</a></li>
+<li><a href="#net_hive_addr_id">fn net_hive_addr_id</a></li>
+<li><a href="#net_hive_addr_region">fn net_hive_addr_region</a></li>
+<li><a href="#net_hive_addr_zone">fn net_hive_addr_zone</a></li>
+<li><a href="#net_hive_addr_name_hash">fn net_hive_addr_name_hash</a></li>
+<li><a href="#net_hive_addr_set_region">fn net_hive_addr_set_region</a></li>
+<li><a href="#net_hive_addr_set_zone">fn net_hive_addr_set_zone</a></li>
+<li><a href="#net_hive_addr_set_name_hash">fn net_hive_addr_set_name_hash</a></li>
+<li><a href="#net_hive_addr_from_name">fn net_hive_addr_from_name</a></li>
+<li><a href="#net_hive_addr_equals">fn net_hive_addr_equals</a></li>
+<li><a href="#net_actor_addr_new">fn net_actor_addr_new</a></li>
+<li><a href="#net_actor_addr_hive">fn net_actor_addr_hive</a></li>
+<li><a href="#net_actor_addr_id">fn net_actor_addr_id</a></li>
+<li><a href="#net_actor_addr_generation">fn net_actor_addr_generation</a></li>
+<li><a href="#net_actor_addr_mailbox_hint">fn net_actor_addr_mailbox_hint</a></li>
+<li><a href="#net_actor_addr_set_generation">fn net_actor_addr_set_generation</a></li>
+<li><a href="#net_actor_addr_set_mailbox_hint">fn net_actor_addr_set_mailbox_hint</a></li>
+<li><a href="#net_actor_addr_equals">fn net_actor_addr_equals</a></li>
+<li><a href="#net_endpoint_new">fn net_endpoint_new</a></li>
+<li><a href="#net_endpoint_transport">fn net_endpoint_transport</a></li>
+<li><a href="#net_endpoint_priority">fn net_endpoint_priority</a></li>
+<li><a href="#net_endpoint_weight">fn net_endpoint_weight</a></li>
+<li><a href="#net_endpoint_ttl">fn net_endpoint_ttl</a></li>
+<li><a href="#net_endpoint_created">fn net_endpoint_created</a></li>
+<li><a href="#net_endpoint_healthy">fn net_endpoint_healthy</a></li>
+<li><a href="#net_endpoint_set_priority">fn net_endpoint_set_priority</a></li>
+<li><a href="#net_endpoint_set_weight">fn net_endpoint_set_weight</a></li>
+<li><a href="#net_endpoint_set_ttl">fn net_endpoint_set_ttl</a></li>
+<li><a href="#net_endpoint_set_created">fn net_endpoint_set_created</a></li>
+<li><a href="#net_endpoint_set_healthy">fn net_endpoint_set_healthy</a></li>
+<li><a href="#net_endpoint_is_expired">fn net_endpoint_is_expired</a></li>
+<li><a href="#resolve_result_new">fn resolve_result_new</a></li>
+<li><a href="#resolve_result_status">fn resolve_result_status</a></li>
+<li><a href="#resolve_result_endpoints">fn resolve_result_endpoints</a></li>
+<li><a href="#resolve_result_time">fn resolve_result_time</a></li>
+<li><a href="#resolve_result_source">fn resolve_result_source</a></li>
+<li><a href="#resolve_result_set_status">fn resolve_result_set_status</a></li>
+<li><a href="#resolve_result_set_time">fn resolve_result_set_time</a></li>
+<li><a href="#resolve_result_set_source">fn resolve_result_set_source</a></li>
+<li><a href="#resolve_result_add_endpoint">fn resolve_result_add_endpoint</a></li>
+<li><a href="#resolve_result_best_endpoint">fn resolve_result_best_endpoint</a></li>
+<li><a href="#addr_cache_new">fn addr_cache_new</a></li>
+<li><a href="#addr_cache_entries">fn addr_cache_entries</a></li>
+<li><a href="#addr_cache_max_size">fn addr_cache_max_size</a></li>
+<li><a href="#addr_cache_hits">fn addr_cache_hits</a></li>
+<li><a href="#addr_cache_misses">fn addr_cache_misses</a></li>
+<li><a href="#addr_cache_inc_hits">fn addr_cache_inc_hits</a></li>
+<li><a href="#addr_cache_inc_misses">fn addr_cache_inc_misses</a></li>
+<li><a href="#cache_entry_new">fn cache_entry_new</a></li>
+<li><a href="#cache_entry_key">fn cache_entry_key</a></li>
+<li><a href="#cache_entry_result">fn cache_entry_result</a></li>
+<li><a href="#cache_entry_expires">fn cache_entry_expires</a></li>
+<li><a href="#addr_cache_get">fn addr_cache_get</a></li>
+<li><a href="#addr_cache_put">fn addr_cache_put</a></li>
+<li><a href="#addr_cache_evict_oldest">fn addr_cache_evict_oldest</a></li>
+<li><a href="#addr_cache_clear">fn addr_cache_clear</a></li>
+<li><a href="#addr_resolver_new">fn addr_resolver_new</a></li>
+<li><a href="#addr_resolver_cache">fn addr_resolver_cache</a></li>
+<li><a href="#addr_resolver_registrations">fn addr_resolver_registrations</a></li>
+<li><a href="#addr_resolver_discovery">fn addr_resolver_discovery</a></li>
+<li><a href="#addr_resolver_config">fn addr_resolver_config</a></li>
+<li><a href="#resolver_config_new">fn resolver_config_new</a></li>
+<li><a href="#resolver_config_ttl">fn resolver_config_ttl</a></li>
+<li><a href="#resolver_config_negative_ttl">fn resolver_config_negative_ttl</a></li>
+<li><a href="#resolver_config_timeout">fn resolver_config_timeout</a></li>
+<li><a href="#resolver_config_use_cache">fn resolver_config_use_cache</a></li>
+<li><a href="#registration_new">fn registration_new</a></li>
+<li><a href="#registration_hive_id">fn registration_hive_id</a></li>
+<li><a href="#registration_endpoints">fn registration_endpoints</a></li>
+<li><a href="#addr_resolver_register">fn addr_resolver_register</a></li>
+<li><a href="#addr_resolver_unregister">fn addr_resolver_unregister</a></li>
+<li><a href="#addr_resolver_resolve_hive">fn addr_resolver_resolve_hive</a></li>
+<li><a href="#addr_resolver_resolve_actor">fn addr_resolver_resolve_actor</a></li>
+<li><a href="#addr_resolver_discover">fn addr_resolver_discover</a></li>
+<li><a href="#addr_resolver_add_discovery">fn addr_resolver_add_discovery</a></li>
+<li><a href="#addr_resolver_remove_discovery">fn addr_resolver_remove_discovery</a></li>
+<li><a href="#addr_resolver_mark_unhealthy">fn addr_resolver_mark_unhealthy</a></li>
+<li><a href="#addr_resolver_mark_healthy">fn addr_resolver_mark_healthy</a></li>
+<li><a href="#addr_resolver_stats">fn addr_resolver_stats</a></li>
+<li><a href="#resolver_stats_cache_hits">fn resolver_stats_cache_hits</a></li>
+<li><a href="#resolver_stats_cache_misses">fn resolver_stats_cache_misses</a></li>
+<li><a href="#resolver_stats_cache_size">fn resolver_stats_cache_size</a></li>
+<li><a href="#resolver_stats_registrations">fn resolver_stats_registrations</a></li>
+<li><a href="#resolver_stats_discovery_endpoints">fn resolver_stats_discovery_endpoints</a></li>
+</ul>
+</div>
+<h2 id="ADDR_TYPE_UNKNOWN">fn ADDR_TYPE_UNKNOWN</h2>
+<pre class="signature">fn ADDR_TYPE_UNKNOWN() -&gt; i64 { 0 }</pre>
+<h2 id="ADDR_TYPE_HIVE">fn ADDR_TYPE_HIVE</h2>
+<pre class="signature">fn ADDR_TYPE_HIVE() -&gt; i64 { 1 }       // Hive address</pre>
+<h2 id="ADDR_TYPE_ACTOR">fn ADDR_TYPE_ACTOR</h2>
+<pre class="signature">fn ADDR_TYPE_ACTOR() -&gt; i64 { 2 }      // Actor within hive</pre>
+<h2 id="ADDR_TYPE_SERVICE">fn ADDR_TYPE_SERVICE</h2>
+<pre class="signature">fn ADDR_TYPE_SERVICE() -&gt; i64 { 3 }    // Named service</pre>
+<h2 id="ADDR_TYPE_MULTICAST">fn ADDR_TYPE_MULTICAST</h2>
+<pre class="signature">fn ADDR_TYPE_MULTICAST() -&gt; i64 { 4 }  // Multicast group</pre>
+<h2 id="RESOLVE_OK">fn RESOLVE_OK</h2>
+<pre class="signature">fn RESOLVE_OK() -&gt; i64 { 0 }</pre>
+<h2 id="RESOLVE_NOT_FOUND">fn RESOLVE_NOT_FOUND</h2>
+<pre class="signature">fn RESOLVE_NOT_FOUND() -&gt; i64 { 1 }</pre>
+<h2 id="RESOLVE_TIMEOUT">fn RESOLVE_TIMEOUT</h2>
+<pre class="signature">fn RESOLVE_TIMEOUT() -&gt; i64 { 2 }</pre>
+<h2 id="RESOLVE_ERROR">fn RESOLVE_ERROR</h2>
+<pre class="signature">fn RESOLVE_ERROR() -&gt; i64 { 3 }</pre>
+<h2 id="RESOLVE_CACHED">fn RESOLVE_CACHED</h2>
+<pre class="signature">fn RESOLVE_CACHED() -&gt; i64 { 4 }</pre>
+<h2 id="ADDR_CACHE_TTL">fn ADDR_CACHE_TTL</h2>
+<pre class="signature">fn ADDR_CACHE_TTL() -&gt; i64 { 300000 }         // 5 minutes default TTL</pre>
+<h2 id="ADDR_CACHE_NEGATIVE_TTL">fn ADDR_CACHE_NEGATIVE_TTL</h2>
+<pre class="signature">fn ADDR_CACHE_NEGATIVE_TTL() -&gt; i64 { 60000 } // 1 minute negative cache</pre>
+<h2 id="ADDR_CACHE_MAX_SIZE">fn ADDR_CACHE_MAX_SIZE</h2>
+<pre class="signature">fn ADDR_CACHE_MAX_SIZE() -&gt; i64 { 1000 }      // Max cached entries</pre>
+<h2 id="net_hive_addr_new">fn net_hive_addr_new</h2>
+<pre class="signature">fn net_hive_addr_new(hive_id: i64) -&gt; i64 {</pre>
+<h2 id="net_hive_addr_id">fn net_hive_addr_id</h2>
+<pre class="signature">fn net_hive_addr_id(addr: i64) -&gt; i64 { vec_get(addr, 0) }</pre>
+<h2 id="net_hive_addr_region">fn net_hive_addr_region</h2>
+<pre class="signature">fn net_hive_addr_region(addr: i64) -&gt; i64 { vec_get(addr, 1) }</pre>
+<h2 id="net_hive_addr_zone">fn net_hive_addr_zone</h2>
+<pre class="signature">fn net_hive_addr_zone(addr: i64) -&gt; i64 { vec_get(addr, 2) }</pre>
+<h2 id="net_hive_addr_name_hash">fn net_hive_addr_name_hash</h2>
+<pre class="signature">fn net_hive_addr_name_hash(addr: i64) -&gt; i64 { vec_get(addr, 3) }</pre>
+<h2 id="net_hive_addr_set_region">fn net_hive_addr_set_region</h2>
+<pre class="signature">fn net_hive_addr_set_region(addr: i64, region: i64) -&gt; i64 {</pre>
+<h2 id="net_hive_addr_set_zone">fn net_hive_addr_set_zone</h2>
+<pre class="signature">fn net_hive_addr_set_zone(addr: i64, zone: i64) -&gt; i64 {</pre>
+<h2 id="net_hive_addr_set_name_hash">fn net_hive_addr_set_name_hash</h2>
+<pre class="signature">fn net_hive_addr_set_name_hash(addr: i64, hash: i64) -&gt; i64 {</pre>
+<h2 id="net_hive_addr_from_name">fn net_hive_addr_from_name</h2>
+<pre class="signature">fn net_hive_addr_from_name(name: i64) -&gt; i64 {</pre>
+<h2 id="net_hive_addr_equals">fn net_hive_addr_equals</h2>
+<pre class="signature">fn net_hive_addr_equals(a: i64, b: i64) -&gt; i64 {</pre>
+<h2 id="net_actor_addr_new">fn net_actor_addr_new</h2>
+<pre class="signature">fn net_actor_addr_new(hive_addr: i64, actor_id: i64) -&gt; i64 {</pre>
+<h2 id="net_actor_addr_hive">fn net_actor_addr_hive</h2>
+<pre class="signature">fn net_actor_addr_hive(addr: i64) -&gt; i64 { vec_get(addr, 0) }</pre>
+<h2 id="net_actor_addr_id">fn net_actor_addr_id</h2>
+<pre class="signature">fn net_actor_addr_id(addr: i64) -&gt; i64 { vec_get(addr, 1) }</pre>
+<h2 id="net_actor_addr_generation">fn net_actor_addr_generation</h2>
+<pre class="signature">fn net_actor_addr_generation(addr: i64) -&gt; i64 { vec_get(addr, 2) }</pre>
+<h2 id="net_actor_addr_mailbox_hint">fn net_actor_addr_mailbox_hint</h2>
+<pre class="signature">fn net_actor_addr_mailbox_hint(addr: i64) -&gt; i64 { vec_get(addr, 3) }</pre>
+<h2 id="net_actor_addr_set_generation">fn net_actor_addr_set_generation</h2>
+<pre class="signature">fn net_actor_addr_set_generation(addr: i64, gen: i64) -&gt; i64 {</pre>
+<h2 id="net_actor_addr_set_mailbox_hint">fn net_actor_addr_set_mailbox_hint</h2>
+<pre class="signature">fn net_actor_addr_set_mailbox_hint(addr: i64, hint: i64) -&gt; i64 {</pre>
+<h2 id="net_actor_addr_equals">fn net_actor_addr_equals</h2>
+<pre class="signature">fn net_actor_addr_equals(a: i64, b: i64) -&gt; i64 {</pre>
+<h2 id="net_endpoint_new">fn net_endpoint_new</h2>
+<pre class="signature">fn net_endpoint_new(transport_endpoint: i64) -&gt; i64 {</pre>
+<h2 id="net_endpoint_transport">fn net_endpoint_transport</h2>
+<pre class="signature">fn net_endpoint_transport(ep: i64) -&gt; i64 { vec_get(ep, 0) }</pre>
+<h2 id="net_endpoint_priority">fn net_endpoint_priority</h2>
+<pre class="signature">fn net_endpoint_priority(ep: i64) -&gt; i64 { vec_get(ep, 1) }</pre>
+<h2 id="net_endpoint_weight">fn net_endpoint_weight</h2>
+<pre class="signature">fn net_endpoint_weight(ep: i64) -&gt; i64 { vec_get(ep, 2) }</pre>
+<h2 id="net_endpoint_ttl">fn net_endpoint_ttl</h2>
+<pre class="signature">fn net_endpoint_ttl(ep: i64) -&gt; i64 { vec_get(ep, 3) }</pre>
+<h2 id="net_endpoint_created">fn net_endpoint_created</h2>
+<pre class="signature">fn net_endpoint_created(ep: i64) -&gt; i64 { vec_get(ep, 4) }</pre>
+<h2 id="net_endpoint_healthy">fn net_endpoint_healthy</h2>
+<pre class="signature">fn net_endpoint_healthy(ep: i64) -&gt; i64 { vec_get(ep, 5) }</pre>
+<h2 id="net_endpoint_set_priority">fn net_endpoint_set_priority</h2>
+<pre class="signature">fn net_endpoint_set_priority(ep: i64, priority: i64) -&gt; i64 {</pre>
+<h2 id="net_endpoint_set_weight">fn net_endpoint_set_weight</h2>
+<pre class="signature">fn net_endpoint_set_weight(ep: i64, weight: i64) -&gt; i64 {</pre>
+<h2 id="net_endpoint_set_ttl">fn net_endpoint_set_ttl</h2>
+<pre class="signature">fn net_endpoint_set_ttl(ep: i64, ttl: i64) -&gt; i64 {</pre>
+<h2 id="net_endpoint_set_created">fn net_endpoint_set_created</h2>
+<pre class="signature">fn net_endpoint_set_created(ep: i64, time: i64) -&gt; i64 {</pre>
+<h2 id="net_endpoint_set_healthy">fn net_endpoint_set_healthy</h2>
+<pre class="signature">fn net_endpoint_set_healthy(ep: i64, healthy: i64) -&gt; i64 {</pre>
+<h2 id="net_endpoint_is_expired">fn net_endpoint_is_expired</h2>
+<pre class="signature">fn net_endpoint_is_expired(ep: i64, now: i64) -&gt; i64 {</pre>
+<h2 id="resolve_result_new">fn resolve_result_new</h2>
+<pre class="signature">fn resolve_result_new(status: i64) -&gt; i64 {</pre>
+<h2 id="resolve_result_status">fn resolve_result_status</h2>
+<pre class="signature">fn resolve_result_status(r: i64) -&gt; i64 { vec_get(r, 0) }</pre>
+<h2 id="resolve_result_endpoints">fn resolve_result_endpoints</h2>
+<pre class="signature">fn resolve_result_endpoints(r: i64) -&gt; i64 { vec_get(r, 1) }</pre>
+<h2 id="resolve_result_time">fn resolve_result_time</h2>
+<pre class="signature">fn resolve_result_time(r: i64) -&gt; i64 { vec_get(r, 2) }</pre>
+<h2 id="resolve_result_source">fn resolve_result_source</h2>
+<pre class="signature">fn resolve_result_source(r: i64) -&gt; i64 { vec_get(r, 3) }</pre>
+<h2 id="resolve_result_set_status">fn resolve_result_set_status</h2>
+<pre class="signature">fn resolve_result_set_status(r: i64, status: i64) -&gt; i64 {</pre>
+<h2 id="resolve_result_set_time">fn resolve_result_set_time</h2>
+<pre class="signature">fn resolve_result_set_time(r: i64, time: i64) -&gt; i64 {</pre>
+<h2 id="resolve_result_set_source">fn resolve_result_set_source</h2>
+<pre class="signature">fn resolve_result_set_source(r: i64, source: i64) -&gt; i64 {</pre>
+<h2 id="resolve_result_add_endpoint">fn resolve_result_add_endpoint</h2>
+<pre class="signature">fn resolve_result_add_endpoint(r: i64, ep: i64) -&gt; i64 {</pre>
+<h2 id="resolve_result_best_endpoint">fn resolve_result_best_endpoint</h2>
+<pre class="signature">fn resolve_result_best_endpoint(r: i64) -&gt; i64 {</pre>
+<h2 id="addr_cache_new">fn addr_cache_new</h2>
+<pre class="signature">fn addr_cache_new() -&gt; i64 {</pre>
+<h2 id="addr_cache_entries">fn addr_cache_entries</h2>
+<pre class="signature">fn addr_cache_entries(cache: i64) -&gt; i64 { vec_get(cache, 0) }</pre>
+<h2 id="addr_cache_max_size">fn addr_cache_max_size</h2>
+<pre class="signature">fn addr_cache_max_size(cache: i64) -&gt; i64 { vec_get(cache, 1) }</pre>
+<h2 id="addr_cache_hits">fn addr_cache_hits</h2>
+<pre class="signature">fn addr_cache_hits(cache: i64) -&gt; i64 { vec_get(cache, 2) }</pre>
+<h2 id="addr_cache_misses">fn addr_cache_misses</h2>
+<pre class="signature">fn addr_cache_misses(cache: i64) -&gt; i64 { vec_get(cache, 3) }</pre>
+<h2 id="addr_cache_inc_hits">fn addr_cache_inc_hits</h2>
+<pre class="signature">fn addr_cache_inc_hits(cache: i64) -&gt; i64 {</pre>
+<h2 id="addr_cache_inc_misses">fn addr_cache_inc_misses</h2>
+<pre class="signature">fn addr_cache_inc_misses(cache: i64) -&gt; i64 {</pre>
+<h2 id="cache_entry_new">fn cache_entry_new</h2>
+<pre class="signature">fn cache_entry_new(key: i64, result: i64, expires_at: i64) -&gt; i64 {</pre>
+<h2 id="cache_entry_key">fn cache_entry_key</h2>
+<pre class="signature">fn cache_entry_key(e: i64) -&gt; i64 { vec_get(e, 0) }</pre>
+<h2 id="cache_entry_result">fn cache_entry_result</h2>
+<pre class="signature">fn cache_entry_result(e: i64) -&gt; i64 { vec_get(e, 1) }</pre>
+<h2 id="cache_entry_expires">fn cache_entry_expires</h2>
+<pre class="signature">fn cache_entry_expires(e: i64) -&gt; i64 { vec_get(e, 2) }</pre>
+<h2 id="addr_cache_get">fn addr_cache_get</h2>
+<pre class="signature">fn addr_cache_get(cache: i64, key: i64, now: i64) -&gt; i64 {</pre>
+<h2 id="addr_cache_put">fn addr_cache_put</h2>
+<pre class="signature">fn addr_cache_put(cache: i64, key: i64, result: i64, ttl: i64, now: i64) -&gt; i64 {</pre>
+<h2 id="addr_cache_evict_oldest">fn addr_cache_evict_oldest</h2>
+<pre class="signature">fn addr_cache_evict_oldest(cache: i64, now: i64) -&gt; i64 {</pre>
+<h2 id="addr_cache_clear">fn addr_cache_clear</h2>
+<pre class="signature">fn addr_cache_clear(cache: i64) -&gt; i64 {</pre>
+<h2 id="addr_resolver_new">fn addr_resolver_new</h2>
+<pre class="signature">fn addr_resolver_new() -&gt; i64 {</pre>
+<h2 id="addr_resolver_cache">fn addr_resolver_cache</h2>
+<pre class="signature">fn addr_resolver_cache(r: i64) -&gt; i64 { vec_get(r, 0) }</pre>
+<h2 id="addr_resolver_registrations">fn addr_resolver_registrations</h2>
+<pre class="signature">fn addr_resolver_registrations(r: i64) -&gt; i64 { vec_get(r, 1) }</pre>
+<h2 id="addr_resolver_discovery">fn addr_resolver_discovery</h2>
+<pre class="signature">fn addr_resolver_discovery(r: i64) -&gt; i64 { vec_get(r, 2) }</pre>
+<h2 id="addr_resolver_config">fn addr_resolver_config</h2>
+<pre class="signature">fn addr_resolver_config(r: i64) -&gt; i64 { vec_get(r, 3) }</pre>
+<h2 id="resolver_config_new">fn resolver_config_new</h2>
+<pre class="signature">fn resolver_config_new() -&gt; i64 {</pre>
+<h2 id="resolver_config_ttl">fn resolver_config_ttl</h2>
+<pre class="signature">fn resolver_config_ttl(config: i64) -&gt; i64 { vec_get(config, 0) }</pre>
+<h2 id="resolver_config_negative_ttl">fn resolver_config_negative_ttl</h2>
+<pre class="signature">fn resolver_config_negative_ttl(config: i64) -&gt; i64 { vec_get(config, 1) }</pre>
+<h2 id="resolver_config_timeout">fn resolver_config_timeout</h2>
+<pre class="signature">fn resolver_config_timeout(config: i64) -&gt; i64 { vec_get(config, 2) }</pre>
+<h2 id="resolver_config_use_cache">fn resolver_config_use_cache</h2>
+<pre class="signature">fn resolver_config_use_cache(config: i64) -&gt; i64 { vec_get(config, 3) }</pre>
+<h2 id="registration_new">fn registration_new</h2>
+<pre class="signature">fn registration_new(hive_id: i64) -&gt; i64 {</pre>
+<h2 id="registration_hive_id">fn registration_hive_id</h2>
+<pre class="signature">fn registration_hive_id(reg: i64) -&gt; i64 { vec_get(reg, 0) }</pre>
+<h2 id="registration_endpoints">fn registration_endpoints</h2>
+<pre class="signature">fn registration_endpoints(reg: i64) -&gt; i64 { vec_get(reg, 1) }</pre>
+<h2 id="addr_resolver_register">fn addr_resolver_register</h2>
+<pre class="signature">fn addr_resolver_register(resolver: i64, hive_id: i64, endpoint: i64, now: i64) -&gt; i64 {</pre>
+<h2 id="addr_resolver_unregister">fn addr_resolver_unregister</h2>
+<pre class="signature">fn addr_resolver_unregister(resolver: i64, hive_id: i64) -&gt; i64 {</pre>
+<h2 id="addr_resolver_resolve_hive">fn addr_resolver_resolve_hive</h2>
+<pre class="signature">fn addr_resolver_resolve_hive(resolver: i64, hive_address: i64, now: i64) -&gt; i64 {</pre>
+<h2 id="addr_resolver_resolve_actor">fn addr_resolver_resolve_actor</h2>
+<pre class="signature">fn addr_resolver_resolve_actor(resolver: i64, actor_address: i64, now: i64) -&gt; i64 {</pre>
+<h2 id="addr_resolver_discover">fn addr_resolver_discover</h2>
+<pre class="signature">fn addr_resolver_discover(resolver: i64, hive_id: i64, now: i64) -&gt; i64 {</pre>
+<h2 id="addr_resolver_add_discovery">fn addr_resolver_add_discovery</h2>
+<pre class="signature">fn addr_resolver_add_discovery(resolver: i64, endpoint: i64) -&gt; i64 {</pre>
+<h2 id="addr_resolver_remove_discovery">fn addr_resolver_remove_discovery</h2>
+<pre class="signature">fn addr_resolver_remove_discovery(resolver: i64, endpoint: i64) -&gt; i64 {</pre>
+<h2 id="addr_resolver_mark_unhealthy">fn addr_resolver_mark_unhealthy</h2>
+<pre class="signature">fn addr_resolver_mark_unhealthy(resolver: i64, hive_id: i64, endpoint: i64) -&gt; i64 {</pre>
+<h2 id="addr_resolver_mark_healthy">fn addr_resolver_mark_healthy</h2>
+<pre class="signature">fn addr_resolver_mark_healthy(resolver: i64, hive_id: i64, endpoint: i64) -&gt; i64 {</pre>
+<h2 id="addr_resolver_stats">fn addr_resolver_stats</h2>
+<pre class="signature">fn addr_resolver_stats(resolver: i64) -&gt; i64 {</pre>
+<h2 id="resolver_stats_cache_hits">fn resolver_stats_cache_hits</h2>
+<pre class="signature">fn resolver_stats_cache_hits(stats: i64) -&gt; i64 { vec_get(stats, 0) }</pre>
+<h2 id="resolver_stats_cache_misses">fn resolver_stats_cache_misses</h2>
+<pre class="signature">fn resolver_stats_cache_misses(stats: i64) -&gt; i64 { vec_get(stats, 1) }</pre>
+<h2 id="resolver_stats_cache_size">fn resolver_stats_cache_size</h2>
+<pre class="signature">fn resolver_stats_cache_size(stats: i64) -&gt; i64 { vec_get(stats, 2) }</pre>
+<h2 id="resolver_stats_registrations">fn resolver_stats_registrations</h2>
+<pre class="signature">fn resolver_stats_registrations(stats: i64) -&gt; i64 { vec_get(stats, 3) }</pre>
+<h2 id="resolver_stats_discovery_endpoints">fn resolver_stats_discovery_endpoints</h2>
+<pre class="signature">fn resolver_stats_discovery_endpoints(stats: i64) -&gt; i64 { vec_get(stats, 4) }</pre>
+
+    <hr>
+    <p><em>Generated by sxdoc</em></p>
+  </main>
+</div>
+</body>
+</html>

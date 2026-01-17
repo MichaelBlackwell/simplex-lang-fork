@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>message - Simplex API Reference</title>
+  <meta name="description" content="API documentation for the Simplex programming language">
+  <link rel="stylesheet" href="../assets/docs.css">
+  <script src="../assets/nav.js" defer></script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "message - Simplex API Reference",
+  "description": "API documentation for the Simplex programming language",
+  "programmingLanguage": {
+    "@type": "ComputerLanguage",
+    "name": "Simplex",
+    "url": "https://github.com/senuamedia/simplex"
+  },
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "Simplex Documentation",
+    "url": "https://simplex.senuamedia.com/api/"
+  },
+  "articleSection": "nexus"
+}
+</script>
+</head>
+<body>
+<div class="doc-wrapper">
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-header"><a href="../index.html">Simplex API</a></div>
+    <div class="search-box">
+      <input type="text" id="search" placeholder="Search...">
+    </div>
+    <div id="nav-content">Loading...</div>
+  </nav>
+  <main class="content">
+    <nav class="breadcrumb">
+      <a href="../index.html">API Reference</a> &raquo;       <span class="current-category">nexus</span> &raquo; message
+    </nav>
+    <h1>Module: message</h1>
+<div class="toc">
+<strong>Contents</strong>
+<ul>
+<li><a href="#message_new">fn message_new</a></li>
+<li><a href="#message_type">fn message_type</a></li>
+<li><a href="#message_flags">fn message_flags</a></li>
+<li><a href="#message_correlation_id">fn message_correlation_id</a></li>
+<li><a href="#message_stream_id">fn message_stream_id</a></li>
+<li><a href="#message_payload">fn message_payload</a></li>
+<li><a href="#message_set_flags">fn message_set_flags</a></li>
+<li><a href="#message_set_correlation_id">fn message_set_correlation_id</a></li>
+<li><a href="#message_set_stream_id">fn message_set_stream_id</a></li>
+<li><a href="#message_set_payload">fn message_set_payload</a></li>
+<li><a href="#message_encode">fn message_encode</a></li>
+<li><a href="#message_decode">fn message_decode</a></li>
+<li><a href="#MSG_FLAG_HAS_CORRELATION">fn MSG_FLAG_HAS_CORRELATION</a></li>
+<li><a href="#MSG_FLAG_HAS_STREAM">fn MSG_FLAG_HAS_STREAM</a></li>
+<li><a href="#MSG_FLAG_COMPRESSED">fn MSG_FLAG_COMPRESSED</a></li>
+<li><a href="#MSG_FLAG_REQUIRES_ACK">fn MSG_FLAG_REQUIRES_ACK</a></li>
+<li><a href="#MSG_FLAG_IS_REPLY">fn MSG_FLAG_IS_REPLY</a></li>
+<li><a href="#MSG_FLAG_IS_ERROR">fn MSG_FLAG_IS_ERROR</a></li>
+<li><a href="#stream_state_new">fn stream_state_new</a></li>
+<li><a href="#stream_state_id">fn stream_state_id</a></li>
+<li><a href="#stream_state_total">fn stream_state_total</a></li>
+<li><a href="#stream_state_received">fn stream_state_received</a></li>
+<li><a href="#stream_state_buffer">fn stream_state_buffer</a></li>
+<li><a href="#stream_state_is_complete">fn stream_state_is_complete</a></li>
+<li><a href="#stream_state_set_total">fn stream_state_set_total</a></li>
+<li><a href="#STREAM_CONTENT_RAW">fn STREAM_CONTENT_RAW</a></li>
+<li><a href="#STREAM_CONTENT_BELIEFS">fn STREAM_CONTENT_BELIEFS</a></li>
+<li><a href="#STREAM_CONTENT_BASELINE">fn STREAM_CONTENT_BASELINE</a></li>
+<li><a href="#STREAM_CONTENT_CATALOG">fn STREAM_CONTENT_CATALOG</a></li>
+<li><a href="#stream_start_payload_new">fn stream_start_payload_new</a></li>
+<li><a href="#stream_start_payload_parse">fn stream_start_payload_parse</a></li>
+<li><a href="#stream_data_payload_new">fn stream_data_payload_new</a></li>
+<li><a href="#stream_data_payload_parse">fn stream_data_payload_parse</a></li>
+<li><a href="#stream_end_payload_new">fn stream_end_payload_new</a></li>
+<li><a href="#stream_end_payload_parse">fn stream_end_payload_parse</a></li>
+<li><a href="#message_stream_start">fn message_stream_start</a></li>
+<li><a href="#message_stream_data">fn message_stream_data</a></li>
+<li><a href="#message_stream_end">fn message_stream_end</a></li>
+<li><a href="#stream_handle_data">fn stream_handle_data</a></li>
+<li><a href="#stream_handle_end">fn stream_handle_end</a></li>
+<li><a href="#compute_simple_checksum">fn compute_simple_checksum</a></li>
+<li><a href="#compress_rle">fn compress_rle</a></li>
+<li><a href="#decompress_rle">fn decompress_rle</a></li>
+<li><a href="#message_compress_payload">fn message_compress_payload</a></li>
+<li><a href="#message_decompress_payload">fn message_decompress_payload</a></li>
+<li><a href="#belief_message_new">fn belief_message_new</a></li>
+<li><a href="#belief_message_parse">fn belief_message_parse</a></li>
+<li><a href="#goal_message_new">fn goal_message_new</a></li>
+<li><a href="#goal_message_parse">fn goal_message_parse</a></li>
+<li><a href="#QUERY_TYPE_BELIEF">fn QUERY_TYPE_BELIEF</a></li>
+<li><a href="#QUERY_TYPE_GOAL">fn QUERY_TYPE_GOAL</a></li>
+<li><a href="#QUERY_TYPE_STATE">fn QUERY_TYPE_STATE</a></li>
+<li><a href="#QUERY_TYPE_CAPABILITY">fn QUERY_TYPE_CAPABILITY</a></li>
+<li><a href="#query_message_new">fn query_message_new</a></li>
+<li><a href="#query_message_parse">fn query_message_parse</a></li>
+<li><a href="#msg_router_new">fn msg_router_new</a></li>
+<li><a href="#msg_router_stats_new">fn msg_router_stats_new</a></li>
+<li><a href="#msg_router_stats_messages_routed">fn msg_router_stats_messages_routed</a></li>
+<li><a href="#msg_router_stats_messages_dropped">fn msg_router_stats_messages_dropped</a></li>
+<li><a href="#msg_router_stats_streams_completed">fn msg_router_stats_streams_completed</a></li>
+<li><a href="#msg_router_stats_queries_answered">fn msg_router_stats_queries_answered</a></li>
+<li><a href="#msg_router_pending_streams">fn msg_router_pending_streams</a></li>
+<li><a href="#msg_router_dispatch">fn msg_router_dispatch</a></li>
+<li><a href="#msg_router_handle_stream_start">fn msg_router_handle_stream_start</a></li>
+<li><a href="#msg_router_handle_stream_data">fn msg_router_handle_stream_data</a></li>
+<li><a href="#msg_router_handle_stream_end">fn msg_router_handle_stream_end</a></li>
+<li><a href="#msg_router_find_stream">fn msg_router_find_stream</a></li>
+<li><a href="#msg_router_print_stats">fn msg_router_print_stats</a></li>
+<li><a href="#message_type_name">fn message_type_name</a></li>
+<li><a href="#message_print">fn message_print</a></li>
+</ul>
+</div>
+<h2 id="message_new">fn message_new</h2>
+<pre class="signature">fn message_new(msg_type: i64) -&gt; i64 {</pre>
+<h2 id="message_type">fn message_type</h2>
+<pre class="signature">fn message_type(msg: i64) -&gt; i64 { vec_get(msg, 0) }</pre>
+<h2 id="message_flags">fn message_flags</h2>
+<pre class="signature">fn message_flags(msg: i64) -&gt; i64 { vec_get(msg, 1) }</pre>
+<h2 id="message_correlation_id">fn message_correlation_id</h2>
+<pre class="signature">fn message_correlation_id(msg: i64) -&gt; i64 { vec_get(msg, 2) }</pre>
+<h2 id="message_stream_id">fn message_stream_id</h2>
+<pre class="signature">fn message_stream_id(msg: i64) -&gt; i64 { vec_get(msg, 3) }</pre>
+<h2 id="message_payload">fn message_payload</h2>
+<pre class="signature">fn message_payload(msg: i64) -&gt; i64 { vec_get(msg, 4) }</pre>
+<h2 id="message_set_flags">fn message_set_flags</h2>
+<pre class="signature">fn message_set_flags(msg: i64, flags: i64) -&gt; i64 {</pre>
+<h2 id="message_set_correlation_id">fn message_set_correlation_id</h2>
+<pre class="signature">fn message_set_correlation_id(msg: i64, id: i64) -&gt; i64 {</pre>
+<h2 id="message_set_stream_id">fn message_set_stream_id</h2>
+<pre class="signature">fn message_set_stream_id(msg: i64, id: i64) -&gt; i64 {</pre>
+<h2 id="message_set_payload">fn message_set_payload</h2>
+<pre class="signature">fn message_set_payload(msg: i64, payload: i64) -&gt; i64 {</pre>
+<h2 id="message_encode">fn message_encode</h2>
+<pre class="signature">fn message_encode(msg: i64) -&gt; i64 {</pre>
+<h2 id="message_decode">fn message_decode</h2>
+<pre class="signature">fn message_decode(bytes: i64) -&gt; i64 {</pre>
+<h2 id="MSG_FLAG_HAS_CORRELATION">fn MSG_FLAG_HAS_CORRELATION</h2>
+<pre class="signature">fn MSG_FLAG_HAS_CORRELATION() -&gt; i64 { 1 }</pre>
+<h2 id="MSG_FLAG_HAS_STREAM">fn MSG_FLAG_HAS_STREAM</h2>
+<pre class="signature">fn MSG_FLAG_HAS_STREAM() -&gt; i64 { 2 }</pre>
+<h2 id="MSG_FLAG_COMPRESSED">fn MSG_FLAG_COMPRESSED</h2>
+<pre class="signature">fn MSG_FLAG_COMPRESSED() -&gt; i64 { 4 }</pre>
+<h2 id="MSG_FLAG_REQUIRES_ACK">fn MSG_FLAG_REQUIRES_ACK</h2>
+<pre class="signature">fn MSG_FLAG_REQUIRES_ACK() -&gt; i64 { 8 }</pre>
+<h2 id="MSG_FLAG_IS_REPLY">fn MSG_FLAG_IS_REPLY</h2>
+<pre class="signature">fn MSG_FLAG_IS_REPLY() -&gt; i64 { 16 }</pre>
+<h2 id="MSG_FLAG_IS_ERROR">fn MSG_FLAG_IS_ERROR</h2>
+<pre class="signature">fn MSG_FLAG_IS_ERROR() -&gt; i64 { 32 }</pre>
+<h2 id="stream_state_new">fn stream_state_new</h2>
+<pre class="signature">fn stream_state_new(stream_id: i64) -&gt; i64 {</pre>
+<h2 id="stream_state_id">fn stream_state_id</h2>
+<pre class="signature">fn stream_state_id(state: i64) -&gt; i64 { vec_get(state, 0) }</pre>
+<h2 id="stream_state_total">fn stream_state_total</h2>
+<pre class="signature">fn stream_state_total(state: i64) -&gt; i64 { vec_get(state, 1) }</pre>
+<h2 id="stream_state_received">fn stream_state_received</h2>
+<pre class="signature">fn stream_state_received(state: i64) -&gt; i64 { vec_get(state, 2) }</pre>
+<h2 id="stream_state_buffer">fn stream_state_buffer</h2>
+<pre class="signature">fn stream_state_buffer(state: i64) -&gt; i64 { vec_get(state, 3) }</pre>
+<h2 id="stream_state_is_complete">fn stream_state_is_complete</h2>
+<pre class="signature">fn stream_state_is_complete(state: i64) -&gt; i64 { vec_get(state, 4) }</pre>
+<h2 id="stream_state_set_total">fn stream_state_set_total</h2>
+<pre class="signature">fn stream_state_set_total(state: i64, total: i64) -&gt; i64 {</pre>
+<h2 id="STREAM_CONTENT_RAW">fn STREAM_CONTENT_RAW</h2>
+<pre class="signature">fn STREAM_CONTENT_RAW() -&gt; i64 { 0 }</pre>
+<h2 id="STREAM_CONTENT_BELIEFS">fn STREAM_CONTENT_BELIEFS</h2>
+<pre class="signature">fn STREAM_CONTENT_BELIEFS() -&gt; i64 { 1 }</pre>
+<h2 id="STREAM_CONTENT_BASELINE">fn STREAM_CONTENT_BASELINE</h2>
+<pre class="signature">fn STREAM_CONTENT_BASELINE() -&gt; i64 { 2 }</pre>
+<h2 id="STREAM_CONTENT_CATALOG">fn STREAM_CONTENT_CATALOG</h2>
+<pre class="signature">fn STREAM_CONTENT_CATALOG() -&gt; i64 { 3 }</pre>
+<h2 id="stream_start_payload_new">fn stream_start_payload_new</h2>
+<pre class="signature">fn stream_start_payload_new(total_chunks: i64, total_size: i64, content_type: i64) -&gt; i64 {</pre>
+<h2 id="stream_start_payload_parse">fn stream_start_payload_parse</h2>
+<pre class="signature">fn stream_start_payload_parse(payload: i64) -&gt; i64 {</pre>
+<h2 id="stream_data_payload_new">fn stream_data_payload_new</h2>
+<pre class="signature">fn stream_data_payload_new(chunk_index: i64, data: i64) -&gt; i64 {</pre>
+<h2 id="stream_data_payload_parse">fn stream_data_payload_parse</h2>
+<pre class="signature">fn stream_data_payload_parse(payload: i64) -&gt; i64 {</pre>
+<h2 id="stream_end_payload_new">fn stream_end_payload_new</h2>
+<pre class="signature">fn stream_end_payload_new(checksum: i64, final_count: i64) -&gt; i64 {</pre>
+<h2 id="stream_end_payload_parse">fn stream_end_payload_parse</h2>
+<pre class="signature">fn stream_end_payload_parse(payload: i64) -&gt; i64 {</pre>
+<h2 id="message_stream_start">fn message_stream_start</h2>
+<pre class="signature">fn message_stream_start(stream_id: i64, total_chunks: i64, total_size: i64, content_type: i64) -&gt; i64 {</pre>
+<h2 id="message_stream_data">fn message_stream_data</h2>
+<pre class="signature">fn message_stream_data(stream_id: i64, chunk_index: i64, data: i64) -&gt; i64 {</pre>
+<h2 id="message_stream_end">fn message_stream_end</h2>
+<pre class="signature">fn message_stream_end(stream_id: i64, checksum: i64, final_count: i64) -&gt; i64 {</pre>
+<h2 id="stream_handle_data">fn stream_handle_data</h2>
+<pre class="signature">fn stream_handle_data(state: i64, data_payload: i64) -&gt; i64 {</pre>
+<h2 id="stream_handle_end">fn stream_handle_end</h2>
+<pre class="signature">fn stream_handle_end(state: i64, end_payload: i64) -&gt; i64 {</pre>
+<h2 id="compute_simple_checksum">fn compute_simple_checksum</h2>
+<pre class="signature">fn compute_simple_checksum(data: i64) -&gt; i64 {</pre>
+<h2 id="compress_rle">fn compress_rle</h2>
+<pre class="signature">fn compress_rle(data: i64) -&gt; i64 {</pre>
+<h2 id="decompress_rle">fn decompress_rle</h2>
+<pre class="signature">fn decompress_rle(data: i64) -&gt; i64 {</pre>
+<h2 id="message_compress_payload">fn message_compress_payload</h2>
+<pre class="signature">fn message_compress_payload(msg: i64) -&gt; i64 {</pre>
+<h2 id="message_decompress_payload">fn message_decompress_payload</h2>
+<pre class="signature">fn message_decompress_payload(msg: i64) -&gt; i64 {</pre>
+<h2 id="belief_message_new">fn belief_message_new</h2>
+<pre class="signature">fn belief_message_new(belief_id: i64, confidence: i64, content: i64) -&gt; i64 {</pre>
+<h2 id="belief_message_parse">fn belief_message_parse</h2>
+<pre class="signature">fn belief_message_parse(msg: i64) -&gt; i64 {</pre>
+<h2 id="goal_message_new">fn goal_message_new</h2>
+<pre class="signature">fn goal_message_new(goal_id: i64, priority: i64, deadline: i64, description: i64) -&gt; i64 {</pre>
+<h2 id="goal_message_parse">fn goal_message_parse</h2>
+<pre class="signature">fn goal_message_parse(msg: i64) -&gt; i64 {</pre>
+<h2 id="QUERY_TYPE_BELIEF">fn QUERY_TYPE_BELIEF</h2>
+<pre class="signature">fn QUERY_TYPE_BELIEF() -&gt; i64 { 1 }</pre>
+<h2 id="QUERY_TYPE_GOAL">fn QUERY_TYPE_GOAL</h2>
+<pre class="signature">fn QUERY_TYPE_GOAL() -&gt; i64 { 2 }</pre>
+<h2 id="QUERY_TYPE_STATE">fn QUERY_TYPE_STATE</h2>
+<pre class="signature">fn QUERY_TYPE_STATE() -&gt; i64 { 3 }</pre>
+<h2 id="QUERY_TYPE_CAPABILITY">fn QUERY_TYPE_CAPABILITY</h2>
+<pre class="signature">fn QUERY_TYPE_CAPABILITY() -&gt; i64 { 4 }</pre>
+<h2 id="query_message_new">fn query_message_new</h2>
+<pre class="signature">fn query_message_new(query_id: i64, query_type: i64, query_data: i64) -&gt; i64 {</pre>
+<h2 id="query_message_parse">fn query_message_parse</h2>
+<pre class="signature">fn query_message_parse(msg: i64) -&gt; i64 {</pre>
+<h2 id="msg_router_new">fn msg_router_new</h2>
+<pre class="signature">fn msg_router_new() -&gt; i64 {</pre>
+<h2 id="msg_router_stats_new">fn msg_router_stats_new</h2>
+<pre class="signature">fn msg_router_stats_new() -&gt; i64 {</pre>
+<h2 id="msg_router_stats_messages_routed">fn msg_router_stats_messages_routed</h2>
+<pre class="signature">fn msg_router_stats_messages_routed(stats: i64) -&gt; i64 { vec_get(stats, 0) }</pre>
+<h2 id="msg_router_stats_messages_dropped">fn msg_router_stats_messages_dropped</h2>
+<pre class="signature">fn msg_router_stats_messages_dropped(stats: i64) -&gt; i64 { vec_get(stats, 1) }</pre>
+<h2 id="msg_router_stats_streams_completed">fn msg_router_stats_streams_completed</h2>
+<pre class="signature">fn msg_router_stats_streams_completed(stats: i64) -&gt; i64 { vec_get(stats, 2) }</pre>
+<h2 id="msg_router_stats_queries_answered">fn msg_router_stats_queries_answered</h2>
+<pre class="signature">fn msg_router_stats_queries_answered(stats: i64) -&gt; i64 { vec_get(stats, 3) }</pre>
+<h2 id="msg_router_pending_streams">fn msg_router_pending_streams</h2>
+<pre class="signature">fn msg_router_pending_streams(router: i64) -&gt; i64 { vec_get(router, 1) }</pre>
+<h2 id="msg_router_dispatch">fn msg_router_dispatch</h2>
+<pre class="signature">fn msg_router_dispatch(router: i64, msg: i64) -&gt; i64 {</pre>
+<h2 id="msg_router_handle_stream_start">fn msg_router_handle_stream_start</h2>
+<pre class="signature">fn msg_router_handle_stream_start(router: i64, msg: i64) -&gt; i64 {</pre>
+<h2 id="msg_router_handle_stream_data">fn msg_router_handle_stream_data</h2>
+<pre class="signature">fn msg_router_handle_stream_data(router: i64, msg: i64) -&gt; i64 {</pre>
+<h2 id="msg_router_handle_stream_end">fn msg_router_handle_stream_end</h2>
+<pre class="signature">fn msg_router_handle_stream_end(router: i64, msg: i64) -&gt; i64 {</pre>
+<h2 id="msg_router_find_stream">fn msg_router_find_stream</h2>
+<pre class="signature">fn msg_router_find_stream(pending: i64, stream_id: i64) -&gt; i64 {</pre>
+<h2 id="msg_router_print_stats">fn msg_router_print_stats</h2>
+<pre class="signature">fn msg_router_print_stats(router: i64) -&gt; i64 {</pre>
+<h2 id="message_type_name">fn message_type_name</h2>
+<pre class="signature">fn message_type_name(msg_type: i64) -&gt; i64 {</pre>
+<h2 id="message_print">fn message_print</h2>
+<pre class="signature">fn message_print(msg: i64) -&gt; i64 {</pre>
+
+    <hr>
+    <p><em>Generated by sxdoc</em></p>
+  </main>
+</div>
+</body>
+</html>

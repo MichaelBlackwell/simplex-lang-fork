@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>security - Simplex API Reference</title>
+  <meta name="description" content="API documentation for the Simplex programming language">
+  <link rel="stylesheet" href="../assets/docs.css">
+  <script src="../assets/nav.js" defer></script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "security - Simplex API Reference",
+  "description": "API documentation for the Simplex programming language",
+  "programmingLanguage": {
+    "@type": "ComputerLanguage",
+    "name": "Simplex",
+    "url": "https://github.com/senuamedia/simplex"
+  },
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "Simplex Documentation",
+    "url": "https://simplex.senuamedia.com/api/"
+  },
+  "articleSection": "edge-hive"
+}
+</script>
+</head>
+<body>
+<div class="doc-wrapper">
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-header"><a href="../index.html">Simplex API</a></div>
+    <div class="search-box">
+      <input type="text" id="search" placeholder="Search...">
+    </div>
+    <div id="nav-content">Loading...</div>
+  </nav>
+  <main class="content">
+    <nav class="breadcrumb">
+      <a href="../index.html">API Reference</a> &raquo;       <span class="current-category">edge-hive</span> &raquo; security
+    </nav>
+    <h1>Module: security</h1>
+<div class="toc">
+<strong>Contents</strong>
+<ul>
+<li><a href="#KEY_LENGTH">fn KEY_LENGTH</a></li>
+<li><a href="#SALT_LENGTH">fn SALT_LENGTH</a></li>
+<li><a href="#NONCE_LENGTH">fn NONCE_LENGTH</a></li>
+<li><a href="#TAG_LENGTH">fn TAG_LENGTH</a></li>
+<li><a href="#PBKDF2_ITERATIONS">fn PBKDF2_ITERATIONS</a></li>
+<li><a href="#TOKEN_LENGTH">fn TOKEN_LENGTH</a></li>
+<li><a href="#SESSION_EXPIRY">fn SESSION_EXPIRY</a></li>
+<li><a href="#user_identity_new">fn user_identity_new</a></li>
+<li><a href="#user_identity_from_stored">fn user_identity_from_stored</a></li>
+<li><a href="#user_identity_login">fn user_identity_login</a></li>
+<li><a href="#identity_user_id">fn identity_user_id</a></li>
+<li><a href="#identity_user_id_hex">fn identity_user_id_hex</a></li>
+<li><a href="#identity_encryption_key">fn identity_encryption_key</a></li>
+<li><a href="#identity_auth_token">fn identity_auth_token</a></li>
+<li><a href="#identity_token_expiry">fn identity_token_expiry</a></li>
+<li><a href="#identity_device_key">fn identity_device_key</a></li>
+<li><a href="#identity_salt">fn identity_salt</a></li>
+<li><a href="#identity_is_token_valid">fn identity_is_token_valid</a></li>
+<li><a href="#identity_refresh_token">fn identity_refresh_token</a></li>
+<li><a href="#identity_clear_key">fn identity_clear_key</a></li>
+<li><a href="#get_user_data_directory">fn get_user_data_directory</a></li>
+<li><a href="#get_user_beliefs_path">fn get_user_beliefs_path</a></li>
+<li><a href="#get_user_config_path">fn get_user_config_path</a></li>
+<li><a href="#get_user_salt_path">fn get_user_salt_path</a></li>
+<li><a href="#get_user_cache_directory">fn get_user_cache_directory</a></li>
+<li><a href="#get_base_data_directory">fn get_base_data_directory</a></li>
+<li><a href="#ensure_user_directory">fn ensure_user_directory</a></li>
+<li><a href="#ENCRYPTION_VERSION">fn ENCRYPTION_VERSION</a></li>
+<li><a href="#encrypt_data">fn encrypt_data</a></li>
+<li><a href="#decrypt_data">fn decrypt_data</a></li>
+<li><a href="#secure_write_file">fn secure_write_file</a></li>
+<li><a href="#secure_read_file">fn secure_read_file</a></li>
+<li><a href="#create_auth_handshake">fn create_auth_handshake</a></li>
+<li><a href="#verify_auth_handshake">fn verify_auth_handshake</a></li>
+<li><a href="#sign_message">fn sign_message</a></li>
+<li><a href="#verify_message_signature">fn verify_message_signature</a></li>
+<li><a href="#serialize_for_signing">fn serialize_for_signing</a></li>
+<li><a href="#generate_secure_device_id">fn generate_secure_device_id</a></li>
+<li><a href="#verify_password">fn verify_password</a></li>
+<li><a href="#create_session_token">fn create_session_token</a></li>
+<li><a href="#validate_session">fn validate_session</a></li>
+<li><a href="#secure_wipe">fn secure_wipe</a></li>
+<li><a href="#secure_wipe_identity">fn secure_wipe_identity</a></li>
+<li><a href="#MSG_AUTH_HANDSHAKE">fn MSG_AUTH_HANDSHAKE</a></li>
+<li><a href="#MSG_AUTH_RESPONSE">fn MSG_AUTH_RESPONSE</a></li>
+<li><a href="#MSG_AUTH_REFRESH">fn MSG_AUTH_REFRESH</a></li>
+<li><a href="#MSG_AUTH_LOGOUT">fn MSG_AUTH_LOGOUT</a></li>
+<li><a href="#PLATFORM_MACOS">fn PLATFORM_MACOS</a></li>
+<li><a href="#PLATFORM_LINUX">fn PLATFORM_LINUX</a></li>
+<li><a href="#PLATFORM_WINDOWS">fn PLATFORM_WINDOWS</a></li>
+</ul>
+</div>
+<h2 id="KEY_LENGTH">fn KEY_LENGTH</h2>
+<pre class="signature">fn KEY_LENGTH() -&gt; i64 { 32 }           // 256 bits</pre>
+<h2 id="SALT_LENGTH">fn SALT_LENGTH</h2>
+<pre class="signature">fn SALT_LENGTH() -&gt; i64 { 16 }          // 128 bits</pre>
+<h2 id="NONCE_LENGTH">fn NONCE_LENGTH</h2>
+<pre class="signature">fn NONCE_LENGTH() -&gt; i64 { 12 }         // 96 bits for GCM</pre>
+<h2 id="TAG_LENGTH">fn TAG_LENGTH</h2>
+<pre class="signature">fn TAG_LENGTH() -&gt; i64 { 16 }           // 128 bits for GCM</pre>
+<h2 id="PBKDF2_ITERATIONS">fn PBKDF2_ITERATIONS</h2>
+<pre class="signature">fn PBKDF2_ITERATIONS() -&gt; i64 { 100000 } // OWASP recommended minimum</pre>
+<h2 id="TOKEN_LENGTH">fn TOKEN_LENGTH</h2>
+<pre class="signature">fn TOKEN_LENGTH() -&gt; i64 { 32 }         // 256-bit tokens</pre>
+<h2 id="SESSION_EXPIRY">fn SESSION_EXPIRY</h2>
+<pre class="signature">fn SESSION_EXPIRY() -&gt; i64 { 86400 }    // 24 hours in seconds</pre>
+<h2 id="user_identity_new">fn user_identity_new</h2>
+<pre class="signature">fn user_identity_new(username: i64, password: i64) -&gt; i64 {</pre>
+<h2 id="user_identity_from_stored">fn user_identity_from_stored</h2>
+<pre class="signature">fn user_identity_from_stored(username: i64, password: i64, stored_salt: i64) -&gt; i64 {</pre>
+<h2 id="user_identity_login">fn user_identity_login</h2>
+<pre class="signature">fn user_identity_login(username: i64, password: i64) -&gt; i64 {</pre>
+<h2 id="identity_user_id">fn identity_user_id</h2>
+<pre class="signature">fn identity_user_id(identity: i64) -&gt; i64 { vec_get(identity, 0) }</pre>
+<h2 id="identity_user_id_hex">fn identity_user_id_hex</h2>
+<pre class="signature">fn identity_user_id_hex(identity: i64) -&gt; i64 { vec_get(identity, 1) }</pre>
+<h2 id="identity_encryption_key">fn identity_encryption_key</h2>
+<pre class="signature">fn identity_encryption_key(identity: i64) -&gt; i64 { vec_get(identity, 2) }</pre>
+<h2 id="identity_auth_token">fn identity_auth_token</h2>
+<pre class="signature">fn identity_auth_token(identity: i64) -&gt; i64 { vec_get(identity, 3) }</pre>
+<h2 id="identity_token_expiry">fn identity_token_expiry</h2>
+<pre class="signature">fn identity_token_expiry(identity: i64) -&gt; i64 { vec_get(identity, 4) }</pre>
+<h2 id="identity_device_key">fn identity_device_key</h2>
+<pre class="signature">fn identity_device_key(identity: i64) -&gt; i64 { vec_get(identity, 5) }</pre>
+<h2 id="identity_salt">fn identity_salt</h2>
+<pre class="signature">fn identity_salt(identity: i64) -&gt; i64 { vec_get(identity, 6) }</pre>
+<h2 id="identity_is_token_valid">fn identity_is_token_valid</h2>
+<pre class="signature">fn identity_is_token_valid(identity: i64) -&gt; i64 {</pre>
+<h2 id="identity_refresh_token">fn identity_refresh_token</h2>
+<pre class="signature">fn identity_refresh_token(identity: i64) -&gt; i64 {</pre>
+<h2 id="identity_clear_key">fn identity_clear_key</h2>
+<pre class="signature">fn identity_clear_key(identity: i64) -&gt; i64 {</pre>
+<h2 id="get_user_data_directory">fn get_user_data_directory</h2>
+<pre class="signature">fn get_user_data_directory(identity: i64) -&gt; i64 {</pre>
+<h2 id="get_user_beliefs_path">fn get_user_beliefs_path</h2>
+<pre class="signature">fn get_user_beliefs_path(identity: i64) -&gt; i64 {</pre>
+<h2 id="get_user_config_path">fn get_user_config_path</h2>
+<pre class="signature">fn get_user_config_path(identity: i64) -&gt; i64 {</pre>
+<h2 id="get_user_salt_path">fn get_user_salt_path</h2>
+<pre class="signature">fn get_user_salt_path(identity: i64) -&gt; i64 {</pre>
+<h2 id="get_user_cache_directory">fn get_user_cache_directory</h2>
+<pre class="signature">fn get_user_cache_directory(identity: i64) -&gt; i64 {</pre>
+<h2 id="get_base_data_directory">fn get_base_data_directory</h2>
+<pre class="signature">fn get_base_data_directory() -&gt; i64 {</pre>
+<h2 id="ensure_user_directory">fn ensure_user_directory</h2>
+<pre class="signature">fn ensure_user_directory(identity: i64) -&gt; i64 {</pre>
+<h2 id="ENCRYPTION_VERSION">fn ENCRYPTION_VERSION</h2>
+<pre class="signature">fn ENCRYPTION_VERSION() -&gt; i64 { 1 }</pre>
+<h2 id="encrypt_data">fn encrypt_data</h2>
+<pre class="signature">fn encrypt_data(identity: i64, plaintext: i64) -&gt; i64 {</pre>
+<h2 id="decrypt_data">fn decrypt_data</h2>
+<pre class="signature">fn decrypt_data(identity: i64, blob: i64) -&gt; i64 {</pre>
+<h2 id="secure_write_file">fn secure_write_file</h2>
+<pre class="signature">fn secure_write_file(identity: i64, path: i64, data: i64) -&gt; i64 {</pre>
+<h2 id="secure_read_file">fn secure_read_file</h2>
+<pre class="signature">fn secure_read_file(identity: i64, path: i64) -&gt; i64 {</pre>
+<h2 id="create_auth_handshake">fn create_auth_handshake</h2>
+<pre class="signature">fn create_auth_handshake(identity: i64, device_id: i64) -&gt; i64 {</pre>
+<h2 id="verify_auth_handshake">fn verify_auth_handshake</h2>
+<pre class="signature">fn verify_auth_handshake(msg: i64, expected_user_id: i64) -&gt; i64 {</pre>
+<h2 id="sign_message">fn sign_message</h2>
+<pre class="signature">fn sign_message(identity: i64, msg: i64) -&gt; i64 {</pre>
+<h2 id="verify_message_signature">fn verify_message_signature</h2>
+<pre class="signature">fn verify_message_signature(identity: i64, msg: i64, signature: i64) -&gt; i64 {</pre>
+<h2 id="serialize_for_signing">fn serialize_for_signing</h2>
+<pre class="signature">fn serialize_for_signing(msg: i64) -&gt; i64 {</pre>
+<h2 id="generate_secure_device_id">fn generate_secure_device_id</h2>
+<pre class="signature">fn generate_secure_device_id() -&gt; i64 {</pre>
+<h2 id="verify_password">fn verify_password</h2>
+<pre class="signature">fn verify_password(identity: i64, password: i64) -&gt; i64 {</pre>
+<h2 id="create_session_token">fn create_session_token</h2>
+<pre class="signature">fn create_session_token(identity: i64) -&gt; i64 {</pre>
+<h2 id="validate_session">fn validate_session</h2>
+<pre class="signature">fn validate_session(identity: i64, session: i64) -&gt; i64 {</pre>
+<h2 id="secure_wipe">fn secure_wipe</h2>
+<pre class="signature">fn secure_wipe(data: i64) -&gt; i64 {</pre>
+<h2 id="secure_wipe_identity">fn secure_wipe_identity</h2>
+<pre class="signature">fn secure_wipe_identity(identity: i64) -&gt; i64 {</pre>
+<h2 id="MSG_AUTH_HANDSHAKE">fn MSG_AUTH_HANDSHAKE</h2>
+<pre class="signature">fn MSG_AUTH_HANDSHAKE() -&gt; i64 { 100 }</pre>
+<h2 id="MSG_AUTH_RESPONSE">fn MSG_AUTH_RESPONSE</h2>
+<pre class="signature">fn MSG_AUTH_RESPONSE() -&gt; i64 { 101 }</pre>
+<h2 id="MSG_AUTH_REFRESH">fn MSG_AUTH_REFRESH</h2>
+<pre class="signature">fn MSG_AUTH_REFRESH() -&gt; i64 { 102 }</pre>
+<h2 id="MSG_AUTH_LOGOUT">fn MSG_AUTH_LOGOUT</h2>
+<pre class="signature">fn MSG_AUTH_LOGOUT() -&gt; i64 { 103 }</pre>
+<h2 id="PLATFORM_MACOS">fn PLATFORM_MACOS</h2>
+<pre class="signature">fn PLATFORM_MACOS() -&gt; i64 { 1 }</pre>
+<h2 id="PLATFORM_LINUX">fn PLATFORM_LINUX</h2>
+<pre class="signature">fn PLATFORM_LINUX() -&gt; i64 { 3 }</pre>
+<h2 id="PLATFORM_WINDOWS">fn PLATFORM_WINDOWS</h2>
+<pre class="signature">fn PLATFORM_WINDOWS() -&gt; i64 { 4 }</pre>
+
+    <hr>
+    <p><em>Generated by sxdoc</em></p>
+  </main>
+</div>
+</body>
+</html>

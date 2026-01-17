@@ -37,7 +37,7 @@ fn CMD_MODEL() -> i64 { 11 }
 fn main() -> i64 {
     println(string_from(""));
     println(string_from("╔══════════════════════════════════════════════════════════════╗"));
-    println(string_from("║              SIMPLEX EDGE HIVE v0.9.0                         ║"));
+    println(string_from("║              SIMPLEX EDGE HIVE v0.9.9                         ║"));
     println(string_from("║         Local-First Cognitive Intelligence                    ║"));
     println(string_from("╚══════════════════════════════════════════════════════════════╝"));
     println(string_from(""));
@@ -117,8 +117,14 @@ fn initialize_hive() -> i64 {
 }
 
 fn generate_device_id_simple() -> i64 {
-    // Simple device ID based on timestamp
-    time_now() % 1000000000
+    // Generate unique device ID combining timestamp and random component
+    // This prevents collisions from devices initialized at the same second
+    let timestamp: i64 = time_now();
+    let random_part: i64 = random_int(0, 999999);
+
+    // Combine: timestamp provides base uniqueness, random handles same-second cases
+    // Result space: ~10^15 unique IDs (vs old 10^9)
+    (timestamp % 1000000000) * 1000000 + random_part
 }
 
 // =============================================================================
