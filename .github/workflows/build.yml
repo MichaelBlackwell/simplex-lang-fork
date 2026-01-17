@@ -154,10 +154,14 @@ jobs:
         path: sxc-linux-x86_64
 
   build-macos:
-    runs-on: macos-latest
     strategy:
       matrix:
-        arch: [x86_64, arm64]
+        include:
+          - arch: x86_64
+            runner: macos-15-intel
+          - arch: arm64
+            runner: macos-latest
+    runs-on: ${{ matrix.runner }}
 
     steps:
     - uses: actions/checkout@v4
@@ -430,7 +434,7 @@ jobs:
       run: find artifacts -type f
 
     - name: Create Release
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v2
       with:
         files: |
           artifacts/sxc-linux-x86_64/sxc-linux-x86_64
