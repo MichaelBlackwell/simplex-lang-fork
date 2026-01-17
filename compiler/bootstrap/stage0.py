@@ -83,6 +83,12 @@ class TokenKind:
     CARET = 'CARET'
     LTLT = 'LTLT'
     GTGT = 'GTGT'
+    # Compound assignment operators
+    PLUS_EQ = 'PLUS_EQ'      # +=
+    MINUS_EQ = 'MINUS_EQ'    # -=
+    STAR_EQ = 'STAR_EQ'      # *=
+    SLASH_EQ = 'SLASH_EQ'    # /=
+    PERCENT_EQ = 'PERCENT_EQ' # %=
     # Keywords
     KW_FN = 'KW_FN'
     KW_LET = 'KW_LET'
@@ -114,6 +120,7 @@ class TokenKind:
     KW_SEND = 'KW_SEND'
     KW_ASK = 'KW_ASK'
     KW_INIT = 'KW_INIT'
+    KW_MESSAGE = 'KW_MESSAGE'
     # AI/Hive keywords
     KW_SPECIALIST = 'KW_SPECIALIST'
     KW_HIVE = 'KW_HIVE'
@@ -163,6 +170,7 @@ KEYWORDS = {
     'send': TokenKind.KW_SEND,
     'ask': TokenKind.KW_ASK,
     'init': TokenKind.KW_INIT,
+    'message': TokenKind.KW_MESSAGE,
     'specialist': TokenKind.KW_SPECIALIST,
     'hive': TokenKind.KW_HIVE,
     'infer': TokenKind.KW_INFER,
@@ -234,9 +242,21 @@ class Lexer:
         if c == ']': return Token(TokenKind.RBRACKET, c, start)
         if c == ',': return Token(TokenKind.COMMA, c, start)
         if c == ';': return Token(TokenKind.SEMI, c, start)
-        if c == '+': return Token(TokenKind.PLUS, c, start)
-        if c == '*': return Token(TokenKind.STAR, c, start)
-        if c == '%': return Token(TokenKind.PERCENT, c, start)
+        if c == '+':
+            if self.peek() == '=':
+                self.advance()
+                return Token(TokenKind.PLUS_EQ, '+=', start)
+            return Token(TokenKind.PLUS, c, start)
+        if c == '*':
+            if self.peek() == '=':
+                self.advance()
+                return Token(TokenKind.STAR_EQ, '*=', start)
+            return Token(TokenKind.STAR, c, start)
+        if c == '%':
+            if self.peek() == '=':
+                self.advance()
+                return Token(TokenKind.PERCENT_EQ, '%=', start)
+            return Token(TokenKind.PERCENT, c, start)
         if c == '#': return Token(TokenKind.HASH, c, start)
         if c == '.':
             if self.peek() == '.':
@@ -255,6 +275,9 @@ class Lexer:
             if self.peek() == '>':
                 self.advance()
                 return Token(TokenKind.ARROW, '->', start)
+            if self.peek() == '=':
+                self.advance()
+                return Token(TokenKind.MINUS_EQ, '-=', start)
             return Token(TokenKind.MINUS, c, start)
 
         if c == '=':
@@ -312,6 +335,9 @@ class Lexer:
             if self.peek() == '/':
                 self.skip_line_comment()
                 return self.next_token()
+            if self.peek() == '=':
+                self.advance()
+                return Token(TokenKind.SLASH_EQ, '/=', start)
             return Token(TokenKind.SLASH, c, start)
 
         # f-string literals: f"..."
@@ -514,8 +540,12 @@ def make_ask_expr(target, message_name, args):
 def make_specialist_def(name, config, state_vars, handlers):
     return {'type': 'SpecialistDef', 'name': name, 'config': config, 'state_vars': state_vars, 'handlers': handlers}
 
-def make_hive_def(name, specialists, router, strategy):
-    return {'type': 'HiveDef', 'name': name, 'specialists': specialists, 'router': router, 'strategy': strategy}
+def make_hive_def(name, specialists, router, strategy, mnemonic=None):
+    return {'type': 'HiveDef', 'name': name, 'specialists': specialists, 'router': router, 'strategy': strategy, 'mnemonic': mnemonic or {}}
+
+def make_message_def(name, fields=None):
+    """Create a message type definition for actor communication."""
+    return {'type': 'MessageDef', 'name': name, 'fields': fields or []}
 
 def make_infer_expr(prompt, options):
     return {'type': 'InferExpr', 'prompt': prompt, 'options': options}
@@ -636,6 +666,8 @@ class Parser:
             item = self.parse_specialist_def()
         elif self.check(TokenKind.KW_HIVE):
             item = self.parse_hive_def()
+        elif self.check(TokenKind.KW_MESSAGE):
+            item = self.parse_message_def()
         elif self.check(TokenKind.KW_MOD):
             item = self.parse_mod_def()
         elif self.check(TokenKind.KW_USE):
@@ -780,7 +812,15 @@ class Parser:
                 else:
                     ty = 'Self'  # Default type for bare self
             else:
-                name = self.expect(TokenKind.IDENT).text
+                # Allow some keywords to be used as parameter names (like 'init')
+                if self.check(TokenKind.IDENT):
+                    name = self.advance().text
+                elif self.check(TokenKind.KW_INIT):
+                    name = self.advance().text
+                elif self.check(TokenKind.KW_HIVE):
+                    name = self.advance().text
+                else:
+                    name = self.expect(TokenKind.IDENT).text
                 self.expect(TokenKind.COLON)
                 ty = self.parse_type()
             params.append(make_param(name, ty))
@@ -1176,11 +1216,16 @@ class Parser:
         return make_specialist_def(name, config, state_vars, handlers)
 
     def parse_hive_def(self):
-        """Parse hive definition - supervisor for specialists.
+        """Parse hive definition - supervisor for specialists with shared memory.
         hive Name {
             specialists: [Spec1, Spec2],
             router: RuleRouter,
-            strategy: OneForOne
+            strategy: OneForOne,
+            mnemonic {
+                episodic: { capacity: 1000 },
+                semantic: { path: "knowledge.db" },
+                beliefs: { revision_threshold: 0.3 }
+            }
         }
         """
         self.expect(TokenKind.KW_HIVE)
@@ -1190,28 +1235,104 @@ class Parser:
         specialists = []
         router = None
         strategy = 'OneForOne'
+        mnemonic = {}
 
         while not self.check(TokenKind.RBRACE):
             field_name = self.expect(TokenKind.IDENT).text
-            self.expect(TokenKind.COLON)
 
-            if field_name == 'specialists':
-                self.expect(TokenKind.LBRACKET)
-                while not self.check(TokenKind.RBRACKET):
-                    specialists.append(self.expect(TokenKind.IDENT).text)
+            # Check for mnemonic block - can be with or without colon
+            # mnemonic { ... } or mnemonic: { ... }
+            if field_name == 'mnemonic':
+                # Consume optional colon
+                if self.check(TokenKind.COLON):
+                    self.advance()
+                self.expect(TokenKind.LBRACE)
+                # Parse mnemonic sub-blocks: episodic, semantic, procedural, beliefs
+                while not self.check(TokenKind.RBRACE):
+                    block_name = self.expect(TokenKind.IDENT).text
+                    self.expect(TokenKind.COLON)
+                    self.expect(TokenKind.LBRACE)
+
+                    block_config = {}
+                    while not self.check(TokenKind.RBRACE):
+                        key = self.expect(TokenKind.IDENT).text
+                        self.expect(TokenKind.COLON)
+
+                        # Parse value
+                        if self.check(TokenKind.STRING):
+                            value = self.advance().text
+                        elif self.check(TokenKind.INT):
+                            value = int(self.advance().text)
+                        elif self.check(TokenKind.FLOAT):
+                            value = float(self.advance().text)
+                        elif self.check(TokenKind.KW_TRUE):
+                            self.advance()
+                            value = True
+                        elif self.check(TokenKind.KW_FALSE):
+                            self.advance()
+                            value = False
+                        else:
+                            value = self.advance().text
+
+                        block_config[key] = value
+                        if self.check(TokenKind.COMMA):
+                            self.advance()
+
+                    self.expect(TokenKind.RBRACE)
+                    mnemonic[block_name] = block_config
+
                     if self.check(TokenKind.COMMA):
                         self.advance()
-                self.expect(TokenKind.RBRACKET)
-            elif field_name == 'router':
-                router = self.expect(TokenKind.IDENT).text
-            elif field_name == 'strategy':
-                strategy = self.expect(TokenKind.IDENT).text
+
+                self.expect(TokenKind.RBRACE)
+            else:
+                self.expect(TokenKind.COLON)
+
+                if field_name == 'specialists':
+                    self.expect(TokenKind.LBRACKET)
+                    while not self.check(TokenKind.RBRACKET):
+                        specialists.append(self.expect(TokenKind.IDENT).text)
+                        if self.check(TokenKind.COMMA):
+                            self.advance()
+                    self.expect(TokenKind.RBRACKET)
+                elif field_name == 'router':
+                    router = self.expect(TokenKind.IDENT).text
+                elif field_name == 'strategy':
+                    strategy = self.expect(TokenKind.IDENT).text
 
             if self.check(TokenKind.COMMA):
                 self.advance()
 
         self.expect(TokenKind.RBRACE)
-        return make_hive_def(name, specialists, router, strategy)
+        return make_hive_def(name, specialists, router, strategy, mnemonic)
+
+    def parse_message_def(self):
+        """Parse message declaration for actor communication.
+        Supports:
+          message MessageName                    // Simple message (no fields)
+          message MessageName(field1: Type1, field2: Type2)  // With fields
+        """
+        self.expect(TokenKind.KW_MESSAGE)
+        name = self.expect(TokenKind.IDENT).text
+
+        fields = []
+        # Check for optional fields in parentheses
+        if self.check(TokenKind.LPAREN):
+            self.advance()
+            while not self.check(TokenKind.RPAREN):
+                field_name = self.expect(TokenKind.IDENT).text
+                self.expect(TokenKind.COLON)
+                field_type = self.parse_type()
+                fields.append({'name': field_name, 'ty': field_type})
+                if self.check(TokenKind.COMMA):
+                    self.advance()
+            self.expect(TokenKind.RPAREN)
+
+        # Optional semicolon
+        if self.check(TokenKind.SEMI):
+            self.advance()
+
+        return make_message_def(name, fields)
 
     def parse_mod_def(self):
         """Parse mod name; or mod name { ... } declaration"""
@@ -1304,8 +1425,30 @@ class Parser:
                 stmts.append({'type': 'ContinueStmt'})
             else:
                 e = self.parse_expr()
+                # Check for compound assignment: ident += value, etc.
+                compound_ops = {
+                    TokenKind.PLUS_EQ: '+',
+                    TokenKind.MINUS_EQ: '-',
+                    TokenKind.STAR_EQ: '*',
+                    TokenKind.SLASH_EQ: '/',
+                    TokenKind.PERCENT_EQ: '%',
+                }
+                compound_op = None
+                for op_token, op_str in compound_ops.items():
+                    if self.check(op_token):
+                        compound_op = op_str
+                        self.advance()
+                        break
+
+                if compound_op and e['type'] == 'IdentExpr':
+                    # Transform x += y into x = x + y
+                    value = self.parse_expr()
+                    if self.check(TokenKind.SEMI):
+                        self.advance()
+                    combined_value = {'type': 'BinaryExpr', 'op': compound_op, 'left': e, 'right': value}
+                    stmts.append(make_assign_stmt(e['name'], combined_value))
                 # Check for assignment: ident = value, *ptr = value, or self.field = value
-                if self.check(TokenKind.EQ):
+                elif self.check(TokenKind.EQ):
                     if e['type'] == 'IdentExpr':
                         self.advance()  # consume =
                         value = self.parse_expr()
@@ -1341,7 +1484,22 @@ class Parser:
             self.advance()
         else:
             self.expect(TokenKind.KW_LET)
-        name = self.expect(TokenKind.IDENT).text
+
+        # Check for 'mut' keyword for mutable bindings
+        is_mutable = False
+        if self.check(TokenKind.KW_MUT):
+            self.advance()
+            is_mutable = True
+
+        # Allow some keywords to be used as variable names (like 'hive', 'init')
+        if self.check(TokenKind.IDENT):
+            name = self.advance().text
+        elif self.check(TokenKind.KW_HIVE):
+            name = self.advance().text
+        elif self.check(TokenKind.KW_INIT):
+            name = self.advance().text
+        else:
+            name = self.expect(TokenKind.IDENT).text
         ty = None
         if self.check(TokenKind.COLON):
             self.advance()
@@ -1674,7 +1832,8 @@ class Parser:
             self.expect(TokenKind.RPAREN)
             return make_infer_expr(prompt, options)
 
-        if self.check(TokenKind.IDENT):
+        # Allow some keywords to be used as identifiers (init, hive)
+        if self.check(TokenKind.IDENT) or self.check(TokenKind.KW_INIT) or self.check(TokenKind.KW_HIVE):
             name = self.advance().text
 
             # Check for :: (could be enum variant or turbofish)
@@ -1719,7 +1878,15 @@ class Parser:
                     return {'type': 'CallExpr', 'func': name, 'args': args, 'type_args': type_args}
                 else:
                     # Could be enum variant (Name::Variant) or associated function (Type::function())
-                    variant = self.expect(TokenKind.IDENT).text
+                    # Allow keywords like 'init', 'new' to be used as method names after ::
+                    if self.check(TokenKind.IDENT):
+                        variant = self.advance().text
+                    elif self.check(TokenKind.KW_INIT):
+                        variant = self.advance().text
+                    elif self.check(TokenKind.KW_NEW):
+                        variant = self.advance().text
+                    else:
+                        variant = self.expect(TokenKind.IDENT).text
                     # Check if it's followed by ( for function call
                     if self.check(TokenKind.LPAREN):
                         # Associated function call: Type::function(args)
@@ -2103,6 +2270,12 @@ class Parser:
         while i < len(content):
             c = content[i]
             if c == '{':
+                # Check for escaped brace: {{
+                if i + 1 < len(content) and content[i + 1] == '{':
+                    # {{ produces literal {
+                    current += '{'
+                    i += 2
+                    continue
                 parts.append(current)
                 current = ''
                 i += 1
@@ -2151,11 +2324,24 @@ class Parser:
                         expr_parser = Parser(expr_tokens)
                         parsed_expr = expr_parser.parse_expr()
                         exprs.append(parsed_expr)
-                    except:
+                    except Exception as e:
+                        # Expression parsing failed - print warning for debugging
+                        import sys
+                        print(f"Warning: Failed to parse f-string expression '{expr_text}': {e}", file=sys.stderr)
                         # Fallback: treat as simple identifier
                         exprs.append(make_ident_expr(expr_text))
                 else:
                     exprs.append(make_int_expr(0))
+            elif c == '}':
+                # Check for escaped brace: }}
+                if i + 1 < len(content) and content[i + 1] == '}':
+                    # }} produces literal }
+                    current += '}'
+                    i += 2
+                    continue
+                # Lone } outside interpolation - include it (shouldn't happen in valid f-strings)
+                current += c
+                i += 1
             else:
                 current += c
                 i += 1
@@ -2188,6 +2374,7 @@ class CodeGen:
         self.actors = {}  # actor_name -> ActorDef (for spawn/send/ask resolution)
         self.specialists = {}  # specialist_name -> SpecialistDef
         self.hives = {}   # hive_name -> HiveDef
+        self.messages = {}  # message_name -> MessageDef
         self.traits = {}  # trait_name -> TraitDef
         self.trait_impls = {}  # (trait_name, type_name) -> ImplDef
         self.current_fn_return_type = 'i64'
@@ -2210,6 +2397,62 @@ class CodeGen:
         self.public_items = {}  # module_name -> set of public item names
         self.item_visibility = {}  # (module_name, item_name) -> bool (is_pub)
         self.current_module = None  # Current module being compiled
+
+    def infer_fstring_expr_type(self, expr_node):
+        """Infer the type of an expression for f-string formatting.
+        Returns: 'i64', 'f64', 'bool', 'str', or 'unknown'
+        """
+        if not expr_node or not isinstance(expr_node, dict):
+            return 'unknown'
+        expr_type = expr_node.get('type', '')
+        if expr_type == 'IntExpr':
+            return 'i64'
+        elif expr_type == 'FloatExpr':
+            return 'f64'
+        elif expr_type == 'BoolExpr':
+            return 'bool'
+        elif expr_type == 'StringExpr':
+            return 'str'
+        elif expr_type == 'IdentExpr':
+            # Look up the variable's type
+            name = expr_node.get('name', '')
+            return self.var_types.get(name, 'i64')  # default to i64
+        elif expr_type == 'BinaryExpr':
+            # Binary operations typically return the type of their operands
+            # For arithmetic ops (+, -, *, /) with integers -> i64
+            # For comparison ops (==, <, >, etc) -> bool
+            op = expr_node.get('op', '')
+            if op in ('==', '!=', '<', '>', '<=', '>=', '&&', '||'):
+                return 'bool'
+            # Arithmetic - check left operand
+            left = expr_node.get('left')
+            return self.infer_fstring_expr_type(left)
+        elif expr_type == 'UnaryExpr':
+            op = expr_node.get('op', '')
+            if op == '!':
+                return 'bool'
+            return self.infer_fstring_expr_type(expr_node.get('operand'))
+        elif expr_type == 'CallExpr':
+            # Would need function return type info - default to i64
+            return 'i64'
+        elif expr_type == 'FieldExpr':
+            # Would need struct field type info - default to i64
+            return 'i64'
+        elif expr_type == 'MethodCallExpr':
+            # Would need method return type info - default to i64
+            return 'i64'
+        elif expr_type == 'IfExpr':
+            # Type of if expression is type of branches
+            then_branch = expr_node.get('then_block')
+            if then_branch:
+                stmts = then_branch.get('stmts', [])
+                if stmts:
+                    last = stmts[-1]
+                    if last.get('type') == 'ExprStmt':
+                        return self.infer_fstring_expr_type(last.get('expr'))
+            return 'i64'
+        else:
+            return 'i64'  # Default to i64 for unknown types
 
     def register_item_visibility(self, module_name, item_name, is_pub):
         """Register an item's visibility for cross-module access checking."""
@@ -2560,7 +2803,7 @@ class CodeGen:
         self.emit('declare i64 @intrinsic_revoke_belief(i64)')
         self.emit('declare i64 @intrinsic_belief_count()')
         self.emit('declare void @intrinsic_decay_beliefs()')
-        self.emit('; Belief guard intrinsics (TASK-013-A)')
+        self.emit('; Belief guard intrinsics')
         self.emit('declare i64 @belief_register(i64, double, double)')
         self.emit('declare i64 @belief_update(i64, double)')
         self.emit('declare i64 @belief_update_dual(i64, double, double)')
@@ -2800,6 +3043,7 @@ class CodeGen:
         self.emit('declare ptr @intrinsic_process_output(ptr)')
         self.emit('; File system intrinsics')
         self.emit('declare ptr @intrinsic_getenv(ptr)')
+        self.emit('declare i64 @env_get(i64)')              # env_get(name) -> string_ptr (used by sxc.sx)
         self.emit('declare i64 @intrinsic_file_exists(ptr)')
         self.emit('declare i64 @intrinsic_is_file(ptr)')
         self.emit('declare i64 @intrinsic_is_directory(ptr)')
@@ -3898,6 +4142,13 @@ class CodeGen:
         self.emit('declare i64 @specialist_memory_forget(i64, i64)')
         self.emit('declare i64 @specialist_memory_count(i64)')
         self.emit('declare void @specialist_memory_close(i64)')
+        self.emit('; Hive Runtime Functions')
+        self.emit('declare i64 @hive_mnemonic_init(i64)')           # Initialize shared memory with capacity
+        self.emit('declare i64 @hive_route_message(i64, i64, i64, i64)')  # Route message based on router type
+        self.emit('declare i64 @hive_dispatch_message(i64, i64)')   # Dispatch message to specialist
+        self.emit('declare i64 @hive_supervise(i64, i64, i64)')     # Handle failure with strategy
+        self.emit('declare i64 @hive_get_router_state(i64)')        # Get router round-robin counter
+        self.emit('declare void @hive_set_router_state(i64, i64)')  # Set router state
         self.emit('; 29.3 Tool Registry')
         self.emit('declare i64 @tool_registry_new()')
         self.emit('declare i64 @tool_register(i64, i64, i64, i64)')
@@ -4223,6 +4474,11 @@ class CodeGen:
                 self.structs[item['name']] = [(v['name'], v['ty']) for v in item['state_vars']]
             elif item['type'] == 'HiveDef':
                 self.hives[item['name']] = item
+            elif item['type'] == 'MessageDef':
+                # Register message as a struct-like type for actor communication
+                self.messages[item['name']] = item
+                # Also register as struct so it can be constructed
+                self.structs[item['name']] = [(f['name'], f['ty']) for f in item.get('fields', [])]
             elif item['type'] == 'TraitDef':
                 self.traits[item['name']] = item
             elif item['type'] == 'ImplDef' and item.get('trait_name'):
@@ -4253,6 +4509,8 @@ class CodeGen:
                 self.generate_specialist(item)
             elif item['type'] == 'HiveDef':
                 self.generate_hive(item)
+            elif item['type'] == 'MessageDef':
+                self.generate_message(item)
 
         # Generate pending generic instantiations
         while self.pending_instantiations:
@@ -5356,30 +5614,89 @@ class CodeGen:
     def generate_hive(self, hive_def):
         """Generate code for a hive definition.
         Hive is a supervisor that spawns and manages specialists.
+
+        Hive struct layout:
+        - offset 0: router_type (i64) - enum value for router strategy
+        - offset 8: strategy_type (i64) - enum value for supervision strategy
+        - offset 16: specialist_count (i64) - number of specialists
+        - offset 24: mnemonic_handle (i64) - handle to shared memory (0 if none)
+        - offset 32+: specialist pointers (i64 each)
         """
         hive_name = hive_def['name']
         specialists = hive_def['specialists']
-        router = hive_def['router']
-        strategy = hive_def['strategy']
+        router = hive_def.get('router', 'RoundRobin')
+        strategy = hive_def.get('strategy', 'OneForOne')
+        mnemonic = hive_def.get('mnemonic', {})
 
         num_specs = len(specialists)
-        struct_size = max(num_specs * 8, 8)
+        # Header (32 bytes) + specialists (8 bytes each)
+        struct_size = 32 + (num_specs * 8)
+
+        # Router type enum values
+        router_types = {
+            'RoundRobin': 0,
+            'SemanticRouter': 1,
+            'RuleRouter': 2,
+            'ContentRouter': 3,
+            'LoadBalancer': 4,
+        }
+        router_value = router_types.get(router, 0)
+
+        # Strategy type enum values
+        strategy_types = {
+            'OneForOne': 0,
+            'OneForAll': 1,
+            'RestForOne': 2,
+        }
+        strategy_value = strategy_types.get(strategy, 0)
 
         # Generate constructor that spawns all specialists
         self.emit(f'; Hive {hive_name} constructor')
+        self.emit(f'; Router: {router} ({router_value}), Strategy: {strategy} ({strategy_value})')
         self.emit(f'define i64 @"{hive_name}_new"() {{')
         self.emit('entry:')
 
         ptr_temp = self.new_temp()
         self.emit(f'  {ptr_temp} = call ptr @malloc(i64 {struct_size})')
 
+        # Store router type at offset 0
+        router_gep = self.new_temp()
+        self.emit(f'  {router_gep} = getelementptr i8, ptr {ptr_temp}, i64 0')
+        self.emit(f'  store i64 {router_value}, ptr {router_gep}')
+
+        # Store strategy type at offset 8
+        strategy_gep = self.new_temp()
+        self.emit(f'  {strategy_gep} = getelementptr i8, ptr {ptr_temp}, i64 8')
+        self.emit(f'  store i64 {strategy_value}, ptr {strategy_gep}')
+
+        # Store specialist count at offset 16
+        count_gep = self.new_temp()
+        self.emit(f'  {count_gep} = getelementptr i8, ptr {ptr_temp}, i64 16')
+        self.emit(f'  store i64 {num_specs}, ptr {count_gep}')
+
+        # Initialize mnemonic (shared memory) at offset 24
+        mnemonic_gep = self.new_temp()
+        self.emit(f'  {mnemonic_gep} = getelementptr i8, ptr {ptr_temp}, i64 24')
+        if mnemonic:
+            # Create mnemonic memory handle
+            # Combine capacity values from episodic, semantic, etc.
+            episodic_cap = mnemonic.get('episodic', {}).get('capacity', 1000)
+            semantic_path = mnemonic.get('semantic', {}).get('path', '')
+            beliefs_threshold = mnemonic.get('beliefs', {}).get('revision_threshold', 0.3)
+
+            # Call mnemonic initialization runtime function
+            mnemonic_handle = self.new_temp()
+            self.emit(f'  {mnemonic_handle} = call i64 @hive_mnemonic_init(i64 {episodic_cap})')
+            self.emit(f'  store i64 {mnemonic_handle}, ptr {mnemonic_gep}')
+        else:
+            self.emit(f'  store i64 0, ptr {mnemonic_gep}')
+
+        # Spawn each specialist and store at offset 32+
         for i, spec in enumerate(specialists):
-            # Spawn each specialist
             spec_ptr = self.new_temp()
             self.emit(f'  {spec_ptr} = call i64 @"{spec}_new"()')
 
-            # Store in hive struct
-            offset = i * 8
+            offset = 32 + (i * 8)
             gep_temp = self.new_temp()
             self.emit(f'  {gep_temp} = getelementptr i8, ptr {ptr_temp}, i64 {offset}')
             self.emit(f'  store i64 {spec_ptr}, ptr {gep_temp}')
@@ -5389,6 +5706,131 @@ class CodeGen:
         self.emit(f'  ret i64 {result}')
         self.emit('}')
         self.emit('')
+
+        # Generate route function: {hive}_route(hive, message) -> specialist
+        self.emit(f'; Hive {hive_name} router ({router})')
+        self.emit(f'define i64 @"{hive_name}_route"(i64 %hive, i64 %message) {{')
+        self.emit('entry:')
+        hive_ptr = self.new_temp()
+        self.emit(f'  {hive_ptr} = inttoptr i64 %hive to ptr')
+
+        # Load router type
+        router_ptr = self.new_temp()
+        self.emit(f'  {router_ptr} = getelementptr i8, ptr {hive_ptr}, i64 0')
+        router_val = self.new_temp()
+        self.emit(f'  {router_val} = load i64, ptr {router_ptr}')
+
+        # Load specialist count
+        count_ptr = self.new_temp()
+        self.emit(f'  {count_ptr} = getelementptr i8, ptr {hive_ptr}, i64 16')
+        count_val = self.new_temp()
+        self.emit(f'  {count_val} = load i64, ptr {count_ptr}')
+
+        # Call runtime router function
+        selected = self.new_temp()
+        self.emit(f'  {selected} = call i64 @hive_route_message(i64 %hive, i64 {router_val}, i64 %message, i64 {count_val})')
+        self.emit(f'  ret i64 {selected}')
+        self.emit('}')
+        self.emit('')
+
+        # Generate send function: {hive}_send(hive, message) -> result
+        self.emit(f'; Hive {hive_name} send message')
+        self.emit(f'define i64 @"{hive_name}_send"(i64 %hive, i64 %message) {{')
+        self.emit('entry:')
+        # Route the message to get target specialist
+        target = self.new_temp()
+        self.emit(f'  {target} = call i64 @"{hive_name}_route"(i64 %hive, i64 %message)')
+        # Send to the selected specialist
+        result2 = self.new_temp()
+        self.emit(f'  {result2} = call i64 @hive_dispatch_message(i64 {target}, i64 %message)')
+        self.emit(f'  ret i64 {result2}')
+        self.emit('}')
+        self.emit('')
+
+        # Generate accessor functions
+        self.emit(f'define i64 @"{hive_name}_get_specialist"(i64 %hive, i64 %index) {{')
+        self.emit('entry:')
+        hive_ptr2 = self.new_temp()
+        self.emit(f'  {hive_ptr2} = inttoptr i64 %hive to ptr')
+        # Calculate offset: 32 + (index * 8)
+        idx_offset = self.new_temp()
+        self.emit(f'  {idx_offset} = mul i64 %index, 8')
+        total_offset = self.new_temp()
+        self.emit(f'  {total_offset} = add i64 {idx_offset}, 32')
+        spec_gep = self.new_temp()
+        self.emit(f'  {spec_gep} = getelementptr i8, ptr {hive_ptr2}, i64 {total_offset}')
+        spec_val = self.new_temp()
+        self.emit(f'  {spec_val} = load i64, ptr {spec_gep}')
+        self.emit(f'  ret i64 {spec_val}')
+        self.emit('}')
+        self.emit('')
+
+        # Generate mnemonic accessor
+        self.emit(f'define i64 @"{hive_name}_get_mnemonic"(i64 %hive) {{')
+        self.emit('entry:')
+        hive_ptr3 = self.new_temp()
+        self.emit(f'  {hive_ptr3} = inttoptr i64 %hive to ptr')
+        mnem_gep = self.new_temp()
+        self.emit(f'  {mnem_gep} = getelementptr i8, ptr {hive_ptr3}, i64 24')
+        mnem_val = self.new_temp()
+        self.emit(f'  {mnem_val} = load i64, ptr {mnem_gep}')
+        self.emit(f'  ret i64 {mnem_val}')
+        self.emit('}')
+        self.emit('')
+
+    def generate_message(self, msg_def):
+        """Generate code for a message type definition.
+        Messages are struct-like types used for actor communication.
+        Generates constructor and field accessors.
+        """
+        msg_name = msg_def['name']
+        fields = msg_def.get('fields', [])
+
+        # Calculate struct size (8 bytes per field, or 8 minimum for empty)
+        num_fields = len(fields)
+        struct_size = max(num_fields * 8, 8)
+
+        # Generate constructor: MessageName_new(field1, field2, ...) -> i64
+        self.emit(f'; Message {msg_name} constructor')
+        if fields:
+            param_list = ', '.join([f'i64 %param.{f["name"]}' for f in fields])
+            self.emit(f'define i64 @"{msg_name}_new"({param_list}) {{')
+        else:
+            self.emit(f'define i64 @"{msg_name}_new"() {{')
+        self.emit('entry:')
+
+        # Allocate message struct
+        ptr_temp = self.new_temp()
+        self.emit(f'  {ptr_temp} = call ptr @malloc(i64 {struct_size})')
+
+        # Store each field
+        for i, field in enumerate(fields):
+            offset = i * 8
+            gep_temp = self.new_temp()
+            self.emit(f'  {gep_temp} = getelementptr i8, ptr {ptr_temp}, i64 {offset}')
+            self.emit(f'  store i64 %param.{field["name"]}, ptr {gep_temp}')
+
+        # Return as i64
+        result = self.new_temp()
+        self.emit(f'  {result} = ptrtoint ptr {ptr_temp} to i64')
+        self.emit(f'  ret i64 {result}')
+        self.emit('}')
+        self.emit('')
+
+        # Generate field accessor functions
+        for i, field in enumerate(fields):
+            offset = i * 8
+            self.emit(f'define i64 @"{msg_name}_get_{field["name"]}"(i64 %self) {{')
+            self.emit('entry:')
+            ptr_temp = self.new_temp()
+            self.emit(f'  {ptr_temp} = inttoptr i64 %self to ptr')
+            gep_temp = self.new_temp()
+            self.emit(f'  {gep_temp} = getelementptr i8, ptr {ptr_temp}, i64 {offset}')
+            val_temp = self.new_temp()
+            self.emit(f'  {val_temp} = load i64, ptr {gep_temp}')
+            self.emit(f'  ret i64 {val_temp}')
+            self.emit('}')
+            self.emit('')
 
     def generate_block(self, block):
         result = '0'
@@ -5726,6 +6168,7 @@ class CodeGen:
                 # Generate expression if there is one
                 if i < len(exprs):
                     ex_val = self.generate_expr(exprs[i])
+                    expr_node = exprs[i]
                     # Check for format specifier
                     format_spec = format_specs[i] if i < len(format_specs) else None
                     if format_spec:
@@ -5764,6 +6207,48 @@ class CodeGen:
                             self.emit(f'  {formatted} = call i64 @format_binary(i64 {ex_val})')
                             ex_val = formatted
                         # Width/padding specifiers could be added here
+                    else:
+                        # No format specifier - auto-convert non-string types to string
+                        expr_type_name = self.infer_fstring_expr_type(expr_node)
+                        if expr_type_name in ('i64', 'i32', 'i8'):
+                            # Integer to string conversion
+                            formatted = self.new_temp()
+                            self.emit(f'  {formatted} = call ptr @intrinsic_int_to_string(i64 {ex_val})')
+                            t_conv = self.new_temp()
+                            self.emit(f'  {t_conv} = ptrtoint ptr {formatted} to i64')
+                            ex_val = t_conv
+                        elif expr_type_name == 'f64':
+                            # Float to string conversion
+                            formatted = self.new_temp()
+                            self.emit(f'  {formatted} = call i64 @format_f64(i64 {ex_val}, i64 6)')
+                            ex_val = formatted
+                        elif expr_type_name == 'bool':
+                            # Bool to string conversion - use conditional for "true"/"false"
+                            true_label = self.add_string_constant("true")
+                            false_label = self.add_string_constant("false")
+                            cmp_temp = self.new_temp()
+                            self.emit(f'  {cmp_temp} = icmp ne i64 {ex_val}, 0')
+                            then_lbl = self.new_label('bool_true')
+                            else_lbl = self.new_label('bool_false')
+                            end_lbl = self.new_label('bool_end')
+                            self.emit(f'  br i1 {cmp_temp}, label %{then_lbl}, label %{else_lbl}')
+                            self.emit(f'{then_lbl}:')
+                            true_str = self.new_temp()
+                            self.emit(f'  {true_str} = call ptr @intrinsic_string_new(ptr {true_label})')
+                            true_conv = self.new_temp()
+                            self.emit(f'  {true_conv} = ptrtoint ptr {true_str} to i64')
+                            self.emit(f'  br label %{end_lbl}')
+                            self.emit(f'{else_lbl}:')
+                            false_str = self.new_temp()
+                            self.emit(f'  {false_str} = call ptr @intrinsic_string_new(ptr {false_label})')
+                            false_conv = self.new_temp()
+                            self.emit(f'  {false_conv} = ptrtoint ptr {false_str} to i64')
+                            self.emit(f'  br label %{end_lbl}')
+                            self.emit(f'{end_lbl}:')
+                            phi_temp = self.new_temp()
+                            self.emit(f'  {phi_temp} = phi i64 [{true_conv}, %{then_lbl}], [{false_conv}, %{else_lbl}]')
+                            ex_val = phi_temp
+                        # 'str' type doesn't need conversion
                     if result == '0':
                         result = ex_val
                     else:
@@ -5980,7 +6465,7 @@ class CodeGen:
             type_args = expr.get('type_args', [])
 
             # Handle enum variant constructors: Some(x), None, Ok(x), Err(e)
-            # Check if this is an enum variant
+            # Check if this is an enum variant (also matches underscore-mangled names)
             enum_variant_info = None
             for enum_name, variants in self.enums.items():
                 if orig_func_name in variants:
@@ -6616,6 +7101,11 @@ class CodeGen:
                 'string_ends_with': 'intrinsic_string_ends_with',
                 'string_contains': 'intrinsic_string_contains',
                 'string_replace': 'intrinsic_string_replace',
+                'string_lines': 'intrinsic_string_lines',
+                'string_join': 'intrinsic_string_join',
+                'string_to_lowercase': 'intrinsic_string_to_lowercase',
+                'string_to_uppercase': 'intrinsic_string_to_uppercase',
+                'string_compare': 'intrinsic_string_compare',
                 'copy_file': 'intrinsic_copy_file',
                 'get_home_dir': 'intrinsic_get_home_dir',
 
