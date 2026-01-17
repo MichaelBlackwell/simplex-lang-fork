@@ -218,7 +218,3 @@ This release protects against:
 
 ### New Tests
 - `tests/test_security.sx` - Security layer tests
-
-## Contributors
-
-Security implementation by Claude Code (Anthropic).

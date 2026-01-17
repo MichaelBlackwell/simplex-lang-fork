@@ -350,7 +350,7 @@ intptr_t iter_next(intptr_t iter_ptr) {
     intptr_t value = (intptr_t)iter->vec->items[iter->index];
     iter->index++;
     // Return Option::Some(value) - pack value in upper bits, tag 1 in lower byte
-    // NOTE: This is the fragile tagged pointer design mentioned in TASK-010
+    // NOTE: This is the fragile tagged pointer design
     // Works on current 48-bit virtual addresses but may break with 57-bit addresses
     // TODO: Consider OptionPtr struct redesign for future portability
     return (value << 8) | 1;
@@ -573,14 +573,65 @@ SxString* intrinsic_ai_infer(SxString* model, SxString* prompt, int64_t temperat
 }
 
 double* intrinsic_ai_embed(SxString* text) {
-    // Mock implementation: return zero vector
+    // Mock implementation using character n-gram hashing for consistent pseudo-embeddings
+    // This produces similar vectors for similar text, enabling basic semantic testing
     double* vec = malloc(1536 * sizeof(double));
+    if (!vec) return NULL;
+
+    // Initialize with small random-looking but deterministic values
     for (int i = 0; i < 1536; i++) {
         vec[i] = 0.0;
     }
-    // Set first element based on text length for basic similarity testing
-    if (text && text->data) {
-        vec[0] = (double)text->len / 100.0;
+
+    if (text && text->data && text->len > 0) {
+        // Use character unigrams, bigrams, and trigrams for richer representation
+        size_t len = text->len;
+        const unsigned char* data = (const unsigned char*)text->data;
+
+        // Unigrams: hash each character
+        for (size_t i = 0; i < len; i++) {
+            uint64_t h = 14695981039346656037ULL;
+            h ^= data[i];
+            h *= 1099511628211ULL;
+            int idx = (int)(h % 1536);
+            vec[idx] += 1.0;
+        }
+
+        // Bigrams: hash pairs of characters
+        for (size_t i = 0; i + 1 < len; i++) {
+            uint64_t h = 14695981039346656037ULL;
+            h ^= data[i];
+            h *= 1099511628211ULL;
+            h ^= data[i + 1];
+            h *= 1099511628211ULL;
+            int idx = (int)((h >> 16) % 1536);
+            vec[idx] += 0.7;
+        }
+
+        // Trigrams: hash triples of characters
+        for (size_t i = 0; i + 2 < len; i++) {
+            uint64_t h = 14695981039346656037ULL;
+            h ^= data[i];
+            h *= 1099511628211ULL;
+            h ^= data[i + 1];
+            h *= 1099511628211ULL;
+            h ^= data[i + 2];
+            h *= 1099511628211ULL;
+            int idx = (int)((h >> 32) % 1536);
+            vec[idx] += 0.5;
+        }
+
+        // Normalize to unit vector for cosine similarity
+        double sum = 0.0;
+        for (int i = 0; i < 1536; i++) {
+            sum += vec[i] * vec[i];
+        }
+        if (sum > 0) {
+            sum = sqrt(sum);
+            for (int i = 0; i < 1536; i++) {
+                vec[i] /= sum;
+            }
+        }
     }
     return vec;
 }
@@ -609,6 +660,9 @@ typedef struct HiveRouter {
     int64_t* specialists;     // Array of specialist pointers
     int64_t current_idx;      // For round-robin
     RoutingRule* rules;       // For rule-based routing
+    int64_t* load_counts;     // Per-specialist pending message count (for LEAST_BUSY)
+    double** embeddings;      // Per-specialist description embeddings (for SEMANTIC)
+    int embedding_dim;        // Dimension of embeddings
     pthread_mutex_t lock;
 } HiveRouter;
 
@@ -622,6 +676,9 @@ int64_t router_new(int64_t type, int64_t spec_count) {
     router->specialists = (int64_t*)calloc(spec_count, sizeof(int64_t));
     router->current_idx = 0;
     router->rules = NULL;
+    router->load_counts = (int64_t*)calloc(spec_count, sizeof(int64_t));
+    router->embeddings = (double**)calloc(spec_count, sizeof(double*));
+    router->embedding_dim = 64;  // Default embedding dimension
     pthread_mutex_init(&router->lock, NULL);
 
     return (int64_t)router;
@@ -698,10 +755,82 @@ int64_t router_route(int64_t router_ptr, int64_t message_type_ptr) {
             break;
         }
 
-        case ROUTER_LEAST_BUSY:
-        case ROUTER_SEMANTIC:
+        case ROUTER_LEAST_BUSY: {
+            // Find specialist with lowest load count
+            int64_t min_load = INT64_MAX;
+            int64_t min_idx = 0;
+            for (int64_t i = 0; i < router->specialist_count; i++) {
+                if (router->load_counts[i] < min_load) {
+                    min_load = router->load_counts[i];
+                    min_idx = i;
+                }
+            }
+            result = router->specialists[min_idx];
+            router->load_counts[min_idx]++;  // Increment load for chosen specialist
+            break;
+        }
+
+        case ROUTER_SEMANTIC: {
+            // Use embeddings to find best semantic match for message
+            SxString* msg = (SxString*)message_type_ptr;
+            if (msg && msg->data && router->embeddings) {
+                // Compute message embedding using n-gram hash
+                double* msg_emb = (double*)calloc(router->embedding_dim, sizeof(double));
+                if (msg_emb) {
+                    size_t len = msg->len;
+                    const unsigned char* data = (const unsigned char*)msg->data;
+
+                    // N-gram hashing for message embedding
+                    for (size_t i = 0; i < len; i++) {
+                        uint64_t h = 14695981039346656037ULL ^ data[i];
+                        h *= 1099511628211ULL;
+                        msg_emb[h % router->embedding_dim] += 1.0;
+                    }
+                    for (size_t i = 0; i + 1 < len; i++) {
+                        uint64_t h = 14695981039346656037ULL;
+                        h ^= data[i]; h *= 1099511628211ULL;
+                        h ^= data[i+1]; h *= 1099511628211ULL;
+                        msg_emb[(h >> 16) % router->embedding_dim] += 0.7;
+                    }
+
+                    // Normalize message embedding
+                    double msg_norm = 0.0;
+                    for (int i = 0; i < router->embedding_dim; i++) {
+                        msg_norm += msg_emb[i] * msg_emb[i];
+                    }
+                    msg_norm = sqrt(msg_norm);
+                    if (msg_norm > 0) {
+                        for (int i = 0; i < router->embedding_dim; i++) {
+                            msg_emb[i] /= msg_norm;
+                        }
+                    }
+
+                    // Find specialist with highest cosine similarity
+                    double max_sim = -2.0;
+                    int64_t best_idx = 0;
+                    for (int64_t j = 0; j < router->specialist_count; j++) {
+                        if (router->embeddings[j]) {
+                            double sim = 0.0;
+                            for (int i = 0; i < router->embedding_dim; i++) {
+                                sim += msg_emb[i] * router->embeddings[j][i];
+                            }
+                            if (sim > max_sim) {
+                                max_sim = sim;
+                                best_idx = j;
+                            }
+                        }
+                    }
+                    free(msg_emb);
+                    result = router->specialists[best_idx];
+                    break;
+                }
+            }
+            // Fall through to default if semantic routing fails
+        }
+        /* fall through */
+
         default:
-            // Default to round-robin for unimplemented types
+            // Default to round-robin for uninitialized semantic or unknown types
             result = router->specialists[router->current_idx];
             router->current_idx = (router->current_idx + 1) % router->specialist_count;
             break;
@@ -718,8 +847,71 @@ int64_t router_type_random(void) { return ROUTER_RANDOM; }
 int64_t router_type_least_busy(void) { return ROUTER_LEAST_BUSY; }
 int64_t router_type_semantic(void) { return ROUTER_SEMANTIC; }
 
+// Decrement load count for specialist (call when message processing completes)
+void router_decrement_load(int64_t router_ptr, int64_t specialist_idx) {
+    HiveRouter* router = (HiveRouter*)router_ptr;
+    if (!router || specialist_idx < 0 || specialist_idx >= router->specialist_count) return;
+
+    pthread_mutex_lock(&router->lock);
+    if (router->load_counts[specialist_idx] > 0) {
+        router->load_counts[specialist_idx]--;
+    }
+    pthread_mutex_unlock(&router->lock);
+}
+
+// Set specialist embedding for semantic routing (description is specialist's capability description)
+int64_t router_set_specialist_embedding(int64_t router_ptr, int64_t idx, int64_t description_ptr) {
+    HiveRouter* router = (HiveRouter*)router_ptr;
+    SxString* desc = (SxString*)description_ptr;
+    if (!router || idx < 0 || idx >= router->specialist_count || !desc || !desc->data) return 0;
+
+    pthread_mutex_lock(&router->lock);
+
+    // Free old embedding if present
+    if (router->embeddings[idx]) {
+        free(router->embeddings[idx]);
+    }
+
+    // Compute embedding from description using n-gram hashing
+    router->embeddings[idx] = (double*)calloc(router->embedding_dim, sizeof(double));
+    if (!router->embeddings[idx]) {
+        pthread_mutex_unlock(&router->lock);
+        return 0;
+    }
+
+    size_t len = desc->len;
+    const unsigned char* data = (const unsigned char*)desc->data;
+
+    for (size_t i = 0; i < len; i++) {
+        uint64_t h = 14695981039346656037ULL ^ data[i];
+        h *= 1099511628211ULL;
+        router->embeddings[idx][h % router->embedding_dim] += 1.0;
+    }
+    for (size_t i = 0; i + 1 < len; i++) {
+        uint64_t h = 14695981039346656037ULL;
+        h ^= data[i]; h *= 1099511628211ULL;
+        h ^= data[i+1]; h *= 1099511628211ULL;
+        router->embeddings[idx][(h >> 16) % router->embedding_dim] += 0.7;
+    }
+
+    // Normalize
+    double norm = 0.0;
+    for (int i = 0; i < router->embedding_dim; i++) {
+        norm += router->embeddings[idx][i] * router->embeddings[idx][i];
+    }
+    norm = sqrt(norm);
+    if (norm > 0) {
+        for (int i = 0; i < router->embedding_dim; i++) {
+            router->embeddings[idx][i] /= norm;
+        }
+    }
+
+    pthread_mutex_unlock(&router->lock);
+    return 1;
+}
+
 // Close router
-// NOTE: Reference counting (TASK-010 D2) is optional and only added if use-after-free bugs are reported
+// NOTE: Reference counting is optional and only added if use-after-free bugs are reported
 // Current implementation uses single-owner semantics which is documented
 void router_close(int64_t router_ptr) {
     HiveRouter* router = (HiveRouter*)router_ptr;
@@ -737,6 +929,16 @@ void router_close(int64_t router_ptr) {
     }
 
     free(router->specialists);
+    free(router->load_counts);
+
+    // Free embeddings
+    if (router->embeddings) {
+        for (int64_t i = 0; i < router->specialist_count; i++) {
+            if (router->embeddings[i]) free(router->embeddings[i]);
+        }
+        free(router->embeddings);
+    }
+
     pthread_mutex_unlock(&router->lock);
     pthread_mutex_destroy(&router->lock);
     free(router);
@@ -2551,10 +2753,27 @@ int64_t actor_get_links(int64_t actor, int64_t* out_array, int64_t max_count) {
 
 // Spawn and link atomically
 int64_t actor_spawn_link(int64_t parent, int64_t init_state, int64_t handler) {
-    (void)parent; (void)init_state; (void)handler;  // Suppress unused warnings - API parameters
-    // This would call intrinsic_actor_spawn then actor_link
-    // For now, just return 0 as placeholder
-    return 0;
+    if (parent == 0) {
+        // No parent to link to, just spawn normally
+        return (int64_t)intrinsic_actor_spawn((void*)init_state, (void*)handler);
+    }
+
+    // Spawn the new actor
+    ActorHandle* child = (ActorHandle*)intrinsic_actor_spawn((void*)init_state, (void*)handler);
+    if (!child) {
+        return 0;  // Spawn failed
+    }
+
+    // Atomically establish bidirectional link
+    int64_t child_id = (int64_t)child;
+    if (!actor_link(parent, child_id)) {
+        // Link failed - in strict mode we might want to kill the child
+        // For now, just log and continue (child exists but unlinked)
+        fprintf(stderr, "Warning: spawn_link - link failed between parent %lld and child %lld\n",
+                (long long)parent, (long long)child_id);
+    }
+
+    return child_id;
 }
 
 // Simple wrapper to get link count (for Simplex binding)
@@ -5892,6 +6111,7 @@ typedef struct TraitEntry {
     int64_t id;
     char* name;
     int64_t value;      // Current value (0-100)
+    double weight;      // Fitness contribution weight (default 1.0)
     int64_t generation;
     struct TraitEntry* next;
 } TraitEntry;
@@ -5900,7 +6120,18 @@ static TraitEntry* g_trait_head = NULL;
 static int64_t g_trait_next_id = 1;
 static int64_t g_generation = 0;
 
-// Add trait
+// Fitness function configuration
+typedef enum {
+    FITNESS_WEIGHTED_SUM = 0,   // Default: weighted sum of traits
+    FITNESS_WEIGHTED_PRODUCT,   // Multiply weighted trait values
+    FITNESS_MIN_TRAIT,          // Minimum trait value (bottleneck fitness)
+    FITNESS_HARMONIC_MEAN       // Harmonic mean for balanced optimization
+} FitnessFunctionType;
+
+static FitnessFunctionType g_fitness_function = FITNESS_WEIGHTED_SUM;
+static double g_fitness_scale = 1.0;  // Global scaling factor
+
+// Add trait with optional weight
 int64_t intrinsic_add_trait(void* name_ptr, int64_t initial_value) {
     SxString* name = (SxString*)name_ptr;
     if (!name || !name->data) return -1;
@@ -5909,12 +6140,53 @@ int64_t intrinsic_add_trait(void* name_ptr, int64_t initial_value) {
     entry->id = g_trait_next_id++;
     entry->name = strdup(name->data);
     entry->value = initial_value;
+    entry->weight = 1.0;  // Default weight
     entry->generation = g_generation;
 
     entry->next = g_trait_head;
     g_trait_head = entry;
     return entry->id;
 }
+
+// Set trait weight for fitness calculation
+void intrinsic_set_trait_weight(int64_t trait_id, double weight) {
+    TraitEntry* entry = g_trait_head;
+    while (entry) {
+        if (entry->id == trait_id) {
+            entry->weight = weight;
+            return;
+        }
+        entry = entry->next;
+    }
+}
+
+// Get trait weight
+double intrinsic_get_trait_weight(int64_t trait_id) {
+    TraitEntry* entry = g_trait_head;
+    while (entry) {
+        if (entry->id == trait_id) return entry->weight;
+        entry = entry->next;
+    }
+    return 0.0;
+}
+
+// Configure fitness function type
+void intrinsic_set_fitness_function(int64_t func_type) {
+    if (func_type >= 0 && func_type <= FITNESS_HARMONIC_MEAN) {
+        g_fitness_function = (FitnessFunctionType)func_type;
+    }
+}
+
+// Set fitness scaling factor
+void intrinsic_set_fitness_scale(double scale) {
+    g_fitness_scale = scale;
+}
+
+// Fitness function type constants
+int64_t fitness_type_weighted_sum(void) { return FITNESS_WEIGHTED_SUM; }
+int64_t fitness_type_weighted_product(void) { return FITNESS_WEIGHTED_PRODUCT; }
+int64_t fitness_type_min_trait(void) { return FITNESS_MIN_TRAIT; }
+int64_t fitness_type_harmonic_mean(void) { return FITNESS_HARMONIC_MEAN; }
 
 // Get trait value
 int64_t intrinsic_trait_value(int64_t trait_id) {
@@ -5953,15 +6225,85 @@ int64_t intrinsic_current_generation(void) {
     return g_generation;
 }
 
-// Fitness evaluation (placeholder - returns trait sum)
+// Fitness evaluation with configurable function and weights
 int64_t intrinsic_evaluate_fitness(void) {
-    int64_t fitness = 0;
     TraitEntry* entry = g_trait_head;
-    while (entry) {
-        fitness += entry->value;
-        entry = entry->next;
+    double result = 0.0;
+    int count = 0;
+
+    switch (g_fitness_function) {
+        case FITNESS_WEIGHTED_SUM: {
+            // Weighted sum: sum(value * weight)
+            double total_weight = 0.0;
+            while (entry) {
+                result += (double)entry->value * entry->weight;
+                total_weight += entry->weight;
+                entry = entry->next;
+                count++;
+            }
+            // Normalize by total weight if non-zero
+            if (total_weight > 0 && count > 0) {
+                result = result / total_weight * count;
+            }
+            break;
+        }
+
+        case FITNESS_WEIGHTED_PRODUCT: {
+            // Geometric mean: product(value^weight)^(1/sum(weights))
+            result = 1.0;
+            double total_weight = 0.0;
+            while (entry) {
+                if (entry->value > 0 && entry->weight > 0) {
+                    result *= pow((double)entry->value, entry->weight);
+                    total_weight += entry->weight;
+                }
+                entry = entry->next;
+                count++;
+            }
+            if (total_weight > 0) {
+                result = pow(result, 1.0 / total_weight);
+            }
+            break;
+        }
+
+        case FITNESS_MIN_TRAIT: {
+            // Bottleneck fitness: minimum weighted trait value
+            result = 1e9;
+            while (entry) {
+                double weighted_val = (double)entry->value * entry->weight;
+                if (weighted_val < result) {
+                    result = weighted_val;
+                }
+                entry = entry->next;
+                count++;
+            }
+            if (count == 0) result = 0.0;
+            break;
+        }
+
+        case FITNESS_HARMONIC_MEAN: {
+            // Weighted harmonic mean: sum(weights) / sum(weight/value)
+            double weight_sum = 0.0;
+            double reciprocal_sum = 0.0;
+            while (entry) {
+                if (entry->value > 0) {
+                    weight_sum += entry->weight;
+                    reciprocal_sum += entry->weight / (double)entry->value;
+                }
+                entry = entry->next;
+                count++;
+            }
+            if (reciprocal_sum > 0) {
+                result = weight_sum / reciprocal_sum;
+            }
+            break;
+        }
     }
-    return fitness;
+
+    // Apply global scaling
+    result *= g_fitness_scale;
+
+    return (int64_t)result;
 }
 
 // =============================================================================
@@ -9449,21 +9791,180 @@ typedef struct MigrationBuffer {
     int capacity;
 } MigrationBuffer;
 
-// Serialize actor state (placeholder - actual serialization depends on actor type)
-int64_t migration_serialize_actor(int64_t actor_ptr) {
-    // In a real implementation, this would serialize the actor's full state
-    // For now, return a placeholder
-    char buffer[1024];
-    snprintf(buffer, sizeof(buffer), "{\"actor\":%lld,\"state\":\"serialized\"}", (long long)actor_ptr);
-    return (int64_t)intrinsic_string_new(buffer);
+// Helper to escape JSON string
+static char* json_escape_string(const char* str, size_t len) {
+    // Estimate max size: each char could become \uXXXX (6 chars)
+    size_t max_len = len * 6 + 1;
+    char* escaped = (char*)malloc(max_len);
+    if (!escaped) return NULL;
+
+    size_t j = 0;
+    for (size_t i = 0; i < len && j < max_len - 6; i++) {
+        unsigned char c = (unsigned char)str[i];
+        if (c == '"') {
+            escaped[j++] = '\\'; escaped[j++] = '"';
+        } else if (c == '\\') {
+            escaped[j++] = '\\'; escaped[j++] = '\\';
+        } else if (c == '\n') {
+            escaped[j++] = '\\'; escaped[j++] = 'n';
+        } else if (c == '\r') {
+            escaped[j++] = '\\'; escaped[j++] = 'r';
+        } else if (c == '\t') {
+            escaped[j++] = '\\'; escaped[j++] = 't';
+        } else if (c < 32) {
+            j += snprintf(escaped + j, max_len - j, "\\u%04x", c);
+        } else {
+            escaped[j++] = c;
+        }
+    }
+    escaped[j] = '\0';
+    return escaped;
 }
 
-// Deserialize actor state
+// Serialize actor state with proper JSON format
+int64_t migration_serialize_actor(int64_t actor_ptr) {
+    if (!actor_ptr) {
+        return (int64_t)intrinsic_string_new("{\"error\":\"null_actor\"}");
+    }
+
+    // Look up actor in registry
+    ActorHandle* actor = NULL;
+    pthread_mutex_lock(&actor_registry_lock);
+    for (int64_t i = 0; i < actor_registry_cap; i++) {
+        if (actor_registry[i] && (int64_t)actor_registry[i] == actor_ptr) {
+            actor = actor_registry[i];
+            break;
+        }
+    }
+    pthread_mutex_unlock(&actor_registry_lock);
+
+    if (!actor) {
+        // Direct pointer case
+        actor = (ActorHandle*)actor_ptr;
+    }
+
+    // Get mailbox message count
+    Mailbox* mb = (Mailbox*)actor->mailbox;
+    int64_t mailbox_count = mb ? mb->count : 0;
+
+    // Serialize state pointer as hex (actual state serialization depends on application)
+    // Build JSON representation of actor
+    size_t buffer_size = 2048;
+    char* buffer = (char*)malloc(buffer_size);
+    if (!buffer) {
+        return (int64_t)intrinsic_string_new("{\"error\":\"allocation_failed\"}");
+    }
+
+    int written = snprintf(buffer, buffer_size,
+        "{"
+        "\"actor_id\":%lld,"
+        "\"state_ptr\":\"0x%llx\","
+        "\"running\":%s,"
+        "\"restarting\":%s,"
+        "\"supervisor_id\":%lld,"
+        "\"mailbox_count\":%lld,"
+        "\"has_on_start\":%s,"
+        "\"has_on_stop\":%s,"
+        "\"has_on_error\":%s,"
+        "\"handler_ptr\":\"0x%llx\""
+        "}",
+        (long long)actor->id,
+        (unsigned long long)(uintptr_t)actor->state,
+        actor->running ? "true" : "false",
+        actor->restarting ? "true" : "false",
+        (long long)actor->supervisor,
+        (long long)mailbox_count,
+        actor->on_start ? "true" : "false",
+        actor->on_stop ? "true" : "false",
+        actor->on_error ? "true" : "false",
+        (unsigned long long)(uintptr_t)actor->handler
+    );
+
+    if (written < 0 || (size_t)written >= buffer_size) {
+        free(buffer);
+        return (int64_t)intrinsic_string_new("{\"error\":\"buffer_overflow\"}");
+    }
+
+    int64_t result = (int64_t)intrinsic_string_new(buffer);
+    free(buffer);
+    return result;
+}
+
+// Deserialize actor state from JSON
 int64_t migration_deserialize_actor(int64_t data_ptr) {
-    (void)data_ptr;  // Suppress unused warning
-    // In a real implementation, this would deserialize and recreate the actor
-    // For now, return placeholder
-    return 0;
+    SxString* data = (SxString*)data_ptr;
+    if (!data || !data->data) return 0;
+
+    // Parse JSON to extract actor fields
+    // Simple parsing for known format
+    int64_t actor_id = 0;
+    void* state_ptr = NULL;
+    int64_t supervisor_id = 0;
+    int running = 1;
+
+    const char* json = data->data;
+
+    // Extract actor_id
+    const char* p = strstr(json, "\"actor_id\":");
+    if (p) {
+        actor_id = strtoll(p + 11, NULL, 10);
+    }
+
+    // Extract state_ptr
+    p = strstr(json, "\"state_ptr\":\"0x");
+    if (p) {
+        state_ptr = (void*)(uintptr_t)strtoull(p + 15, NULL, 16);
+    }
+
+    // Extract supervisor_id
+    p = strstr(json, "\"supervisor_id\":");
+    if (p) {
+        supervisor_id = strtoll(p + 16, NULL, 10);
+    }
+
+    // Extract running
+    p = strstr(json, "\"running\":");
+    if (p) {
+        running = (strncmp(p + 10, "true", 4) == 0) ? 1 : 0;
+    }
+
+    // Create a new actor with the deserialized state
+    // Note: The actual state needs to be reconstructed by the caller
+    // This returns a stub actor that can be filled in
+    ActorHandle* actor = (ActorHandle*)malloc(sizeof(ActorHandle));
+    if (!actor) return 0;
+
+    actor->id = actor_id > 0 ? actor_id : ++next_actor_id;
+    actor->state = state_ptr;  // Caller must restore actual state
+    actor->mailbox = intrinsic_mailbox_new();
+    actor->handler = NULL;  // Must be set by caller
+    actor->on_start = NULL;
+    actor->on_stop = NULL;
+    actor->on_error = NULL;
+    actor->supervisor = supervisor_id;
+    actor->running = running;
+    actor->restarting = 0;
+
+    // Register in global registry
+    pthread_mutex_lock(&actor_registry_lock);
+    if (actor->id >= actor_registry_cap) {
+        int64_t new_cap = actor_registry_cap == 0 ? 64 : actor_registry_cap * 2;
+        while (new_cap <= actor->id) new_cap *= 2;
+        ActorHandle** new_registry = realloc(actor_registry, new_cap * sizeof(ActorHandle*));
+        if (new_registry) {
+            for (int64_t i = actor_registry_cap; i < new_cap; i++) {
+                new_registry[i] = NULL;
+            }
+            actor_registry = new_registry;
+            actor_registry_cap = new_cap;
+        }
+    }
+    if (actor->id < actor_registry_cap) {
+        actor_registry[actor->id] = actor;
+    }
+    pthread_mutex_unlock(&actor_registry_lock);
+
+    return (int64_t)actor;
 }
 
 // Create migration coordinator
@@ -9570,23 +10071,36 @@ typedef struct CodeStore {
 
 static CodeStore* g_code_store = NULL;
 
-// Simple SHA-256 placeholder (real implementation would use OpenSSL)
+// SHA-256 hash using OpenSSL
 static void code_hash(const char* data, size_t len, char* out) {
-    // Using FNV-1a as placeholder since we already have OpenSSL linked
-    uint64_t h1 = 14695981039346656037ULL;
-    uint64_t h2 = 14695981039346656037ULL;
-    for (size_t i = 0; i < len; i++) {
-        if (i % 2 == 0) {
-            h1 ^= (uint8_t)data[i];
-            h1 *= 1099511628211ULL;
-        } else {
-            h2 ^= (uint8_t)data[i];
-            h2 *= 1099511628211ULL;
-        }
+    unsigned char hash[EVP_MAX_MD_SIZE];
+    unsigned int hash_len;
+
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    if (!ctx) {
+        // Fallback to zero hash on allocation failure
+        memset(out, '0', 64);
+        out[64] = '\0';
+        return;
     }
-    snprintf(out, 65, "%016llx%016llx%016llx%016llx",
-             (unsigned long long)h1, (unsigned long long)h2,
-             (unsigned long long)(h1 ^ h2), (unsigned long long)(h1 + h2));
+
+    if (EVP_DigestInit_ex(ctx, EVP_sha256(), NULL) != 1 ||
+        EVP_DigestUpdate(ctx, data, len) != 1 ||
+        EVP_DigestFinal_ex(ctx, hash, &hash_len) != 1) {
+        // Fallback to zero hash on error
+        EVP_MD_CTX_free(ctx);
+        memset(out, '0', 64);
+        out[64] = '\0';
+        return;
+    }
+
+    EVP_MD_CTX_free(ctx);
+
+    // Convert to hex string
+    for (unsigned int i = 0; i < hash_len && i < 32; i++) {
+        snprintf(out + (i * 2), 3, "%02x", hash[i]);
+    }
+    out[64] = '\0';
 }
 
 // Create code store
@@ -10306,20 +10820,96 @@ int64_t embedding_model_load(int64_t model_ptr, int64_t path_ptr) {
     return 1;
 }
 
-// Simple hash-based embedding (placeholder for real model)
+// Improved hash-based embedding with better semantic distribution
+// Uses n-grams, word-level hashing, and positional encoding for richer representations
 static void compute_simple_embedding(const char* text, double* out, int dim) {
     // Initialize with zeros
     memset(out, 0, dim * sizeof(double));
-    
-    // Simple character-based embedding
+
+    if (!text) return;
     size_t len = strlen(text);
+    if (len == 0) return;
+
+    const unsigned char* data = (const unsigned char*)text;
+
+    // FNV-1a constants for hashing
+    const uint64_t FNV_PRIME = 1099511628211ULL;
+    const uint64_t FNV_OFFSET = 14695981039346656037ULL;
+
+    // Layer 1: Character unigrams with positional encoding
     for (size_t i = 0; i < len; i++) {
-        int idx = (int)(((unsigned char)text[i] * 7 + i * 13) % dim);
-        out[idx] += 1.0;
+        uint64_t h = FNV_OFFSET ^ data[i];
+        h *= FNV_PRIME;
+        // Add positional information
+        h ^= (i * 31);
+        h *= FNV_PRIME;
+        int idx = (int)(h % dim);
+        // Decay weight by position (earlier chars slightly more important)
+        double weight = 1.0 / (1.0 + 0.01 * i);
+        out[idx] += weight;
     }
-    
-    // Normalize to unit vector
-    double sum = 0;
+
+    // Layer 2: Character bigrams (capture local patterns)
+    for (size_t i = 0; i + 1 < len; i++) {
+        uint64_t h = FNV_OFFSET;
+        h ^= data[i]; h *= FNV_PRIME;
+        h ^= data[i + 1]; h *= FNV_PRIME;
+        int idx = (int)((h >> 8) % dim);
+        out[idx] += 0.7;
+    }
+
+    // Layer 3: Character trigrams (capture morphemes)
+    for (size_t i = 0; i + 2 < len; i++) {
+        uint64_t h = FNV_OFFSET;
+        h ^= data[i]; h *= FNV_PRIME;
+        h ^= data[i + 1]; h *= FNV_PRIME;
+        h ^= data[i + 2]; h *= FNV_PRIME;
+        int idx = (int)((h >> 16) % dim);
+        out[idx] += 0.5;
+    }
+
+    // Layer 4: Word-level hashing (split on spaces/punctuation)
+    size_t word_start = 0;
+    for (size_t i = 0; i <= len; i++) {
+        int is_boundary = (i == len) ||
+                         (data[i] == ' ') ||
+                         (data[i] == '\t') ||
+                         (data[i] == '\n') ||
+                         (data[i] == '.') ||
+                         (data[i] == ',') ||
+                         (data[i] == '!') ||
+                         (data[i] == '?');
+
+        if (is_boundary && i > word_start) {
+            // Hash the word
+            uint64_t h = FNV_OFFSET;
+            for (size_t j = word_start; j < i; j++) {
+                // Case-insensitive hashing
+                unsigned char c = data[j];
+                if (c >= 'A' && c <= 'Z') c += 32;
+                h ^= c;
+                h *= FNV_PRIME;
+            }
+            // Use different bit ranges for variety
+            int idx1 = (int)((h >> 24) % dim);
+            int idx2 = (int)((h >> 32) % dim);
+            out[idx1] += 1.2;
+            out[idx2] += 0.6;
+            word_start = i + 1;
+        }
+    }
+
+    // Layer 5: Skip-grams (capture longer-range dependencies)
+    for (size_t i = 0; i + 2 < len; i++) {
+        uint64_t h = FNV_OFFSET;
+        h ^= data[i]; h *= FNV_PRIME;
+        h ^= data[i + 2]; h *= FNV_PRIME;  // Skip one character
+        int idx = (int)((h >> 40) % dim);
+        out[idx] += 0.3;
+    }
+
+    // Normalize to unit vector for cosine similarity
+    double sum = 0.0;
     for (int i = 0; i < dim; i++) {
         sum += out[i] * out[i];
     }
@@ -12363,6 +12953,7 @@ typedef struct LLMClient {
     int max_tokens;
     int64_t total_tokens;
     double total_cost;
+    int64_t cached_embedding_model;  // Cached embedding model for llm_embed
     pthread_mutex_t lock;
 } LLMClient;
 
@@ -12370,7 +12961,7 @@ typedef struct LLMClient {
 int64_t llm_client_new(int64_t provider) {
     LLMClient* client = (LLMClient*)malloc(sizeof(LLMClient));
     if (!client) return 0;
-    
+
     client->provider = (LLMProvider)provider;
     client->api_key = NULL;
     client->base_url = NULL;
@@ -12379,8 +12970,9 @@ int64_t llm_client_new(int64_t provider) {
     client->max_tokens = 1024;
     client->total_tokens = 0;
     client->total_cost = 0.0;
+    client->cached_embedding_model = 0;  // Lazy initialization
     pthread_mutex_init(&client->lock, NULL);
-    
+
     return (int64_t)client;
 }
 
@@ -12491,28 +13083,9 @@ static char* json_extract_string(const char* json, const char* key) {
     return result;
 }
 
-// Helper: Escape string for JSON
-static char* json_escape_string(const char* str) {
-    size_t len = strlen(str);
-    char* escaped = (char*)malloc(len * 2 + 1);
-    char* w = escaped;
-    for (const char* r = str; *r; r++) {
-        switch (*r) {
-            case '"': *w++ = '\\'; *w++ = '"'; break;
-            case '\\': *w++ = '\\'; *w++ = '\\'; break;
-            case '\n': *w++ = '\\'; *w++ = 'n'; break;
-            case '\r': *w++ = '\\'; *w++ = 'r'; break;
-            case '\t': *w++ = '\\'; *w++ = 't'; break;
-            default: *w++ = *r; break;
-        }
-    }
-    *w = '\0';
-    return escaped;
-}
-
 // Helper: Build Anthropic API request JSON
 static char* build_anthropic_request(const char* model, const char* prompt, int max_tokens) {
-    char* escaped = json_escape_string(prompt);
+    char* escaped = json_escape_string(prompt, strlen(prompt));
     char* json = (char*)malloc(strlen(escaped) + 512);
     sprintf(json,
         "{\"model\":\"%s\",\"max_tokens\":%d,\"messages\":[{\"role\":\"user\",\"content\":\"%s\"}]}",
@@ -12523,7 +13096,7 @@ static char* build_anthropic_request(const char* model, const char* prompt, int 
 
 // Helper: Build OpenAI API request JSON
 static char* build_openai_request(const char* model, const char* prompt, int max_tokens) {
-    char* escaped = json_escape_string(prompt);
+    char* escaped = json_escape_string(prompt, strlen(prompt));
     char* json = (char*)malloc(strlen(escaped) + 512);
     sprintf(json,
         "{\"model\":\"%s\",\"max_tokens\":%d,\"messages\":[{\"role\":\"user\",\"content\":\"%s\"}]}",
@@ -12534,7 +13107,7 @@ static char* build_openai_request(const char* model, const char* prompt, int max
 
 // Helper: Build Ollama API request JSON (local models)
 static char* build_ollama_request(const char* model, const char* prompt) {
-    char* escaped = json_escape_string(prompt);
+    char* escaped = json_escape_string(prompt, strlen(prompt));
     char* json = (char*)malloc(strlen(escaped) + 256);
     sprintf(json,
         "{\"model\":\"%s\",\"prompt\":\"%s\",\"stream\":false}",
@@ -12728,14 +13301,27 @@ int64_t llm_chat(int64_t client_ptr, int64_t message_ptr) {
     return llm_complete(client_ptr, message_ptr);
 }
 
-// Get embeddings (mock)
+// Get embeddings with cached model
 int64_t llm_embed(int64_t client_ptr, int64_t text_ptr) {
     LLMClient* client = (LLMClient*)client_ptr;
     SxString* text = (SxString*)text_ptr;
     if (!client || !text) return 0;
 
-    // Mock embedding - just return a small embedding model result
-    return embedding_embed((int64_t)embedding_model_new(64), text_ptr);
+    pthread_mutex_lock(&client->lock);
+
+    // Lazy initialization of cached embedding model
+    if (client->cached_embedding_model == 0) {
+        client->cached_embedding_model = embedding_model_new(64);
+    }
+
+    // Use cached model for embedding
+    int64_t result = 0;
+    if (client->cached_embedding_model != 0) {
+        result = embedding_embed(client->cached_embedding_model, text_ptr);
+    }
+
+    pthread_mutex_unlock(&client->lock);
+    return result;
 }
 
 // Get token usage
@@ -12754,11 +13340,14 @@ double llm_get_cost(int64_t client_ptr) {
 void llm_client_close(int64_t client_ptr) {
     LLMClient* client = (LLMClient*)client_ptr;
     if (!client) return;
-    
+
     pthread_mutex_lock(&client->lock);
     if (client->api_key) free(client->api_key);
     if (client->base_url) free(client->base_url);
     if (client->model) free(client->model);
+    if (client->cached_embedding_model) {
+        embedding_model_close(client->cached_embedding_model);
+    }
     pthread_mutex_unlock(&client->lock);
     pthread_mutex_destroy(&client->lock);
     free(client);
@@ -16426,7 +17015,7 @@ void evolution_population_free(int64_t pop_ptr) {
 }
 
 // ============================================================================
-// TASK-013-A: Belief Guard Runtime Support
+// Belief Guard Runtime Support
 // ============================================================================
 // This implements the runtime support for belief-gated receive with derivative
 // patterns. Beliefs are stored as dual numbers (confidence + derivative) for
@@ -16544,7 +17133,7 @@ int64_t belief_update(int64_t name_ptr, double new_confidence) {
 
     pthread_mutex_unlock(&g_dual_belief_mutex);
 
-    // Check if any suspended receives should wake (TASK-013-A WAKE mechanism)
+    // Check if any suspended receives should wake
     if (belief_name_copy) {
         wake_check_belief(belief_name_copy);
         free(belief_name_copy);
@@ -16801,7 +17390,7 @@ int64_t belief_guard_check_derivative(int64_t name_ptr, int64_t op, double thres
 }
 
 // ============================================================================
-// TASK-013-A Phase 6: WAKE Mechanism for Belief-Gated Receive
+// WAKE Mechanism for Belief-Gated Receive
 // ============================================================================
 // This implements the WAKE transition for suspended receives. When a receive
 // handler has a belief guard that is not satisfied, it can be suspended.

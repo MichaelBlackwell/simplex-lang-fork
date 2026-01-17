@@ -92,10 +92,18 @@ enum TokenKind {
     KwAnima,
     // Mutable binding
     KwVar,
+    // Mutable reference keyword
+    KwMut,
     // Spawn expression
     KwSpawn,
     // Where clause
-    KwWhere
+    KwWhere,
+    // Belief guard tokens
+    At,              // @ symbol for belief guards
+    KwConfidence,    // confidence(belief_id)
+    KwDerivative,    // .derivative accessor
+    // Attribute tokens
+    Hash             // # for #[attr] syntax
 }
 
 // AST node tags - using i64 since stage1 doesn't have proper enums for everything
@@ -159,7 +167,7 @@ fn EXPR_CAST() -> i64 { 32 }     // expr as Type - type cast
 fn EXPR_METHOD() -> i64 { 33 }   // method reference - Type::method
 fn EXPR_STRUCT() -> i64 { 34 }   // struct expression marker
 
-// Belief guard expressions (TASK-013-A)
+// Belief guard expressions
 fn EXPR_CONFIDENCE() -> i64 { 35 }    // confidence(belief_id)
 fn EXPR_DERIVATIVE() -> i64 { 36 }    // expr.derivative
 fn EXPR_BELIEF_GUARD() -> i64 { 37 }  // belief_expr cmp value
@@ -916,9 +924,14 @@ fn OP_NOT() -> i64 { 1 }
 // Content like "Hello {name}, you are {age} years old" becomes:
 // parts = ["Hello ", ", you are ", " years old"]
 // exprs = [ident(name), ident(age)]
+// Supports:
+// - Full expressions: f"{obj.method()}", f"{a + b}"
+// - Escaped braces: f"{{literal}}" produces "{literal}"
+// - Format specifiers: f"{value:format}" (format string extracted but stored separately)
 fn parse_fstring(parser: i64, content: i64) -> i64 {
     let parts: i64 = vec_new();
     let exprs: i64 = vec_new();
+    let formats: i64 = vec_new();  // Format specifiers (parallel to exprs)
     let current: i64 = string_from("");
     let len: i64 = string_len(content);
     let i: i64 = 0;
@@ -926,19 +939,38 @@ fn parse_fstring(parser: i64, content: i64) -> i64 {
     while i < len {
         let c: i64 = string_char_at(content, i);
         if c == 123 {  // '{'
+            // Check for escaped brace: {{
+            if i + 1 < len {
+                let next: i64 = string_char_at(content, i + 1);
+                if next == 123 {
+                    // {{ produces literal {
+                    current = string_concat(current, string_from_char(123));
+                    i = i + 2;
+                    continue;
+                }
+            }
+
             // Found expression start
             vec_push(parts, current);
             current = string_from("");
             i = i + 1;
 
-            // Extract expression text until '}'
+            // Extract expression text until ':' (format spec) or '}' (close)
+            // Track brace depth for nested expressions like {arr[i]}
             let expr_text: i64 = string_from("");
+            let format_spec: i64 = string_from("");
             let depth: i64 = 1;
+            let in_format: i64 = 0;  // 0 = parsing expr, 1 = parsing format
+
             while i < len {
                 let ec: i64 = string_char_at(content, i);
-                if ec == 123 {
+                if ec == 123 {  // '{'
                     depth = depth + 1;
-                    expr_text = string_concat(expr_text, string_from_char(ec));
+                    if in_format == 1 {
+                        format_spec = string_concat(format_spec, string_from_char(ec));
+                    } else {
+                        expr_text = string_concat(expr_text, string_from_char(ec));
+                    }
                 } else {
                     if ec == 125 {  // '}'
                         depth = depth - 1;
@@ -946,21 +978,67 @@ fn parse_fstring(parser: i64, content: i64) -> i64 {
                             i = i + 1;
                             break;
                         }
-                        expr_text = string_concat(expr_text, string_from_char(ec));
+                        if in_format == 1 {
+                            format_spec = string_concat(format_spec, string_from_char(ec));
+                        } else {
+                            expr_text = string_concat(expr_text, string_from_char(ec));
+                        }
                     } else {
-                        expr_text = string_concat(expr_text, string_from_char(ec));
+                        if ec == 58 {  // ':'
+                            // Only treat as format separator at depth 1, and if not already in format
+                            if depth == 1 {
+                                if in_format == 0 {
+                                    in_format = 1;
+                                } else {
+                                    format_spec = string_concat(format_spec, string_from_char(ec));
+                                }
+                            } else {
+                                // Nested colon (e.g., in ternary or slice), keep in expression
+                                if in_format == 1 {
+                                    format_spec = string_concat(format_spec, string_from_char(ec));
+                                } else {
+                                    expr_text = string_concat(expr_text, string_from_char(ec));
+                                }
+                            }
+                        } else {
+                            if in_format == 1 {
+                                format_spec = string_concat(format_spec, string_from_char(ec));
+                            } else {
+                                expr_text = string_concat(expr_text, string_from_char(ec));
+                            }
+                        }
                     }
                 }
                 i = i + 1;
             }
 
-            // Parse the expression text
-            // For now, just treat it as an identifier for simple cases
-            // TODO: Full expression parsing inside f-strings
-            vec_push(exprs, ast_ident(expr_text));
+            // Parse the expression text using the full expression parser
+            // Tokenize the expression text and create a sub-parser
+            let expr_tokens: i64 = tokenize(expr_text);
+            let expr_parser: i64 = parser_new(expr_tokens);
+            let parsed_expr: i64 = parse_expr(expr_parser);
+
+            vec_push(exprs, parsed_expr);
+            vec_push(formats, format_spec);
         } else {
-            current = string_concat(current, string_from_char(c));
-            i = i + 1;
+            if c == 125 {  // '}'
+                // Check for escaped brace: }}
+                if i + 1 < len {
+                    let next: i64 = string_char_at(content, i + 1);
+                    if next == 125 {
+                        // }} produces literal }
+                        current = string_concat(current, string_from_char(125));
+                        i = i + 2;
+                        continue;
+                    }
+                }
+                // Single } outside interpolation - just include it
+                current = string_concat(current, string_from_char(c));
+                i = i + 1;
+            } else {
+                current = string_concat(current, string_from_char(c));
+                i = i + 1;
+            }
         }
     }
 
@@ -2078,8 +2156,26 @@ fn parse_return(parser: i64) -> i64 {
     ast_return(expr)
 }
 
-// Parse type: handles simple idents, Self, Self::AssocType, tuples, and dyn Trait
+// Parse type: handles simple idents, Self, Self::AssocType, tuples, dyn Trait, and reference types (&T, &str)
 fn parse_type(parser: i64) -> i64 {
+    // Check for reference type (&T, &str, &mut T)
+    if parser_check(parser, TokenKind::Amp) {
+        parser_advance(parser);  // consume '&'
+        // Check for &mut (mutable reference)
+        let is_mut: bool = false;
+        if parser_check(parser, TokenKind::KwMut) {
+            parser_advance(parser);  // consume 'mut'
+            is_mut = true;
+        }
+        // Parse the inner type recursively
+        let inner_type: i64 = parse_type(parser);
+        // Return "&Type" or "&mut Type" as the type string
+        if is_mut {
+            return string_concat(string_from("&mut "), inner_type);
+        }
+        return string_concat(string_from("&"), inner_type);
+    }
+
     // Check for tuple type: (T1, T2, ...)
     if parser_check(parser, TokenKind::LParen) {
         parser_advance(parser);  // consume (
@@ -2815,7 +2911,7 @@ fn parse_actor(parser: i64) -> i64 {
                 parser_advance(parser);
                 ret_type = parse_type(parser);
             }
-            // Parse optional belief guard: @ confidence(id) < 0.5 (TASK-013-A)
+            // Parse optional belief guard: @ confidence(id) < 0.5
             let belief_guard: i64 = 0;
             if parser_check(parser, TokenKind::At) {
                 parser_advance(parser);  // consume '@'
@@ -2894,7 +2990,7 @@ fn parse_specialist(parser: i64) -> i64 {
                 parser_advance(parser);
                 ret_type = parse_type(parser);
             }
-            // Parse optional belief guard: @ confidence(id) < 0.5 (TASK-013-A)
+            // Parse optional belief guard: @ confidence(id) < 0.5
             let belief_guard: i64 = 0;
             if parser_check(parser, TokenKind::At) {
                 parser_advance(parser);  // consume '@'
@@ -3117,10 +3213,45 @@ fn parse_anima(parser: i64) -> i64 {
     ast_anima(name, identity, memory, beliefs, slm, persistence)
 }
 
+// Skip any attributes (#[...]) before an item
+fn skip_attributes(parser: i64) -> i64 {
+    while parser_check(parser, TokenKind::Hash) {
+        parser_advance(parser);  // consume #
+        if parser_check(parser, TokenKind::LBracket) {
+            parser_advance(parser);  // consume [
+            // Skip tokens until we find the closing ]
+            let depth: i64 = 1;
+            while depth > 0 {
+                if parser_at_end(parser) {
+                    return 0;
+                }
+                if parser_check(parser, TokenKind::LBracket) {
+                    depth = depth + 1;
+                }
+                if parser_check(parser, TokenKind::RBracket) {
+                    depth = depth - 1;
+                    if depth == 0 {
+                        parser_advance(parser);  // consume final ]
+                        return skip_attributes(parser);  // check for more attributes
+                    }
+                }
+                parser_advance(parser);
+            }
+        }
+    }
+    0
+}
+
 // Parse a single item (fn, enum, or struct)
 fn parse_item(parser: i64) -> i64 {
+    // Skip any attributes (#[test], #[no_learn], etc.)
+    skip_attributes(parser);
+
     // Skip pub keyword if present
     parser_match(parser, TokenKind::KwPub);
+
+    // Skip attributes again in case they come after pub
+    skip_attributes(parser);
 
     // Check for async fn
     if parser_check(parser, TokenKind::KwAsync) {
@@ -3175,7 +3306,7 @@ fn parse_item(parser: i64) -> i64 {
 }
 
 // ========================================
-// Belief Guard Parsing (TASK-013-A)
+// Belief Guard Parsing
 // ========================================
 
 // Parse belief guard: confidence(id) < 0.5 && confidence(id).derivative < -0.1
