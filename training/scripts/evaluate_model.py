@@ -388,7 +388,7 @@ What does the hive believe about the release?""",
         print("="*60)
 
         for name, result in results.items():
-            status = "✓" if result.value > 0.5 else "✗"
+            status = "PASS" if result.value > 0.5 else "FAIL"
             print(f"{status} {result.metric}: {result.value:.3f}")
             if result.details:
                 for k, v in result.details.items():

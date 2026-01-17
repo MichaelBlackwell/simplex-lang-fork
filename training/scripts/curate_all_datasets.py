@@ -578,7 +578,7 @@ def main():
         for category, datasets in sorted(categories.items()):
             print(f"\n=== {category.upper()} ===")
             for name, info in datasets:
-                status = "✓" if info.commercial_ok else "⚠ Research only"
+                status = "OK" if info.commercial_ok else "[!] Research only"
                 print(f"  {name}: {info.name}")
                 print(f"    License: {info.license} [{status}]")
         return

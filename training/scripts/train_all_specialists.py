@@ -929,9 +929,9 @@ Analyze for standard terms and potential issues."""
 3. **No return/destruction** - Should include data handling obligations
 
 **Comparison to Standard:**
-- Duration: ✓ Within normal range
-- Exceptions: ✓ Standard carve-outs present
-- Scope: ⚠ Could be more specific
+- Duration: OK Within normal range
+- Exceptions: OK Standard carve-outs present
+- Scope: [!] Could be more specific
 
 **Recommendation:** Acceptable with suggested clarifications
 
@@ -956,11 +956,11 @@ Identify compliance gaps."""
 
 | Requirement | Status | Finding |
 |-------------|--------|---------|
-| Data encryption | ✅ Pass | At-rest encryption confirmed |
-| Access controls | ⚠ Review | Staff access scope unclear |
-| Data retention | ⚠ Review | 7-year retention may exceed necessity |
-| Third-party sharing | ❌ Gap | Analytics provider agreement needed |
-| Consent management | ❓ Unknown | Collection consent not specified |
+| Data encryption | [PASS] Pass | At-rest encryption confirmed |
+| Access controls | [!] Review | Staff access scope unclear |
+| Data retention | [!] Review | 7-year retention may exceed necessity |
+| Third-party sharing | [FAIL] Gap | Analytics provider agreement needed |
+| Consent management | [?] Unknown | Collection consent not specified |
 
 **Critical Gaps:**
 1. **Third-party data processing agreement** - Required for analytics provider
@@ -1099,7 +1099,7 @@ Provide verdict with supporting evidence."""
 
 **Claim:** "{claim[0]}"
 
-**Verdict:** {'✅ TRUE' if claim[1] else '❌ FALSE'}
+**Verdict:** {'[PASS] TRUE' if claim[1] else '[FAIL] FALSE'}
 
 **Evidence:** {claim[2]}
 
@@ -1537,7 +1537,7 @@ def main():
         for cat, specs in sorted(by_category.items()):
             print(f"\n{cat.upper()} ({len(specs)})")
             for s in specs:
-                status = "✓" if s.generator else "✗"
+                status = "OK" if s.generator else "FAIL"
                 print(f"  {status} {s.id}: {s.name} ({s.model_size})")
 
         total = len(SPECIALISTS)

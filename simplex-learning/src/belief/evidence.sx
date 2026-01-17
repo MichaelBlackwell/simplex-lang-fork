@@ -1,0 +1,602 @@
+// TASK-014: Evidence Links and Falsification Conditions
+//
+// Evidence links connect beliefs to observations that support (or contradict) them.
+// Falsification conditions define what would cause a belief to be revised.
+//
+// Key insight: A belief without falsification conditions cannot be wrong -
+// which means it cannot be meaningfully true either. Every belief must
+// specify what would change it.
+
+use std::time::{Duration, Instant};
+use super::provenance::BeliefId;
+
+/// Comparison operators for falsification checks
+#[derive(Clone, Copy)]
+pub enum Comparator {
+    LessThan,
+    LessOrEqual,
+    GreaterThan,
+    GreaterOrEqual,
+    Equal,
+    NotEqual,
+}
+
+impl Comparator {
+    /// Apply the comparison
+    pub fn compare(&self, value: f64, threshold: f64) -> bool {
+        match self {
+            Comparator::LessThan => value < threshold,
+            Comparator::LessOrEqual => value <= threshold,
+            Comparator::GreaterThan => value > threshold,
+            Comparator::GreaterOrEqual => value >= threshold,
+            Comparator::Equal => (value - threshold).abs() < 1e-9,
+            Comparator::NotEqual => (value - threshold).abs() >= 1e-9,
+        }
+    }
+
+    /// Get the name of this comparator
+    pub fn name(&self) -> &'static str {
+        match self {
+            Comparator::LessThan => "<",
+            Comparator::LessOrEqual => "<=",
+            Comparator::GreaterThan => ">",
+            Comparator::GreaterOrEqual => ">=",
+            Comparator::Equal => "==",
+            Comparator::NotEqual => "!=",
+        }
+    }
+}
+
+/// Status of an evidence link
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceStatus {
+    /// Evidence is current and valid
+    Active,
+
+    /// Evidence has expired (too old to be relevant)
+    Expired,
+
+    /// Evidence has been superseded by newer observation
+    Superseded,
+
+    /// Evidence was found to be unreliable
+    Discredited,
+
+    /// Evidence is pending verification
+    Pending,
+}
+
+impl EvidenceStatus {
+    /// Is this evidence still usable?
+    pub fn is_valid(&self) -> bool {
+        matches!(self, EvidenceStatus::Active | EvidenceStatus::Pending)
+    }
+}
+
+/// An observation that can serve as evidence
+#[derive(Clone)]
+pub struct Observation {
+    /// Unique identifier for this observation
+    pub id: String,
+
+    /// What was observed (human-readable description)
+    pub description: String,
+
+    /// Numerical value if applicable
+    pub value: Option<f64>,
+
+    /// Source of the observation
+    pub source: String,
+
+    /// When observed
+    pub timestamp: Instant,
+
+    /// How reliable is this observation (0.0 to 1.0)
+    pub reliability: f64,
+
+    /// Optional structured data
+    pub data: Option<String>,
+}
+
+impl Observation {
+    /// Create a new observation
+    pub fn new(id: &str, description: &str, source: &str) -> Self {
+        Observation {
+            id: id.to_string(),
+            description: description.to_string(),
+            value: None,
+            source: source.to_string(),
+            timestamp: Instant::now(),
+            reliability: 1.0,
+            data: None,
+        }
+    }
+
+    /// Create an observation with a numerical value
+    pub fn with_value(id: &str, description: &str, value: f64, source: &str) -> Self {
+        Observation {
+            id: id.to_string(),
+            description: description.to_string(),
+            value: Some(value),
+            source: source.to_string(),
+            timestamp: Instant::now(),
+            reliability: 1.0,
+            data: None,
+        }
+    }
+
+    /// Set reliability
+    pub fn reliability(mut self, reliability: f64) -> Self {
+        self.reliability = reliability.max(0.0).min(1.0);
+        self
+    }
+
+    /// Set structured data
+    pub fn data(mut self, data: &str) -> Self {
+        self.data = Some(data.to_string());
+        self
+    }
+
+    /// Get the age of this observation
+    pub fn age(&self) -> Duration {
+        self.timestamp.elapsed()
+    }
+}
+
+/// Links a belief to supporting (or contradicting) evidence
+#[derive(Clone)]
+pub struct EvidenceLink {
+    /// The observation that serves as evidence
+    pub observation: Observation,
+
+    /// How strongly this supports the belief
+    /// Positive values support, negative values contradict
+    /// Range: -1.0 (strong contradiction) to +1.0 (strong support)
+    pub support_strength: f64,
+
+    /// When this evidence was linked to the belief
+    pub linked_at: Instant,
+
+    /// Current status of this evidence
+    pub status: EvidenceStatus,
+
+    /// How long before this evidence expires (if ever)
+    pub expires_after: Option<Duration>,
+
+    /// Optional weight for combining multiple pieces of evidence
+    pub weight: f64,
+}
+
+impl EvidenceLink {
+    /// Create a new evidence link
+    pub fn new(observation: Observation, support_strength: f64) -> Self {
+        EvidenceLink {
+            observation,
+            support_strength: support_strength.max(-1.0).min(1.0),
+            linked_at: Instant::now(),
+            status: EvidenceStatus::Active,
+            expires_after: None,
+            weight: 1.0,
+        }
+    }
+
+    /// Create supporting evidence
+    pub fn supporting(observation: Observation, strength: f64) -> Self {
+        EvidenceLink::new(observation, strength.abs())
+    }
+
+    /// Create contradicting evidence
+    pub fn contradicting(observation: Observation, strength: f64) -> Self {
+        EvidenceLink::new(observation, -strength.abs())
+    }
+
+    /// Set expiration duration
+    pub fn expires_in(mut self, duration: Duration) -> Self {
+        self.expires_after = Some(duration);
+        self
+    }
+
+    /// Set weight for combining evidence
+    pub fn weight(mut self, weight: f64) -> Self {
+        self.weight = weight.max(0.0);
+        self
+    }
+
+    /// Check if this evidence has expired
+    pub fn is_expired(&self) -> bool {
+        if let Some(expires_after) = self.expires_after {
+            self.linked_at.elapsed() > expires_after
+        } else {
+            false
+        }
+    }
+
+    /// Update status based on expiration
+    pub fn update_status(&mut self) {
+        if self.status == EvidenceStatus::Active && self.is_expired() {
+            self.status = EvidenceStatus::Expired;
+        }
+    }
+
+    /// Is this evidence still valid?
+    pub fn is_valid(&self) -> bool {
+        self.status.is_valid() && !self.is_expired()
+    }
+
+    /// Is this supporting evidence?
+    pub fn is_supporting(&self) -> bool {
+        self.support_strength > 0.0
+    }
+
+    /// Is this contradicting evidence?
+    pub fn is_contradicting(&self) -> bool {
+        self.support_strength < 0.0
+    }
+
+    /// Get the effective support (strength * weight * reliability)
+    pub fn effective_support(&self) -> f64 {
+        if self.is_valid() {
+            self.support_strength * self.weight * self.observation.reliability
+        } else {
+            0.0
+        }
+    }
+}
+
+/// What to do when a falsification condition is met
+#[derive(Clone)]
+pub enum FalsificationAction {
+    /// Reduce confidence by a fixed amount
+    ReduceConfidence { amount: f64 },
+
+    /// Set confidence to a specific value
+    SetConfidence { value: f64 },
+
+    /// Scale confidence by a factor
+    ScaleConfidence { factor: f64 },
+
+    /// Mark belief for review
+    MarkForReview { reason: String },
+
+    /// Invalidate the belief entirely
+    Invalidate,
+
+    /// Trigger a re-evaluation of the belief
+    Reevaluate,
+
+    /// Replace with a different belief
+    Replace { replacement_id: BeliefId },
+
+    /// Custom action
+    Custom { action_id: String, parameters: Vec<String> },
+}
+
+impl FalsificationAction {
+    /// Get a description of this action
+    pub fn describe(&self) -> String {
+        match self {
+            FalsificationAction::ReduceConfidence { amount } => {
+                format!("Reduce confidence by {:.2}", amount)
+            },
+            FalsificationAction::SetConfidence { value } => {
+                format!("Set confidence to {:.2}", value)
+            },
+            FalsificationAction::ScaleConfidence { factor } => {
+                format!("Scale confidence by {:.2}", factor)
+            },
+            FalsificationAction::MarkForReview { reason } => {
+                format!("Mark for review: {}", reason)
+            },
+            FalsificationAction::Invalidate => {
+                "Invalidate belief".to_string()
+            },
+            FalsificationAction::Reevaluate => {
+                "Trigger re-evaluation".to_string()
+            },
+            FalsificationAction::Replace { replacement_id } => {
+                format!("Replace with belief '{}'", replacement_id)
+            },
+            FalsificationAction::Custom { action_id, .. } => {
+                format!("Custom action: {}", action_id)
+            },
+        }
+    }
+}
+
+/// How to check if a falsification condition is met
+#[derive(Clone)]
+pub enum FalsificationCheck {
+    /// Automatic check against an observable metric
+    Observable {
+        /// Name of the metric to check
+        metric: String,
+        /// Threshold value
+        threshold: f64,
+        /// Comparison operator
+        comparator: Comparator,
+    },
+
+    /// Requires external verification (human review, external service)
+    External {
+        /// Who/what performs the verification
+        verifier: String,
+        /// How to contact the verifier
+        contact: Option<String>,
+    },
+
+    /// Contradicted by another belief reaching a threshold
+    Contradiction {
+        /// ID of the potentially contradicting belief
+        belief_id: BeliefId,
+        /// Confidence threshold at which contradiction triggers
+        threshold: f64,
+    },
+
+    /// Time-based expiry
+    Expiry {
+        /// How long until the belief expires
+        duration: Duration,
+    },
+
+    /// Prediction failure - belief made a prediction that was wrong
+    PredictionFailure {
+        /// What was predicted
+        prediction: String,
+        /// Acceptable error margin
+        tolerance: f64,
+    },
+
+    /// Multiple evidence sources disagree
+    EvidenceConflict {
+        /// Minimum number of sources that must disagree
+        min_disagreeing_sources: usize,
+        /// Strength threshold for disagreement
+        disagreement_threshold: f64,
+    },
+
+    /// Statistical test (e.g., hypothesis test rejects null)
+    StatisticalTest {
+        /// Name of the test
+        test_name: String,
+        /// Significance level (alpha)
+        alpha: f64,
+    },
+}
+
+impl FalsificationCheck {
+    /// Create an observable check
+    pub fn observable(metric: &str, comparator: Comparator, threshold: f64) -> Self {
+        FalsificationCheck::Observable {
+            metric: metric.to_string(),
+            threshold,
+            comparator,
+        }
+    }
+
+    /// Create an expiry check
+    pub fn expires_in(duration: Duration) -> Self {
+        FalsificationCheck::Expiry { duration }
+    }
+
+    /// Create a contradiction check
+    pub fn contradicted_by(belief_id: BeliefId, threshold: f64) -> Self {
+        FalsificationCheck::Contradiction {
+            belief_id,
+            threshold: threshold.max(0.0).min(1.0),
+        }
+    }
+
+    /// Create an external verification check
+    pub fn external(verifier: &str) -> Self {
+        FalsificationCheck::External {
+            verifier: verifier.to_string(),
+            contact: None,
+        }
+    }
+
+    /// Get a description of this check
+    pub fn describe(&self) -> String {
+        match self {
+            FalsificationCheck::Observable { metric, threshold, comparator } => {
+                format!("{} {} {:.2}", metric, comparator.name(), threshold)
+            },
+            FalsificationCheck::External { verifier, .. } => {
+                format!("External verification by '{}'", verifier)
+            },
+            FalsificationCheck::Contradiction { belief_id, threshold } => {
+                format!("Contradicted by '{}' at confidence >= {:.2}", belief_id, threshold)
+            },
+            FalsificationCheck::Expiry { duration } => {
+                format!("Expires after {:?}", duration)
+            },
+            FalsificationCheck::PredictionFailure { prediction, tolerance } => {
+                format!("Prediction '{}' fails (tolerance: {:.2})", prediction, tolerance)
+            },
+            FalsificationCheck::EvidenceConflict { min_disagreeing_sources, .. } => {
+                format!("{} or more sources disagree", min_disagreeing_sources)
+            },
+            FalsificationCheck::StatisticalTest { test_name, alpha } => {
+                format!("{} rejects at alpha={:.3}", test_name, alpha)
+            },
+        }
+    }
+}
+
+/// Conditions under which a belief should be revised or invalidated
+#[derive(Clone)]
+pub struct FalsificationCondition {
+    /// Human-readable description of what would falsify the belief
+    pub condition: String,
+
+    /// How to check if the condition is met
+    pub check: FalsificationCheck,
+
+    /// What to do if the condition is met
+    pub action: FalsificationAction,
+
+    /// When this condition was last checked
+    pub last_checked: Option<Instant>,
+
+    /// Is this condition currently triggered?
+    pub triggered: bool,
+
+    /// Priority for checking (higher = check more often)
+    pub priority: u32,
+}
+
+impl FalsificationCondition {
+    /// Create a new falsification condition
+    pub fn new(condition: &str, check: FalsificationCheck, action: FalsificationAction) -> Self {
+        FalsificationCondition {
+            condition: condition.to_string(),
+            check,
+            action,
+            last_checked: None,
+            triggered: false,
+            priority: 1,
+        }
+    }
+
+    /// Create a simple expiry condition
+    pub fn expires_in(duration: Duration) -> Self {
+        FalsificationCondition::new(
+            &format!("Belief expires after {:?}", duration),
+            FalsificationCheck::Expiry { duration },
+            FalsificationAction::Invalidate,
+        )
+    }
+
+    /// Create a metric-based condition
+    pub fn when_metric(metric: &str, comparator: Comparator, threshold: f64, action: FalsificationAction) -> Self {
+        FalsificationCondition::new(
+            &format!("{} {} {:.2}", metric, comparator.name(), threshold),
+            FalsificationCheck::Observable {
+                metric: metric.to_string(),
+                threshold,
+                comparator,
+            },
+            action,
+        )
+    }
+
+    /// Create a contradiction-based condition
+    pub fn when_contradicted_by(belief_id: BeliefId, threshold: f64, action: FalsificationAction) -> Self {
+        FalsificationCondition::new(
+            &format!("Contradicted by belief '{}' with confidence >= {:.2}", belief_id, threshold),
+            FalsificationCheck::Contradiction { belief_id, threshold },
+            action,
+        )
+    }
+
+    /// Set priority
+    pub fn priority(mut self, priority: u32) -> Self {
+        self.priority = priority;
+        self
+    }
+
+    /// Mark as checked
+    pub fn mark_checked(&mut self) {
+        self.last_checked = Some(Instant::now());
+    }
+
+    /// Mark as triggered
+    pub fn trigger(&mut self) {
+        self.triggered = true;
+        self.mark_checked();
+    }
+
+    /// Reset triggered status
+    pub fn reset(&mut self) {
+        self.triggered = false;
+    }
+
+    /// Check if this is an expiry condition and if it has expired
+    pub fn check_expiry(&self, belief_created_at: Instant) -> bool {
+        if let FalsificationCheck::Expiry { duration } = &self.check {
+            belief_created_at.elapsed() > *duration
+        } else {
+            false
+        }
+    }
+}
+
+/// Collection of evidence for a belief
+pub struct EvidenceSet {
+    /// All evidence links
+    links: Vec<EvidenceLink>,
+}
+
+impl EvidenceSet {
+    /// Create an empty evidence set
+    pub fn new() -> Self {
+        EvidenceSet { links: Vec::new() }
+    }
+
+    /// Add evidence
+    pub fn add(&mut self, link: EvidenceLink) {
+        self.links.push(link);
+    }
+
+    /// Get all valid evidence
+    pub fn valid_evidence(&self) -> impl Iterator<Item = &EvidenceLink> {
+        self.links.iter().filter(|e| e.is_valid())
+    }
+
+    /// Get supporting evidence
+    pub fn supporting_evidence(&self) -> impl Iterator<Item = &EvidenceLink> {
+        self.valid_evidence().filter(|e| e.is_supporting())
+    }
+
+    /// Get contradicting evidence
+    pub fn contradicting_evidence(&self) -> impl Iterator<Item = &EvidenceLink> {
+        self.valid_evidence().filter(|e| e.is_contradicting())
+    }
+
+    /// Compute net support (sum of all effective support)
+    pub fn net_support(&self) -> f64 {
+        self.valid_evidence().map(|e| e.effective_support()).sum()
+    }
+
+    /// Compute total supporting strength
+    pub fn total_support(&self) -> f64 {
+        self.supporting_evidence().map(|e| e.effective_support()).sum()
+    }
+
+    /// Compute total contradicting strength
+    pub fn total_contradiction(&self) -> f64 {
+        self.contradicting_evidence().map(|e| e.effective_support().abs()).sum()
+    }
+
+    /// Count of valid evidence
+    pub fn count(&self) -> usize {
+        self.valid_evidence().count()
+    }
+
+    /// Count of supporting evidence
+    pub fn supporting_count(&self) -> usize {
+        self.supporting_evidence().count()
+    }
+
+    /// Count of contradicting evidence
+    pub fn contradicting_count(&self) -> usize {
+        self.contradicting_evidence().count()
+    }
+
+    /// Update all evidence statuses
+    pub fn update_statuses(&mut self) {
+        for link in &mut self.links {
+            link.update_status();
+        }
+    }
+
+    /// Remove all expired or invalid evidence
+    pub fn prune(&mut self) {
+        self.links.retain(|e| e.is_valid());
+    }
+}
+
+impl Default for EvidenceSet {
+    fn default() -> Self {
+        EvidenceSet::new()
+    }
+}

@@ -1,0 +1,968 @@
+// Edge Hive - Main Cognitive Loop (Secure)
+// The core EdgeHive structure that orchestrates all components
+//
+// This module requires:
+// - runtime.sx (extern runtime functions)
+// - types.sx (type constants)
+// - device.sx (device profile)
+// - beliefs.sx (belief store)
+// - specialist.sx (specialist system)
+// - federation.sx (cloud sync)
+// - security.sx (user identity, encryption)
+// - persistence.sx (secure storage)
+// - model.sx (local model inference)
+//
+// EdgeHive Structure:
+// Slot 0: device_profile
+// Slot 1: belief_store
+// Slot 2: specialist_registry
+// Slot 3: federation_manager
+// Slot 4: request_queue (incoming user requests)
+// Slot 5: response_cache
+// Slot 6: state (HIVE_IDLE, HIVE_PROCESSING, HIVE_SYNCING)
+// Slot 7: config vec
+// Slot 8: stats vec
+// Slot 9: user_identity (required for secure operations)
+// Slot 10: last_save_time (for auto-save)
+// Slot 11: local_model (on-device SLM for local inference)
+
+// =============================================================================
+// Hive States
+// =============================================================================
+
+fn HIVE_IDLE() -> i64 { 0 }
+fn HIVE_PROCESSING() -> i64 { 1 }
+fn HIVE_SYNCING() -> i64 { 2 }
+fn HIVE_OFFLINE() -> i64 { 3 }
+fn HIVE_LOW_POWER() -> i64 { 4 }
+
+// =============================================================================
+// EdgeHive Constructor
+// =============================================================================
+
+fn edge_hive_new(device_id: i64, cloud_endpoint: i64) -> i64 {
+    // Legacy constructor (no user identity - insecure)
+    // Use edge_hive_new_secure() instead
+    let hive: i64 = vec_new();
+
+    // Detect device capabilities
+    let profile: i64 = detect_device_profile();
+    vec_push(hive, profile);  // Slot 0
+
+    // Create belief store sized for this device
+    let device_class: i64 = device_get_class(profile);
+    let max_beliefs: i64 = max_belief_store_entries(device_class);
+    let beliefs: i64 = belief_store_new(max_beliefs);
+    vec_push(hive, beliefs);  // Slot 1
+
+    // Create specialists for this device
+    let specialists: i64 = create_default_specialists(profile);
+    vec_push(hive, specialists);  // Slot 2
+
+    // Create federation manager (without identity)
+    let federation: i64 = federation_new(device_id, cloud_endpoint);
+    vec_push(hive, federation);  // Slot 3
+
+    // Request queue
+    vec_push(hive, vec_new());  // Slot 4
+
+    // Response cache
+    vec_push(hive, cache_new(max_cache_size_kb(device_class)));  // Slot 5
+
+    // Initial state
+    vec_push(hive, HIVE_IDLE());  // Slot 6
+
+    // Config
+    let config: i64 = vec_new();
+    vec_push(config, 1);  // auto_sync enabled
+    vec_push(config, 300);  // sync_interval_sec (5 minutes)
+    vec_push(config, 1);  // learn_patterns enabled
+    vec_push(config, 1);  // offline_capable
+    vec_push(hive, config);  // Slot 7
+
+    // Stats
+    let stats: i64 = vec_new();
+    vec_push(stats, 0);  // requests_handled
+    vec_push(stats, 0);  // requests_delegated
+    vec_push(stats, 0);  // cache_hits
+    vec_push(stats, 0);  // cognitive_cycles
+    vec_push(stats, time_now());  // start_time
+    vec_push(hive, stats);  // Slot 8
+
+    // No user identity (insecure)
+    vec_push(hive, 0);  // Slot 9
+
+    // Last save time
+    vec_push(hive, time_now());  // Slot 10
+
+    // Create and load local model for this device
+    let local_model: i64 = create_model_for_device(profile);
+    if local_model_is_none(local_model) != 1 {
+        // Try to load the model (non-blocking)
+        local_model_load(local_model);
+    }
+    vec_push(hive, local_model);  // Slot 11
+
+    hive
+}
+
+// =============================================================================
+// Secure Constructor (Recommended)
+// =============================================================================
+
+fn edge_hive_new_secure(identity: i64, device_id: i64, cloud_endpoint: i64) -> i64 {
+    // Secure constructor with user identity
+    // All storage is encrypted with user's key
+
+    // Validate identity
+    if identity == 0 {
+        return 0;  // Must have valid identity
+    }
+
+    let hive: i64 = vec_new();
+
+    // Detect device capabilities
+    let profile: i64 = detect_device_profile();
+    vec_push(hive, profile);  // Slot 0
+
+    // Create belief store sized for this device
+    let device_class: i64 = device_get_class(profile);
+    let max_beliefs: i64 = max_belief_store_entries(device_class);
+    let beliefs: i64 = belief_store_new(max_beliefs);
+
+    // Try to load existing encrypted beliefs
+    let loaded: i64 = load_belief_store_secure(identity, beliefs);
+    if loaded > 0 {
+        // Successfully loaded existing beliefs
+    }
+    vec_push(hive, beliefs);  // Slot 1
+
+    // Create specialists for this device
+    let specialists: i64 = create_default_specialists(profile);
+    vec_push(hive, specialists);  // Slot 2
+
+    // Create federation manager with identity for authenticated connections
+    let federation: i64 = federation_new_secure(identity, device_id, cloud_endpoint);
+    vec_push(hive, federation);  // Slot 3
+
+    // Request queue
+    vec_push(hive, vec_new());  // Slot 4
+
+    // Response cache
+    vec_push(hive, cache_new(max_cache_size_kb(device_class)));  // Slot 5
+
+    // Initial state
+    vec_push(hive, HIVE_IDLE());  // Slot 6
+
+    // Config - try to load encrypted config
+    let config: i64 = vec_new();
+    vec_push(config, 1);  // auto_sync enabled
+    vec_push(config, 300);  // sync_interval_sec (5 minutes)
+    vec_push(config, 1);  // learn_patterns enabled
+    vec_push(config, 1);  // offline_capable
+    load_hive_config_secure(identity, config);  // Load overwrites if found
+    vec_push(hive, config);  // Slot 7
+
+    // Stats
+    let stats: i64 = vec_new();
+    vec_push(stats, 0);  // requests_handled
+    vec_push(stats, 0);  // requests_delegated
+    vec_push(stats, 0);  // cache_hits
+    vec_push(stats, 0);  // cognitive_cycles
+    vec_push(stats, time_now());  // start_time
+    vec_push(hive, stats);  // Slot 8
+
+    // User identity (for encryption)
+    vec_push(hive, identity);  // Slot 9
+
+    // Last save time
+    vec_push(hive, time_now());  // Slot 10
+
+    // Create and load local model for this device
+    let local_model: i64 = create_model_for_device(profile);
+    if local_model_is_none(local_model) != 1 {
+        println(string_from("Loading local model for edge inference..."));
+        let loaded: i64 = local_model_load(local_model);
+        if loaded == 1 {
+            let info: i64 = local_model_info(local_model);
+            print(string_from("Loaded: "));
+            println(model_info_name(info));
+        } else {
+            println(string_from("Model not available - cloud delegation only"));
+        }
+    } else {
+        println(string_from("Device class does not support local models"));
+    }
+    vec_push(hive, local_model);  // Slot 11
+
+    hive
+}
+
+// =============================================================================
+// Accessors
+// =============================================================================
+
+fn hive_device_profile(hive: i64) -> i64 { vec_get(hive, 0) }
+fn hive_belief_store(hive: i64) -> i64 { vec_get(hive, 1) }
+fn hive_specialists(hive: i64) -> i64 { vec_get(hive, 2) }
+fn hive_federation(hive: i64) -> i64 { vec_get(hive, 3) }
+fn hive_request_queue(hive: i64) -> i64 { vec_get(hive, 4) }
+fn hive_cache(hive: i64) -> i64 { vec_get(hive, 5) }
+fn hive_state(hive: i64) -> i64 { vec_get(hive, 6) }
+fn hive_config(hive: i64) -> i64 { vec_get(hive, 7) }
+fn hive_stats(hive: i64) -> i64 { vec_get(hive, 8) }
+fn hive_identity(hive: i64) -> i64 { vec_get(hive, 9) }
+fn hive_last_save_time(hive: i64) -> i64 { vec_get(hive, 10) }
+fn hive_local_model(hive: i64) -> i64 { vec_get(hive, 11) }
+
+fn hive_set_state(hive: i64, state: i64) -> i64 {
+    vec_set(hive, 6, state);
+    0
+}
+
+fn hive_set_last_save_time(hive: i64, time: i64) -> i64 {
+    vec_set(hive, 10, time);
+    0
+}
+
+fn hive_has_identity(hive: i64) -> i64 {
+    if hive_identity(hive) != 0 { 1 } else { 0 }
+}
+
+// =============================================================================
+// Config Accessors
+// =============================================================================
+
+fn hive_auto_sync(hive: i64) -> i64 {
+    let config: i64 = hive_config(hive);
+    vec_get(config, 0)
+}
+
+fn hive_sync_interval(hive: i64) -> i64 {
+    let config: i64 = hive_config(hive);
+    vec_get(config, 1)
+}
+
+fn hive_learn_patterns(hive: i64) -> i64 {
+    let config: i64 = hive_config(hive);
+    vec_get(config, 2)
+}
+
+fn hive_offline_capable(hive: i64) -> i64 {
+    let config: i64 = hive_config(hive);
+    vec_get(config, 3)
+}
+
+fn hive_set_auto_sync(hive: i64, enabled: i64) -> i64 {
+    let config: i64 = hive_config(hive);
+    vec_set(config, 0, enabled);
+    0
+}
+
+// =============================================================================
+// Request Handling - Main Entry Point
+// =============================================================================
+
+fn hive_handle_request(hive: i64, request_type: i64, payload: i64) -> i64 {
+    hive_set_state(hive, HIVE_PROCESSING());
+
+    // Create request structure
+    let request: i64 = vec_new();
+    vec_push(request, request_type);
+    vec_push(request, payload);
+    vec_push(request, time_now());
+
+    // Check cache first
+    let cache: i64 = hive_cache(hive);
+    let cached: i64 = cache_get(cache, request_type, payload);
+    if cached != 0 {
+        let stats: i64 = hive_stats(hive);
+        let hits: i64 = vec_get(stats, 2);
+        vec_set(stats, 2, hits + 1);
+        hive_set_state(hive, HIVE_IDLE());
+        return cached;
+    }
+
+    // Route to cognitive loop
+    let response: i64 = hive_cognitive_cycle(hive, request);
+
+    // Update stats
+    let stats: i64 = hive_stats(hive);
+    let handled: i64 = vec_get(stats, 0);
+    vec_set(stats, 0, handled + 1);
+
+    hive_set_state(hive, HIVE_IDLE());
+    response
+}
+
+// =============================================================================
+// Cognitive Cycle - Core Intelligence Loop
+// =============================================================================
+
+fn hive_cognitive_cycle(hive: i64, request: i64) -> i64 {
+    let stats: i64 = hive_stats(hive);
+    let cycles: i64 = vec_get(stats, 3);
+    vec_set(stats, 3, cycles + 1);
+
+    let request_type: i64 = vec_get(request, 0);
+    let payload: i64 = vec_get(request, 1);
+    let beliefs: i64 = hive_belief_store(hive);
+    let specialists: i64 = hive_specialists(hive);
+    let local_model: i64 = hive_local_model(hive);
+
+    // Step 1: Context enrichment
+    // Update beliefs with current context
+    let profile: i64 = hive_device_profile(hive);
+    belief_set_context(beliefs, string_from("battery"), device_get_battery(profile));
+    belief_set_context(beliefs, string_from("network"), device_get_network(profile));
+
+    // Step 2: Find best local specialist
+    let specialist: i64 = find_best_specialist(specialists, request_type, beliefs);
+
+    if specialist != 0 {
+        // Step 3: Try local handling with specialist
+        let confidence: i64 = specialist_confidence(specialist, request_type, beliefs);
+
+        // Check if confidence is high enough for local handling
+        let threshold: i64 = hive_delegation_threshold(hive);
+
+        if confidence >= threshold {
+            // Handle locally
+            let response: i64 = specialist_handle_request(specialist, request, beliefs);
+            let response_conf: i64 = vec_get(response, 2);
+
+            if response_conf >= 500 {
+                // Good local response - cache it
+                hive_cache_response(hive, request_type, payload, response);
+
+                // Learn from successful handling if enabled
+                if hive_learn_patterns(hive) == 1 {
+                    hive_learn_from_interaction(hive, request, response);
+                }
+
+                return response;
+            }
+        }
+    }
+
+    // Step 4: Try local model inference if available
+    if local_model_is_ready(local_model) == 1 {
+        let model_conf: i64 = local_model_confidence(local_model, request_type, payload);
+        let threshold: i64 = hive_delegation_threshold(hive);
+
+        if model_conf >= threshold {
+            let response: i64 = hive_local_model_infer(hive, request);
+            if response != 0 {
+                let response_conf: i64 = vec_get(response, 2);
+                if response_conf >= 400 {
+                    // Acceptable local model response
+                    hive_cache_response(hive, request_type, payload, response);
+                    if hive_learn_patterns(hive) == 1 {
+                        hive_learn_from_interaction(hive, request, response);
+                    }
+                    return response;
+                }
+            }
+        }
+    }
+
+    // Step 5: Delegate to cloud (fallback)
+    return hive_delegate_to_cloud(hive, request);
+}
+
+// =============================================================================
+// Local Model Inference
+// =============================================================================
+
+fn hive_local_model_infer(hive: i64, request: i64) -> i64 {
+    let local_model: i64 = hive_local_model(hive);
+    let beliefs: i64 = hive_belief_store(hive);
+    let request_type: i64 = vec_get(request, 0);
+    let payload: i64 = vec_get(request, 1);
+
+    // Build system prompt from beliefs and context
+    let system_prompt: i64 = build_system_prompt(hive);
+
+    // Extract user message from payload
+    let user_message: i64 = extract_user_message(payload);
+    if user_message == 0 {
+        return 0;  // No message to process
+    }
+
+    // Format prompt for model type
+    let model_type: i64 = local_model_type(local_model);
+    let full_prompt: i64 = format_chat_prompt(system_prompt, user_message, model_type);
+
+    // Generate response using local model
+    let generated: i64 = local_model_generate(local_model, full_prompt);
+    if generated == 0 {
+        return 0;  // Generation failed
+    }
+
+    // Wrap in response structure
+    let response: i64 = vec_new();
+    vec_push(response, generated);       // result
+    vec_push(response, 1);               // status: success
+    vec_push(response, 600);             // confidence: moderate (local model)
+    vec_push(response, string_from("local_model"));  // source
+
+    // Update stats
+    let stats: i64 = hive_stats(hive);
+    let local_handled: i64 = vec_get(stats, 4);
+    if vec_len(stats) > 4 {
+        vec_set(stats, 4, local_handled + 1);
+    }
+
+    response
+}
+
+fn build_system_prompt(hive: i64) -> i64 {
+    let beliefs: i64 = hive_belief_store(hive);
+
+    // Start with base system prompt
+    let prompt: i64 = string_from("You are a helpful AI assistant running locally on the user's device. ");
+    prompt = string_concat(prompt, string_from("You respect user privacy and provide concise, helpful responses. "));
+
+    // Add user preferences from beliefs
+    let theme_pref: i64 = belief_get_preference(beliefs, string_from("response_style"));
+    if theme_pref == 1 {
+        prompt = string_concat(prompt, string_from("The user prefers brief responses. "));
+    } else if theme_pref == 2 {
+        prompt = string_concat(prompt, string_from("The user prefers detailed responses. "));
+    }
+
+    // Add context
+    let hour: i64 = time_hour(time_now());
+    if hour < 6 {
+        prompt = string_concat(prompt, string_from("It is late night/early morning. "));
+    } else if hour < 12 {
+        prompt = string_concat(prompt, string_from("It is morning. "));
+    } else if hour < 18 {
+        prompt = string_concat(prompt, string_from("It is afternoon. "));
+    } else {
+        prompt = string_concat(prompt, string_from("It is evening. "));
+    }
+
+    prompt
+}
+
+fn extract_user_message(payload: i64) -> i64 {
+    // Payload structure varies by request type
+    // Usually first element is the user's message
+    if vec_len(payload) == 0 {
+        return 0;
+    }
+    vec_get(payload, 0)
+}
+
+fn hive_delegation_threshold(hive: i64) -> i64 {
+    // Threshold for local handling (0-1000)
+    // Varies based on device state
+    let profile: i64 = hive_device_profile(hive);
+    let fed: i64 = hive_federation(hive);
+
+    // If offline, always try local
+    if federation_is_connected(fed) == 0 {
+        return 0;  // Accept any confidence
+    }
+
+    // Adapt based on battery and strategy
+    let strategy: i64 = federation_sync_strategy(fed);
+
+    if strategy == SYNC_AGGRESSIVE() {
+        return 900;  // Only handle locally if very confident
+    }
+    if strategy == SYNC_LOCAL_FIRST() {
+        return 300;  // Prefer local handling
+    }
+
+    500  // Default balanced threshold
+}
+
+// =============================================================================
+// Cloud Delegation
+// =============================================================================
+
+fn hive_delegate_to_cloud(hive: i64, request: i64) -> i64 {
+    let fed: i64 = hive_federation(hive);
+    let beliefs: i64 = hive_belief_store(hive);
+
+    // Track delegation stats
+    let stats: i64 = hive_stats(hive);
+    let delegated: i64 = vec_get(stats, 1);
+    vec_set(stats, 1, delegated + 1);
+
+    // Enrich request with context
+    let enriched: i64 = vec_new();
+    vec_push(enriched, request);
+    vec_push(enriched, belief_get_context(beliefs, string_from("hour")));
+
+    // Delegate
+    let result: i64 = federation_delegate_request(fed, enriched);
+
+    // Create response
+    let response: i64 = vec_new();
+    vec_push(response, result);
+    vec_push(response, 0);  // Pending result
+    vec_push(response, 0);  // Unknown confidence
+
+    response
+}
+
+// =============================================================================
+// Response Caching
+// =============================================================================
+
+fn cache_new(max_size_kb: i64) -> i64 {
+    let cache: i64 = vec_new();
+    vec_push(cache, vec_new());  // entries
+    vec_push(cache, max_size_kb);  // max size
+    vec_push(cache, 0);  // current size estimate
+    cache
+}
+
+fn cache_get(cache: i64, request_type: i64, payload: i64) -> i64 {
+    let entries: i64 = vec_get(cache, 0);
+    let key: i64 = request_type * 1000000 + string_hash(payload);
+
+    let len: i64 = vec_len(entries);
+    let i: i64 = 0;
+    while i < len {
+        let entry: i64 = vec_get(entries, i);
+        let entry_key: i64 = vec_get(entry, 0);
+        if entry_key == key {
+            // Check TTL
+            let timestamp: i64 = vec_get(entry, 2);
+            let ttl: i64 = vec_get(entry, 3);
+            if time_now() - timestamp < ttl {
+                return vec_get(entry, 1);  // Return cached response
+            }
+            // Expired - remove
+            // (simplified: just return 0, cleanup happens later)
+        }
+        i = i + 1;
+    }
+    0  // Not found or expired
+}
+
+fn cache_set(cache: i64, request_type: i64, payload: i64, response: i64, ttl: i64) -> i64 {
+    let entries: i64 = vec_get(cache, 0);
+    let key: i64 = request_type * 1000000 + string_hash(payload);
+
+    // Check if already exists
+    let len: i64 = vec_len(entries);
+    let i: i64 = 0;
+    while i < len {
+        let entry: i64 = vec_get(entries, i);
+        let entry_key: i64 = vec_get(entry, 0);
+        if entry_key == key {
+            // Update existing
+            vec_set(entry, 1, response);
+            vec_set(entry, 2, time_now());
+            vec_set(entry, 3, ttl);
+            return 0;
+        }
+        i = i + 1;
+    }
+
+    // Add new entry
+    let entry: i64 = vec_new();
+    vec_push(entry, key);
+    vec_push(entry, response);
+    vec_push(entry, time_now());
+    vec_push(entry, ttl);
+    vec_push(entries, entry);
+    0
+}
+
+fn hive_cache_response(hive: i64, request_type: i64, payload: i64, response: i64) -> i64 {
+    let cache: i64 = hive_cache(hive);
+    let ttl: i64 = 300;  // 5 minute default TTL
+    cache_set(cache, request_type, payload, response, ttl)
+}
+
+// =============================================================================
+// Pattern Learning
+// =============================================================================
+
+fn hive_learn_from_interaction(hive: i64, request: i64, response: i64) -> i64 {
+    let beliefs: i64 = hive_belief_store(hive);
+    let request_type: i64 = vec_get(request, 0);
+
+    // Get current time context
+    let hour: i64 = time_hour(time_now());
+
+    // Learn time-based patterns
+    // e.g., if user makes certain requests at certain times
+    let pattern_key: i64 = string_concat(
+        string_from("req_"),
+        i64_to_string(request_type)
+    );
+    pattern_key = string_concat(pattern_key, string_from("_hour_"));
+    pattern_key = string_concat(pattern_key, i64_to_string(hour));
+
+    // Increment pattern counter
+    let current: i64 = belief_store_get(beliefs, BELIEF_PATTERN(), pattern_key);
+    belief_store_set(beliefs, BELIEF_PATTERN(), pattern_key, current + 1, 800);
+
+    0
+}
+
+// =============================================================================
+// Background Maintenance
+// =============================================================================
+
+fn hive_maintenance_cycle(hive: i64) -> i64 {
+    let profile: i64 = hive_device_profile(hive);
+    let beliefs: i64 = hive_belief_store(hive);
+    let fed: i64 = hive_federation(hive);
+    let identity: i64 = hive_identity(hive);
+
+    // Update device state
+    // In production, would query actual sensors
+    // device_update_battery(profile);
+    // device_update_network(profile);
+
+    // Check if we need to sync
+    if hive_auto_sync(hive) == 1 {
+        let last_sync: i64 = federation_last_sync(fed);
+        let interval: i64 = hive_sync_interval(hive);
+
+        if time_now() - last_sync > interval {
+            hive_set_state(hive, HIVE_SYNCING());
+            federation_sync_beliefs(fed, beliefs);
+            hive_set_state(hive, HIVE_IDLE());
+        }
+    }
+
+    // Auto-save encrypted beliefs periodically (if identity available)
+    if identity != 0 {
+        let last_save: i64 = hive_last_save_time(hive);
+        if should_auto_save(last_save) == 1 {
+            // Only save if beliefs are dirty
+            if belief_store_is_dirty(beliefs) == 1 {
+                save_belief_store_secure(identity, beliefs);
+                hive_set_last_save_time(hive, time_now());
+            }
+        }
+    }
+
+    // Process pending delegated requests
+    federation_process_pending(fed);
+
+    // Decay old beliefs periodically
+    belief_store_decay_confidence(beliefs, 995);  // 0.5% decay
+
+    // Adapt sync strategy to current conditions
+    federation_adapt_strategy(fed, profile);
+
+    // Update hive state based on conditions
+    if device_is_battery_critical(profile) == 1 {
+        hive_set_state(hive, HIVE_LOW_POWER());
+    } else if federation_is_connected(fed) == 0 {
+        hive_set_state(hive, HIVE_OFFLINE());
+    }
+
+    0
+}
+
+// =============================================================================
+// User Preferences
+// =============================================================================
+
+fn hive_set_preference(hive: i64, key: i64, value: i64) -> i64 {
+    let beliefs: i64 = hive_belief_store(hive);
+    belief_set_preference(beliefs, key, value)
+}
+
+fn hive_get_preference(hive: i64, key: i64) -> i64 {
+    let beliefs: i64 = hive_belief_store(hive);
+    belief_get_preference(beliefs, key)
+}
+
+// =============================================================================
+// Status and Debugging
+// =============================================================================
+
+fn hive_state_name(state: i64) -> i64 {
+    if state == HIVE_IDLE() { string_from("idle") }
+    else if state == HIVE_PROCESSING() { string_from("processing") }
+    else if state == HIVE_SYNCING() { string_from("syncing") }
+    else if state == HIVE_OFFLINE() { string_from("offline") }
+    else if state == HIVE_LOW_POWER() { string_from("low_power") }
+    else { string_from("unknown") }
+}
+
+fn hive_print_status(hive: i64) -> i64 {
+    println(string_from(""));
+    println(string_from("╔════════════════════════════════════════╗"));
+    println(string_from("║         EDGE HIVE STATUS               ║"));
+    println(string_from("╚════════════════════════════════════════╝"));
+
+    let profile: i64 = hive_device_profile(hive);
+    device_print_summary(profile);
+
+    println(string_from(""));
+    let state: i64 = hive_state(hive);
+    print(string_from("Hive State: "));
+    println(hive_state_name(state));
+
+    // Local Model Status
+    println(string_from(""));
+    println(string_from("── Local Model ──"));
+    let local_model: i64 = hive_local_model(hive);
+    if local_model_is_none(local_model) == 1 {
+        println(string_from("Model: None (cloud-only mode)"));
+    } else {
+        let info: i64 = local_model_info(local_model);
+        print(string_from("Model: "));
+        println(model_info_name(info));
+        print(string_from("Parameters: "));
+        print_i64(model_info_params(info));
+        println(string_from("M"));
+        print(string_from("Context Length: "));
+        print_i64(model_info_context(info));
+        println(string_from(""));
+        print(string_from("Status: "));
+        if local_model_is_ready(local_model) == 1 {
+            println(string_from("Ready"));
+        } else {
+            let model_state: i64 = local_model_state(local_model);
+            if model_state == MODEL_STATE_LOADING() {
+                println(string_from("Loading..."));
+            } else if model_state == MODEL_STATE_ERROR() {
+                println(string_from("Error (using cloud fallback)"));
+            } else {
+                println(string_from("Not loaded"));
+            }
+        }
+        // Model stats
+        let model_stats: i64 = local_model_stats(local_model);
+        print(string_from("Local inferences: "));
+        print_i64(stats_total_inferences(model_stats));
+        println(string_from(""));
+        print(string_from("Tokens generated: "));
+        print_i64(stats_total_tokens(model_stats));
+        println(string_from(""));
+        let avg_tps: i64 = stats_avg_tps(model_stats);
+        if avg_tps > 0 {
+            print(string_from("Avg tokens/sec: "));
+            print_i64(avg_tps / 100);
+            print(string_from("."));
+            print_i64(avg_tps % 100);
+            println(string_from(""));
+        }
+    }
+
+    let stats: i64 = hive_stats(hive);
+    println(string_from(""));
+    println(string_from("── Request Stats ──"));
+    print(string_from("Requests handled: "));
+    print_i64(vec_get(stats, 0));
+    println(string_from(""));
+    print(string_from("Requests delegated: "));
+    print_i64(vec_get(stats, 1));
+    println(string_from(""));
+    print(string_from("Cache hits: "));
+    print_i64(vec_get(stats, 2));
+    println(string_from(""));
+    print(string_from("Cognitive cycles: "));
+    print_i64(vec_get(stats, 3));
+    println(string_from(""));
+
+    let beliefs: i64 = hive_belief_store(hive);
+    println(string_from(""));
+    belief_store_print_stats(beliefs);
+
+    let fed: i64 = hive_federation(hive);
+    println(string_from(""));
+    federation_print_stats(fed);
+
+    let specialists: i64 = hive_specialists(hive);
+    println(string_from(""));
+    specialist_registry_print_all(specialists);
+
+    0
+}
+
+// =============================================================================
+// Shutdown
+// =============================================================================
+
+fn hive_shutdown(hive: i64) -> i64 {
+    // Legacy shutdown (no encryption)
+    println(string_from("Edge Hive shutting down..."));
+
+    // Unload local model to free memory
+    let local_model: i64 = hive_local_model(hive);
+    if local_model_is_none(local_model) != 1 {
+        println(string_from("Unloading local model..."));
+        local_model_unload(local_model);
+    }
+
+    // Final sync if connected
+    let fed: i64 = hive_federation(hive);
+    let beliefs: i64 = hive_belief_store(hive);
+
+    if federation_is_connected(fed) == 1 {
+        println(string_from("Syncing beliefs before shutdown..."));
+        federation_sync_beliefs(fed, beliefs);
+    }
+
+    federation_disconnect(fed);
+    println(string_from("Edge Hive shutdown complete."));
+    0
+}
+
+fn hive_shutdown_secure(hive: i64) -> i64 {
+    // Secure shutdown with encrypted persistence
+    println(string_from("Edge Hive secure shutdown..."));
+
+    // Unload local model to free memory
+    let local_model: i64 = hive_local_model(hive);
+    if local_model_is_none(local_model) != 1 {
+        println(string_from("Unloading local model..."));
+        local_model_unload(local_model);
+    }
+
+    let fed: i64 = hive_federation(hive);
+    let beliefs: i64 = hive_belief_store(hive);
+    let identity: i64 = hive_identity(hive);
+    let config: i64 = hive_config(hive);
+
+    // Final sync if connected
+    if federation_is_connected(fed) == 1 {
+        println(string_from("Syncing beliefs before shutdown..."));
+        federation_sync_beliefs(fed, beliefs);
+    }
+
+    // Save encrypted state if we have identity
+    if identity != 0 {
+        println(string_from("Saving encrypted beliefs..."));
+        save_belief_store_secure(identity, beliefs);
+
+        println(string_from("Saving encrypted config..."));
+        save_hive_config_secure(identity, config);
+
+        // Clear sensitive memory
+        identity_clear_key(identity);
+    }
+
+    federation_disconnect(fed);
+    println(string_from("Edge Hive secure shutdown complete."));
+    0
+}
+
+// =============================================================================
+// Runtime Imports
+// All runtime functions are declared in runtime.sx and provided by
+// the Simplex C runtime. See runtime.sx for function signatures.
+// =============================================================================
+
+// Runtime functions used by this module:
+// - vec_new, vec_push, vec_get, vec_set, vec_len, vec_pop
+// - string_from, string_concat, string_hash, i64_to_string
+// - print, println, print_i64
+// - time_now, time_hour
+//
+// These are declared as extern functions in runtime.sx
+
+// =============================================================================
+// Extern Declarations
+// =============================================================================
+
+// From security.sx
+extern fn identity_clear_key(identity: i64) -> i64;
+
+// From persistence.sx
+extern fn save_belief_store_secure(identity: i64, store: i64) -> i64;
+extern fn load_belief_store_secure(identity: i64, store: i64) -> i64;
+extern fn save_hive_config_secure(identity: i64, config: i64) -> i64;
+extern fn load_hive_config_secure(identity: i64, config: i64) -> i64;
+extern fn should_auto_save(last_save_time: i64) -> i64;
+
+// From beliefs.sx
+extern fn belief_store_new(max_entries: i64) -> i64;
+extern fn belief_set_context(beliefs: i64, key: i64, value: i64) -> i64;
+extern fn belief_get_context(beliefs: i64, key: i64) -> i64;
+extern fn belief_set_preference(beliefs: i64, key: i64, value: i64) -> i64;
+extern fn belief_get_preference(beliefs: i64, key: i64) -> i64;
+extern fn belief_store_get(beliefs: i64, belief_type: i64, key: i64) -> i64;
+extern fn belief_store_set(beliefs: i64, belief_type: i64, key: i64, value: i64, confidence: i64) -> i64;
+extern fn belief_store_decay_confidence(beliefs: i64, factor: i64) -> i64;
+extern fn belief_store_is_dirty(beliefs: i64) -> i64;
+extern fn belief_store_print_stats(beliefs: i64) -> i64;
+
+// From device.sx
+extern fn detect_device_profile() -> i64;
+extern fn device_get_class(profile: i64) -> i64;
+extern fn device_get_battery(profile: i64) -> i64;
+extern fn device_get_network(profile: i64) -> i64;
+extern fn device_is_battery_critical(profile: i64) -> i64;
+extern fn device_print_summary(profile: i64) -> i64;
+extern fn max_belief_store_entries(device_class: i64) -> i64;
+extern fn max_cache_size_kb(device_class: i64) -> i64;
+
+// From specialist.sx
+extern fn create_default_specialists(profile: i64) -> i64;
+extern fn find_best_specialist(registry: i64, request_type: i64, beliefs: i64) -> i64;
+extern fn specialist_confidence(specialist: i64, request_type: i64, beliefs: i64) -> i64;
+extern fn specialist_handle_request(specialist: i64, request: i64, beliefs: i64) -> i64;
+extern fn specialist_registry_print_all(registry: i64) -> i64;
+
+// From federation.sx
+extern fn federation_new(device_id: i64, endpoint: i64) -> i64;
+extern fn federation_new_secure(identity: i64, device_id: i64, endpoint: i64) -> i64;
+extern fn federation_is_connected(fed: i64) -> i64;
+extern fn federation_sync_strategy(fed: i64) -> i64;
+extern fn federation_sync_beliefs(fed: i64, beliefs: i64) -> i64;
+extern fn federation_delegate_request(fed: i64, request: i64) -> i64;
+extern fn federation_last_sync(fed: i64) -> i64;
+extern fn federation_process_pending(fed: i64) -> i64;
+extern fn federation_adapt_strategy(fed: i64, profile: i64) -> i64;
+extern fn federation_disconnect(fed: i64) -> i64;
+extern fn federation_print_stats(fed: i64) -> i64;
+
+// From types.sx
+extern fn SYNC_AGGRESSIVE() -> i64;
+extern fn SYNC_LOCAL_FIRST() -> i64;
+extern fn BELIEF_PATTERN() -> i64;
+
+// From model.sx
+extern fn create_model_for_device(profile: i64) -> i64;
+extern fn local_model_new(model_type: i64) -> i64;
+extern fn local_model_type(model: i64) -> i64;
+extern fn local_model_info(model: i64) -> i64;
+extern fn local_model_state(model: i64) -> i64;
+extern fn local_model_stats(model: i64) -> i64;
+extern fn local_model_is_none(model: i64) -> i64;
+extern fn local_model_is_ready(model: i64) -> i64;
+extern fn local_model_load(model: i64) -> i64;
+extern fn local_model_unload(model: i64) -> i64;
+extern fn local_model_generate(model: i64, prompt: i64) -> i64;
+extern fn local_model_confidence(model: i64, request_type: i64, payload: i64) -> i64;
+extern fn model_info_name(info: i64) -> i64;
+extern fn model_info_params(info: i64) -> i64;
+extern fn model_info_context(info: i64) -> i64;
+extern fn format_chat_prompt(system: i64, user: i64, model_type: i64) -> i64;
+extern fn stats_total_inferences(stats: i64) -> i64;
+extern fn stats_total_tokens(stats: i64) -> i64;
+extern fn stats_avg_tps(stats: i64) -> i64;
+extern fn MODEL_STATE_LOADING() -> i64;
+extern fn MODEL_STATE_ERROR() -> i64;
+
+// From runtime
+extern fn vec_new() -> i64;
+extern fn vec_push(v: i64, val: i64) -> i64;
+extern fn vec_get(v: i64, idx: i64) -> i64;
+extern fn vec_set(v: i64, idx: i64, val: i64) -> i64;
+extern fn vec_len(v: i64) -> i64;
+extern fn string_from(s: &str) -> i64;
+extern fn string_concat(a: i64, b: i64) -> i64;
+extern fn string_hash(s: i64) -> i64;
+extern fn i64_to_string(n: i64) -> i64;
+extern fn print(s: i64) -> i64;
+extern fn println(s: i64) -> i64;
+extern fn print_i64(n: i64) -> i64;
+extern fn time_now() -> i64;
+extern fn time_hour(timestamp: i64) -> i64;

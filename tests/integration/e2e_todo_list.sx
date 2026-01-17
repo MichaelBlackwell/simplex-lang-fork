@@ -3,263 +3,263 @@
 
 // Todo item structure using HashMap
 fn todo_new(id: i64, title: i64, completed: i64) -> i64 {
-    let todo: i64 = hashmap_new();
-    hashmap_insert(todo, "id", id);
-    hashmap_insert(todo, "title", title);
-    hashmap_insert(todo, "completed", completed);
-    todo
+ let todo: i64 = hashmap_new();
+ hashmap_insert(todo, "id", id);
+ hashmap_insert(todo, "title", title);
+ hashmap_insert(todo, "completed", completed);
+ todo
 }
 
 fn todo_get_id(todo: i64) -> i64 {
-    option_unwrap(hashmap_get(todo, "id"))
+ option_unwrap(hashmap_get(todo, "id"))
 }
 
 fn todo_get_title(todo: i64) -> i64 {
-    option_unwrap(hashmap_get(todo, "title"))
+ option_unwrap(hashmap_get(todo, "title"))
 }
 
 fn todo_is_completed(todo: i64) -> i64 {
-    option_unwrap(hashmap_get(todo, "completed")) == true
+ option_unwrap(hashmap_get(todo, "completed")) == true
 }
 
 fn todo_set_completed(todo: i64, completed: i64) -> i64 {
-    hashmap_insert(todo, "completed", completed);
-    todo
+ hashmap_insert(todo, "completed", completed);
+ todo
 }
 
 // Todo list manager
 fn todolist_new() -> i64 {
-    let list: i64 = hashmap_new();
-    hashmap_insert(list, "todos", vec_new());
-    hashmap_insert(list, "next_id", 1);
-    list
+ let list: i64 = hashmap_new();
+ hashmap_insert(list, "todos", vec_new());
+ hashmap_insert(list, "next_id", 1);
+ list
 }
 
 fn todolist_add(list: i64, title: i64) -> i64 {
-    let todos: i64 = option_unwrap(hashmap_get(list, "todos"));
-    let next_id: i64 = option_unwrap(hashmap_get(list, "next_id"));
+ let todos: i64 = option_unwrap(hashmap_get(list, "todos"));
+ let next_id: i64 = option_unwrap(hashmap_get(list, "next_id"));
 
-    let todo: i64 = todo_new(next_id, title, false);
-    vec_push(todos, todo);
-    hashmap_insert(list, "next_id", next_id + 1);
+ let todo: i64 = todo_new(next_id, title, false);
+ vec_push(todos, todo);
+ hashmap_insert(list, "next_id", next_id + 1);
 
-    next_id  // Return the ID of the newly added todo
+ next_id // Return the ID of the newly added todo
 }
 
 fn todolist_find(list: i64, id: i64) -> i64 {
-    let todos: i64 = option_unwrap(hashmap_get(list, "todos"));
+ let todos: i64 = option_unwrap(hashmap_get(list, "todos"));
 
-    var i: i64 = 0;
-    while i < vec_len(todos) {
-        let todo: i64 = vec_get(todos, i);
-        if todo_get_id(todo) == id {
-            return option_some(todo);
-        }
-        i = i + 1;
-    }
+ var i: i64 = 0;
+ while i < vec_len(todos) {
+ let todo: i64 = vec_get(todos, i);
+ if todo_get_id(todo) == id {
+ return option_some(todo);
+ }
+ i = i + 1;
+ }
 
-    option_none()
+ option_none()
 }
 
 fn todolist_complete(list: i64, id: i64) -> i64 {
-    let todo_opt: i64 = todolist_find(list, id);
-    if option_is_none(todo_opt) {
-        return false;
-    }
+ let todo_opt: i64 = todolist_find(list, id);
+ if option_is_none(todo_opt) {
+ return false;
+ }
 
-    let todo: i64 = option_unwrap(todo_opt);
-    todo_set_completed(todo, true);
-    true
+ let todo: i64 = option_unwrap(todo_opt);
+ todo_set_completed(todo, true);
+ true
 }
 
 fn todolist_count(list: i64) -> i64 {
-    let todos: i64 = option_unwrap(hashmap_get(list, "todos"));
-    vec_len(todos)
+ let todos: i64 = option_unwrap(hashmap_get(list, "todos"));
+ vec_len(todos)
 }
 
 fn todolist_count_completed(list: i64) -> i64 {
-    let todos: i64 = option_unwrap(hashmap_get(list, "todos"));
-    var count: i64 = 0;
+ let todos: i64 = option_unwrap(hashmap_get(list, "todos"));
+ var count: i64 = 0;
 
-    var i: i64 = 0;
-    while i < vec_len(todos) {
-        let todo: i64 = vec_get(todos, i);
-        if todo_is_completed(todo) {
-            count = count + 1;
-        }
-        i = i + 1;
-    }
+ var i: i64 = 0;
+ while i < vec_len(todos) {
+ let todo: i64 = vec_get(todos, i);
+ if todo_is_completed(todo) {
+ count = count + 1;
+ }
+ i = i + 1;
+ }
 
-    count
+ count
 }
 
 fn todolist_to_json(list: i64) -> i64 {
-    let todos: i64 = option_unwrap(hashmap_get(list, "todos"));
-    let arr: i64 = json_array();
+ let todos: i64 = option_unwrap(hashmap_get(list, "todos"));
+ let arr: i64 = json_array();
 
-    var i: i64 = 0;
-    while i < vec_len(todos) {
-        let todo: i64 = vec_get(todos, i);
-        let obj: i64 = json_object();
-        json_object_set(obj, "id", json_number_i64(todo_get_id(todo)));
-        json_object_set(obj, "title", json_string(todo_get_title(todo)));
-        json_object_set(obj, "completed", json_bool(todo_is_completed(todo)));
-        json_array_push(arr, obj);
-        i = i + 1;
-    }
+ var i: i64 = 0;
+ while i < vec_len(todos) {
+ let todo: i64 = vec_get(todos, i);
+ let obj: i64 = json_object();
+ json_object_set(obj, "id", json_number_i64(todo_get_id(todo)));
+ json_object_set(obj, "title", json_string(todo_get_title(todo)));
+ json_object_set(obj, "completed", json_bool(todo_is_completed(todo)));
+ json_array_push(arr, obj);
+ i = i + 1;
+ }
 
-    arr
+ arr
 }
 
 fn test_add_todos() -> i64 {
-    let list: i64 = todolist_new();
+ let list: i64 = todolist_new();
 
-    let id1: i64 = todolist_add(list, "Buy groceries");
-    let id2: i64 = todolist_add(list, "Walk the dog");
-    let id3: i64 = todolist_add(list, "Finish project");
+ let id1: i64 = todolist_add(list, "Buy groceries");
+ let id2: i64 = todolist_add(list, "Walk the dog");
+ let id3: i64 = todolist_add(list, "Finish project");
 
-    if id1 != 1 {
-        println("FAIL: first todo id should be 1");
-        return 1;
-    }
-    if id2 != 2 {
-        println("FAIL: second todo id should be 2");
-        return 1;
-    }
-    if id3 != 3 {
-        println("FAIL: third todo id should be 3");
-        return 1;
-    }
+ if id1 != 1 {
+ println("FAIL: first todo id should be 1");
+ return 1;
+ }
+ if id2 != 2 {
+ println("FAIL: second todo id should be 2");
+ return 1;
+ }
+ if id3 != 3 {
+ println("FAIL: third todo id should be 3");
+ return 1;
+ }
 
-    if todolist_count(list) != 3 {
-        println("FAIL: should have 3 todos");
-        return 1;
-    }
+ if todolist_count(list) != 3 {
+ println("FAIL: should have 3 todos");
+ return 1;
+ }
 
-    println("PASS: test_add_todos");
-    0
+ println("PASS: test_add_todos");
+ 0
 }
 
 fn test_complete_todo() -> i64 {
-    let list: i64 = todolist_new();
-    todolist_add(list, "Task 1");
-    todolist_add(list, "Task 2");
-    todolist_add(list, "Task 3");
+ let list: i64 = todolist_new();
+ todolist_add(list, "Task 1");
+ todolist_add(list, "Task 2");
+ todolist_add(list, "Task 3");
 
-    if todolist_count_completed(list) != 0 {
-        println("FAIL: no todos should be completed initially");
-        return 1;
-    }
+ if todolist_count_completed(list) != 0 {
+ println("FAIL: no todos should be completed initially");
+ return 1;
+ }
 
-    let result: i64 = todolist_complete(list, 2);
-    if result != true {
-        println("FAIL: completing existing todo should return true");
-        return 1;
-    }
+ let result: i64 = todolist_complete(list, 2);
+ if result != true {
+ println("FAIL: completing existing todo should return true");
+ return 1;
+ }
 
-    if todolist_count_completed(list) != 1 {
-        println("FAIL: one todo should be completed");
-        return 1;
-    }
+ if todolist_count_completed(list) != 1 {
+ println("FAIL: one todo should be completed");
+ return 1;
+ }
 
-    // Try to complete non-existent todo
-    let result2: i64 = todolist_complete(list, 999);
-    if result2 != false {
-        println("FAIL: completing non-existent todo should return false");
-        return 1;
-    }
+ // Try to complete non-existent todo
+ let result2: i64 = todolist_complete(list, 999);
+ if result2 != false {
+ println("FAIL: completing non-existent todo should return false");
+ return 1;
+ }
 
-    println("PASS: test_complete_todo");
-    0
+ println("PASS: test_complete_todo");
+ 0
 }
 
 fn test_find_todo() -> i64 {
-    let list: i64 = todolist_new();
-    todolist_add(list, "First");
-    todolist_add(list, "Second");
-    todolist_add(list, "Third");
+ let list: i64 = todolist_new();
+ todolist_add(list, "First");
+ todolist_add(list, "Second");
+ todolist_add(list, "Third");
 
-    let found: i64 = todolist_find(list, 2);
-    if option_is_none(found) {
-        println("FAIL: todo with id 2 should exist");
-        return 1;
-    }
+ let found: i64 = todolist_find(list, 2);
+ if option_is_none(found) {
+ println("FAIL: todo with id 2 should exist");
+ return 1;
+ }
 
-    let todo: i64 = option_unwrap(found);
-    if string_eq(todo_get_title(todo), "Second") == false {
-        println("FAIL: todo title should be 'Second'");
-        return 1;
-    }
+ let todo: i64 = option_unwrap(found);
+ if string_eq(todo_get_title(todo), "Second") == false {
+ println("FAIL: todo title should be 'Second'");
+ return 1;
+ }
 
-    let not_found: i64 = todolist_find(list, 999);
-    if option_is_some(not_found) {
-        println("FAIL: todo with id 999 should not exist");
-        return 1;
-    }
+ let not_found: i64 = todolist_find(list, 999);
+ if option_is_some(not_found) {
+ println("FAIL: todo with id 999 should not exist");
+ return 1;
+ }
 
-    println("PASS: test_find_todo");
-    0
+ println("PASS: test_find_todo");
+ 0
 }
 
 fn test_json_export() -> i64 {
-    let list: i64 = todolist_new();
-    todolist_add(list, "Task A");
-    todolist_add(list, "Task B");
-    todolist_complete(list, 1);
+ let list: i64 = todolist_new();
+ todolist_add(list, "Task A");
+ todolist_add(list, "Task B");
+ todolist_complete(list, 1);
 
-    let json: i64 = todolist_to_json(list);
+ let json: i64 = todolist_to_json(list);
 
-    if json_is_array(json) == false {
-        println("FAIL: exported should be array");
-        return 1;
-    }
+ if json_is_array(json) == false {
+ println("FAIL: exported should be array");
+ return 1;
+ }
 
-    if json_array_len(json) != 2 {
-        println("FAIL: should have 2 todos");
-        return 1;
-    }
+ if json_array_len(json) != 2 {
+ println("FAIL: should have 2 todos");
+ return 1;
+ }
 
-    let first: i64 = json_get_index(json, 0);
-    let title: i64 = json_get(first, "title");
-    if string_eq(json_as_string(title), "Task A") == false {
-        println("FAIL: first todo title should be 'Task A'");
-        return 1;
-    }
+ let first: i64 = json_get_index(json, 0);
+ let title: i64 = json_get(first, "title");
+ if string_eq(json_as_string(title), "Task A") == false {
+ println("FAIL: first todo title should be 'Task A'");
+ return 1;
+ }
 
-    let completed: i64 = json_get(first, "completed");
-    if json_as_bool(completed) != true {
-        println("FAIL: first todo should be completed");
-        return 1;
-    }
+ let completed: i64 = json_get(first, "completed");
+ if json_as_bool(completed) != true {
+ println("FAIL: first todo should be completed");
+ return 1;
+ }
 
-    let second: i64 = json_get_index(json, 1);
-    let completed2: i64 = json_get(second, "completed");
-    if json_as_bool(completed2) != false {
-        println("FAIL: second todo should not be completed");
-        return 1;
-    }
+ let second: i64 = json_get_index(json, 1);
+ let completed2: i64 = json_get(second, "completed");
+ if json_as_bool(completed2) != false {
+ println("FAIL: second todo should not be completed");
+ return 1;
+ }
 
-    println("PASS: test_json_export");
-    0
+ println("PASS: test_json_export");
+ 0
 }
 
 fn main() -> i64 {
-    println("=== Todo List Integration Test ===");
-    println("");
+ println("=== Todo List Integration Test ===");
+ println("");
 
-    var failures: i64 = 0;
-    failures = failures + test_add_todos();
-    failures = failures + test_complete_todo();
-    failures = failures + test_find_todo();
-    failures = failures + test_json_export();
+ var failures: i64 = 0;
+ failures = failures + test_add_todos();
+ failures = failures + test_complete_todo();
+ failures = failures + test_find_todo();
+ failures = failures + test_json_export();
 
-    println("");
-    if failures == 0 {
-        println("All todo list tests passed!");
-    } else {
-        print("Todo list tests failed: ");
-        println(int_to_string(failures));
-    }
+ println("");
+ if failures == 0 {
+ println("All todo list tests passed!");
+ } else {
+ print("Todo list tests failed: ");
+ println(int_to_string(failures));
+ }
 
-    failures
+ failures
 }

@@ -1,0 +1,664 @@
+// =============================================================================
+// Nexus Protocol - Phase 9: TCP Transport Implementation
+// =============================================================================
+//
+// This module provides TCP transport implementation for the Nexus protocol.
+// It supports:
+//   - TCP connection establishment and teardown
+//   - Optional TLS wrapping for secure connections
+//   - TCP_NODELAY for low-latency operations
+//   - Keepalive probes for connection health
+//   - Non-blocking I/O with buffering
+//
+// =============================================================================
+
+// =============================================================================
+// TCP Socket Options
+// =============================================================================
+
+fn TCP_OPT_NODELAY() -> i64 { 1 }
+fn TCP_OPT_KEEPALIVE() -> i64 { 2 }
+fn TCP_OPT_REUSEADDR() -> i64 { 4 }
+fn TCP_OPT_REUSEPORT() -> i64 { 8 }
+fn TCP_OPT_NONBLOCK() -> i64 { 16 }
+
+// TCP states (internal)
+fn TCP_STATE_INITIAL() -> i64 { 0 }
+fn TCP_STATE_SYN_SENT() -> i64 { 1 }
+fn TCP_STATE_ESTABLISHED() -> i64 { 2 }
+fn TCP_STATE_FIN_WAIT() -> i64 { 3 }
+fn TCP_STATE_CLOSE_WAIT() -> i64 { 4 }
+fn TCP_STATE_CLOSED() -> i64 { 5 }
+
+// Default TCP settings
+fn TCP_DEFAULT_BACKLOG() -> i64 { 128 }
+fn TCP_KEEPALIVE_TIME() -> i64 { 60 }      // Seconds
+fn TCP_KEEPALIVE_INTERVAL() -> i64 { 10 }  // Seconds
+fn TCP_KEEPALIVE_COUNT() -> i64 { 3 }      // Probes
+
+// =============================================================================
+// TCP Socket Handle
+// =============================================================================
+
+// Create a TCP socket structure (wraps OS socket fd)
+// Structure: [fd, state, options, local_addr, remote_addr,
+//             send_buf_size, recv_buf_size, last_error, tls_handle]
+fn tcp_socket_new() -> i64 {
+    let socket = vec_new();
+    vec_push(socket, 0);                    // 0: file descriptor (-1 = invalid)
+    vec_push(socket, TCP_STATE_INITIAL());  // 1: TCP state
+    vec_push(socket, 0);                    // 2: options
+    vec_push(socket, 0);                    // 3: local address
+    vec_push(socket, 0);                    // 4: remote address
+    vec_push(socket, 65536);                // 5: send buffer size
+    vec_push(socket, 65536);                // 6: recv buffer size
+    vec_push(socket, 0);                    // 7: last error
+    vec_push(socket, 0);                    // 8: TLS handle (0 = no TLS)
+    socket
+}
+
+fn tcp_socket_fd(sock: i64) -> i64 { vec_get(sock, 0) }
+fn tcp_socket_state(sock: i64) -> i64 { vec_get(sock, 1) }
+fn tcp_socket_options(sock: i64) -> i64 { vec_get(sock, 2) }
+fn tcp_socket_local_addr(sock: i64) -> i64 { vec_get(sock, 3) }
+fn tcp_socket_remote_addr(sock: i64) -> i64 { vec_get(sock, 4) }
+fn tcp_socket_send_buf_size(sock: i64) -> i64 { vec_get(sock, 5) }
+fn tcp_socket_recv_buf_size(sock: i64) -> i64 { vec_get(sock, 6) }
+fn tcp_socket_last_error(sock: i64) -> i64 { vec_get(sock, 7) }
+fn tcp_socket_tls_handle(sock: i64) -> i64 { vec_get(sock, 8) }
+
+fn tcp_socket_set_fd(sock: i64, fd: i64) -> i64 {
+    vec_set(sock, 0, fd);
+    1
+}
+
+fn tcp_socket_set_state(sock: i64, state: i64) -> i64 {
+    vec_set(sock, 1, state);
+    1
+}
+
+fn tcp_socket_set_options(sock: i64, opts: i64) -> i64 {
+    vec_set(sock, 2, opts);
+    1
+}
+
+fn tcp_socket_set_local_addr(sock: i64, addr: i64) -> i64 {
+    vec_set(sock, 3, addr);
+    1
+}
+
+fn tcp_socket_set_remote_addr(sock: i64, addr: i64) -> i64 {
+    vec_set(sock, 4, addr);
+    1
+}
+
+fn tcp_socket_set_error(sock: i64, err: i64) -> i64 {
+    vec_set(sock, 7, err);
+    1
+}
+
+fn tcp_socket_set_tls(sock: i64, tls: i64) -> i64 {
+    vec_set(sock, 8, tls);
+    1
+}
+
+fn tcp_socket_has_tls(sock: i64) -> i64 {
+    if tcp_socket_tls_handle(sock) != 0 { 1 } else { 0 }
+}
+
+// =============================================================================
+// TCP Address Handling
+// =============================================================================
+
+// Create an address structure
+// Structure: [family, ip_bytes, port]
+fn tcp_addr_new(family: i64, ip: i64, port: i64) -> i64 {
+    let addr = vec_new();
+    vec_push(addr, family);  // 0: AF_INET (2) or AF_INET6 (10)
+    vec_push(addr, ip);      // 1: IP address as bytes
+    vec_push(addr, port);    // 2: port number
+    addr
+}
+
+fn tcp_addr_family(addr: i64) -> i64 { vec_get(addr, 0) }
+fn tcp_addr_ip(addr: i64) -> i64 { vec_get(addr, 1) }
+fn tcp_addr_port(addr: i64) -> i64 { vec_get(addr, 2) }
+
+// Create IPv4 address from components
+fn tcp_addr_ipv4(a: i64, b: i64, c: i64, d: i64, port: i64) -> i64 {
+    let ip = vec_new();
+    vec_push(ip, a);
+    vec_push(ip, b);
+    vec_push(ip, c);
+    vec_push(ip, d);
+    tcp_addr_new(2, ip, port)  // AF_INET = 2
+}
+
+// Create localhost IPv4 address
+fn tcp_addr_localhost(port: i64) -> i64 {
+    tcp_addr_ipv4(127, 0, 0, 1, port)
+}
+
+// Create any address (0.0.0.0)
+fn tcp_addr_any(port: i64) -> i64 {
+    tcp_addr_ipv4(0, 0, 0, 0, port)
+}
+
+// Compare two addresses
+fn tcp_addr_equals(a: i64, b: i64) -> i64 {
+    if tcp_addr_family(a) != tcp_addr_family(b) {
+        return 0;
+    }
+    if tcp_addr_port(a) != tcp_addr_port(b) {
+        return 0;
+    }
+
+    let ip_a = tcp_addr_ip(a);
+    let ip_b = tcp_addr_ip(b);
+    let len_a = vec_len(ip_a);
+    let len_b = vec_len(ip_b);
+
+    if len_a != len_b {
+        return 0;
+    }
+
+    let i = 0;
+    while i < len_a {
+        if vec_get(ip_a, i) != vec_get(ip_b, i) {
+            return 0;
+        }
+        i = i + 1;
+    }
+
+    1
+}
+
+// =============================================================================
+// TCP Socket Operations (Simulated)
+// =============================================================================
+
+// These functions simulate TCP socket operations.
+// In a real implementation, they would call OS socket APIs.
+
+// Create and configure a TCP socket
+fn tcp_socket_create(options: i64) -> i64 {
+    let sock = tcp_socket_new();
+
+    // Simulate socket creation with a pseudo file descriptor
+    // In reality: fd = socket(AF_INET, SOCK_STREAM, 0)
+    let fd = 100 + (vec_len(sock) % 1000);  // Pseudo FD
+    tcp_socket_set_fd(sock, fd);
+    tcp_socket_set_options(sock, options);
+
+    sock
+}
+
+// Bind socket to local address
+fn tcp_socket_bind(sock: i64, addr: i64) -> i64 {
+    if tcp_socket_fd(sock) <= 0 {
+        tcp_socket_set_error(sock, TRANS_ERR_IO());
+        return 0;
+    }
+
+    // Simulate bind
+    tcp_socket_set_local_addr(sock, addr);
+    1
+}
+
+// Listen for connections (server mode)
+fn tcp_socket_listen(sock: i64, backlog: i64) -> i64 {
+    if tcp_socket_fd(sock) <= 0 {
+        tcp_socket_set_error(sock, TRANS_ERR_IO());
+        return 0;
+    }
+
+    // Simulate listen
+    tcp_socket_set_state(sock, TCP_STATE_ESTABLISHED());
+    1
+}
+
+// Accept incoming connection
+fn tcp_socket_accept(sock: i64) -> i64 {
+    if tcp_socket_state(sock) != TCP_STATE_ESTABLISHED() {
+        return 0;
+    }
+
+    // Simulate accept - create new socket for connection
+    let client = tcp_socket_new();
+    let fd = tcp_socket_fd(sock) + 1;
+    tcp_socket_set_fd(client, fd);
+    tcp_socket_set_state(client, TCP_STATE_ESTABLISHED());
+
+    client
+}
+
+// Connect to remote address
+fn tcp_socket_connect(sock: i64, addr: i64) -> i64 {
+    if tcp_socket_fd(sock) <= 0 {
+        tcp_socket_set_error(sock, TRANS_ERR_IO());
+        return 0;
+    }
+
+    // Simulate connection (would be non-blocking in real impl)
+    tcp_socket_set_state(sock, TCP_STATE_SYN_SENT());
+
+    // For simulation, immediately transition to established
+    tcp_socket_set_state(sock, TCP_STATE_ESTABLISHED());
+    tcp_socket_set_remote_addr(sock, addr);
+
+    1
+}
+
+// Close socket
+fn tcp_socket_close(sock: i64) -> i64 {
+    let state = tcp_socket_state(sock);
+    if state == TCP_STATE_CLOSED() {
+        return 1;
+    }
+
+    // Handle TLS shutdown first
+    if tcp_socket_has_tls(sock) == 1 {
+        // Would call SSL_shutdown here
+        tcp_socket_set_tls(sock, 0);
+    }
+
+    // Transition through close states
+    if state == TCP_STATE_ESTABLISHED() {
+        tcp_socket_set_state(sock, TCP_STATE_FIN_WAIT());
+    }
+
+    tcp_socket_set_state(sock, TCP_STATE_CLOSED());
+    tcp_socket_set_fd(sock, 0);
+
+    1
+}
+
+// Send data over socket
+fn tcp_socket_send(sock: i64, data: i64) -> i64 {
+    if tcp_socket_state(sock) != TCP_STATE_ESTABLISHED() {
+        tcp_socket_set_error(sock, TRANS_ERR_CLOSED());
+        return 0;
+    }
+
+    // With TLS, would encrypt first
+    if tcp_socket_has_tls(sock) == 1 {
+        // Would call SSL_write here
+    }
+
+    // Simulate send - return bytes "sent"
+    vec_len(data)
+}
+
+// Receive data from socket
+fn tcp_socket_recv(sock: i64, max_bytes: i64) -> i64 {
+    if tcp_socket_state(sock) != TCP_STATE_ESTABLISHED() {
+        return 0;
+    }
+
+    // With TLS, would decrypt
+    if tcp_socket_has_tls(sock) == 1 {
+        // Would call SSL_read here
+    }
+
+    // Simulate receive - return empty (no data available)
+    vec_new()
+}
+
+// Check if socket is readable (has data)
+fn tcp_socket_readable(sock: i64) -> i64 {
+    if tcp_socket_state(sock) != TCP_STATE_ESTABLISHED() {
+        return 0;
+    }
+    // Simulate poll - would use select/poll/epoll
+    0
+}
+
+// Check if socket is writable
+fn tcp_socket_writable(sock: i64) -> i64 {
+    if tcp_socket_state(sock) != TCP_STATE_ESTABLISHED() {
+        return 0;
+    }
+    // Always writable in simulation
+    1
+}
+
+// =============================================================================
+// TCP Transport Layer Integration
+// =============================================================================
+
+// Extended transport structure for TCP-specific data
+// Structure appended to transport: [tcp_socket, connect_attempts, last_connect_time]
+fn tcp_transport_init(t: i64) -> i64 {
+    // Get config options
+    let config = transport_config(t);
+    let opts = transport_config_options(config);
+
+    // Determine socket options from transport options
+    let sock_opts = 0;
+    if (opts / TRANS_OPT_NODELAY()) % 2 == 1 {
+        sock_opts = sock_opts + TCP_OPT_NODELAY();
+    }
+    if (opts / TRANS_OPT_KEEPALIVE()) % 2 == 1 {
+        sock_opts = sock_opts + TCP_OPT_KEEPALIVE();
+    }
+
+    // Create TCP socket
+    let sock = tcp_socket_create(sock_opts);
+    transport_set_handle(t, sock);
+
+    1
+}
+
+// Connect TCP transport
+fn tcp_transport_connect_impl(t: i64) -> i64 {
+    // Initialize if needed
+    if transport_handle(t) == 0 {
+        tcp_transport_init(t);
+    }
+
+    let sock = transport_handle(t);
+    let endpoint = transport_endpoint(t);
+
+    // Build remote address from endpoint
+    let host = transport_endpoint_host(endpoint);
+    let port = transport_endpoint_port(endpoint);
+
+    // For simulation, create a localhost address
+    // Real implementation would do DNS resolution here
+    let addr = tcp_addr_new(2, host, port);
+
+    // Connect socket
+    if tcp_socket_connect(sock, addr) == 0 {
+        let err = tcp_socket_last_error(sock);
+        transport_set_error(t, TRANS_ERR_CONNECT(), err);
+        return 0;
+    }
+
+    // Check for TLS requirement
+    let config = transport_config(t);
+    let opts = transport_config_options(config);
+    if (opts / TRANS_OPT_TLS()) % 2 == 1 {
+        if tcp_transport_start_tls(t) == 0 {
+            return 0;
+        }
+    }
+
+    transport_set_state(t, TRANS_STATE_CONNECTED());
+    transport_set_state(t, TRANS_STATE_READY());
+
+    1
+}
+
+// Start TLS on existing connection
+fn tcp_transport_start_tls(t: i64) -> i64 {
+    let sock = transport_handle(t);
+    let config = transport_config(t);
+    let tls_config = transport_config_tls(config);
+
+    // Simulate TLS handshake
+    // Real implementation would:
+    // 1. Create SSL context from tls_config
+    // 2. Create SSL object
+    // 3. Set socket FD
+    // 4. Call SSL_connect
+    // 5. Verify peer certificate
+
+    // For simulation, just mark TLS as active
+    tcp_socket_set_tls(sock, 1);
+
+    1
+}
+
+// Close TCP transport
+fn tcp_transport_close_impl(t: i64) -> i64 {
+    let sock = transport_handle(t);
+    if sock == 0 {
+        return 1;
+    }
+
+    tcp_socket_close(sock);
+    transport_set_handle(t, 0);
+
+    1
+}
+
+// Send data over TCP transport
+fn tcp_transport_send_impl(t: i64, data: i64) -> i64 {
+    let sock = transport_handle(t);
+    if sock == 0 {
+        transport_set_error(t, TRANS_ERR_CLOSED(), 0);
+        return 0;
+    }
+
+    let data_len = vec_len(data);
+    let sent = tcp_socket_send(sock, data);
+
+    if sent == 0 {
+        let err = tcp_socket_last_error(sock);
+        if err != 0 {
+            transport_set_error(t, TRANS_ERR_IO(), err);
+            return 0;
+        }
+    }
+
+    // Clear sent data from write buffer
+    if sent == data_len {
+        transport_clear_write_buf(t);
+    } else if sent > 0 {
+        // Partial send - shift buffer
+        let write_buf = transport_write_buf(t);
+        let new_buf = vec_new();
+        let i = sent;
+        while i < vec_len(write_buf) {
+            vec_push(new_buf, vec_get(write_buf, i));
+            i = i + 1;
+        }
+        vec_set(t, 6, new_buf);
+    }
+
+    sent
+}
+
+// Receive data from TCP transport
+fn tcp_transport_recv_impl(t: i64) -> i64 {
+    let sock = transport_handle(t);
+    if sock == 0 {
+        return 0;
+    }
+
+    let config = transport_config(t);
+    let buf_size = transport_config_read_buf(config);
+
+    let data = tcp_socket_recv(sock, buf_size);
+    let data_len = vec_len(data);
+
+    if data_len > 0 {
+        // Append to read buffer
+        let read_buf = transport_read_buf(t);
+        let i = 0;
+        while i < data_len {
+            vec_push(read_buf, vec_get(data, i));
+            i = i + 1;
+        }
+    }
+
+    data_len
+}
+
+// =============================================================================
+// TCP Listener (Server Mode)
+// =============================================================================
+
+// Create a TCP listener
+// Structure: [socket, addr, backlog, pending_connections]
+fn tcp_listener_new(addr: i64) -> i64 {
+    let listener = vec_new();
+    vec_push(listener, 0);                      // 0: socket
+    vec_push(listener, addr);                   // 1: bind address
+    vec_push(listener, TCP_DEFAULT_BACKLOG());  // 2: backlog
+    vec_push(listener, vec_new());              // 3: pending connections
+    listener
+}
+
+fn tcp_listener_socket(l: i64) -> i64 { vec_get(l, 0) }
+fn tcp_listener_addr(l: i64) -> i64 { vec_get(l, 1) }
+fn tcp_listener_backlog(l: i64) -> i64 { vec_get(l, 2) }
+fn tcp_listener_pending(l: i64) -> i64 { vec_get(l, 3) }
+
+fn tcp_listener_set_socket(l: i64, sock: i64) -> i64 {
+    vec_set(l, 0, sock);
+    1
+}
+
+fn tcp_listener_set_backlog(l: i64, backlog: i64) -> i64 {
+    vec_set(l, 2, backlog);
+    1
+}
+
+// Bind and start listening
+fn tcp_listener_bind(l: i64) -> i64 {
+    let addr = tcp_listener_addr(l);
+    let backlog = tcp_listener_backlog(l);
+
+    // Create socket with reuse options
+    let opts = TCP_OPT_REUSEADDR() + TCP_OPT_NONBLOCK();
+    let sock = tcp_socket_create(opts);
+
+    if tcp_socket_bind(sock, addr) == 0 {
+        return 0;
+    }
+
+    if tcp_socket_listen(sock, backlog) == 0 {
+        return 0;
+    }
+
+    tcp_listener_set_socket(l, sock);
+    1
+}
+
+// Accept a connection
+fn tcp_listener_accept(l: i64) -> i64 {
+    let sock = tcp_listener_socket(l);
+    if sock == 0 {
+        return 0;
+    }
+
+    let client_sock = tcp_socket_accept(sock);
+    if client_sock == 0 {
+        return 0;
+    }
+
+    // Create transport for accepted connection
+    let endpoint = transport_endpoint_tcp(0, 0);
+    let config = transport_config_new();
+    let trans = transport_new(endpoint, config);
+
+    transport_set_handle(trans, client_sock);
+    transport_set_state(trans, TRANS_STATE_CONNECTED());
+    transport_set_state(trans, TRANS_STATE_READY());
+
+    trans
+}
+
+// Close listener
+fn tcp_listener_close(l: i64) -> i64 {
+    let sock = tcp_listener_socket(l);
+    if sock != 0 {
+        tcp_socket_close(sock);
+        tcp_listener_set_socket(l, 0);
+    }
+    1
+}
+
+// =============================================================================
+// TCP Connection Options Helpers
+// =============================================================================
+
+// Enable TCP_NODELAY (disable Nagle's algorithm)
+fn tcp_transport_set_nodelay(t: i64, enabled: i64) -> i64 {
+    let sock = transport_handle(t);
+    if sock == 0 {
+        return 0;
+    }
+
+    let opts = tcp_socket_options(sock);
+    if enabled == 1 {
+        if (opts / TCP_OPT_NODELAY()) % 2 == 0 {
+            tcp_socket_set_options(sock, opts + TCP_OPT_NODELAY());
+        }
+    } else {
+        if (opts / TCP_OPT_NODELAY()) % 2 == 1 {
+            tcp_socket_set_options(sock, opts - TCP_OPT_NODELAY());
+        }
+    }
+    1
+}
+
+// Enable keepalive probes
+fn tcp_transport_set_keepalive(t: i64, enabled: i64) -> i64 {
+    let sock = transport_handle(t);
+    if sock == 0 {
+        return 0;
+    }
+
+    let opts = tcp_socket_options(sock);
+    if enabled == 1 {
+        if (opts / TCP_OPT_KEEPALIVE()) % 2 == 0 {
+            tcp_socket_set_options(sock, opts + TCP_OPT_KEEPALIVE());
+        }
+    } else {
+        if (opts / TCP_OPT_KEEPALIVE()) % 2 == 1 {
+            tcp_socket_set_options(sock, opts - TCP_OPT_KEEPALIVE());
+        }
+    }
+    1
+}
+
+// Set send buffer size
+fn tcp_transport_set_send_buf(t: i64, size: i64) -> i64 {
+    let sock = transport_handle(t);
+    if sock == 0 {
+        return 0;
+    }
+    vec_set(sock, 5, size);
+    1
+}
+
+// Set receive buffer size
+fn tcp_transport_set_recv_buf(t: i64, size: i64) -> i64 {
+    let sock = transport_handle(t);
+    if sock == 0 {
+        return 0;
+    }
+    vec_set(sock, 6, size);
+    1
+}
+
+// =============================================================================
+// TCP Statistics
+// =============================================================================
+
+// Create TCP-specific stats
+fn tcp_transport_stats(t: i64) -> i64 {
+    let stats = transport_stats_new(t);
+
+    let sock = transport_handle(t);
+    if sock != 0 {
+        vec_push(stats, tcp_socket_state(sock));
+        vec_push(stats, tcp_socket_send_buf_size(sock));
+        vec_push(stats, tcp_socket_recv_buf_size(sock));
+        vec_push(stats, tcp_socket_has_tls(sock));
+    } else {
+        vec_push(stats, 0);
+        vec_push(stats, 0);
+        vec_push(stats, 0);
+        vec_push(stats, 0);
+    }
+
+    stats
+}
+
+fn tcp_stats_socket_state(stats: i64) -> i64 { vec_get(stats, 9) }
+fn tcp_stats_send_buf(stats: i64) -> i64 { vec_get(stats, 10) }
+fn tcp_stats_recv_buf(stats: i64) -> i64 { vec_get(stats, 11) }
+fn tcp_stats_has_tls(stats: i64) -> i64 { vec_get(stats, 12) }

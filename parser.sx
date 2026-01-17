@@ -104,7 +104,11 @@ enum TokenKind {
     KwGpu,
     KwNpu,
     // Annotation symbol
-    At
+    At,
+    // TASK-014: Epistemic safety attributes
+    Hash,          // # for #[attr] syntax
+    KwNoLearn,     // no_learn - no learnable parameters
+    KwNoGradient   // no_gradient - gradients don't flow through
 }
 
 // AST node tags - using i64 since stage1 doesn't have proper enums for everything
@@ -158,6 +162,82 @@ fn EXPR_ARRAY() -> i64 { 21 }    // [a, b, c] - array literal
 fn EXPR_FLOAT() -> i64 { 22 }    // floating point literal
 fn EXPR_CLOSURE() -> i64 { 23 }  // (params) => expr - closure/lambda
 fn EXPR_INFER() -> i64 { 24 }    // infer(prompt) - AI inference
+
+// TASK-014: Attribute flags for epistemic safety
+// These flags are combined using bitwise OR to mark functions/structs
+fn ATTR_FLAG_NONE() -> i64 { 0 }
+fn ATTR_FLAG_NO_LEARN() -> i64 { 1 }     // #[no_learn] - cannot contain learnable params
+fn ATTR_FLAG_NO_GRADIENT() -> i64 { 2 }  // #[no_gradient] - gradients don't flow through
+fn ATTR_FLAG_INVARIANT() -> i64 { 4 }    // #[invariant] - must hold before/after learning
+
+// Parse #[attr] attributes before items
+// Returns a bitmask of attribute flags
+fn parse_attributes(parser: i64) -> i64 {
+    let attrs: i64 = ATTR_FLAG_NONE();
+
+    // Parse multiple #[attr] attributes
+    while parser_check(parser, TokenKind::Hash) {
+        parser_advance(parser);  // consume #
+        parser_expect(parser, TokenKind::LBracket);  // expect [
+
+        // Parse attribute name
+        if parser_check(parser, TokenKind::KwNoLearn) {
+            parser_advance(parser);
+            attrs = attrs | ATTR_FLAG_NO_LEARN();
+        } else {
+        if parser_check(parser, TokenKind::KwNoGradient) {
+            parser_advance(parser);
+            attrs = attrs | ATTR_FLAG_NO_GRADIENT();
+        } else {
+        if parser_check(parser, TokenKind::KwInvariant) {
+            parser_advance(parser);
+            attrs = attrs | ATTR_FLAG_INVARIANT();
+        } else {
+        if parser_check(parser, TokenKind::Ident) {
+            // Allow arbitrary identifiers for future attributes
+            let tok: i64 = parser_advance(parser);
+            let text: i64 = token_text(tok);
+            // Check for snake_case versions
+            if string_eq(text, string_from("no_learn")) {
+                attrs = attrs | ATTR_FLAG_NO_LEARN();
+            } else {
+            if string_eq(text, string_from("no_gradient")) {
+                attrs = attrs | ATTR_FLAG_NO_GRADIENT();
+            } else {
+            if string_eq(text, string_from("invariant")) {
+                attrs = attrs | ATTR_FLAG_INVARIANT();
+            } else {
+                parser_add_error(parser, string_concat(string_from("Unknown attribute: "), text));
+            }
+            }
+            }
+        } else {
+            parser_add_error(parser, string_from("Expected attribute name after #["));
+        }
+        }
+        }
+        }
+
+        parser_expect(parser, TokenKind::RBracket);  // expect ]
+    }
+
+    attrs
+}
+
+// Check if attributes contain no_learn flag
+fn has_no_learn_attr(attrs: i64) -> bool {
+    (attrs & ATTR_FLAG_NO_LEARN()) != 0
+}
+
+// Check if attributes contain no_gradient flag
+fn has_no_gradient_attr(attrs: i64) -> bool {
+    (attrs & ATTR_FLAG_NO_GRADIENT()) != 0
+}
+
+// Check if attributes contain invariant flag
+fn has_invariant_attr(attrs: i64) -> bool {
+    (attrs & ATTR_FLAG_INVARIANT()) != 0
+}
 
 // Parser state - we pass this to all functions
 fn parser_new(tokens: i64) -> i64 {
@@ -274,6 +354,44 @@ fn ast_fn_def(name: i64, type_params: i64, params: i64, ret_ty: i64, body: i64, 
 
 fn ast_fn_is_async(node: i64) -> i64 {
     load_i64(node, 6)
+}
+
+// TASK-014: FnDef with attributes
+// Layout: tag(0), name(1), type_params(2), params(3), ret_ty(4), body(5), is_async(6), attrs(7)
+fn ast_fn_def_with_attrs(name: i64, type_params: i64, params: i64, ret_ty: i64, body: i64, is_async: i64, attrs: i64) -> i64 {
+    let node: i64 = malloc(64);  // Increased size for attrs
+    store_i64(node, 0, TAG_FN());
+    store_ptr(node, 1, name);
+    store_ptr(node, 2, type_params);
+    store_ptr(node, 3, params);
+    store_ptr(node, 4, ret_ty);
+    store_ptr(node, 5, body);
+    store_i64(node, 6, is_async);
+    store_i64(node, 7, attrs);  // Attribute flags bitmask
+    node
+}
+
+// Get attributes from function node (TASK-014)
+fn ast_fn_attrs(node: i64) -> i64 {
+    load_i64(node, 7)
+}
+
+// Check if function has no_learn attribute (TASK-014)
+fn ast_fn_has_no_learn(node: i64) -> bool {
+    let attrs: i64 = ast_fn_attrs(node);
+    (attrs & ATTR_FLAG_NO_LEARN()) != 0
+}
+
+// Check if function has no_gradient attribute (TASK-014)
+fn ast_fn_has_no_gradient(node: i64) -> bool {
+    let attrs: i64 = ast_fn_attrs(node);
+    (attrs & ATTR_FLAG_NO_GRADIENT()) != 0
+}
+
+// Check if function has invariant attribute (TASK-014)
+fn ast_fn_has_invariant(node: i64) -> bool {
+    let attrs: i64 = ast_fn_attrs(node);
+    (attrs & ATTR_FLAG_INVARIANT()) != 0
 }
 
 // Item: EnumDef
@@ -1910,6 +2028,11 @@ fn parse_type_params(parser: i64) -> i64 {
 
 // Parse function definition (is_async: 1 if preceded by async keyword)
 fn parse_fn(parser: i64, is_async: i64) -> i64 {
+    parse_fn_with_attrs(parser, is_async, ATTR_FLAG_NONE())
+}
+
+// Parse function definition with attributes (TASK-014)
+fn parse_fn_with_attrs(parser: i64, is_async: i64, attrs: i64) -> i64 {
     parser_expect(parser, TokenKind::KwFn);
     let name_tok: i64 = parser_expect(parser, TokenKind::Ident);
     let name: i64 = token_text(name_tok);
@@ -1925,7 +2048,7 @@ fn parse_fn(parser: i64, is_async: i64) -> i64 {
     }
 
     let body: i64 = parse_block(parser);
-    ast_fn_def(name, type_params, params, ret_ty, body, is_async)
+    ast_fn_def_with_attrs(name, type_params, params, ret_ty, body, is_async, attrs)
 }
 
 // Parse enum definition
@@ -2603,6 +2726,9 @@ fn parse_neural_gate(parser: i64, hardware_target: i64) -> i64 {
 
 // Parse a single item (fn, enum, or struct)
 fn parse_item(parser: i64) -> i64 {
+    // TASK-014: Parse #[attr] attributes first
+    let attrs: i64 = parse_attributes(parser);
+
     // Skip pub keyword if present
     parser_match(parser, TokenKind::KwPub);
 
@@ -2652,7 +2778,7 @@ fn parse_item(parser: i64) -> i64 {
     if parser_check(parser, TokenKind::KwAsync) {
         parser_advance(parser);
         if parser_check(parser, TokenKind::KwFn) {
-            return parse_fn(parser, 1);  // async fn
+            return parse_fn_with_attrs(parser, 1, attrs);  // async fn with attrs
         }
         // async without fn - error
         parser_add_error(parser, string_from("expected 'fn' after 'async'"));
@@ -2665,7 +2791,7 @@ fn parse_item(parser: i64) -> i64 {
     }
 
     if parser_check(parser, TokenKind::KwFn) {
-        return parse_fn(parser, 0);  // regular fn
+        return parse_fn_with_attrs(parser, 0, attrs);  // regular fn with attrs
     }
     if parser_check(parser, TokenKind::KwEnum) {
         return parse_enum(parser);

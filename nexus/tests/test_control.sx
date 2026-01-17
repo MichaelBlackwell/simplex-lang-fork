@@ -1,0 +1,791 @@
+// Nexus Protocol - Control Module Tests
+//
+// Tests for Phase 3: control protocol, dynamic beliefs, error recovery
+
+fn main() -> i64 {
+    print("=== Nexus Control Tests ===\n\n");
+
+    var passed = 0;
+    var failed = 0;
+
+    // DEFINE/TOMBSTONE tests
+    if test_define_payload() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_define_frame() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_tombstone_payload() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_tombstone_frame() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // PING/PONG tests
+    if test_ping_payload() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_ping_pong_frames() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // CHECKSUM tests
+    if test_checksum_payload() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_checksum_frame() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // FULL_SYNC tests
+    if test_full_sync_payload() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_full_sync_frame() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // DISCONNECT tests
+    if test_disconnect_payload() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_disconnect_frame() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Flow control tests
+    if test_flow_control_basic() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_flow_control_congestion() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Control session tests
+    if test_control_session_new() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_control_session_ping_pong() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_control_session_pending() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_control_session_checksum() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Integration tests
+    if test_checksum_verification() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_resync_on_mismatch() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Summary
+    print("\nPassed: ");
+    print_i64(passed);
+    print(" / ");
+    print_i64(passed + failed);
+    print("\n");
+
+    failed
+}
+
+// =============================================================================
+// DEFINE Tests
+// =============================================================================
+
+fn test_define_payload() -> i64 {
+    print("Testing DEFINE payload encode/decode... ");
+
+    let belief_index = 42;
+    let initial_value = 12345678;
+
+    let payload = define_payload_new(belief_index, initial_value);
+
+    if vec_len(payload) != 6 {
+        print("FAIL: wrong payload length\n");
+        return 1;
+    }
+
+    let parsed = define_payload_parse(payload);
+    if parsed == 0 {
+        print("FAIL: parse returned null\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 0) != belief_index {
+        print("FAIL: wrong belief_index\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 1) != initial_value {
+        print("FAIL: wrong initial_value\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_define_frame() -> i64 {
+    print("Testing DEFINE frame creation... ");
+
+    let frame_bytes = control_create_define(100, 999);
+
+    let frame = frame_decode(frame_bytes);
+    if frame == 0 {
+        print("FAIL: decode failed\n");
+        return 1;
+    }
+
+    if frame_type(frame) != FRAME_DEFINE() {
+        print("FAIL: wrong frame type\n");
+        return 1;
+    }
+
+    let payload = frame_payload(frame);
+    let parsed = define_payload_parse(payload);
+    if vec_get(parsed, 0) != 100 {
+        print("FAIL: belief_index mismatch\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// TOMBSTONE Tests
+// =============================================================================
+
+fn test_tombstone_payload() -> i64 {
+    print("Testing TOMBSTONE payload encode/decode... ");
+
+    let belief_index = 55;
+    let tick = 1000;
+
+    let payload = tombstone_payload_new(belief_index, tick);
+
+    if vec_len(payload) != 4 {
+        print("FAIL: wrong payload length\n");
+        return 1;
+    }
+
+    let parsed = tombstone_payload_parse(payload);
+    if parsed == 0 {
+        print("FAIL: parse returned null\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 0) != belief_index {
+        print("FAIL: wrong belief_index\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 1) != tick {
+        print("FAIL: wrong tick\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_tombstone_frame() -> i64 {
+    print("Testing TOMBSTONE frame creation... ");
+
+    let frame_bytes = control_create_tombstone(200, 500);
+
+    let frame = frame_decode(frame_bytes);
+    if frame == 0 {
+        print("FAIL: decode failed\n");
+        return 1;
+    }
+
+    if frame_type(frame) != FRAME_TOMBSTONE() {
+        print("FAIL: wrong frame type\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// PING/PONG Tests
+// =============================================================================
+
+fn test_ping_payload() -> i64 {
+    print("Testing PING payload encode/decode... ");
+
+    let sequence = 12345;
+    let timestamp = 9876543210;
+
+    let payload = ping_payload_new(sequence, timestamp);
+
+    if vec_len(payload) != 12 {
+        print("FAIL: wrong payload length\n");
+        return 1;
+    }
+
+    let parsed = ping_payload_parse(payload);
+    if parsed == 0 {
+        print("FAIL: parse returned null\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 0) != sequence {
+        print("FAIL: wrong sequence\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 1) != timestamp {
+        print("FAIL: wrong timestamp\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_ping_pong_frames() -> i64 {
+    print("Testing PING/PONG frame creation... ");
+
+    let ping_bytes = control_create_ping(1, 1000);
+    let pong_bytes = control_create_pong(1, 1000);
+
+    let ping = frame_decode(ping_bytes);
+    let pong = frame_decode(pong_bytes);
+
+    if ping == 0 || pong == 0 {
+        print("FAIL: decode failed\n");
+        return 1;
+    }
+
+    if frame_type(ping) != FRAME_PING() {
+        print("FAIL: wrong PING frame type\n");
+        return 1;
+    }
+
+    if frame_type(pong) != FRAME_PONG() {
+        print("FAIL: wrong PONG frame type\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// CHECKSUM Tests
+// =============================================================================
+
+fn test_checksum_payload() -> i64 {
+    print("Testing CHECKSUM payload encode/decode... ");
+
+    let tick = 100;
+    let checksum = 123456789012345;
+    let belief_count = 1000;
+
+    let payload = checksum_payload_new(tick, checksum, belief_count);
+
+    if vec_len(payload) != 12 {
+        print("FAIL: wrong payload length\n");
+        return 1;
+    }
+
+    let parsed = checksum_payload_parse(payload);
+    if parsed == 0 {
+        print("FAIL: parse returned null\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 0) != tick {
+        print("FAIL: wrong tick\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 1) != checksum {
+        print("FAIL: wrong checksum\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 2) != belief_count {
+        print("FAIL: wrong belief_count\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_checksum_frame() -> i64 {
+    print("Testing CHECKSUM frame creation... ");
+
+    let frame_bytes = control_create_checksum(50, 999888777, 500);
+
+    let frame = frame_decode(frame_bytes);
+    if frame == 0 {
+        print("FAIL: decode failed\n");
+        return 1;
+    }
+
+    if frame_type(frame) != FRAME_CHECKSUM() {
+        print("FAIL: wrong frame type\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// FULL_SYNC Tests
+// =============================================================================
+
+fn test_full_sync_payload() -> i64 {
+    print("Testing FULL_SYNC payload encode/decode... ");
+
+    let expected_tick = 200;
+    let reason = RESYNC_CHECKSUM_MISMATCH();
+    let checksum = 555666777888;
+
+    let payload = full_sync_payload_new(expected_tick, reason, checksum);
+
+    if vec_len(payload) != 11 {
+        print("FAIL: wrong payload length\n");
+        return 1;
+    }
+
+    let parsed = full_sync_payload_parse(payload);
+    if parsed == 0 {
+        print("FAIL: parse returned null\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 0) != expected_tick {
+        print("FAIL: wrong expected_tick\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 1) != reason {
+        print("FAIL: wrong reason\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 2) != checksum {
+        print("FAIL: wrong checksum\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_full_sync_frame() -> i64 {
+    print("Testing FULL_SYNC frame creation... ");
+
+    let frame_bytes = control_create_full_sync(100, RESYNC_MISSING_FRAMES(), 12345);
+
+    let frame = frame_decode(frame_bytes);
+    if frame == 0 {
+        print("FAIL: decode failed\n");
+        return 1;
+    }
+
+    if frame_type(frame) != FRAME_FULL_SYNC() {
+        print("FAIL: wrong frame type\n");
+        return 1;
+    }
+
+    // FULL_SYNC should have URGENT flag
+    if (frame_flags(frame) & FLAG_URGENT()) == 0 {
+        print("FAIL: URGENT flag not set\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// DISCONNECT Tests
+// =============================================================================
+
+fn test_disconnect_payload() -> i64 {
+    print("Testing DISCONNECT payload encode/decode... ");
+
+    let reason = DISCONNECT_GOING_AWAY();
+    let final_tick = 999;
+
+    let payload = disconnect_payload_new(reason, final_tick);
+
+    if vec_len(payload) != 3 {
+        print("FAIL: wrong payload length\n");
+        return 1;
+    }
+
+    let parsed = disconnect_payload_parse(payload);
+    if parsed == 0 {
+        print("FAIL: parse returned null\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 0) != reason {
+        print("FAIL: wrong reason\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 1) != final_tick {
+        print("FAIL: wrong final_tick\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_disconnect_frame() -> i64 {
+    print("Testing DISCONNECT frame creation... ");
+
+    let frame_bytes = control_create_disconnect(DISCONNECT_NORMAL(), 1000);
+
+    let frame = frame_decode(frame_bytes);
+    if frame == 0 {
+        print("FAIL: decode failed\n");
+        return 1;
+    }
+
+    if frame_type(frame) != FRAME_DISCONNECT() {
+        print("FAIL: wrong frame type\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// Flow Control Tests
+// =============================================================================
+
+fn test_flow_control_basic() -> i64 {
+    print("Testing flow control basic operations... ");
+
+    let fc = flow_control_new();
+
+    // Initial state
+    if flow_control_window(fc) != FLOW_DEFAULT_WINDOW() {
+        print("FAIL: wrong initial window\n");
+        return 1;
+    }
+
+    if flow_control_can_send(fc) != 1 {
+        print("FAIL: should be able to send initially\n");
+        return 1;
+    }
+
+    // Send some frames
+    var i = 0;
+    while i < FLOW_DEFAULT_WINDOW() {
+        flow_control_on_send(fc);
+        i = i + 1;
+    }
+
+    // Window should be full
+    if flow_control_can_send(fc) != 0 {
+        print("FAIL: should not be able to send when window full\n");
+        return 1;
+    }
+
+    // Acknowledge one
+    flow_control_on_ack(fc, 1);
+
+    // Should be able to send again
+    if flow_control_can_send(fc) != 1 {
+        print("FAIL: should be able to send after ack\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_flow_control_congestion() -> i64 {
+    print("Testing flow control congestion handling... ");
+
+    let fc = flow_control_new();
+
+    // Get initial window
+    let initial_window = flow_control_window(fc);
+
+    // Trigger congestion
+    flow_control_on_congestion(fc);
+
+    // Window should be halved
+    let new_window = flow_control_window(fc);
+    if new_window != initial_window / 2 {
+        print("FAIL: window should be halved\n");
+        return 1;
+    }
+
+    // Congestion count should increase
+    if flow_control_congestion_count(fc) != 1 {
+        print("FAIL: congestion count should be 1\n");
+        return 1;
+    }
+
+    // Window should not go below minimum
+    var j = 0;
+    while j < 10 {
+        flow_control_on_congestion(fc);
+        j = j + 1;
+    }
+
+    if flow_control_window(fc) < FLOW_MIN_WINDOW() {
+        print("FAIL: window below minimum\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// Control Session Tests
+// =============================================================================
+
+fn test_control_session_new() -> i64 {
+    print("Testing control session creation... ");
+
+    let session = control_session_new(60);
+
+    if session == 0 {
+        print("FAIL: session is null\n");
+        return 1;
+    }
+
+    if control_session_is_active(session) != 1 {
+        print("FAIL: session should be active\n");
+        return 1;
+    }
+
+    if control_session_rtt(session) != 0 {
+        print("FAIL: initial RTT should be 0\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_control_session_ping_pong() -> i64 {
+    print("Testing control session ping/pong... ");
+
+    let session = control_session_new(60);
+
+    // Send ping at time 1000
+    let ping_bytes = control_session_send_ping(session, 1000);
+
+    if ping_bytes == 0 {
+        print("FAIL: ping creation failed\n");
+        return 1;
+    }
+
+    // Simulate receiving the ping and creating a pong response
+    let pong_bytes = control_session_handle_ping(session, ping_bytes);
+
+    if pong_bytes == 0 {
+        print("FAIL: pong creation failed\n");
+        return 1;
+    }
+
+    // Handle the pong at time 1050 (50ms RTT)
+    let result = control_session_handle_pong(session, pong_bytes, 1050);
+
+    if result != ERR_NONE() {
+        print("FAIL: pong handling failed\n");
+        return 1;
+    }
+
+    // Check RTT was calculated
+    let rtt = control_session_rtt(session);
+    if rtt != 50 {
+        print("FAIL: RTT should be 50, got ");
+        print_i64(rtt);
+        print("\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_control_session_pending() -> i64 {
+    print("Testing control session pending frames... ");
+
+    let session = control_session_new(60);
+
+    // Queue some defines
+    control_session_queue_define(session, 10, 100);
+    control_session_queue_define(session, 20, 200);
+
+    // Queue some tombstones
+    control_session_queue_tombstone(session, 5, 50);
+
+    // Check pending counts
+    let defines = control_session_pending_defines(session);
+    let tombstones = control_session_pending_tombstones(session);
+
+    if vec_len(defines) != 2 {
+        print("FAIL: should have 2 pending defines\n");
+        return 1;
+    }
+
+    if vec_len(tombstones) != 1 {
+        print("FAIL: should have 1 pending tombstone\n");
+        return 1;
+    }
+
+    // Clear pending
+    control_session_clear_pending(session);
+
+    if vec_len(defines) != 0 {
+        print("FAIL: defines should be cleared\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_control_session_checksum() -> i64 {
+    print("Testing control session checksum timing... ");
+
+    let session = control_session_new(5);  // Checksum every 5 frames
+
+    // Initially should not need checksum
+    if control_session_needs_checksum(session) != 0 {
+        print("FAIL: should not need checksum initially\n");
+        return 1;
+    }
+
+    // Send 4 frames
+    var i = 0;
+    while i < 4 {
+        control_session_on_frame_sent(session);
+        i = i + 1;
+    }
+
+    // Still should not need checksum
+    if control_session_needs_checksum(session) != 0 {
+        print("FAIL: should not need checksum after 4 frames\n");
+        return 1;
+    }
+
+    // Send 5th frame
+    control_session_on_frame_sent(session);
+
+    // Now should need checksum
+    if control_session_needs_checksum(session) != 1 {
+        print("FAIL: should need checksum after 5 frames\n");
+        return 1;
+    }
+
+    // Reset counter
+    control_session_reset_checksum_counter(session);
+
+    // Should not need checksum again
+    if control_session_needs_checksum(session) != 0 {
+        print("FAIL: should not need checksum after reset\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// Integration Tests
+// =============================================================================
+
+fn test_checksum_verification() -> i64 {
+    print("Testing checksum verification... ");
+
+    // Create decoder with known state
+    let decoder = sync_decoder_new(5);
+    let baseline = vec_new();
+    vec_push(baseline, 100);
+    vec_push(baseline, 200);
+    vec_push(baseline, 300);
+    vec_push(baseline, 400);
+    vec_push(baseline, 500);
+    sync_decoder_set_baseline(decoder, baseline);
+
+    // Compute correct checksum
+    let correct_checksum = sync_compute_checksum(decoder);
+
+    // Create control session
+    let session = control_session_new(60);
+
+    // Create checksum frame with correct checksum
+    let frame_bytes = control_create_checksum(0, correct_checksum, 5);
+
+    // Verify - should pass
+    let result = control_verify_checksum(session, decoder, frame_bytes);
+    if result != ERR_NONE() {
+        print("FAIL: correct checksum should pass\n");
+        return 1;
+    }
+
+    // Create checksum frame with wrong checksum
+    let bad_frame_bytes = control_create_checksum(0, 12345, 5);
+
+    // Verify - should fail
+    result = control_verify_checksum(session, decoder, bad_frame_bytes);
+    if result != ERR_CHECKSUM_MISMATCH() {
+        print("FAIL: wrong checksum should fail\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_resync_on_mismatch() -> i64 {
+    print("Testing resync on checksum mismatch... ");
+
+    // Create decoder
+    let decoder = sync_decoder_new(5);
+    let baseline = vec_new();
+    vec_push(baseline, 100);
+    vec_push(baseline, 200);
+    vec_push(baseline, 300);
+    vec_push(baseline, 400);
+    vec_push(baseline, 500);
+    sync_decoder_set_baseline(decoder, baseline);
+
+    // Create control session
+    let session = control_session_new(60);
+
+    // Send bad checksum frame through dispatcher
+    let bad_checksum_frame = control_create_checksum(0, 999, 5);
+    let response = control_handle_frame(session, decoder, bad_checksum_frame, 0);
+
+    // Should get a FULL_SYNC response
+    if response == 0 {
+        print("FAIL: should get resync response\n");
+        return 1;
+    }
+
+    let frame = frame_decode(response);
+    if frame_type(frame) != FRAME_FULL_SYNC() {
+        print("FAIL: response should be FULL_SYNC\n");
+        return 1;
+    }
+
+    // Session should be in resync state
+    if control_session_state(session) != CTRL_STATE_RESYNC_REQUESTED() {
+        print("FAIL: session should be in RESYNC_REQUESTED state\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}

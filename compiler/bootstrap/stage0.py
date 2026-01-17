@@ -5,7 +5,7 @@ This compiles a subset of Simplex to LLVM IR without depending on Simplex itself
 Rewritten to avoid dataclasses for Python 3.14 compatibility.
 
 Copyright (c) 2025-2026 Rod Higgins
-Licensed under MIT License - see LICENSE file
+Licensed under AGPL-3.0 - see LICENSE file
 https://github.com/senuamedia/simplex-lang
 """
 
@@ -90,6 +90,7 @@ class TokenKind:
     KW_ELSE = 'KW_ELSE'
     KW_WHILE = 'KW_WHILE'
     KW_FOR = 'KW_FOR'
+    KW_LOOP = 'KW_LOOP'
     KW_IN = 'KW_IN'
     KW_RETURN = 'KW_RETURN'
     KW_ENUM = 'KW_ENUM'
@@ -138,6 +139,7 @@ KEYWORDS = {
     'else': TokenKind.KW_ELSE,
     'while': TokenKind.KW_WHILE,
     'for': TokenKind.KW_FOR,
+    'loop': TokenKind.KW_LOOP,
     'in': TokenKind.KW_IN,
     'return': TokenKind.KW_RETURN,
     'enum': TokenKind.KW_ENUM,
@@ -1288,9 +1290,13 @@ class Parser:
                 stmts.append(self.parse_return_stmt())
             elif self.check(TokenKind.KW_BREAK):
                 self.advance()
+                # Check if there's a value to break with
+                break_value = None
+                if not self.check(TokenKind.SEMI) and not self.check(TokenKind.RBRACE) and not self.check(TokenKind.LBRACE):
+                    break_value = self.parse_expr()
                 if self.check(TokenKind.SEMI):
                     self.advance()
-                stmts.append({'type': 'BreakStmt'})
+                stmts.append({'type': 'BreakStmt', 'value': break_value})
             elif self.check(TokenKind.KW_CONTINUE):
                 self.advance()
                 if self.check(TokenKind.SEMI):
@@ -1551,6 +1557,9 @@ class Parser:
 
         if self.check(TokenKind.KW_FOR):
             return self.parse_for_expr()
+
+        if self.check(TokenKind.KW_LOOP):
+            return self.parse_loop_expr()
 
         if self.check(TokenKind.KW_MATCH):
             return self.parse_match_expr()
@@ -2037,6 +2046,15 @@ class Parser:
                 'body': body
             }
 
+    def parse_loop_expr(self):
+        """Parse loop expression: loop { body }"""
+        self.expect(TokenKind.KW_LOOP)
+        body = self.parse_block()
+        return {
+            'type': 'LoopExpr',
+            'body': body
+        }
+
     def parse_match_expr(self):
         """Parse match expression with guard support: match x { pat if cond => body }"""
         self.expect(TokenKind.KW_MATCH)
@@ -2473,6 +2491,9 @@ class CodeGen:
         self.emit('@str_assertion_eq_failed = private constant [20 x i8] c"assertion eq failed\\00"')
         self.emit('declare ptr @intrinsic_string_new(ptr)')
         self.emit('declare ptr @intrinsic_string_from_char(i64)')
+        self.emit('declare i64 @make_sx_string(ptr)')  # Helper for passing strings to i64 params
+        self.emit('declare double @f64_from_bits(i64)')  # Bitcast i64 to f64
+        self.emit('declare i64 @f64_to_bits(double)')  # Bitcast f64 to i64
         self.emit('declare i64 @intrinsic_string_len(ptr)')
         self.emit('declare ptr @intrinsic_string_concat(ptr, ptr)')
         self.emit('declare ptr @intrinsic_string_slice(ptr, i64, i64)')
@@ -2508,15 +2529,18 @@ class CodeGen:
         self.emit('; HashMap<K,V> type')
         self.emit('declare i64 @hashmap_new()')
         self.emit('declare i64 @hashmap_with_capacity(i64)')
-        self.emit('declare void @hashmap_insert(i64, i64, i64)')  # hashmap_insert(map, key, value)
+        self.emit('declare i64 @hashmap_insert(i64, i64, i64)')   # hashmap_insert(map, key, value) -> old_value
         self.emit('declare i64 @hashmap_get(i64, i64)')           # hashmap_get(map, key) -> Option<value>
         self.emit('declare i64 @hashmap_remove(i64, i64)')        # hashmap_remove(map, key) -> Option<value>
-        self.emit('declare i64 @hashmap_contains(i64, i64)')      # hashmap_contains(map, key) -> bool
+        self.emit('declare i8 @hashmap_contains(i64, i64)')       # hashmap_contains(map, key) -> bool
         self.emit('declare i64 @hashmap_len(i64)')
         self.emit('declare void @hashmap_clear(i64)')
-        self.emit('declare i64 @hashmap_keys(i64)')               # Returns Vec<K>
-        self.emit('declare i64 @hashmap_values(i64)')             # Returns Vec<V>
+        self.emit('declare i64 @hashmap_keys(i64)')               # Returns iterator
+        self.emit('declare i64 @hashmap_values(i64)')             # Returns iterator
         self.emit('declare void @hashmap_free(i64)')
+        self.emit('declare i64 @hashmap_keys_next(i64)')          # Get next key from iterator
+        self.emit('declare i64 @hashmap_values_next(i64)')        # Get next value from iterator
+        self.emit('declare void @hashmap_iter_free(i64)')         # Free iterator
         self.emit('declare ptr @store_ptr(ptr, i64, ptr)')
         self.emit('declare ptr @store_i64(ptr, i64, i64)')
         self.emit('declare ptr @load_ptr(ptr, i64)')
@@ -2528,6 +2552,57 @@ class CodeGen:
         self.emit('; AI intrinsics (mock implementation)')
         self.emit('declare ptr @intrinsic_ai_infer(ptr, ptr, i64)')
         self.emit('declare ptr @intrinsic_ai_embed(ptr)')
+        self.emit('; Belief system intrinsics')
+        self.emit('declare i64 @intrinsic_believe(ptr, i64, i64)')
+        self.emit('declare i64 @intrinsic_belief_confidence(i64)')
+        self.emit('declare i64 @intrinsic_belief_truth(i64)')
+        self.emit('declare void @intrinsic_update_belief(i64, i64)')
+        self.emit('declare i64 @intrinsic_revoke_belief(i64)')
+        self.emit('declare i64 @intrinsic_belief_count()')
+        self.emit('declare void @intrinsic_decay_beliefs()')
+        self.emit('; Belief guard intrinsics (TASK-013-A)')
+        self.emit('declare i64 @belief_register(i64, double, double)')
+        self.emit('declare i64 @belief_update(i64, double)')
+        self.emit('declare i64 @belief_update_dual(i64, double, double)')
+        self.emit('declare i64 @belief_guard_get_confidence(i64)')
+        self.emit('declare i64 @belief_guard_get_derivative(i64)')
+        self.emit('declare i64 @belief_register_i64(i64, i64, i64)')
+        self.emit('declare i64 @belief_update_i64(i64, i64)')
+        self.emit('declare i64 @belief_update_dual_i64(i64, i64, i64)')
+        self.emit('declare i64 @belief_suspend_receive(i64, i64, i64, i64, i64, double, i64, i64)')
+        self.emit('declare i64 @belief_cancel_suspend(i64)')
+        self.emit('; Memory intrinsics')
+        self.emit('declare i64 @intrinsic_remember(ptr, i64, i64)')
+        self.emit('declare ptr @intrinsic_recall(ptr, i64)')
+        self.emit('declare ptr @intrinsic_recall_one(i64)')
+        self.emit('declare i64 @intrinsic_forget(i64)')
+        self.emit('declare void @intrinsic_forget_all()')
+        self.emit('declare i64 @intrinsic_memory_count()')
+        self.emit('declare i64 @intrinsic_memory_prune()')
+        self.emit('declare void @intrinsic_memory_decay(i64)')
+        self.emit('declare i64 @intrinsic_memory_importance(i64)')
+        self.emit('declare void @intrinsic_memory_set_importance(i64, i64)')
+        self.emit('; BDI (Belief-Desire-Intention) intrinsics')
+        self.emit('declare i64 @intrinsic_add_goal(ptr, ptr, i64)')
+        self.emit('declare i64 @intrinsic_goal_status(i64)')
+        self.emit('declare void @intrinsic_set_goal_status(i64, i64)')
+        self.emit('declare i64 @intrinsic_select_goal()')
+        self.emit('declare i64 @intrinsic_pending_goals_count()')
+        self.emit('declare i64 @intrinsic_create_intention(i64, ptr, i64)')
+        self.emit('declare i64 @intrinsic_intention_status(i64)')
+        self.emit('declare i64 @intrinsic_intention_step(i64)')
+        self.emit('declare i64 @intrinsic_intention_current_step(i64)')
+        self.emit('declare void @intrinsic_fail_intention(i64)')
+        self.emit('; Evolution engine intrinsics')
+        self.emit('declare i64 @intrinsic_add_trait(ptr, i64)')
+        self.emit('declare i64 @intrinsic_trait_value(i64)')
+        self.emit('declare void @intrinsic_mutate_trait(i64, i64)')
+        self.emit('declare i64 @intrinsic_current_generation()')
+        self.emit('declare i64 @intrinsic_next_generation()')
+        self.emit('declare i64 @intrinsic_evaluate_fitness()')
+        self.emit('; Collective intelligence / swarm intrinsics')
+        self.emit('declare i64 @intrinsic_swarm_broadcast(i64, i64, ptr)')
+        self.emit('declare ptr @intrinsic_swarm_messages(i64, i64)')
         self.emit('; Timing intrinsics for performance measurement')
         self.emit('declare i64 @intrinsic_get_time_ms()')
         self.emit('declare i64 @intrinsic_get_time_us()')
@@ -2838,6 +2913,7 @@ class CodeGen:
         self.emit('declare i1 @intrinsic_is_tty()')
         self.emit('declare i1 @intrinsic_stdin_has_data()')
         self.emit('declare i64 @intrinsic_string_hash(ptr)')
+        self.emit('declare ptr @intrinsic_sha256(ptr, i64)')
         self.emit('declare i64 @intrinsic_string_find(ptr, ptr, i64)')
         self.emit('declare ptr @intrinsic_string_trim(ptr)')
         self.emit('declare ptr @intrinsic_string_split(ptr, ptr)')
@@ -3005,6 +3081,448 @@ class CodeGen:
         self.emit('declare void @mailbox_close(i64)')
         self.emit('declare i64 @mailbox_is_closed(i64)')
         self.emit('declare void @mailbox_free(i64)')
+        # JSON operations
+        self.emit('declare i64 @json_null_i64()')
+        self.emit('declare i64 @json_bool_i64(i8)')
+        self.emit('declare i64 @json_number_i64(i64)')
+        self.emit('declare ptr @json_string_sx(i64)')
+        self.emit('declare i64 @json_array_new()')
+        self.emit('declare i64 @json_object_new()')
+        self.emit('declare i8 @json_is_null(i64)')
+        self.emit('declare i8 @json_is_bool(i64)')
+        self.emit('declare i8 @json_is_number(i64)')
+        self.emit('declare i8 @json_is_string(i64)')
+        self.emit('declare i8 @json_is_array(i64)')
+        self.emit('declare i8 @json_is_object(i64)')
+        self.emit('declare i64 @json_type(i64)')
+        self.emit('declare i8 @json_as_bool(i64)')
+        self.emit('declare i64 @json_as_i64(i64)')
+        self.emit('declare i64 @json_as_string(i64)')
+        self.emit('declare void @json_array_push(i64, i64)')
+        self.emit('declare i64 @json_array_len(i64)')
+        self.emit('declare i64 @json_get_index(i64, i64)')
+        self.emit('declare void @json_object_set_sx(i64, i64, i64)')
+        self.emit('declare i64 @json_get_sx(i64, i64)')
+        self.emit('declare i64 @json_object_len(i64)')
+        self.emit('declare i8 @json_object_has_sx(i64, i64)')
+        self.emit('declare i64 @json_keys(i64)')
+        self.emit('declare i64 @json_stringify(i64)')
+        self.emit('declare i64 @json_stringify_pretty(i64, i64)')
+        self.emit('declare i64 @json_parse_simple(i64)')
+        self.emit('declare i64 @json_clone(i64)')
+        self.emit('declare i8 @json_equals(i64, i64)')
+        self.emit('declare void @json_free(i64)')
+        # Regex operations
+        self.emit('declare i64 @regex_new(i64, i64)')
+        self.emit('declare void @regex_free(i64)')
+        self.emit('declare i64 @regex_is_match(i64, i64)')
+        self.emit('declare i64 @regex_find(i64, i64)')
+        self.emit('declare i64 @regex_find_str(i64, i64)')
+        self.emit('declare i64 @regex_count(i64, i64)')
+        self.emit('declare i64 @regex_replace(i64, i64, i64)')
+        self.emit('declare i64 @regex_replace_first(i64, i64, i64)')
+        self.emit('declare i64 @regex_split(i64, i64)')
+        self.emit('declare i64 @regex_error(i64)')
+        self.emit('declare i64 @regex_group_count(i64)')
+        self.emit('declare i64 @regex_captures(i64, i64)')
+
+        # AI Native Intrinsics
+        self.emit('; Native Model (llama.cpp integration)')
+        self.emit('declare i64 @native_model_load(i64)')
+        self.emit('declare i64 @native_model_infer(i64, i64)')
+        self.emit('declare void @native_model_free()')
+        self.emit('declare i64 @native_model_loaded()')
+
+        self.emit('; Shared Vector Store (semantic memory)')
+        self.emit('declare i64 @shared_store_new(i64, i64)')
+        self.emit('declare i64 @shared_store_global(i64)')
+        self.emit('declare i64 @shared_store_put(i64, i64, i64, i64)')
+        self.emit('declare i64 @shared_store_get(i64, i64)')
+        self.emit('declare i64 @shared_store_search(i64, i64, i64)')
+        self.emit('declare i64 @shared_store_delete(i64, i64)')
+        self.emit('declare i64 @shared_store_count(i64)')
+        self.emit('declare void @shared_store_close(i64)')
+
+        self.emit('; Tool Registry (function calling)')
+        self.emit('declare i64 @tool_count(i64)')
+        self.emit('declare i64 @tool_execute(i64, i64, i64)')
+        self.emit('declare i64 @tool_register_builtins(i64)')
+        self.emit('declare i64 @tool_get_schema(i64, i64)')
+        self.emit('declare i64 @tool_get_all_schemas(i64)')
+        self.emit('declare i64 @tool_result_success(i64)')
+        self.emit('declare i64 @tool_result_output(i64)')
+        self.emit('declare void @tool_result_free(i64)')
+
+        self.emit('; Shared Memory (actor knowledge sharing)')
+        self.emit('declare i64 @shared_memory_new(i64, i64)')
+        self.emit('declare i64 @shared_memory_grant_read(i64, i64)')
+        self.emit('declare i64 @shared_memory_grant_write(i64, i64)')
+        self.emit('declare i64 @shared_memory_recall(i64, i64, i64, i64)')
+        self.emit('declare i64 @shared_memory_remember(i64, i64, i64, double)')
+        self.emit('declare i64 @shared_memory_get_memory(i64)')
+        self.emit('declare void @shared_memory_close(i64)')
+
+        self.emit('; AI Actor System (intelligent agents)')
+        self.emit('declare i64 @ai_actor_system_new()')
+        self.emit('declare i64 @ai_actor_config_new(i64, i64)')
+        self.emit('declare void @ai_actor_config_set_tools(i64, i64)')
+        self.emit('declare void @ai_actor_config_set_memory(i64, i64)')
+        self.emit('declare void @ai_actor_config_set_specialist(i64, i64)')
+        self.emit('declare void @ai_actor_config_set_timeout(i64, i64)')
+        self.emit('declare i64 @ai_actor_spawn(i64, i64)')
+        self.emit('declare i64 @ai_actor_status(i64, i64)')
+        self.emit('declare i64 @ai_actor_name(i64, i64)')
+        self.emit('declare void @ai_actor_stop(i64, i64)')
+        self.emit('declare i64 @ai_actor_add_message(i64, i64, i64, i64)')
+        self.emit('declare i64 @ai_actor_history_len(i64, i64)')
+        self.emit('declare i64 @ai_actor_get_message(i64, i64, i64)')
+        self.emit('declare void @ai_actor_clear_history(i64, i64)')
+        self.emit('declare i64 @ai_actor_system_count(i64)')
+        self.emit('declare i64 @ai_actor_system_list(i64)')
+        self.emit('declare void @ai_actor_system_close(i64)')
+
+        self.emit('; AI Supervisor (fault-tolerant AI)')
+        self.emit('declare i64 @ai_supervisor_new(i64, i64)')
+        self.emit('declare i64 @ai_supervisor_add_child(i64, i64)')
+        self.emit('declare i64 @ai_supervisor_check_health(i64, i64)')
+        self.emit('declare i64 @ai_supervisor_child_count(i64)')
+        self.emit('declare void @ai_supervisor_close(i64)')
+
+        self.emit('; Graph (computation graphs)')
+        self.emit('declare i64 @graph_new()')
+        self.emit('declare i64 @graph_add_node(i64, i64, i64, double)')
+        self.emit('declare void @graph_add_edge(i64, i64, i64)')
+        self.emit('declare void @graph_partition(i64)')
+        self.emit('declare i64 @graph_partition_count(i64)')
+        self.emit('declare i64 @graph_partition_device(i64, i64)')
+        self.emit('declare i64 @graph_partition_node_count(i64, i64)')
+        self.emit('declare double @graph_partition_cost(i64, i64)')
+        self.emit('declare void @graph_free(i64)')
+
+        # LLM Extended Intrinsics (base LLM client declared in Phase 29)
+        self.emit('; LLM Client Extended')
+        self.emit('declare i64 @llm_set_temperature(i64, double)')
+        self.emit('declare i64 @llm_get_tokens(i64)')
+        self.emit('declare double @llm_get_cost(i64)')
+
+        self.emit('; LLM Request Builder')
+        self.emit('declare i64 @llm_request_new(i64)')
+        self.emit('declare void @llm_request_set_system(i64, i64)')
+        self.emit('declare void @llm_request_set_prompt(i64, i64)')
+        self.emit('declare void @llm_request_set_model(i64, i64)')
+        self.emit('declare void @llm_request_set_max_tokens(i64, i64)')
+        self.emit('declare void @llm_request_set_temperature(i64, double)')
+        self.emit('declare void @llm_request_set_schema(i64, i64)')
+        self.emit('declare void @llm_request_enable_stream(i64, i64)')
+        self.emit('declare void @llm_request_set_tools(i64, i64)')
+        self.emit('declare void @llm_request_set_retry(i64, i64)')
+        self.emit('declare i64 @llm_request_to_json(i64, i64)')
+        self.emit('declare void @llm_request_close(i64)')
+
+        self.emit('; LLM Response')
+        self.emit('declare i64 @llm_response_new()')
+        self.emit('declare void @llm_response_set_success(i64, i64)')
+        self.emit('declare void @llm_response_set_content(i64, i64)')
+        self.emit('declare void @llm_response_set_error(i64, i64)')
+        self.emit('declare void @llm_response_set_tokens(i64, i64, i64)')
+        self.emit('declare void @llm_response_set_cost(i64, double)')
+        self.emit('declare void @llm_response_set_latency(i64, double)')
+        self.emit('declare i64 @llm_response_is_success(i64)')
+        self.emit('declare i64 @llm_response_get_content(i64)')
+        self.emit('declare i64 @llm_response_get_error(i64)')
+        self.emit('declare i64 @llm_response_input_tokens(i64)')
+        self.emit('declare i64 @llm_response_output_tokens(i64)')
+        self.emit('declare double @llm_response_get_cost(i64)')
+        self.emit('declare double @llm_response_get_latency(i64)')
+        self.emit('declare i64 @llm_response_to_json(i64)')
+        self.emit('declare void @llm_response_close(i64)')
+
+        self.emit('; Provider Registry')
+        self.emit('declare i64 @provider_registry_new()')
+        self.emit('declare i64 @provider_config_new(i64, i64)')
+        self.emit('declare void @provider_config_set_key(i64, i64)')
+        self.emit('declare void @provider_config_set_model(i64, i64)')
+        self.emit('declare void @provider_config_set_url(i64, i64)')
+        self.emit('declare void @provider_config_set_temp(i64, double)')
+        self.emit('declare void @provider_config_set_max_tokens(i64, i64)')
+        self.emit('declare void @provider_config_set_timeout(i64, i64)')
+        self.emit('declare void @provider_config_set_priority(i64, i64)')
+        self.emit('declare void @provider_config_set_cost(i64, double, double)')
+        self.emit('declare i64 @provider_registry_add(i64, i64)')
+        self.emit('declare i64 @provider_registry_get(i64, i64)')
+        self.emit('declare i64 @provider_registry_count(i64)')
+        self.emit('declare void @provider_registry_set_default(i64, i64)')
+        self.emit('declare i64 @provider_get_by_tier(i64, i64)')
+        self.emit('declare i64 @provider_registry_list(i64)')
+        self.emit('declare i64 @provider_get_stats(i64)')
+        self.emit('declare void @provider_record_request(i64, i64, i64, i64, double)')
+        self.emit('declare double @provider_total_cost(i64)')
+        self.emit('declare void @provider_registry_close(i64)')
+
+        # Option Type Extended Intrinsics (basic ones already declared above)
+        self.emit('; Option extended operations')
+        self.emit('declare void @option_free(i64)')
+        self.emit('declare i64 @option_expect(i64, i64)')
+        self.emit('declare i64 @option_and(i64, i64)')
+        self.emit('declare i64 @option_or(i64, i64)')
+        self.emit('declare i64 @option_get_value(i64)')
+        self.emit('declare i64 @option_clone(i64)')
+        self.emit('declare i64 @option_ok_or(i64, i64)')
+        self.emit('declare i64 @option_transpose(i64)')
+        self.emit('declare i64 @option_flatten(i64)')
+
+        # Result Type Extended Intrinsics (basic ones already declared above)
+        self.emit('; Result extended operations')
+        self.emit('declare void @result_free(i64)')
+        self.emit('declare i64 @result_err_msg(i64)')
+        self.emit('declare i64 @result_ok_option(i64)')
+        self.emit('declare i64 @result_err_option(i64)')
+        self.emit('declare i64 @result_expect(i64, i64)')
+        self.emit('declare i64 @result_expect_err(i64, i64)')
+        self.emit('declare i64 @result_and(i64, i64)')
+        self.emit('declare i64 @result_or(i64, i64)')
+        self.emit('declare i64 @result_get_value(i64)')
+        self.emit('declare i64 @result_get_error(i64)')
+        self.emit('declare i64 @result_clone(i64)')
+        self.emit('declare i64 @result_transpose(i64)')
+        self.emit('declare i64 @result_flatten(i64)')
+
+        # HashSet Intrinsics
+        self.emit('; HashSet operations')
+        self.emit('declare i64 @hashset_new()')
+        self.emit('declare i64 @hashset_with_capacity(i64)')
+        self.emit('declare i64 @hashset_len(i64)')
+        self.emit('declare void @hashset_clear(i64)')
+        self.emit('declare void @hashset_free(i64)')
+        self.emit('declare i64 @hashset_iter(i64)')
+        self.emit('declare i64 @hashset_iter_next(i64)')
+        self.emit('declare void @hashset_iter_free(i64)')
+        self.emit('declare i64 @hashset_union(i64, i64)')
+        self.emit('declare i64 @hashset_intersection(i64, i64)')
+        self.emit('declare i64 @hashset_difference(i64, i64)')
+        self.emit('declare i64 @hashset_symmetric_difference(i64, i64)')
+        self.emit('; Int HashSet operations')
+        self.emit('declare i64 @int_hashset_new()')
+        self.emit('declare i64 @int_hashset_len(i64)')
+        self.emit('declare void @int_hashset_clear(i64)')
+        self.emit('declare void @int_hashset_free(i64)')
+        self.emit('declare i64 @int_hashset_iter(i64)')
+        self.emit('declare i64 @int_hashset_iter_next(i64)')
+        self.emit('declare void @int_hashset_iter_free(i64)')
+        self.emit('declare i64 @int_hashset_union(i64, i64)')
+        self.emit('declare i64 @int_hashset_intersection(i64, i64)')
+        self.emit('declare i64 @int_hashset_difference(i64, i64)')
+
+        # Iterator Intrinsics
+        self.emit('; Iterator operations')
+        self.emit('declare void @sxiter_free(i64)')
+        self.emit('declare i64 @sxiter_sum(i64)')
+        self.emit('declare i64 @sxiter_product(i64)')
+        self.emit('declare i64 @sxiter_count(i64)')
+        self.emit('declare i64 @sxiter_collect_hashmap(i64)')
+        self.emit('declare i64 @sxiter_collect_int_hashmap(i64)')
+        self.emit('declare i64 @sxiter_collect_hashset(i64)')
+        self.emit('declare i64 @sxiter_collect_int_hashset(i64)')
+        self.emit('declare i64 @sxiter_vec(i64)')
+        self.emit('declare i64 @sxiter_next_value(i64)')
+        self.emit('declare i64 @sxiter_enumerate_pair_index(i64)')
+        self.emit('declare i64 @sxiter_enumerate_pair_value(i64)')
+        self.emit('declare void @sxiter_enumerate_pair_free(i64)')
+        self.emit('declare i64 @sxiter_zip_pair_first(i64)')
+        self.emit('declare i64 @sxiter_zip_pair_second(i64)')
+        self.emit('declare void @sxiter_zip_pair_free(i64)')
+
+        # Consensus Intrinsics
+        self.emit('; Consensus Protocols')
+        self.emit('declare i64 @consensus_new(i64)')
+        self.emit('declare i64 @consensus_new_with_id(i64, i64)')
+        self.emit('declare i64 @consensus_propose(i64, i64)')
+        self.emit('declare i64 @consensus_accept(i64, i64)')
+        self.emit('declare i64 @consensus_commit(i64)')
+        self.emit('declare i64 @consensus_commit_to(i64, i64)')
+        self.emit('declare i64 @consensus_commit_all(i64)')
+        self.emit('declare i64 @consensus_commit_index(i64)')
+        self.emit('declare i64 @consensus_append(i64, i64)')
+        self.emit('declare i64 @consensus_term(i64)')
+        self.emit('declare i64 @consensus_increment_term(i64)')
+        self.emit('declare i64 @consensus_set_state(i64, i64)')
+        self.emit('declare i64 @consensus_get_state(i64)')
+        self.emit('declare i64 @consensus_log_count(i64)')
+        self.emit('declare i64 @consensus_status(i64)')
+        self.emit('declare void @consensus_close(i64)')
+        self.emit('declare i64 @consensus_paxos()')
+        self.emit('declare i64 @consensus_raft()')
+        self.emit('declare i64 @consensus_pbft()')
+        self.emit('; Consensus Group')
+        self.emit('declare i64 @consensus_group_new(i64, i64)')
+        self.emit('declare i64 @consensus_group_add(i64, i64)')
+        self.emit('declare i64 @consensus_group_vote(i64, i64, i64)')
+        self.emit('declare void @consensus_group_close(i64)')
+
+        # Belief Operations (unique functions not in Phase 27)
+        self.emit('; Additional Belief Operations')
+        self.emit('declare i64 @belief_add(i64, i64, double)')
+        self.emit('declare double @belief_get_confidence(i64, i64)')
+        self.emit('declare i64 @belief_set_confidence(i64, i64, double)')
+        self.emit('declare i64 @belief_get_content(i64, i64)')
+        self.emit('declare i64 @belief_add_derivation(i64, i64, i64)')
+        self.emit('declare i64 @belief_count(i64)')
+        self.emit('declare i64 @belief_check_contradictions(i64, i64)')
+        self.emit('declare i64 @belief_resolve(i64, i64, i64, i64)')
+        self.emit('declare i64 @belief_strategy_confidence()')
+        self.emit('declare i64 @belief_strategy_recency()')
+        self.emit('declare i64 @belief_strategy_merge()')
+        self.emit('declare i64 @belief_query(i64, i64, i64)')
+
+        # BDI Agent Extended (unique functions not in Phase 28)
+        self.emit('; BDI Agent Extended')
+        self.emit('declare i64 @bdi_add_goal_desc(i64, i64, double)')
+        self.emit('declare i64 @bdi_add_subgoal(i64, i64, i64, double)')
+        self.emit('declare i64 @bdi_add_plan_internal(i64, i64, i64)')
+        self.emit('declare i64 @bdi_add_plan_step(i64, i64, i64)')
+        self.emit('declare i64 @bdi_execute_step(i64, i64)')
+        self.emit('declare i64 @bdi_select_plan_for_goal(i64, i64)')
+        self.emit('declare i64 @bdi_intend(i64, i64, i64)')
+        self.emit('declare i64 @bdi_goal_status(i64, i64)')
+
+        # Anima Memory Intrinsics
+        self.emit('; Anima Memory')
+        self.emit('declare i64 @anima_memory_new(i64)')
+        self.emit('declare void @anima_memory_close(i64)')
+        self.emit('declare i64 @anima_remember(i64, i64, double)')
+        self.emit('declare i64 @anima_learn(i64, i64, double, i64)')
+        self.emit('declare i64 @anima_store_procedure(i64, i64, i64)')
+        self.emit('declare i64 @anima_believe(i64, i64, double, i64)')
+        self.emit('declare i64 @anima_revise_belief(i64, i64, double, i64)')
+        self.emit('declare i64 @anima_working_push(i64, i64)')
+        self.emit('declare i64 @anima_working_pop(i64)')
+        self.emit('declare i64 @anima_working_context(i64)')
+        self.emit('declare i64 @anima_recall_for_goal(i64, i64, i64, i64)')
+        self.emit('declare i64 @anima_episodic_count(i64)')
+        self.emit('declare i64 @anima_semantic_count(i64)')
+        self.emit('declare i64 @anima_beliefs_count(i64)')
+        self.emit('declare i64 @anima_working_count(i64)')
+        self.emit('declare i64 @anima_consolidate(i64)')
+        self.emit('; Anima BDI')
+        self.emit('declare i64 @anima_bdi_new()')
+        self.emit('declare void @anima_bdi_close(i64)')
+        self.emit('declare i64 @anima_add_desire(i64, i64, double)')
+        self.emit('declare i64 @anima_get_top_desire(i64)')
+        self.emit('declare i64 @anima_desires_count(i64)')
+        self.emit('declare i64 @anima_set_desire_status(i64, i64, i64)')
+        self.emit('declare i64 @anima_add_intention(i64, i64, i64, i64)')
+        self.emit('declare i64 @anima_intentions_count(i64)')
+        self.emit('declare i64 @anima_intention_step(i64, i64)')
+        self.emit('declare i64 @anima_advance_intention(i64, i64)')
+        self.emit('declare i64 @anima_set_intention_status(i64, i64, i64)')
+        self.emit('declare i64 @anima_save(i64, i64)')
+        self.emit('declare i64 @anima_load(i64)')
+        self.emit('declare i64 @anima_exists(i64)')
+
+        # Cognitive Actor Intrinsics
+        self.emit('; Cognitive Actor')
+        self.emit('declare i64 @cognitive_actor_new(i64, i64, i64)')
+        self.emit('declare void @cognitive_actor_close(i64)')
+        self.emit('declare i64 @cognitive_actor_get_anima(i64)')
+        self.emit('declare void @cognitive_actor_set_tools(i64, i64)')
+        self.emit('declare void @cognitive_actor_set_provider(i64, i64)')
+        self.emit('declare void @cognitive_actor_set_auto_learn(i64, i64)')
+        self.emit('declare void @cognitive_actor_set_auto_remember(i64, i64)')
+        self.emit('declare void @cognitive_actor_set_threshold(i64, double)')
+        self.emit('declare i64 @cognitive_actor_get_personality(i64)')
+        self.emit('declare void @cognitive_actor_set_personality(i64, i64)')
+        self.emit('declare i64 @cognitive_actor_remember(i64, i64, double)')
+        self.emit('declare i64 @cognitive_actor_learn(i64, i64, double, i64)')
+        self.emit('declare i64 @cognitive_actor_believe(i64, i64, double, i64)')
+        self.emit('declare i64 @cognitive_actor_recall(i64, i64, i64)')
+        self.emit('declare i64 @cognitive_actor_process_interaction(i64, i64, i64, double)')
+        self.emit('declare i64 @cognitive_actor_get_context(i64, i64)')
+        self.emit('declare i64 @cognitive_actor_build_prompt(i64, i64)')
+        self.emit('declare i64 @cognitive_actor_save(i64, i64)')
+        self.emit('declare i64 @cognitive_actor_load(i64)')
+        self.emit('declare i64 @cognitive_actor_info(i64)')
+        self.emit('; Cognitive Team')
+        self.emit('declare i64 @cognitive_team_new(i64)')
+        self.emit('declare void @cognitive_team_close(i64)')
+        self.emit('declare i64 @cognitive_team_add(i64, i64)')
+        self.emit('declare i64 @cognitive_team_share(i64, i64, i64, double)')
+        self.emit('declare i64 @cognitive_team_size(i64)')
+        self.emit('declare i64 @cognitive_team_get_shared(i64)')
+        self.emit('declare i64 @cognitive_team_recall(i64, i64, i64)')
+
+        # Neural Network Intrinsics
+        self.emit('; Neural Global State')
+        self.emit('declare i64 @neural_get_training_mode()')
+        self.emit('declare void @neural_set_training_mode(i64)')
+        self.emit('declare double @neural_get_temperature()')
+        self.emit('declare void @neural_set_temperature(double)')
+
+        self.emit('; Neural Activation Functions')
+        self.emit('declare double @neural_sigmoid(double)')
+        self.emit('declare double @neural_tanh(double)')
+        self.emit('declare double @neural_relu(double)')
+
+        self.emit('; Neural Gates')
+        self.emit('declare i64 @neural_gate_new(i64, double, i64, i64)')
+        self.emit('declare double @neural_gate_threshold(i64)')
+        self.emit('declare void @neural_gate_set_threshold(i64, double)')
+        self.emit('declare void @neural_gate_add_gradient(i64, double)')
+        self.emit('declare double @neural_gate_gradient(i64)')
+        self.emit('declare void @neural_gate_zero_grad(i64)')
+        self.emit('declare void @neural_gate_update(i64, double)')
+        self.emit('declare double @neural_gate_with_contract(i64, double, double, i64, i64)')
+        self.emit('declare double @neural_gate_execute_on_device(i64, double, i64)')
+        self.emit('declare void @neural_gate_batch_execute(ptr, ptr, ptr, i64)')
+
+        self.emit('; Neural Gate Registry')
+        self.emit('declare void @neural_register_gate_weight(i64, double, i64)')
+        self.emit('declare void @neural_update_gate_weight(i64, double)')
+        self.emit('declare double @neural_get_gate_weight(i64)')
+        self.emit('declare i64 @neural_get_gate_count()')
+        self.emit('declare void @neural_clear_gate_registry()')
+
+        self.emit('; Neural Pruning')
+        self.emit('declare i64 @neural_prune_by_weight_magnitude(double)')
+        self.emit('declare i64 @neural_is_gate_pruned(i64)')
+        self.emit('declare i64 @neural_get_pruned_gate_count()')
+        self.emit('declare double @neural_get_pruning_ratio()')
+        self.emit('declare void @neural_reset_pruning()')
+
+        self.emit('; Gradient Tape (Automatic Differentiation)')
+        self.emit('declare i64 @grad_tape_new()')
+        self.emit('declare void @grad_tape_set_training(i64, i64)')
+        self.emit('declare void @grad_tape_set_temperature(i64, double)')
+        self.emit('declare double @grad_tape_temperature(i64)')
+        self.emit('declare void @grad_tape_free(i64)')
+
+        self.emit('; Gradient Operations')
+        self.emit('declare i64 @grad_input(double, i64)')
+        self.emit('declare double @grad_value_get(i64)')
+        self.emit('declare double @grad_value_grad(i64)')
+        self.emit('declare i64 @grad_add(i64, i64)')
+        self.emit('declare i64 @grad_sub(i64, i64)')
+        self.emit('declare i64 @grad_mul(i64, i64)')
+        self.emit('declare i64 @grad_div(i64, i64)')
+        self.emit('declare i64 @grad_neg(i64)')
+        self.emit('declare i64 @grad_gt(i64, i64, i64)')
+        self.emit('declare i64 @grad_lt(i64, i64, i64)')
+        self.emit('declare i64 @grad_ge(i64, i64, i64)')
+        self.emit('declare i64 @grad_le(i64, i64, i64)')
+
+        self.emit('; Activation Tracking')
+        self.emit('declare void @activation_tracker_init()')
+        self.emit('declare void @activation_tracking_set_enabled(i64)')
+        self.emit('declare i64 @activation_tracking_enabled()')
+        self.emit('declare void @activation_record(i64, double)')
+        self.emit('declare i64 @activation_stats_get(i64)')
+        self.emit('declare double @activation_rate_get(i64)')
+        self.emit('declare i64 @activation_count_get(i64)')
+        self.emit('declare double @activation_mean_get(i64)')
+        self.emit('declare void @activation_epoch_advance()')
+        self.emit('declare i64 @activation_epoch_current()')
+        self.emit('declare i64 @activation_gate_count()')
+        self.emit('declare void @activation_stats_reset()')
+
         self.emit('; CAS (Compare-And-Swap) operations for lock-free')
         self.emit('declare i64 @atomic_cas_i64(ptr, i64, i64)')     # cas(ptr, expected, new) -> old
         self.emit('declare i64 @atomic_load_i64(ptr)')              # atomic load
@@ -3424,13 +3942,6 @@ class CodeGen:
         self.emit('declare i64 @nsga2_pareto_front(i64)')
         self.emit('declare void @nsga2_close(i64)')
         self.emit('; Phase 31: Distributed Intelligence')
-        self.emit('; 31.1 Consensus')
-        self.emit('declare i64 @consensus_new(i64)')
-        self.emit('declare i64 @consensus_propose(i64, i64)')
-        self.emit('declare i64 @consensus_accept(i64, i64)')
-        self.emit('declare i64 @consensus_commit(i64)')
-        self.emit('declare i64 @consensus_status(i64)')
-        self.emit('declare void @consensus_close(i64)')
         self.emit('; 31.2 Stigmergy')
         self.emit('declare i64 @pheromone_new(i64, i64)')
         self.emit('declare i64 @pheromone_deposit(i64, i64, i64, double)')
@@ -4895,6 +5406,9 @@ class CodeGen:
             # Infer type from struct literal if no explicit type
             if not ty and stmt['value'].get('type') == 'StructLit':
                 ty = stmt['value'].get('name')
+            # Infer type from spawn expression (actor type)
+            if not ty and stmt['value'].get('type') == 'SpawnExpr':
+                ty = stmt['value'].get('actor_name')
             # Use pre-allocated local from entry block (in order)
             if self.pre_alloca_queue:
                 local = self.pre_alloca_queue.pop(0)
@@ -4953,7 +5467,29 @@ class CodeGen:
             # Get object pointer
             if obj['type'] == 'IdentExpr':
                 obj_name = obj['name']
-                if obj_name == 'self' and hasattr(self, 'current_impl_type') and self.current_impl_type:
+                if obj_name == 'self' and hasattr(self, 'current_actor') and self.current_actor:
+                    # self.field = value in actor/specialist handler
+                    self_local = self.locals.get('self')
+                    if self_local:
+                        actor_def = self.actors.get(self.current_actor, {})
+                        state_vars = actor_def.get('state_vars', [])
+                        # Specialists have config fields prepended: __model, __temperature
+                        # So user state vars start at offset 16 (2 * 8 bytes)
+                        config_offset = 0
+                        if hasattr(self, 'current_specialist') and self.current_specialist:
+                            config_offset = 16  # __model (8 bytes) + __temperature (8 bytes)
+                        for i, var in enumerate(state_vars):
+                            if var['name'] == field_name:
+                                self_ptr = self.new_temp()
+                                self.emit(f'  {self_ptr} = load i64, ptr {self_local}')
+                                ptr_temp = self.new_temp()
+                                self.emit(f'  {ptr_temp} = inttoptr i64 {self_ptr} to ptr')
+                                offset = config_offset + i * 8
+                                gep_temp = self.new_temp()
+                                self.emit(f'  {gep_temp} = getelementptr i8, ptr {ptr_temp}, i64 {offset}')
+                                self.emit(f'  store i64 {value}, ptr {gep_temp}')
+                                break
+                elif obj_name == 'self' and hasattr(self, 'current_impl_type') and self.current_impl_type:
                     # self.field = value in struct method
                     self_local = self.locals.get('self')
                     if self_local:
@@ -4996,7 +5532,15 @@ class CodeGen:
             self.generate_expr(stmt['expr'])
         elif stmt['type'] == 'BreakStmt':
             if self.loop_stack:
-                _, break_label = self.loop_stack[-1]
+                loop_ctx = self.loop_stack[-1]
+                break_label = loop_ctx[1]  # break label is always at index 1
+                # Check if there's a result slot (from loop expression)
+                result_slot = loop_ctx[2] if len(loop_ctx) > 2 else None
+                # If there's a break value, generate and store it
+                break_value = stmt.get('value')
+                if break_value is not None and result_slot is not None:
+                    val = self.generate_expr(break_value)
+                    self.emit(f'  store i64 {val}, ptr {result_slot}')
                 self.emit(f'  br label %{break_label}')
                 # Create unreachable block to avoid LLVM errors
                 unreachable_label = self.new_label('after_break')
@@ -5346,6 +5890,7 @@ class CodeGen:
         if expr_type == 'EnumVariantExpr':
             enum_name = expr['enum_name']
             if enum_name in self.enums:
+                # Return discriminant value directly (no allocation needed for comparisons)
                 return str(self.enums[enum_name].get(expr['variant'], 0))
             return '0'
 
@@ -5444,6 +5989,12 @@ class CodeGen:
                 # Also check qualified names like Option::Some
                 if '::' in orig_func_name:
                     parts = orig_func_name.split('::')
+                    if parts[0] == enum_name and parts[1] in variants:
+                        enum_variant_info = (enum_name, parts[1], variants[parts[1]])
+                        break
+                # Also check underscore-mangled names like Status_Ok (from parser mangling)
+                if '_' in orig_func_name:
+                    parts = orig_func_name.split('_', 1)  # Split on first underscore only
                     if parts[0] == enum_name and parts[1] in variants:
                         enum_variant_info = (enum_name, parts[1], variants[parts[1]])
                         break
@@ -5597,6 +6148,23 @@ class CodeGen:
                 'vec_push': 'intrinsic_vec_push',
                 'vec_get': 'intrinsic_vec_get',
                 'vec_len': 'intrinsic_vec_len',
+                'vec_set': 'intrinsic_vec_set',
+                'vec_pop': 'intrinsic_vec_pop',
+                'vec_clear': 'intrinsic_vec_clear',
+                'hashmap_new': 'hashmap_new',
+                'hashmap_with_capacity': 'hashmap_with_capacity',
+                'hashmap_insert': 'hashmap_insert',
+                'hashmap_get': 'hashmap_get',
+                'hashmap_remove': 'hashmap_remove',
+                'hashmap_contains': 'hashmap_contains',
+                'hashmap_len': 'hashmap_len',
+                'hashmap_clear': 'hashmap_clear',
+                'hashmap_keys': 'hashmap_keys',
+                'hashmap_values': 'hashmap_values',
+                'hashmap_free': 'hashmap_free',
+                'hashmap_keys_next': 'hashmap_keys_next',
+                'hashmap_values_next': 'hashmap_values_next',
+                'hashmap_iter_free': 'hashmap_iter_free',
                 'println': 'intrinsic_println',
                 'print': 'intrinsic_print',
                 'int_to_string': 'intrinsic_int_to_string',
@@ -5646,7 +6214,225 @@ class CodeGen:
                 'atomic_load_ptr': 'intrinsic_atomic_load_ptr',
                 'atomic_store_ptr': 'intrinsic_atomic_store_ptr',
                 'atomic_cas_ptr': 'intrinsic_atomic_cas_ptr',
-                # Phase 23.3: Lock-free mailbox - no intrinsic mapping, use direct calls
+                # Lock-free mailbox
+                'mailbox_new': 'mailbox_new',
+                'mailbox_send': 'mailbox_send',
+                'mailbox_recv': 'mailbox_recv',
+                'mailbox_try_recv': 'mailbox_try_recv',
+                'mailbox_size': 'mailbox_size',
+                'mailbox_empty': 'mailbox_empty',
+                'mailbox_full': 'mailbox_full',
+                'mailbox_close': 'mailbox_close',
+                'mailbox_is_closed': 'mailbox_is_closed',
+                'mailbox_free': 'mailbox_free',
+                # JSON operations
+                'json_null': 'json_null_i64',
+                'json_bool': 'json_bool_i64',
+                'json_number': 'json_number_i64',
+                'json_string': 'json_string_sx',
+                'json_array': 'json_array_new',
+                'json_object': 'json_object_new',
+                'json_is_null': 'json_is_null',
+                'json_is_bool': 'json_is_bool',
+                'json_is_number': 'json_is_number',
+                'json_is_string': 'json_is_string',
+                'json_is_array': 'json_is_array',
+                'json_is_object': 'json_is_object',
+                'json_type': 'json_type',
+                'json_as_bool': 'json_as_bool',
+                'json_as_i64': 'json_as_i64',
+                'json_as_string': 'json_as_string',
+                'json_array_push': 'json_array_push',
+                'json_array_len': 'json_array_len',
+                'json_get_index': 'json_get_index',
+                'json_object_set': 'json_object_set_sx',
+                'json_object_get': 'json_get_sx',
+                'json_object_len': 'json_object_len',
+                'json_object_has': 'json_object_has_sx',
+                'json_keys': 'json_keys',
+                'json_stringify': 'json_stringify',
+                'json_stringify_pretty': 'json_stringify_pretty',
+                'json_parse': 'json_parse_simple',
+                'json_clone': 'json_clone',
+                'json_equals': 'json_equals',
+                'json_free': 'json_free',
+                # Regex operations
+                'regex_new': 'regex_new',
+                'regex_free': 'regex_free',
+                'regex_is_match': 'regex_is_match',
+                'regex_find': 'regex_find',
+                'regex_find_str': 'regex_find_str',
+                'regex_count': 'regex_count',
+                'regex_replace': 'regex_replace',
+                'regex_replace_first': 'regex_replace_first',
+                'regex_split': 'regex_split',
+                'regex_error': 'regex_error',
+                'regex_group_count': 'regex_group_count',
+                'regex_captures': 'regex_captures',
+
+                # AI Native Intrinsics
+                # Native Model (llama.cpp)
+                'native_model_load': 'native_model_load',
+                'native_model_infer': 'native_model_infer',
+                'native_model_free': 'native_model_free',
+                'native_model_loaded': 'native_model_loaded',
+
+                # Embedding Model
+                'embedding_model_new': 'embedding_model_new',
+                'embedding_model_load': 'embedding_model_load',
+                'embedding_embed': 'embedding_embed',
+                'embedding_batch_embed': 'embedding_batch_embed',
+                'embedding_dim': 'embedding_dim',
+                'embedding_get': 'embedding_get',
+                'embedding_cosine_similarity': 'embedding_cosine_similarity',
+                'embedding_free': 'embedding_free',
+                'embedding_model_close': 'embedding_model_close',
+
+                # Shared Vector Store (semantic memory)
+                'shared_store_new': 'shared_store_new',
+                'shared_store_global': 'shared_store_global',
+                'shared_store_put': 'shared_store_put',
+                'shared_store_get': 'shared_store_get',
+                'shared_store_search': 'shared_store_search',
+                'shared_store_delete': 'shared_store_delete',
+                'shared_store_count': 'shared_store_count',
+                'shared_store_close': 'shared_store_close',
+
+                # Tool Registry (function calling)
+                'tool_registry_new': 'tool_registry_new',
+                'tool_register': 'tool_register',
+                'tool_get': 'tool_get',
+                'tool_count': 'tool_count',
+                'tool_list': 'tool_list',
+                'tool_invoke': 'tool_invoke',
+                'tool_execute': 'tool_execute',
+                'tool_register_builtins': 'tool_register_builtins',
+                'tool_get_schema': 'tool_get_schema',
+                'tool_get_all_schemas': 'tool_get_all_schemas',
+                'tool_result_success': 'tool_result_success',
+                'tool_result_output': 'tool_result_output',
+                'tool_result_free': 'tool_result_free',
+                'tool_registry_close': 'tool_registry_close',
+
+                # Shared Memory (actor knowledge sharing)
+                'shared_memory_new': 'shared_memory_new',
+                'shared_memory_grant_read': 'shared_memory_grant_read',
+                'shared_memory_grant_write': 'shared_memory_grant_write',
+                'shared_memory_recall': 'shared_memory_recall',
+                'shared_memory_remember': 'shared_memory_remember',
+                'shared_memory_get_memory': 'shared_memory_get_memory',
+                'shared_memory_close': 'shared_memory_close',
+
+                # AI Actor System (intelligent agents)
+                'ai_actor_system_new': 'ai_actor_system_new',
+                'ai_actor_config_new': 'ai_actor_config_new',
+                'ai_actor_config_set_tools': 'ai_actor_config_set_tools',
+                'ai_actor_config_set_memory': 'ai_actor_config_set_memory',
+                'ai_actor_config_set_specialist': 'ai_actor_config_set_specialist',
+                'ai_actor_config_set_timeout': 'ai_actor_config_set_timeout',
+                'ai_actor_spawn': 'ai_actor_spawn',
+                'ai_actor_status': 'ai_actor_status',
+                'ai_actor_name': 'ai_actor_name',
+                'ai_actor_stop': 'ai_actor_stop',
+                'ai_actor_add_message': 'ai_actor_add_message',
+                'ai_actor_history_len': 'ai_actor_history_len',
+                'ai_actor_get_message': 'ai_actor_get_message',
+                'ai_actor_clear_history': 'ai_actor_clear_history',
+                'ai_actor_system_count': 'ai_actor_system_count',
+                'ai_actor_system_list': 'ai_actor_system_list',
+                'ai_actor_system_close': 'ai_actor_system_close',
+
+                # AI Supervisor (fault-tolerant AI)
+                'ai_supervisor_new': 'ai_supervisor_new',
+                'ai_supervisor_add_child': 'ai_supervisor_add_child',
+                'ai_supervisor_check_health': 'ai_supervisor_check_health',
+                'ai_supervisor_child_count': 'ai_supervisor_child_count',
+                'ai_supervisor_close': 'ai_supervisor_close',
+
+                # Graph (computation graphs)
+                'graph_new': 'graph_new',
+                'graph_add_node': 'graph_add_node',
+                'graph_add_edge': 'graph_add_edge',
+                'graph_partition': 'graph_partition',
+                'graph_partition_count': 'graph_partition_count',
+                'graph_partition_device': 'graph_partition_device',
+                'graph_partition_node_count': 'graph_partition_node_count',
+                'graph_partition_cost': 'graph_partition_cost',
+                'graph_free': 'graph_free',
+
+                # LLM Client
+                'llm_client_new': 'llm_client_new',
+                'llm_set_api_key': 'llm_set_api_key',
+                'llm_set_model': 'llm_set_model',
+                'llm_set_temperature': 'llm_set_temperature',
+                'llm_set_base_url': 'llm_set_base_url',
+                'llm_complete': 'llm_complete',
+                'llm_chat': 'llm_chat',
+                'llm_embed': 'llm_embed',
+                'llm_get_tokens': 'llm_get_tokens',
+                'llm_get_cost': 'llm_get_cost',
+                'llm_client_close': 'llm_client_close',
+
+                # LLM Providers
+                'llm_provider_mock': 'llm_provider_mock',
+                'llm_provider_anthropic': 'llm_provider_anthropic',
+                'llm_provider_openai': 'llm_provider_openai',
+                'llm_provider_ollama': 'llm_provider_ollama',
+
+                # LLM Request Builder
+                'llm_request_new': 'llm_request_new',
+                'llm_request_set_system': 'llm_request_set_system',
+                'llm_request_set_prompt': 'llm_request_set_prompt',
+                'llm_request_set_model': 'llm_request_set_model',
+                'llm_request_set_max_tokens': 'llm_request_set_max_tokens',
+                'llm_request_set_temperature': 'llm_request_set_temperature',
+                'llm_request_set_schema': 'llm_request_set_schema',
+                'llm_request_enable_stream': 'llm_request_enable_stream',
+                'llm_request_set_tools': 'llm_request_set_tools',
+                'llm_request_set_retry': 'llm_request_set_retry',
+                'llm_request_to_json': 'llm_request_to_json',
+                'llm_request_close': 'llm_request_close',
+
+                # LLM Response
+                'llm_response_new': 'llm_response_new',
+                'llm_response_set_success': 'llm_response_set_success',
+                'llm_response_set_content': 'llm_response_set_content',
+                'llm_response_set_error': 'llm_response_set_error',
+                'llm_response_set_tokens': 'llm_response_set_tokens',
+                'llm_response_set_cost': 'llm_response_set_cost',
+                'llm_response_set_latency': 'llm_response_set_latency',
+                'llm_response_is_success': 'llm_response_is_success',
+                'llm_response_get_content': 'llm_response_get_content',
+                'llm_response_get_error': 'llm_response_get_error',
+                'llm_response_input_tokens': 'llm_response_input_tokens',
+                'llm_response_output_tokens': 'llm_response_output_tokens',
+                'llm_response_get_cost': 'llm_response_get_cost',
+                'llm_response_get_latency': 'llm_response_get_latency',
+                'llm_response_to_json': 'llm_response_to_json',
+                'llm_response_close': 'llm_response_close',
+
+                # Provider Registry
+                'provider_registry_new': 'provider_registry_new',
+                'provider_config_new': 'provider_config_new',
+                'provider_config_set_key': 'provider_config_set_key',
+                'provider_config_set_model': 'provider_config_set_model',
+                'provider_config_set_url': 'provider_config_set_url',
+                'provider_config_set_temp': 'provider_config_set_temp',
+                'provider_config_set_max_tokens': 'provider_config_set_max_tokens',
+                'provider_config_set_timeout': 'provider_config_set_timeout',
+                'provider_config_set_priority': 'provider_config_set_priority',
+                'provider_config_set_cost': 'provider_config_set_cost',
+                'provider_registry_add': 'provider_registry_add',
+                'provider_registry_get': 'provider_registry_get',
+                'provider_registry_count': 'provider_registry_count',
+                'provider_registry_set_default': 'provider_registry_set_default',
+                'provider_get_by_tier': 'provider_get_by_tier',
+                'provider_registry_list': 'provider_registry_list',
+                'provider_get_stats': 'provider_get_stats',
+                'provider_record_request': 'provider_record_request',
+                'provider_total_cost': 'provider_total_cost',
+                'provider_registry_close': 'provider_registry_close',
+
                 'actor_spawn': 'intrinsic_actor_spawn',
                 'actor_send': 'intrinsic_actor_send',
                 'actor_state': 'intrinsic_actor_state',
@@ -5759,6 +6545,8 @@ class CodeGen:
                 'path_dirname': 'intrinsic_path_dirname',
                 'path_basename': 'intrinsic_path_basename',
                 'path_extension': 'intrinsic_path_extension',
+                'get_cwd': 'intrinsic_get_cwd',
+                'list_dir': 'intrinsic_list_dir',
                 'assert_fail': 'intrinsic_assert_fail',
                 'assert_eq_i64': 'intrinsic_assert_eq_i64',
                 'assert_eq_str': 'intrinsic_assert_eq_str',
@@ -5787,20 +6575,16 @@ class CodeGen:
                 'belief_count': 'intrinsic_belief_count',
                 'decay_beliefs': 'intrinsic_decay_beliefs',
                 # Phase 14: BDI Agent Architecture
-                'create_goal': 'intrinsic_create_goal',
-                'get_goal': 'intrinsic_get_goal',
-                'goal_priority': 'intrinsic_goal_priority',
+                'add_goal': 'intrinsic_add_goal',
                 'goal_status': 'intrinsic_goal_status',
                 'set_goal_status': 'intrinsic_set_goal_status',
-                'active_goals': 'intrinsic_active_goals',
-                'abandon_goal': 'intrinsic_abandon_goal',
+                'select_goal': 'intrinsic_select_goal',
+                'pending_goals_count': 'intrinsic_pending_goals_count',
                 'create_intention': 'intrinsic_create_intention',
+                'intention_status': 'intrinsic_intention_status',
                 'intention_step': 'intrinsic_intention_step',
-                'advance_intention': 'intrinsic_advance_intention',
-                'complete_intention': 'intrinsic_complete_intention',
+                'intention_current_step': 'intrinsic_intention_current_step',
                 'fail_intention': 'intrinsic_fail_intention',
-                'pending_intentions': 'intrinsic_pending_intentions',
-                'deliberate': 'intrinsic_deliberate',
                 # Phase 15: Mnemonic Specialists
                 'specialist_create': 'intrinsic_specialist_create',
                 'specialist_name': 'intrinsic_specialist_name',
@@ -5809,23 +6593,16 @@ class CodeGen:
                 'specialist_configure': 'intrinsic_specialist_configure',
                 'specialist_limits': 'intrinsic_specialist_limits',
                 # Phase 16: Evolution Engine
-                'trait_create': 'intrinsic_trait_create',
+                'add_trait': 'intrinsic_add_trait',
                 'trait_value': 'intrinsic_trait_value',
-                'trait_mutate': 'intrinsic_trait_mutate',
-                'trait_crossover': 'intrinsic_trait_crossover',
-                'generation_current': 'intrinsic_generation_current',
-                'generation_advance': 'intrinsic_generation_advance',
-                'fitness_set': 'intrinsic_fitness_set',
-                'fitness_get': 'intrinsic_fitness_get',
+                'mutate_trait': 'intrinsic_mutate_trait',
+                'current_generation': 'intrinsic_current_generation',
+                'next_generation': 'intrinsic_next_generation',
+                'evaluate_fitness': 'intrinsic_evaluate_fitness',
                 'select_best': 'intrinsic_select_best',
                 # Phase 17: Collective Intelligence
                 'swarm_broadcast': 'intrinsic_swarm_broadcast',
-                'swarm_receive': 'intrinsic_swarm_receive',
                 'swarm_messages': 'intrinsic_swarm_messages',
-                'vote_cast': 'intrinsic_vote_cast',
-                'vote_tally': 'intrinsic_vote_tally',
-                'consensus_check': 'intrinsic_consensus_check',
-                'swarm_clear': 'intrinsic_swarm_clear',
                 # Phase 20: Toolchain Support
                 'read_line': 'intrinsic_read_line',
                 'print': 'intrinsic_print',
@@ -5841,6 +6618,395 @@ class CodeGen:
                 'string_replace': 'intrinsic_string_replace',
                 'copy_file': 'intrinsic_copy_file',
                 'get_home_dir': 'intrinsic_get_home_dir',
+
+                # Option Type Intrinsics
+                'option_some': 'option_some',
+                'option_none': 'option_none',
+                'option_free': 'option_free',
+                'option_unwrap': 'option_unwrap',
+                'option_expect': 'option_expect',
+                'option_unwrap_or': 'option_unwrap_or',
+                'option_and': 'option_and',
+                'option_or': 'option_or',
+                'option_get_value': 'option_get_value',
+                'option_clone': 'option_clone',
+                'option_ok_or': 'option_ok_or',
+                'option_transpose': 'option_transpose',
+                'option_flatten': 'option_flatten',
+
+                # Result Type Intrinsics
+                'result_ok': 'result_ok',
+                'result_err': 'result_err',
+                'result_err_msg': 'result_err_msg',
+                'result_free': 'result_free',
+                'result_ok_option': 'result_ok_option',
+                'result_err_option': 'result_err_option',
+                'result_unwrap': 'result_unwrap',
+                'result_unwrap_err': 'result_unwrap_err',
+                'result_expect': 'result_expect',
+                'result_expect_err': 'result_expect_err',
+                'result_unwrap_or': 'result_unwrap_or',
+                'result_and': 'result_and',
+                'result_or': 'result_or',
+                'result_get_value': 'result_get_value',
+                'result_get_error': 'result_get_error',
+                'result_clone': 'result_clone',
+                'result_transpose': 'result_transpose',
+                'result_flatten': 'result_flatten',
+
+                # HashSet Intrinsics
+                'hashset_new': 'hashset_new',
+                'hashset_with_capacity': 'hashset_with_capacity',
+                'hashset_len': 'hashset_len',
+                'hashset_clear': 'hashset_clear',
+                'hashset_free': 'hashset_free',
+                'hashset_iter': 'hashset_iter',
+                'hashset_iter_next': 'hashset_iter_next',
+                'hashset_iter_free': 'hashset_iter_free',
+                'hashset_union': 'hashset_union',
+                'hashset_intersection': 'hashset_intersection',
+                'hashset_difference': 'hashset_difference',
+                'hashset_symmetric_difference': 'hashset_symmetric_difference',
+                # Int HashSet
+                'int_hashset_new': 'int_hashset_new',
+                'int_hashset_len': 'int_hashset_len',
+                'int_hashset_clear': 'int_hashset_clear',
+                'int_hashset_free': 'int_hashset_free',
+                'int_hashset_iter': 'int_hashset_iter',
+                'int_hashset_iter_next': 'int_hashset_iter_next',
+                'int_hashset_iter_free': 'int_hashset_iter_free',
+                'int_hashset_union': 'int_hashset_union',
+                'int_hashset_intersection': 'int_hashset_intersection',
+                'int_hashset_difference': 'int_hashset_difference',
+
+                # Iterator Intrinsics
+                'sxiter_free': 'sxiter_free',
+                'sxiter_sum': 'sxiter_sum',
+                'sxiter_product': 'sxiter_product',
+                'sxiter_count': 'sxiter_count',
+                'sxiter_collect_hashmap': 'sxiter_collect_hashmap',
+                'sxiter_collect_int_hashmap': 'sxiter_collect_int_hashmap',
+                'sxiter_collect_hashset': 'sxiter_collect_hashset',
+                'sxiter_collect_int_hashset': 'sxiter_collect_int_hashset',
+                'sxiter_vec': 'sxiter_vec',
+                'sxiter_next_value': 'sxiter_next_value',
+                'sxiter_enumerate_pair_index': 'sxiter_enumerate_pair_index',
+                'sxiter_enumerate_pair_value': 'sxiter_enumerate_pair_value',
+                'sxiter_enumerate_pair_free': 'sxiter_enumerate_pair_free',
+                'sxiter_zip_pair_first': 'sxiter_zip_pair_first',
+                'sxiter_zip_pair_second': 'sxiter_zip_pair_second',
+                'sxiter_zip_pair_free': 'sxiter_zip_pair_free',
+
+                # HTTP Intrinsics
+                'http_request_new': 'http_request_new',
+                'http_request_header': 'http_request_header',
+                'http_request_body': 'http_request_body',
+                'http_request_send': 'http_request_send',
+                'http_request_free': 'http_request_free',
+                'http_response_status': 'http_response_status',
+                'http_response_status_text': 'http_response_status_text',
+                'http_response_header': 'http_response_header',
+                'http_response_body': 'http_response_body',
+                'http_response_body_len': 'http_response_body_len',
+                'http_response_free': 'http_response_free',
+                'http_get': 'http_get',
+                'http_post': 'http_post',
+                # HTTP Server
+                'http_server_new': 'http_server_new',
+                'http_server_tls': 'http_server_tls',
+                'http_server_route': 'http_server_route',
+                'http_server_response_new': 'http_server_response_new',
+                'http_server_response_status': 'http_server_response_status',
+                'http_server_response_header': 'http_server_response_header',
+                'http_server_response_body': 'http_server_response_body',
+                'http_server_bind': 'http_server_bind',
+                'http_server_accept_one': 'http_server_accept_one',
+                'http_server_run': 'http_server_run',
+                'http_server_stop': 'http_server_stop',
+                'http_server_close': 'http_server_close',
+                'http_server_port': 'http_server_port',
+                'http_server_request_method': 'http_server_request_method',
+                'http_server_request_path': 'http_server_request_path',
+                'http_server_request_header': 'http_server_request_header',
+                'http_server_request_body': 'http_server_request_body',
+
+                # WebSocket Intrinsics
+                'ws_connect': 'ws_connect',
+                'ws_accept': 'ws_accept',
+                'ws_send_text': 'ws_send_text',
+                'ws_send_binary': 'ws_send_binary',
+                'ws_ping': 'ws_ping',
+                'ws_pong': 'ws_pong',
+                'ws_recv': 'ws_recv',
+                'ws_msg_opcode': 'ws_msg_opcode',
+                'ws_msg_data': 'ws_msg_data',
+                'ws_close': 'ws_close',
+                'ws_is_connected': 'ws_is_connected',
+                'ws_get_fd': 'ws_get_fd',
+                'ws_opcode_text': 'ws_opcode_text',
+                'ws_opcode_binary': 'ws_opcode_binary',
+                'ws_opcode_close': 'ws_opcode_close',
+                'ws_opcode_ping': 'ws_opcode_ping',
+                'ws_opcode_pong': 'ws_opcode_pong',
+
+                # TLS Intrinsics
+                'tls_context_new_client': 'tls_context_new_client',
+                'tls_context_new_server': 'tls_context_new_server',
+                'tls_context_load_cert': 'tls_context_load_cert',
+                'tls_context_load_key': 'tls_context_load_key',
+                'tls_context_load_ca': 'tls_context_load_ca',
+                'tls_context_use_system_ca': 'tls_context_use_system_ca',
+                'tls_context_set_verify': 'tls_context_set_verify',
+                'tls_context_free': 'tls_context_free',
+                'tls_connect': 'tls_connect',
+                'tls_accept': 'tls_accept',
+                'tls_read': 'tls_read',
+                'tls_write': 'tls_write',
+                'tls_shutdown': 'tls_shutdown',
+                'tls_close': 'tls_close',
+                'tls_peer_cert_subject': 'tls_peer_cert_subject',
+                'tls_peer_verified': 'tls_peer_verified',
+                'tls_version': 'tls_version',
+                'tls_cipher': 'tls_cipher',
+                'tls_error_string': 'tls_error_string',
+                'tls_get_fd': 'tls_get_fd',
+
+                # Actor Extended Intrinsics
+                'actor_get_status': 'actor_get_status',
+                'actor_get_exit_reason': 'actor_get_exit_reason',
+                'actor_get_error_code': 'actor_get_error_code',
+                'actor_set_error': 'actor_set_error',
+                'actor_stop': 'actor_stop',
+                'actor_kill': 'actor_kill',
+                'actor_crash': 'actor_crash',
+                'actor_set_on_error': 'actor_set_on_error',
+                'actor_set_on_exit': 'actor_set_on_exit',
+                'actor_set_supervisor': 'actor_set_supervisor',
+                'actor_get_supervisor': 'actor_get_supervisor',
+                'actor_get_restart_count': 'actor_get_restart_count',
+                'actor_increment_restart': 'actor_increment_restart',
+                'actor_is_alive': 'actor_is_alive',
+                'actor_link': 'actor_link',
+                'actor_unlink': 'actor_unlink',
+                'actor_monitor': 'actor_monitor',
+                'actor_demonitor': 'actor_demonitor',
+                'actor_propagate_exit': 'actor_propagate_exit',
+                'actor_is_linked': 'actor_is_linked',
+                'actor_spawn_link': 'actor_spawn_link',
+                'actor_get_links_count': 'actor_get_links_count',
+                'actor_send_down': 'actor_send_down',
+
+                # Consensus Intrinsics
+                'consensus_new': 'consensus_new',
+                'consensus_new_with_id': 'consensus_new_with_id',
+                'consensus_propose': 'consensus_propose',
+                'consensus_accept': 'consensus_accept',
+                'consensus_commit': 'consensus_commit',
+                'consensus_commit_to': 'consensus_commit_to',
+                'consensus_commit_all': 'consensus_commit_all',
+                'consensus_commit_index': 'consensus_commit_index',
+                'consensus_append': 'consensus_append',
+                'consensus_term': 'consensus_term',
+                'consensus_increment_term': 'consensus_increment_term',
+                'consensus_set_state': 'consensus_set_state',
+                'consensus_get_state': 'consensus_get_state',
+                'consensus_log_count': 'consensus_log_count',
+                'consensus_status': 'consensus_status',
+                'consensus_close': 'consensus_close',
+                'consensus_paxos': 'consensus_paxos',
+                'consensus_raft': 'consensus_raft',
+                'consensus_pbft': 'consensus_pbft',
+                # Consensus Group
+                'consensus_group_new': 'consensus_group_new',
+                'consensus_group_add': 'consensus_group_add',
+                'consensus_group_vote': 'consensus_group_vote',
+                'consensus_group_close': 'consensus_group_close',
+
+                # Belief System Intrinsics
+                'belief_store_new': 'belief_store_new',
+                'belief_store_add': 'belief_store_add',
+                'belief_store_get': 'belief_store_get',
+                'belief_store_confidence': 'belief_store_confidence',
+                'belief_store_remove': 'belief_store_remove',
+                'belief_store_count': 'belief_store_count',
+                'belief_store_close': 'belief_store_close',
+                'belief_add': 'belief_add',
+                'belief_get_confidence': 'belief_get_confidence',
+                'belief_set_confidence': 'belief_set_confidence',
+                'belief_get_content': 'belief_get_content',
+                'belief_set_source': 'belief_set_source',
+                'belief_get_source': 'belief_get_source',
+                'belief_set_timestamp': 'belief_set_timestamp',
+                'belief_get_timestamp': 'belief_get_timestamp',
+                'belief_add_derivation': 'belief_add_derivation',
+                'belief_count': 'belief_count',
+                'belief_check_contradiction': 'belief_check_contradiction',
+                'belief_check_contradictions': 'belief_check_contradictions',
+                'belief_find_contradictions': 'belief_find_contradictions',
+                'belief_contradiction_count': 'belief_contradiction_count',
+                'belief_resolve': 'belief_resolve',
+                'belief_resolve_by_confidence': 'belief_resolve_by_confidence',
+                'belief_resolve_by_recency': 'belief_resolve_by_recency',
+                'belief_resolve_by_source': 'belief_resolve_by_source',
+                'belief_strategy_confidence': 'belief_strategy_confidence',
+                'belief_strategy_recency': 'belief_strategy_recency',
+                'belief_strategy_merge': 'belief_strategy_merge',
+                'belief_query': 'belief_query',
+                'belief_query_related': 'belief_query_related',
+                'belief_query_by_source': 'belief_query_by_source',
+                'belief_query_by_confidence': 'belief_query_by_confidence',
+
+                # BDI Agent Intrinsics
+                'bdi_agent_new': 'bdi_agent_new',
+                'bdi_agent_close': 'bdi_agent_close',
+                'bdi_add_belief': 'bdi_add_belief',
+                'bdi_add_goal': 'bdi_add_goal',
+                'bdi_add_goal_desc': 'bdi_add_goal_desc',
+                'bdi_add_subgoal': 'bdi_add_subgoal',
+                'bdi_add_plan': 'bdi_add_plan',
+                'bdi_add_plan_internal': 'bdi_add_plan_internal',
+                'bdi_add_plan_step': 'bdi_add_plan_step',
+                'bdi_deliberate': 'bdi_deliberate',
+                'bdi_execute': 'bdi_execute',
+                'bdi_execute_step': 'bdi_execute_step',
+                'bdi_find_plans_for_goal': 'bdi_find_plans_for_goal',
+                'bdi_select_plan': 'bdi_select_plan',
+                'bdi_select_plan_for_goal': 'bdi_select_plan_for_goal',
+                'bdi_intend': 'bdi_intend',
+                'bdi_commit_to_intention': 'bdi_commit_to_intention',
+                'bdi_set_commitment': 'bdi_set_commitment',
+                'bdi_goal_status': 'bdi_goal_status',
+                'bdi_goal_count': 'bdi_goal_count',
+                'bdi_intention_count': 'bdi_intention_count',
+
+                # Anima Memory Intrinsics
+                'anima_memory_new': 'anima_memory_new',
+                'anima_memory_close': 'anima_memory_close',
+                'anima_remember': 'anima_remember',
+                'anima_learn': 'anima_learn',
+                'anima_store_procedure': 'anima_store_procedure',
+                'anima_believe': 'anima_believe',
+                'anima_revise_belief': 'anima_revise_belief',
+                'anima_working_push': 'anima_working_push',
+                'anima_working_pop': 'anima_working_pop',
+                'anima_working_context': 'anima_working_context',
+                'anima_recall_for_goal': 'anima_recall_for_goal',
+                'anima_episodic_count': 'anima_episodic_count',
+                'anima_semantic_count': 'anima_semantic_count',
+                'anima_beliefs_count': 'anima_beliefs_count',
+                'anima_working_count': 'anima_working_count',
+                'anima_consolidate': 'anima_consolidate',
+                # Anima BDI
+                'anima_bdi_new': 'anima_bdi_new',
+                'anima_bdi_close': 'anima_bdi_close',
+                'anima_add_desire': 'anima_add_desire',
+                'anima_get_top_desire': 'anima_get_top_desire',
+                'anima_desires_count': 'anima_desires_count',
+                'anima_set_desire_status': 'anima_set_desire_status',
+                'anima_add_intention': 'anima_add_intention',
+                'anima_intentions_count': 'anima_intentions_count',
+                'anima_intention_step': 'anima_intention_step',
+                'anima_advance_intention': 'anima_advance_intention',
+                'anima_set_intention_status': 'anima_set_intention_status',
+                'anima_save': 'anima_save',
+                'anima_load': 'anima_load',
+                'anima_exists': 'anima_exists',
+
+                # Cognitive Actor Intrinsics
+                'cognitive_actor_new': 'cognitive_actor_new',
+                'cognitive_actor_close': 'cognitive_actor_close',
+                'cognitive_actor_get_anima': 'cognitive_actor_get_anima',
+                'cognitive_actor_set_tools': 'cognitive_actor_set_tools',
+                'cognitive_actor_set_provider': 'cognitive_actor_set_provider',
+                'cognitive_actor_set_auto_learn': 'cognitive_actor_set_auto_learn',
+                'cognitive_actor_set_auto_remember': 'cognitive_actor_set_auto_remember',
+                'cognitive_actor_set_threshold': 'cognitive_actor_set_threshold',
+                'cognitive_actor_get_personality': 'cognitive_actor_get_personality',
+                'cognitive_actor_set_personality': 'cognitive_actor_set_personality',
+                'cognitive_actor_remember': 'cognitive_actor_remember',
+                'cognitive_actor_learn': 'cognitive_actor_learn',
+                'cognitive_actor_believe': 'cognitive_actor_believe',
+                'cognitive_actor_recall': 'cognitive_actor_recall',
+                'cognitive_actor_process_interaction': 'cognitive_actor_process_interaction',
+                'cognitive_actor_get_context': 'cognitive_actor_get_context',
+                'cognitive_actor_build_prompt': 'cognitive_actor_build_prompt',
+                'cognitive_actor_save': 'cognitive_actor_save',
+                'cognitive_actor_load': 'cognitive_actor_load',
+                'cognitive_actor_info': 'cognitive_actor_info',
+                # Cognitive Team
+                'cognitive_team_new': 'cognitive_team_new',
+                'cognitive_team_close': 'cognitive_team_close',
+                'cognitive_team_add': 'cognitive_team_add',
+                'cognitive_team_share': 'cognitive_team_share',
+                'cognitive_team_size': 'cognitive_team_size',
+                'cognitive_team_get_shared': 'cognitive_team_get_shared',
+                'cognitive_team_recall': 'cognitive_team_recall',
+
+                # Neural Network Intrinsics
+                # Neural Global State
+                'neural_get_training_mode': 'neural_get_training_mode',
+                'neural_set_training_mode': 'neural_set_training_mode',
+                'neural_get_temperature': 'neural_get_temperature',
+                'neural_set_temperature': 'neural_set_temperature',
+                # Neural Activation Functions
+                'neural_sigmoid': 'neural_sigmoid',
+                'neural_tanh': 'neural_tanh',
+                'neural_relu': 'neural_relu',
+                # Neural Gates
+                'neural_gate_new': 'neural_gate_new',
+                'neural_gate_with_contract': 'neural_gate_with_contract',
+                'neural_gate_execute_on_device': 'neural_gate_execute_on_device',
+                'neural_gate_batch_execute': 'neural_gate_batch_execute',
+                'neural_gate_threshold': 'neural_gate_threshold',
+                'neural_gate_set_threshold': 'neural_gate_set_threshold',
+                'neural_gate_gradient': 'neural_gate_gradient',
+                'neural_gate_add_gradient': 'neural_gate_add_gradient',
+                'neural_gate_zero_grad': 'neural_gate_zero_grad',
+                'neural_gate_update': 'neural_gate_update',
+                # Neural Gate Registry
+                'neural_register_gate_weight': 'neural_register_gate_weight',
+                'neural_update_gate_weight': 'neural_update_gate_weight',
+                'neural_get_gate_weight': 'neural_get_gate_weight',
+                'neural_get_gate_count': 'neural_get_gate_count',
+                'neural_clear_gate_registry': 'neural_clear_gate_registry',
+                # Neural Pruning
+                'neural_prune_by_weight_magnitude': 'neural_prune_by_weight_magnitude',
+                'neural_is_gate_pruned': 'neural_is_gate_pruned',
+                'neural_get_pruned_gate_count': 'neural_get_pruned_gate_count',
+                'neural_get_pruning_ratio': 'neural_get_pruning_ratio',
+                'neural_reset_pruning': 'neural_reset_pruning',
+                # Gradient Tape
+                'grad_tape_new': 'grad_tape_new',
+                'grad_tape_free': 'grad_tape_free',
+                'grad_tape_set_training': 'grad_tape_set_training',
+                'grad_tape_set_temperature': 'grad_tape_set_temperature',
+                'grad_tape_temperature': 'grad_tape_temperature',
+                # Gradient Operations
+                'grad_input': 'grad_input',
+                'grad_value_get': 'grad_value_get',
+                'grad_value_grad': 'grad_value_grad',
+                'grad_add': 'grad_add',
+                'grad_sub': 'grad_sub',
+                'grad_mul': 'grad_mul',
+                'grad_div': 'grad_div',
+                'grad_neg': 'grad_neg',
+                'grad_lt': 'grad_lt',
+                'grad_le': 'grad_le',
+                'grad_gt': 'grad_gt',
+                'grad_ge': 'grad_ge',
+                # Activation Tracking
+                'activation_tracker_init': 'activation_tracker_init',
+                'activation_tracking_enabled': 'activation_tracking_enabled',
+                'activation_tracking_set_enabled': 'activation_tracking_set_enabled',
+                'activation_record': 'activation_record',
+                'activation_count_get': 'activation_count_get',
+                'activation_mean_get': 'activation_mean_get',
+                'activation_rate_get': 'activation_rate_get',
+                'activation_gate_count': 'activation_gate_count',
+                'activation_stats_get': 'activation_stats_get',
+                'activation_stats_reset': 'activation_stats_reset',
+                'activation_epoch_current': 'activation_epoch_current',
+                'activation_epoch_advance': 'activation_epoch_advance',
             }
 
             is_intrinsic = orig_func_name in intrinsic_map
@@ -5868,6 +7034,23 @@ class CodeGen:
                 'intrinsic_vec_push': (['ptr', 'ptr'], 'void'),
                 'intrinsic_vec_get': (['ptr', 'i64'], 'ptr'),
                 'intrinsic_vec_len': (['ptr'], 'i64'),
+                'intrinsic_vec_set': (['ptr', 'i64', 'ptr'], 'void'),
+                'intrinsic_vec_pop': (['ptr'], 'ptr'),
+                'intrinsic_vec_clear': (['ptr'], 'void'),
+                'hashmap_new': ([], 'i64'),
+                'hashmap_with_capacity': (['i64'], 'i64'),
+                'hashmap_insert': (['i64', 'i64', 'i64'], 'i64'),
+                'hashmap_get': (['i64', 'i64'], 'i64'),
+                'hashmap_remove': (['i64', 'i64'], 'i64'),
+                'hashmap_contains': (['i64', 'i64'], 'i8'),
+                'hashmap_len': (['i64'], 'i64'),
+                'hashmap_clear': (['i64'], 'void'),
+                'hashmap_keys': (['i64'], 'i64'),
+                'hashmap_values': (['i64'], 'i64'),
+                'hashmap_free': (['i64'], 'void'),
+                'hashmap_keys_next': (['i64'], 'i64'),
+                'hashmap_values_next': (['i64'], 'i64'),
+                'hashmap_iter_free': (['i64'], 'void'),
                 'intrinsic_println': (['ptr'], 'void'),
                 'intrinsic_print': (['ptr'], 'void'),
                 'intrinsic_int_to_string': (['i64'], 'ptr'),
@@ -5922,6 +7105,225 @@ class CodeGen:
                 'intrinsic_mailbox_empty': (['ptr'], 'i1'),
                 'intrinsic_mailbox_len': (['ptr'], 'i64'),
                 'intrinsic_mailbox_free': (['ptr'], 'void'),
+                # Lock-free mailbox (i64-based)
+                'mailbox_new': (['i64'], 'i64'),
+                'mailbox_send': (['i64', 'i64'], 'i64'),
+                'mailbox_recv': (['i64'], 'i64'),
+                'mailbox_try_recv': (['i64'], 'i64'),
+                'mailbox_size': (['i64'], 'i64'),
+                'mailbox_empty': (['i64'], 'i64'),
+                'mailbox_full': (['i64'], 'i64'),
+                'mailbox_close': (['i64'], 'void'),
+                'mailbox_is_closed': (['i64'], 'i64'),
+                'mailbox_free': (['i64'], 'void'),
+                # JSON operations
+                'json_null_i64': ([], 'i64'),
+                'json_bool_i64': (['i8'], 'i64'),
+                'json_number_i64': (['i64'], 'i64'),
+                'json_string_sx': (['i64'], 'ptr'),
+                'json_array_new': ([], 'i64'),
+                'json_object_new': ([], 'i64'),
+                'json_is_null': (['i64'], 'i8'),
+                'json_is_bool': (['i64'], 'i8'),
+                'json_is_number': (['i64'], 'i8'),
+                'json_is_string': (['i64'], 'i8'),
+                'json_is_array': (['i64'], 'i8'),
+                'json_is_object': (['i64'], 'i8'),
+                'json_type': (['i64'], 'i64'),
+                'json_as_bool': (['i64'], 'i8'),
+                'json_as_i64': (['i64'], 'i64'),
+                'json_as_string': (['i64'], 'i64'),
+                'json_array_push': (['i64', 'i64'], 'void'),
+                'json_array_len': (['i64'], 'i64'),
+                'json_get_index': (['i64', 'i64'], 'i64'),
+                'json_object_set_sx': (['i64', 'i64', 'i64'], 'void'),
+                'json_get_sx': (['i64', 'i64'], 'i64'),
+                'json_object_len': (['i64'], 'i64'),
+                'json_object_has_sx': (['i64', 'i64'], 'i8'),
+                'json_keys': (['i64'], 'i64'),
+                'json_stringify': (['i64'], 'i64'),
+                'json_stringify_pretty': (['i64', 'i64'], 'i64'),
+                'json_parse_simple': (['i64'], 'i64'),
+                'json_clone': (['i64'], 'i64'),
+                'json_equals': (['i64', 'i64'], 'i8'),
+                'json_free': (['i64'], 'void'),
+                # Regex operations
+                'regex_new': (['i64', 'i64'], 'i64'),
+                'regex_free': (['i64'], 'void'),
+                'regex_is_match': (['i64', 'i64'], 'i64'),
+                'regex_find': (['i64', 'i64'], 'i64'),
+                'regex_find_str': (['i64', 'i64'], 'i64'),
+                'regex_count': (['i64', 'i64'], 'i64'),
+                'regex_replace': (['i64', 'i64', 'i64'], 'i64'),
+                'regex_replace_first': (['i64', 'i64', 'i64'], 'i64'),
+                'regex_split': (['i64', 'i64'], 'i64'),
+                'regex_error': (['i64'], 'i64'),
+                'regex_group_count': (['i64'], 'i64'),
+                'regex_captures': (['i64', 'i64'], 'i64'),
+
+                # AI Native Intrinsics
+                # Native Model (llama.cpp)
+                'native_model_load': (['i64'], 'i64'),
+                'native_model_infer': (['i64', 'i64'], 'i64'),
+                'native_model_free': ([], 'void'),
+                'native_model_loaded': ([], 'i64'),
+
+                # Embedding Model
+                'embedding_model_new': (['i64'], 'i64'),
+                'embedding_model_load': (['i64', 'i64'], 'i64'),
+                'embedding_embed': (['i64', 'i64'], 'i64'),
+                'embedding_batch_embed': (['i64', 'i64'], 'i64'),
+                'embedding_dim': (['i64'], 'i64'),
+                'embedding_get': (['i64', 'i64'], 'double'),
+                'embedding_cosine_similarity': (['i64', 'i64'], 'double'),
+                'embedding_free': (['i64'], 'void'),
+                'embedding_model_close': (['i64'], 'void'),
+
+                # Shared Vector Store (semantic memory)
+                'shared_store_new': (['i64', 'i64'], 'i64'),
+                'shared_store_global': (['i64'], 'i64'),
+                'shared_store_put': (['i64', 'i64', 'i64', 'i64'], 'i64'),
+                'shared_store_get': (['i64', 'i64'], 'i64'),
+                'shared_store_search': (['i64', 'i64', 'i64'], 'i64'),
+                'shared_store_delete': (['i64', 'i64'], 'i64'),
+                'shared_store_count': (['i64'], 'i64'),
+                'shared_store_close': (['i64'], 'void'),
+
+                # Tool Registry (function calling)
+                'tool_registry_new': ([], 'i64'),
+                'tool_register': (['i64', 'i64', 'i64', 'i64'], 'i64'),
+                'tool_get': (['i64', 'i64'], 'i64'),
+                'tool_count': (['i64'], 'i64'),
+                'tool_list': (['i64'], 'i64'),
+                'tool_invoke': (['i64', 'i64', 'i64'], 'i64'),
+                'tool_execute': (['i64', 'i64', 'i64'], 'i64'),
+                'tool_register_builtins': (['i64'], 'i64'),
+                'tool_get_schema': (['i64', 'i64'], 'i64'),
+                'tool_get_all_schemas': (['i64'], 'i64'),
+                'tool_result_success': (['i64'], 'i64'),
+                'tool_result_output': (['i64'], 'i64'),
+                'tool_result_free': (['i64'], 'void'),
+                'tool_registry_close': (['i64'], 'void'),
+
+                # Shared Memory (actor knowledge sharing)
+                'shared_memory_new': (['i64', 'i64'], 'i64'),
+                'shared_memory_grant_read': (['i64', 'i64'], 'i64'),
+                'shared_memory_grant_write': (['i64', 'i64'], 'i64'),
+                'shared_memory_recall': (['i64', 'i64', 'i64', 'i64'], 'i64'),
+                'shared_memory_remember': (['i64', 'i64', 'i64', 'double'], 'i64'),
+                'shared_memory_get_memory': (['i64'], 'i64'),
+                'shared_memory_close': (['i64'], 'void'),
+
+                # AI Actor System (intelligent agents)
+                'ai_actor_system_new': ([], 'i64'),
+                'ai_actor_config_new': (['i64', 'i64'], 'i64'),
+                'ai_actor_config_set_tools': (['i64', 'i64'], 'void'),
+                'ai_actor_config_set_memory': (['i64', 'i64'], 'void'),
+                'ai_actor_config_set_specialist': (['i64', 'i64'], 'void'),
+                'ai_actor_config_set_timeout': (['i64', 'i64'], 'void'),
+                'ai_actor_spawn': (['i64', 'i64'], 'i64'),
+                'ai_actor_status': (['i64', 'i64'], 'i64'),
+                'ai_actor_name': (['i64', 'i64'], 'i64'),
+                'ai_actor_stop': (['i64', 'i64'], 'void'),
+                'ai_actor_add_message': (['i64', 'i64', 'i64', 'i64'], 'i64'),
+                'ai_actor_history_len': (['i64', 'i64'], 'i64'),
+                'ai_actor_get_message': (['i64', 'i64', 'i64'], 'i64'),
+                'ai_actor_clear_history': (['i64', 'i64'], 'void'),
+                'ai_actor_system_count': (['i64'], 'i64'),
+                'ai_actor_system_list': (['i64'], 'i64'),
+                'ai_actor_system_close': (['i64'], 'void'),
+
+                # AI Supervisor (fault-tolerant AI)
+                'ai_supervisor_new': (['i64', 'i64'], 'i64'),
+                'ai_supervisor_add_child': (['i64', 'i64'], 'i64'),
+                'ai_supervisor_check_health': (['i64', 'i64'], 'i64'),
+                'ai_supervisor_child_count': (['i64'], 'i64'),
+                'ai_supervisor_close': (['i64'], 'void'),
+
+                # Graph (computation graphs)
+                'graph_new': ([], 'i64'),
+                'graph_add_node': (['i64', 'i64', 'i64', 'double'], 'i64'),
+                'graph_add_edge': (['i64', 'i64', 'i64'], 'void'),
+                'graph_partition': (['i64'], 'void'),
+                'graph_partition_count': (['i64'], 'i64'),
+                'graph_partition_device': (['i64', 'i64'], 'i64'),
+                'graph_partition_node_count': (['i64', 'i64'], 'i64'),
+                'graph_partition_cost': (['i64', 'i64'], 'double'),
+                'graph_free': (['i64'], 'void'),
+
+                # LLM Client
+                'llm_client_new': (['i64'], 'i64'),
+                'llm_set_api_key': (['i64', 'i64'], 'i64'),
+                'llm_set_model': (['i64', 'i64'], 'i64'),
+                'llm_set_temperature': (['i64', 'double'], 'i64'),
+                'llm_set_base_url': (['i64', 'i64'], 'i64'),
+                'llm_complete': (['i64', 'i64'], 'i64'),
+                'llm_chat': (['i64', 'i64'], 'i64'),
+                'llm_embed': (['i64', 'i64'], 'i64'),
+                'llm_get_tokens': (['i64'], 'i64'),
+                'llm_get_cost': (['i64'], 'double'),
+                'llm_client_close': (['i64'], 'void'),
+
+                # LLM Providers
+                'llm_provider_mock': ([], 'i64'),
+                'llm_provider_anthropic': ([], 'i64'),
+                'llm_provider_openai': ([], 'i64'),
+                'llm_provider_ollama': ([], 'i64'),
+
+                # LLM Request Builder
+                'llm_request_new': (['i64'], 'i64'),
+                'llm_request_set_system': (['i64', 'i64'], 'void'),
+                'llm_request_set_prompt': (['i64', 'i64'], 'void'),
+                'llm_request_set_model': (['i64', 'i64'], 'void'),
+                'llm_request_set_max_tokens': (['i64', 'i64'], 'void'),
+                'llm_request_set_temperature': (['i64', 'double'], 'void'),
+                'llm_request_set_schema': (['i64', 'i64'], 'void'),
+                'llm_request_enable_stream': (['i64', 'i64'], 'void'),
+                'llm_request_set_tools': (['i64', 'i64'], 'void'),
+                'llm_request_set_retry': (['i64', 'i64'], 'void'),
+                'llm_request_to_json': (['i64', 'i64'], 'i64'),
+                'llm_request_close': (['i64'], 'void'),
+
+                # LLM Response
+                'llm_response_new': ([], 'i64'),
+                'llm_response_set_success': (['i64', 'i64'], 'void'),
+                'llm_response_set_content': (['i64', 'i64'], 'void'),
+                'llm_response_set_error': (['i64', 'i64'], 'void'),
+                'llm_response_set_tokens': (['i64', 'i64', 'i64'], 'void'),
+                'llm_response_set_cost': (['i64', 'double'], 'void'),
+                'llm_response_set_latency': (['i64', 'double'], 'void'),
+                'llm_response_is_success': (['i64'], 'i64'),
+                'llm_response_get_content': (['i64'], 'i64'),
+                'llm_response_get_error': (['i64'], 'i64'),
+                'llm_response_input_tokens': (['i64'], 'i64'),
+                'llm_response_output_tokens': (['i64'], 'i64'),
+                'llm_response_get_cost': (['i64'], 'double'),
+                'llm_response_get_latency': (['i64'], 'double'),
+                'llm_response_to_json': (['i64'], 'i64'),
+                'llm_response_close': (['i64'], 'void'),
+
+                # Provider Registry
+                'provider_registry_new': ([], 'i64'),
+                'provider_config_new': (['i64', 'i64'], 'i64'),
+                'provider_config_set_key': (['i64', 'i64'], 'void'),
+                'provider_config_set_model': (['i64', 'i64'], 'void'),
+                'provider_config_set_url': (['i64', 'i64'], 'void'),
+                'provider_config_set_temp': (['i64', 'double'], 'void'),
+                'provider_config_set_max_tokens': (['i64', 'i64'], 'void'),
+                'provider_config_set_timeout': (['i64', 'i64'], 'void'),
+                'provider_config_set_priority': (['i64', 'i64'], 'void'),
+                'provider_config_set_cost': (['i64', 'double', 'double'], 'void'),
+                'provider_registry_add': (['i64', 'i64'], 'i64'),
+                'provider_registry_get': (['i64', 'i64'], 'i64'),
+                'provider_registry_count': (['i64'], 'i64'),
+                'provider_registry_set_default': (['i64', 'i64'], 'void'),
+                'provider_get_by_tier': (['i64', 'i64'], 'i64'),
+                'provider_registry_list': (['i64'], 'i64'),
+                'provider_get_stats': (['i64'], 'i64'),
+                'provider_record_request': (['i64', 'i64', 'i64', 'i64', 'double'], 'void'),
+                'provider_total_cost': (['i64'], 'double'),
+                'provider_registry_close': (['i64'], 'void'),
+
                 'intrinsic_actor_spawn': (['ptr', 'ptr'], 'ptr'),
                 'intrinsic_actor_send': (['ptr', 'ptr'], 'void'),
                 'intrinsic_actor_state': (['ptr'], 'ptr'),
@@ -6032,6 +7434,8 @@ class CodeGen:
                 'intrinsic_path_dirname': (['ptr'], 'ptr'),
                 'intrinsic_path_basename': (['ptr'], 'ptr'),
                 'intrinsic_path_extension': (['ptr'], 'ptr'),
+                'intrinsic_get_cwd': ([], 'ptr'),
+                'intrinsic_list_dir': (['ptr'], 'ptr'),
                 'intrinsic_assert_fail': (['ptr', 'ptr', 'i64'], 'void'),
                 'intrinsic_assert_eq_i64': (['i64', 'i64', 'ptr', 'i64'], 'void'),
                 'intrinsic_assert_eq_str': (['ptr', 'ptr', 'ptr', 'i64'], 'void'),
@@ -6061,20 +7465,16 @@ class CodeGen:
                 'intrinsic_belief_count': ([], 'i64'),
                 'intrinsic_decay_beliefs': ([], 'void'),
                 # Phase 14: BDI Agent Architecture
-                'intrinsic_create_goal': (['ptr', 'ptr', 'i64'], 'i64'),
-                'intrinsic_get_goal': (['i64'], 'ptr'),
-                'intrinsic_goal_priority': (['i64'], 'i64'),
+                'intrinsic_add_goal': (['ptr', 'ptr', 'i64'], 'i64'),
                 'intrinsic_goal_status': (['i64'], 'i64'),
                 'intrinsic_set_goal_status': (['i64', 'i64'], 'void'),
-                'intrinsic_active_goals': ([], 'ptr'),
-                'intrinsic_abandon_goal': (['i64'], 'void'),
+                'intrinsic_select_goal': ([], 'i64'),
+                'intrinsic_pending_goals_count': ([], 'i64'),
                 'intrinsic_create_intention': (['i64', 'ptr', 'i64'], 'i64'),
+                'intrinsic_intention_status': (['i64'], 'i64'),
                 'intrinsic_intention_step': (['i64'], 'i64'),
-                'intrinsic_advance_intention': (['i64'], 'i64'),
-                'intrinsic_complete_intention': (['i64'], 'void'),
+                'intrinsic_intention_current_step': (['i64'], 'i64'),
                 'intrinsic_fail_intention': (['i64'], 'void'),
-                'intrinsic_pending_intentions': ([], 'ptr'),
-                'intrinsic_deliberate': ([], 'i64'),
                 # Phase 15: Mnemonic Specialists
                 'intrinsic_specialist_create': (['ptr', 'ptr', 'ptr'], 'i64'),
                 'intrinsic_specialist_name': (['i64'], 'ptr'),
@@ -6083,23 +7483,16 @@ class CodeGen:
                 'intrinsic_specialist_configure': (['i64', 'i64', 'i64', 'i64'], 'void'),
                 'intrinsic_specialist_limits': (['i64'], 'ptr'),
                 # Phase 16: Evolution Engine
-                'intrinsic_trait_create': (['ptr', 'i64'], 'i64'),
+                'intrinsic_add_trait': (['ptr', 'i64'], 'i64'),
                 'intrinsic_trait_value': (['i64'], 'i64'),
-                'intrinsic_trait_mutate': (['i64', 'i64'], 'i64'),
-                'intrinsic_trait_crossover': (['i64', 'i64'], 'i64'),
-                'intrinsic_generation_current': ([], 'i64'),
-                'intrinsic_generation_advance': ([], 'i64'),
-                'intrinsic_fitness_set': (['i64', 'i64'], 'void'),
-                'intrinsic_fitness_get': (['i64'], 'i64'),
+                'intrinsic_mutate_trait': (['i64', 'i64'], 'void'),
+                'intrinsic_current_generation': ([], 'i64'),
+                'intrinsic_next_generation': ([], 'i64'),
+                'intrinsic_evaluate_fitness': ([], 'i64'),
                 'intrinsic_select_best': (['i64'], 'ptr'),
                 # Phase 17: Collective Intelligence
                 'intrinsic_swarm_broadcast': (['i64', 'i64', 'ptr'], 'i64'),
-                'intrinsic_swarm_receive': (['i64', 'i64'], 'ptr'),
-                'intrinsic_swarm_messages': (['i64'], 'ptr'),
-                'intrinsic_vote_cast': (['i64', 'i64'], 'void'),
-                'intrinsic_vote_tally': (['i64'], 'ptr'),
-                'intrinsic_consensus_check': (['i64', 'i64'], 'i64'),
-                'intrinsic_swarm_clear': (['i64'], 'void'),
+                'intrinsic_swarm_messages': (['i64', 'i64'], 'ptr'),
                 # Phase 20: Toolchain Support
                 'intrinsic_read_line': ([], 'ptr'),
                 'intrinsic_print': (['ptr'], 'void'),
@@ -6188,6 +7581,395 @@ class CodeGen:
                 'swarm_get_position': (['i64', 'i64', 'i64'], 'double'),
                 'swarm_set_velocity': (['i64', 'i64', 'i64', 'double'], 'i64'),
                 'swarm_best_fitness': (['i64'], 'double'),
+
+                # Option Type Intrinsics
+                'option_some': (['i64'], 'i64'),
+                'option_none': ([], 'i64'),
+                'option_free': (['i64'], 'void'),
+                'option_unwrap': (['i64'], 'i64'),
+                'option_expect': (['i64', 'i64'], 'i64'),
+                'option_unwrap_or': (['i64', 'i64'], 'i64'),
+                'option_and': (['i64', 'i64'], 'i64'),
+                'option_or': (['i64', 'i64'], 'i64'),
+                'option_get_value': (['i64'], 'i64'),
+                'option_clone': (['i64'], 'i64'),
+                'option_ok_or': (['i64', 'i64'], 'i64'),
+                'option_transpose': (['i64'], 'i64'),
+                'option_flatten': (['i64'], 'i64'),
+
+                # Result Type Intrinsics
+                'result_ok': (['i64'], 'i64'),
+                'result_err': (['i64'], 'i64'),
+                'result_err_msg': (['i64'], 'i64'),
+                'result_free': (['i64'], 'void'),
+                'result_ok_option': (['i64'], 'i64'),
+                'result_err_option': (['i64'], 'i64'),
+                'result_unwrap': (['i64'], 'i64'),
+                'result_unwrap_err': (['i64'], 'i64'),
+                'result_expect': (['i64', 'i64'], 'i64'),
+                'result_expect_err': (['i64', 'i64'], 'i64'),
+                'result_unwrap_or': (['i64', 'i64'], 'i64'),
+                'result_and': (['i64', 'i64'], 'i64'),
+                'result_or': (['i64', 'i64'], 'i64'),
+                'result_get_value': (['i64'], 'i64'),
+                'result_get_error': (['i64'], 'i64'),
+                'result_clone': (['i64'], 'i64'),
+                'result_transpose': (['i64'], 'i64'),
+                'result_flatten': (['i64'], 'i64'),
+
+                # HashSet Intrinsics
+                'hashset_new': ([], 'i64'),
+                'hashset_with_capacity': (['i64'], 'i64'),
+                'hashset_len': (['i64'], 'i64'),
+                'hashset_clear': (['i64'], 'void'),
+                'hashset_free': (['i64'], 'void'),
+                'hashset_iter': (['i64'], 'i64'),
+                'hashset_iter_next': (['i64'], 'i64'),
+                'hashset_iter_free': (['i64'], 'void'),
+                'hashset_union': (['i64', 'i64'], 'i64'),
+                'hashset_intersection': (['i64', 'i64'], 'i64'),
+                'hashset_difference': (['i64', 'i64'], 'i64'),
+                'hashset_symmetric_difference': (['i64', 'i64'], 'i64'),
+                # Int HashSet
+                'int_hashset_new': ([], 'i64'),
+                'int_hashset_len': (['i64'], 'i64'),
+                'int_hashset_clear': (['i64'], 'void'),
+                'int_hashset_free': (['i64'], 'void'),
+                'int_hashset_iter': (['i64'], 'i64'),
+                'int_hashset_iter_next': (['i64'], 'i64'),
+                'int_hashset_iter_free': (['i64'], 'void'),
+                'int_hashset_union': (['i64', 'i64'], 'i64'),
+                'int_hashset_intersection': (['i64', 'i64'], 'i64'),
+                'int_hashset_difference': (['i64', 'i64'], 'i64'),
+
+                # Iterator Intrinsics
+                'sxiter_free': (['i64'], 'void'),
+                'sxiter_sum': (['i64'], 'i64'),
+                'sxiter_product': (['i64'], 'i64'),
+                'sxiter_count': (['i64'], 'i64'),
+                'sxiter_collect_hashmap': (['i64'], 'i64'),
+                'sxiter_collect_int_hashmap': (['i64'], 'i64'),
+                'sxiter_collect_hashset': (['i64'], 'i64'),
+                'sxiter_collect_int_hashset': (['i64'], 'i64'),
+                'sxiter_vec': (['i64'], 'i64'),
+                'sxiter_next_value': (['i64'], 'i64'),
+                'sxiter_enumerate_pair_index': (['i64'], 'i64'),
+                'sxiter_enumerate_pair_value': (['i64'], 'i64'),
+                'sxiter_enumerate_pair_free': (['i64'], 'void'),
+                'sxiter_zip_pair_first': (['i64'], 'i64'),
+                'sxiter_zip_pair_second': (['i64'], 'i64'),
+                'sxiter_zip_pair_free': (['i64'], 'void'),
+
+                # HTTP Intrinsics
+                'http_request_new': (['i64', 'i64'], 'i64'),
+                'http_request_header': (['i64', 'i64', 'i64'], 'void'),
+                'http_request_body': (['i64', 'i64'], 'void'),
+                'http_request_send': (['i64'], 'i64'),
+                'http_request_free': (['i64'], 'void'),
+                'http_response_status': (['i64'], 'i64'),
+                'http_response_status_text': (['i64'], 'i64'),
+                'http_response_header': (['i64', 'i64'], 'i64'),
+                'http_response_body': (['i64'], 'i64'),
+                'http_response_body_len': (['i64'], 'i64'),
+                'http_response_free': (['i64'], 'void'),
+                'http_get': (['i64'], 'i64'),
+                'http_post': (['i64', 'i64'], 'i64'),
+                # HTTP Server
+                'http_server_new': (['i64'], 'i64'),
+                'http_server_tls': (['i64', 'i64', 'i64'], 'i64'),
+                'http_server_route': (['i64', 'i64', 'i64', 'i64'], 'void'),
+                'http_server_response_new': ([], 'i64'),
+                'http_server_response_status': (['i64', 'i64', 'i64'], 'void'),
+                'http_server_response_header': (['i64', 'i64', 'i64'], 'void'),
+                'http_server_response_body': (['i64', 'i64'], 'void'),
+                'http_server_bind': (['i64'], 'i64'),
+                'http_server_accept_one': (['i64'], 'i64'),
+                'http_server_run': (['i64', 'i64'], 'i64'),
+                'http_server_stop': (['i64'], 'void'),
+                'http_server_close': (['i64'], 'void'),
+                'http_server_port': (['i64'], 'i64'),
+                'http_server_request_method': (['i64'], 'i64'),
+                'http_server_request_path': (['i64'], 'i64'),
+                'http_server_request_header': (['i64', 'i64'], 'i64'),
+                'http_server_request_body': (['i64'], 'i64'),
+
+                # WebSocket Intrinsics
+                'ws_connect': (['i64'], 'i64'),
+                'ws_accept': (['i64', 'i64'], 'i64'),
+                'ws_send_text': (['i64', 'i64'], 'i64'),
+                'ws_send_binary': (['i64', 'i64', 'i64'], 'i64'),
+                'ws_ping': (['i64'], 'i64'),
+                'ws_pong': (['i64'], 'i64'),
+                'ws_recv': (['i64'], 'i64'),
+                'ws_msg_opcode': (['i64'], 'i64'),
+                'ws_msg_data': (['i64'], 'i64'),
+                'ws_close': (['i64'], 'void'),
+                'ws_is_connected': (['i64'], 'i64'),
+                'ws_get_fd': (['i64'], 'i64'),
+                'ws_opcode_text': ([], 'i64'),
+                'ws_opcode_binary': ([], 'i64'),
+                'ws_opcode_close': ([], 'i64'),
+                'ws_opcode_ping': ([], 'i64'),
+                'ws_opcode_pong': ([], 'i64'),
+
+                # TLS Intrinsics
+                'tls_context_new_client': ([], 'i64'),
+                'tls_context_new_server': ([], 'i64'),
+                'tls_context_load_cert': (['i64', 'i64'], 'i64'),
+                'tls_context_load_key': (['i64', 'i64'], 'i64'),
+                'tls_context_load_ca': (['i64', 'i64'], 'i64'),
+                'tls_context_use_system_ca': (['i64'], 'i64'),
+                'tls_context_set_verify': (['i64', 'i64'], 'void'),
+                'tls_context_free': (['i64'], 'void'),
+                'tls_connect': (['i64', 'i64', 'i64'], 'i64'),
+                'tls_accept': (['i64', 'i64'], 'i64'),
+                'tls_read': (['i64', 'i64', 'i64'], 'i64'),
+                'tls_write': (['i64', 'i64', 'i64'], 'i64'),
+                'tls_shutdown': (['i64'], 'void'),
+                'tls_close': (['i64'], 'void'),
+                'tls_peer_cert_subject': (['i64'], 'i64'),
+                'tls_peer_verified': (['i64'], 'i64'),
+                'tls_version': (['i64'], 'i64'),
+                'tls_cipher': (['i64'], 'i64'),
+                'tls_error_string': ([], 'i64'),
+                'tls_get_fd': (['i64'], 'i64'),
+
+                # Actor Extended Intrinsics
+                'actor_get_status': (['i64'], 'i64'),
+                'actor_get_exit_reason': (['i64'], 'i64'),
+                'actor_get_error_code': (['i64'], 'i64'),
+                'actor_set_error': (['i64', 'i64', 'i64'], 'void'),
+                'actor_stop': (['i64'], 'void'),
+                'actor_kill': (['i64'], 'void'),
+                'actor_crash': (['i64', 'i64', 'i64'], 'void'),
+                'actor_set_on_error': (['i64', 'i64'], 'void'),
+                'actor_set_on_exit': (['i64', 'i64'], 'void'),
+                'actor_set_supervisor': (['i64', 'i64'], 'void'),
+                'actor_get_supervisor': (['i64'], 'i64'),
+                'actor_get_restart_count': (['i64'], 'i64'),
+                'actor_increment_restart': (['i64'], 'void'),
+                'actor_is_alive': (['i64'], 'i64'),
+                'actor_link': (['i64', 'i64'], 'i64'),
+                'actor_unlink': (['i64', 'i64'], 'void'),
+                'actor_monitor': (['i64', 'i64'], 'i64'),
+                'actor_demonitor': (['i64'], 'void'),
+                'actor_propagate_exit': (['i64', 'i64'], 'void'),
+                'actor_is_linked': (['i64', 'i64'], 'i64'),
+                'actor_spawn_link': (['i64', 'i64', 'i64'], 'i64'),
+                'actor_get_links_count': (['i64'], 'i64'),
+                'actor_send_down': (['i64', 'i64', 'i64'], 'i64'),
+
+                # Consensus Intrinsics
+                'consensus_new': (['i64'], 'i64'),
+                'consensus_new_with_id': (['i64', 'i64'], 'i64'),
+                'consensus_propose': (['i64', 'i64'], 'i64'),
+                'consensus_accept': (['i64', 'i64'], 'i64'),
+                'consensus_commit': (['i64'], 'i64'),
+                'consensus_commit_to': (['i64', 'i64'], 'i64'),
+                'consensus_commit_all': (['i64'], 'i64'),
+                'consensus_commit_index': (['i64'], 'i64'),
+                'consensus_append': (['i64', 'i64'], 'i64'),
+                'consensus_term': (['i64'], 'i64'),
+                'consensus_increment_term': (['i64'], 'i64'),
+                'consensus_set_state': (['i64', 'i64'], 'i64'),
+                'consensus_get_state': (['i64'], 'i64'),
+                'consensus_log_count': (['i64'], 'i64'),
+                'consensus_status': (['i64'], 'i64'),
+                'consensus_close': (['i64'], 'void'),
+                'consensus_paxos': ([], 'i64'),
+                'consensus_raft': ([], 'i64'),
+                'consensus_pbft': ([], 'i64'),
+                # Consensus Group
+                'consensus_group_new': (['i64', 'i64'], 'i64'),
+                'consensus_group_add': (['i64', 'i64'], 'i64'),
+                'consensus_group_vote': (['i64', 'i64', 'i64'], 'i64'),
+                'consensus_group_close': (['i64'], 'void'),
+
+                # Belief System Intrinsics
+                'belief_store_new': ([], 'i64'),
+                'belief_store_add': (['i64', 'i64', 'double', 'i64'], 'i64'),
+                'belief_store_get': (['i64', 'i64'], 'i64'),
+                'belief_store_confidence': (['i64', 'i64'], 'double'),
+                'belief_store_remove': (['i64', 'i64'], 'i64'),
+                'belief_store_count': (['i64'], 'i64'),
+                'belief_store_close': (['i64'], 'void'),
+                'belief_add': (['i64', 'i64', 'double'], 'i64'),
+                'belief_get_confidence': (['i64', 'i64'], 'double'),
+                'belief_set_confidence': (['i64', 'i64', 'double'], 'i64'),
+                'belief_get_content': (['i64', 'i64'], 'i64'),
+                'belief_set_source': (['i64', 'i64', 'i64'], 'i64'),
+                'belief_get_source': (['i64', 'i64'], 'i64'),
+                'belief_set_timestamp': (['i64', 'i64', 'i64'], 'i64'),
+                'belief_get_timestamp': (['i64', 'i64'], 'i64'),
+                'belief_add_derivation': (['i64', 'i64', 'i64'], 'i64'),
+                'belief_count': (['i64'], 'i64'),
+                'belief_check_contradiction': (['i64', 'i64', 'i64'], 'i64'),
+                'belief_check_contradictions': (['i64', 'i64'], 'i64'),
+                'belief_find_contradictions': (['i64'], 'i64'),
+                'belief_contradiction_count': (['i64'], 'i64'),
+                'belief_resolve': (['i64', 'i64', 'i64', 'i64'], 'i64'),
+                'belief_resolve_by_confidence': (['i64', 'i64', 'i64'], 'i64'),
+                'belief_resolve_by_recency': (['i64', 'i64', 'i64'], 'i64'),
+                'belief_resolve_by_source': (['i64', 'i64', 'i64'], 'i64'),
+                'belief_strategy_confidence': ([], 'i64'),
+                'belief_strategy_recency': ([], 'i64'),
+                'belief_strategy_merge': ([], 'i64'),
+                'belief_query': (['i64', 'i64', 'i64'], 'i64'),
+                'belief_query_related': (['i64', 'i64'], 'i64'),
+                'belief_query_by_source': (['i64', 'i64'], 'i64'),
+                'belief_query_by_confidence': (['i64', 'double'], 'i64'),
+
+                # BDI Agent Intrinsics
+                'bdi_agent_new': ([], 'i64'),
+                'bdi_agent_close': (['i64'], 'void'),
+                'bdi_add_belief': (['i64', 'i64', 'double'], 'i64'),
+                'bdi_add_goal': (['i64', 'i64'], 'i64'),
+                'bdi_add_goal_desc': (['i64', 'i64', 'double'], 'i64'),
+                'bdi_add_subgoal': (['i64', 'i64', 'i64', 'double'], 'i64'),
+                'bdi_add_plan': (['i64', 'i64', 'i64'], 'i64'),
+                'bdi_add_plan_internal': (['i64', 'i64', 'i64'], 'i64'),
+                'bdi_add_plan_step': (['i64', 'i64', 'i64'], 'i64'),
+                'bdi_deliberate': (['i64'], 'i64'),
+                'bdi_execute': (['i64'], 'i64'),
+                'bdi_execute_step': (['i64', 'i64'], 'i64'),
+                'bdi_find_plans_for_goal': (['i64', 'i64'], 'i64'),
+                'bdi_select_plan': (['i64', 'i64'], 'i64'),
+                'bdi_select_plan_for_goal': (['i64', 'i64'], 'i64'),
+                'bdi_intend': (['i64', 'i64', 'i64'], 'i64'),
+                'bdi_commit_to_intention': (['i64', 'i64'], 'i64'),
+                'bdi_set_commitment': (['i64', 'i64'], 'i64'),
+                'bdi_goal_status': (['i64', 'i64'], 'i64'),
+                'bdi_goal_count': (['i64'], 'i64'),
+                'bdi_intention_count': (['i64'], 'i64'),
+
+                # Anima Memory Intrinsics
+                'anima_memory_new': (['i64'], 'i64'),
+                'anima_memory_close': (['i64'], 'void'),
+                'anima_remember': (['i64', 'i64', 'double'], 'i64'),
+                'anima_learn': (['i64', 'i64', 'double', 'i64'], 'i64'),
+                'anima_store_procedure': (['i64', 'i64', 'i64'], 'i64'),
+                'anima_believe': (['i64', 'i64', 'double', 'i64'], 'i64'),
+                'anima_revise_belief': (['i64', 'i64', 'double', 'i64'], 'i64'),
+                'anima_working_push': (['i64', 'i64'], 'i64'),
+                'anima_working_pop': (['i64'], 'i64'),
+                'anima_working_context': (['i64'], 'i64'),
+                'anima_recall_for_goal': (['i64', 'i64', 'i64', 'i64'], 'i64'),
+                'anima_episodic_count': (['i64'], 'i64'),
+                'anima_semantic_count': (['i64'], 'i64'),
+                'anima_beliefs_count': (['i64'], 'i64'),
+                'anima_working_count': (['i64'], 'i64'),
+                'anima_consolidate': (['i64'], 'i64'),
+                # Anima BDI
+                'anima_bdi_new': ([], 'i64'),
+                'anima_bdi_close': (['i64'], 'void'),
+                'anima_add_desire': (['i64', 'i64', 'double'], 'i64'),
+                'anima_get_top_desire': (['i64'], 'i64'),
+                'anima_desires_count': (['i64'], 'i64'),
+                'anima_set_desire_status': (['i64', 'i64', 'i64'], 'i64'),
+                'anima_add_intention': (['i64', 'i64', 'i64', 'i64'], 'i64'),
+                'anima_intentions_count': (['i64'], 'i64'),
+                'anima_intention_step': (['i64', 'i64'], 'i64'),
+                'anima_advance_intention': (['i64', 'i64'], 'i64'),
+                'anima_set_intention_status': (['i64', 'i64', 'i64'], 'i64'),
+                'anima_save': (['i64', 'i64'], 'i64'),
+                'anima_load': (['i64'], 'i64'),
+                'anima_exists': (['i64'], 'i64'),
+
+                # Cognitive Actor Intrinsics
+                'cognitive_actor_new': (['i64', 'i64', 'i64'], 'i64'),
+                'cognitive_actor_close': (['i64'], 'void'),
+                'cognitive_actor_get_anima': (['i64'], 'i64'),
+                'cognitive_actor_set_tools': (['i64', 'i64'], 'void'),
+                'cognitive_actor_set_provider': (['i64', 'i64'], 'void'),
+                'cognitive_actor_set_auto_learn': (['i64', 'i64'], 'void'),
+                'cognitive_actor_set_auto_remember': (['i64', 'i64'], 'void'),
+                'cognitive_actor_set_threshold': (['i64', 'double'], 'void'),
+                'cognitive_actor_get_personality': (['i64'], 'i64'),
+                'cognitive_actor_set_personality': (['i64', 'i64'], 'void'),
+                'cognitive_actor_remember': (['i64', 'i64', 'double'], 'i64'),
+                'cognitive_actor_learn': (['i64', 'i64', 'double', 'i64'], 'i64'),
+                'cognitive_actor_believe': (['i64', 'i64', 'double', 'i64'], 'i64'),
+                'cognitive_actor_recall': (['i64', 'i64', 'i64'], 'i64'),
+                'cognitive_actor_process_interaction': (['i64', 'i64', 'i64', 'double'], 'i64'),
+                'cognitive_actor_get_context': (['i64', 'i64'], 'i64'),
+                'cognitive_actor_build_prompt': (['i64', 'i64'], 'i64'),
+                'cognitive_actor_save': (['i64', 'i64'], 'i64'),
+                'cognitive_actor_load': (['i64'], 'i64'),
+                'cognitive_actor_info': (['i64'], 'i64'),
+                # Cognitive Team
+                'cognitive_team_new': (['i64'], 'i64'),
+                'cognitive_team_close': (['i64'], 'void'),
+                'cognitive_team_add': (['i64', 'i64'], 'i64'),
+                'cognitive_team_share': (['i64', 'i64', 'i64', 'double'], 'i64'),
+                'cognitive_team_size': (['i64'], 'i64'),
+                'cognitive_team_get_shared': (['i64'], 'i64'),
+                'cognitive_team_recall': (['i64', 'i64', 'i64'], 'i64'),
+
+                # Neural Network Intrinsics
+                # Neural Global State
+                'neural_get_training_mode': ([], 'i64'),
+                'neural_set_training_mode': (['i64'], 'void'),
+                'neural_get_temperature': ([], 'double'),
+                'neural_set_temperature': (['double'], 'void'),
+                # Neural Activation Functions
+                'neural_sigmoid': (['double'], 'double'),
+                'neural_tanh': (['double'], 'double'),
+                'neural_relu': (['double'], 'double'),
+                # Neural Gates
+                'neural_gate_new': (['i64', 'double', 'i64', 'i64'], 'i64'),
+                'neural_gate_with_contract': (['i64', 'double', 'double', 'i64', 'i64'], 'double'),
+                'neural_gate_execute_on_device': (['i64', 'double', 'i64'], 'double'),
+                'neural_gate_batch_execute': (['ptr', 'ptr', 'ptr', 'i64'], 'void'),
+                'neural_gate_threshold': (['i64'], 'double'),
+                'neural_gate_set_threshold': (['i64', 'double'], 'void'),
+                'neural_gate_gradient': (['i64'], 'double'),
+                'neural_gate_add_gradient': (['i64', 'double'], 'void'),
+                'neural_gate_zero_grad': (['i64'], 'void'),
+                'neural_gate_update': (['i64', 'double'], 'void'),
+                # Neural Gate Registry
+                'neural_register_gate_weight': (['i64', 'double', 'i64'], 'void'),
+                'neural_update_gate_weight': (['i64', 'double'], 'void'),
+                'neural_get_gate_weight': (['i64'], 'double'),
+                'neural_get_gate_count': ([], 'i64'),
+                'neural_clear_gate_registry': ([], 'void'),
+                # Neural Pruning
+                'neural_prune_by_weight_magnitude': (['double'], 'i64'),
+                'neural_is_gate_pruned': (['i64'], 'i64'),
+                'neural_get_pruned_gate_count': ([], 'i64'),
+                'neural_get_pruning_ratio': ([], 'double'),
+                'neural_reset_pruning': ([], 'void'),
+                # Gradient Tape
+                'grad_tape_new': ([], 'i64'),
+                'grad_tape_free': (['i64'], 'void'),
+                'grad_tape_set_training': (['i64', 'i64'], 'void'),
+                'grad_tape_set_temperature': (['i64', 'double'], 'void'),
+                'grad_tape_temperature': (['i64'], 'double'),
+                # Gradient Operations
+                'grad_input': (['i64', 'double'], 'i64'),
+                'grad_value_get': (['i64'], 'double'),
+                'grad_value_grad': (['i64'], 'double'),
+                'grad_add': (['i64', 'i64'], 'i64'),
+                'grad_sub': (['i64', 'i64'], 'i64'),
+                'grad_mul': (['i64', 'i64'], 'i64'),
+                'grad_div': (['i64', 'i64'], 'i64'),
+                'grad_neg': (['i64'], 'i64'),
+                'grad_lt': (['i64', 'i64', 'i64'], 'i64'),
+                'grad_le': (['i64', 'i64', 'i64'], 'i64'),
+                'grad_gt': (['i64', 'i64', 'i64'], 'i64'),
+                'grad_ge': (['i64', 'i64', 'i64'], 'i64'),
+                # Activation Tracking
+                'activation_tracker_init': ([], 'void'),
+                'activation_tracking_enabled': ([], 'i64'),
+                'activation_tracking_set_enabled': (['i64'], 'void'),
+                'activation_record': (['i64', 'double'], 'void'),
+                'activation_count_get': (['i64'], 'i64'),
+                'activation_mean_get': (['i64'], 'double'),
+                'activation_rate_get': (['i64'], 'double'),
+                'activation_gate_count': ([], 'i64'),
+                'activation_stats_get': (['i64'], 'i64'),
+                'activation_stats_reset': ([], 'void'),
+                'activation_epoch_current': ([], 'i64'),
+                'activation_epoch_advance': ([], 'i64'),
             }
 
             if func_name in intrinsic_types:
@@ -6448,6 +8230,31 @@ class CodeGen:
             self.emit(f'{end_label}:')
             return '0'
 
+        if expr_type == 'LoopExpr':
+            # loop { body } - infinite loop, exits via break
+            loop_label = self.new_label('loop')
+            end_label = self.new_label('loop_end')
+
+            # Allocate result slot for break value
+            result_slot = self.new_temp()
+            self.emit(f'  {result_slot} = alloca i64')
+            self.emit(f'  store i64 0, ptr {result_slot}')
+
+            self.emit(f'  br label %{loop_label}')
+
+            self.emit(f'{loop_label}:')
+            # Push loop context with result slot (continue_label, break_label, result_slot)
+            self.loop_stack.append((loop_label, end_label, result_slot))
+            self.generate_block(expr['body'])
+            self.loop_stack.pop()
+            self.emit(f'  br label %{loop_label}')  # Loop back
+
+            self.emit(f'{end_label}:')
+            # Load and return the result
+            final_temp = self.new_temp()
+            self.emit(f'  {final_temp} = load i64, ptr {result_slot}')
+            return final_temp
+
         if expr_type == 'ForExpr':
             # For loop: for var in start..end { body }
             # Desugar to: let var = start; while var < end { body; var = var + 1; }
@@ -6704,15 +8511,23 @@ class CodeGen:
                     bindings = pattern.get('bindings', [])
                     # Get discriminant value
                     disc_val = 0
-                    for enum_name, variants in self.enums.items():
-                        if variant_name in variants:
-                            disc_val = variants[variant_name]
-                            break
-                        # Check for qualified name like Option::Some
-                        if '::' in variant_name:
-                            _, v = variant_name.split('::', 1)
-                            if v in variants:
-                                disc_val = variants[v]
+                    # Check for qualified name like Status::Ok first
+                    if '::' in variant_name:
+                        enum_prefix, v = variant_name.split('::', 1)
+                        # Look for exact enum match first
+                        if enum_prefix in self.enums and v in self.enums[enum_prefix]:
+                            disc_val = self.enums[enum_prefix][v]
+                        else:
+                            # Fall back to searching all enums
+                            for enum_name, variants in self.enums.items():
+                                if v in variants:
+                                    disc_val = variants[v]
+                                    break
+                    else:
+                        # Unqualified name - search all enums
+                        for enum_name, variants in self.enums.items():
+                            if variant_name in variants:
+                                disc_val = variants[variant_name]
                                 break
                     # Scrutinee is ptr to enum, first 8 bytes is discriminant
                     ptr_temp = self.new_temp()
@@ -6921,6 +8736,24 @@ class CodeGen:
             # Convert i64 to ptr
             ptr_temp = self.new_temp()
             self.emit(f'  {ptr_temp} = inttoptr i64 {obj_val} to ptr')
+
+            # Check if this is self.field in actor/specialist context
+            if obj.get('type') == 'IdentExpr' and obj.get('name') == 'self':
+                if hasattr(self, 'current_actor') and self.current_actor:
+                    actor_def = self.actors.get(self.current_actor, {})
+                    state_vars = actor_def.get('state_vars', [])
+                    # Specialists have config fields prepended
+                    config_offset = 0
+                    if hasattr(self, 'current_specialist') and self.current_specialist:
+                        config_offset = 16  # __model + __temperature
+                    for i, var in enumerate(state_vars):
+                        if var['name'] == field_name:
+                            offset = config_offset + i * 8
+                            gep_temp = self.new_temp()
+                            self.emit(f'  {gep_temp} = getelementptr i8, ptr {ptr_temp}, i64 {offset}')
+                            load_temp = self.new_temp()
+                            self.emit(f'  {load_temp} = load i64, ptr {gep_temp}')
+                            return load_temp
 
             # Find field offset by searching all structs
             field_idx = 0
@@ -7688,8 +9521,10 @@ class CodeGen:
 
             # Not in specialist context - use default model
             model_label = self.add_string_constant("default")
+            model_str = self.new_temp()
+            self.emit(f'  {model_str} = call ptr @intrinsic_string_new(ptr {model_label})')
             result_ptr = self.new_temp()
-            self.emit(f'  {result_ptr} = call ptr @intrinsic_ai_infer(ptr {model_label}, ptr {prompt_ptr}, i64 70)')
+            self.emit(f'  {result_ptr} = call ptr @intrinsic_ai_infer(ptr {model_str}, ptr {prompt_ptr}, i64 70)')
             result = self.new_temp()
             self.emit(f'  {result} = ptrtoint ptr {result_ptr} to i64')
             return result

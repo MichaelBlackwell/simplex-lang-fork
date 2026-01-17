@@ -1,0 +1,292 @@
+// simplex-training::compress - Model Compression Pipeline
+//
+// Implements unified compression:
+// - Pruning (structured and unstructured)
+// - Quantization (PTQ and QAT)
+// - Pipeline orchestration
+//
+// Uses learned schedules for optimal compression.
+
+pub mod pruning;
+pub mod quantization;
+
+pub use pruning::{PruningPipeline, PruningConfig, PruningResult};
+pub use quantization::{QuantizationPipeline, QuantConfig, QuantResult};
+
+use simplex_std::dual::dual;
+use simplex_std::{Clone, Default, Vec};
+use crate::schedules::{LearnablePruning, LearnableQuantization};
+
+// =============================================================================
+// Compression Pipeline
+// =============================================================================
+
+/// Combined compression configuration
+#[derive(Clone)]
+pub struct CompressionConfig {
+    /// Enable pruning
+    pub enable_pruning: bool,
+    /// Enable quantization
+    pub enable_quant: bool,
+    /// Target sparsity (0.0 to 1.0)
+    pub target_sparsity: f64,
+    /// Target bits (2 to 16)
+    pub target_bits: u8,
+    /// Calibration steps for PTQ
+    pub calibration_steps: u64,
+    /// Fine-tuning steps after compression
+    pub finetune_steps: u64,
+    /// Preserve accuracy threshold
+    pub accuracy_threshold: f64,
+}
+
+impl CompressionConfig {
+    pub fn new() -> CompressionConfig {
+        CompressionConfig {
+            enable_pruning: true,
+            enable_quant: true,
+            target_sparsity: 0.5,
+            target_bits: 8,
+            calibration_steps: 100,
+            finetune_steps: 1000,
+            accuracy_threshold: 0.01,  // 1% accuracy loss allowed
+        }
+    }
+
+    /// Aggressive compression (small model)
+    pub fn aggressive() -> CompressionConfig {
+        CompressionConfig {
+            enable_pruning: true,
+            enable_quant: true,
+            target_sparsity: 0.7,
+            target_bits: 4,
+            calibration_steps: 200,
+            finetune_steps: 2000,
+            accuracy_threshold: 0.02,
+        }
+    }
+
+    /// Conservative compression (preserve accuracy)
+    pub fn conservative() -> CompressionConfig {
+        CompressionConfig {
+            enable_pruning: true,
+            enable_quant: true,
+            target_sparsity: 0.3,
+            target_bits: 8,
+            calibration_steps: 100,
+            finetune_steps: 500,
+            accuracy_threshold: 0.005,
+        }
+    }
+}
+
+impl Default for CompressionConfig {
+    fn default() -> CompressionConfig {
+        CompressionConfig::new()
+    }
+}
+
+/// Compression result summary
+#[derive(Clone)]
+pub struct CompressionResult {
+    /// Original model size (bytes)
+    pub original_size: u64,
+    /// Compressed model size (bytes)
+    pub compressed_size: u64,
+    /// Compression ratio
+    pub compression_ratio: f64,
+    /// Original accuracy
+    pub original_accuracy: f64,
+    /// Final accuracy
+    pub final_accuracy: f64,
+    /// Accuracy preserved ratio
+    pub accuracy_preserved: f64,
+    /// Pruning result
+    pub pruning: Option<PruningResult>,
+    /// Quantization result
+    pub quant: Option<QuantResult>,
+}
+
+impl CompressionResult {
+    pub fn new() -> CompressionResult {
+        CompressionResult {
+            original_size: 0,
+            compressed_size: 0,
+            compression_ratio: 1.0,
+            original_accuracy: 0.0,
+            final_accuracy: 0.0,
+            accuracy_preserved: 1.0,
+            pruning: None,
+            quant: None,
+        }
+    }
+
+    pub fn compute_ratios(&mut self) {
+        if self.original_size > 0 {
+            self.compression_ratio = self.original_size as f64 / self.compressed_size as f64;
+        }
+        if self.original_accuracy > 0.0 {
+            self.accuracy_preserved = self.final_accuracy / self.original_accuracy;
+        }
+    }
+}
+
+impl Default for CompressionResult {
+    fn default() -> CompressionResult {
+        CompressionResult::new()
+    }
+}
+
+/// Unified compression pipeline
+pub struct CompressionPipeline {
+    /// Configuration
+    pub config: CompressionConfig,
+    /// Pruning schedule
+    pub pruning_schedule: LearnablePruning,
+    /// Quantization schedule
+    pub quant_schedule: LearnableQuantization,
+    /// Current step in compression
+    pub step: u64,
+    /// Result accumulator
+    pub result: CompressionResult,
+}
+
+impl CompressionPipeline {
+    /// Create new compression pipeline
+    pub fn new(config: CompressionConfig) -> CompressionPipeline {
+        var prune = LearnablePruning::new();
+        prune.final_sparsity = dual::variable(config.target_sparsity);
+
+        var quant = LearnableQuantization::new();
+        quant.final_bits = dual::variable(config.target_bits as f64);
+
+        CompressionPipeline {
+            config,
+            pruning_schedule: prune,
+            quant_schedule: quant,
+            step: 0,
+            result: CompressionResult::new(),
+        }
+    }
+
+    /// Get current sparsity target
+    pub fn current_sparsity(&self) -> f64 {
+        let step = dual::constant(self.step as f64);
+        self.pruning_schedule.target_sparsity(step).val
+    }
+
+    /// Get current bit-width target
+    pub fn current_bits(&self) -> f64 {
+        let step = dual::constant(self.step as f64);
+        self.quant_schedule.current_bits(step).val
+    }
+
+    /// Compute pruning mask for weights
+    pub fn compute_prune_mask(&self, weights: &[dual], gradients: &[f64]) -> Vec<dual> {
+        let step = dual::constant(self.step as f64);
+        self.pruning_schedule.compute_mask(weights, gradients, step)
+    }
+
+    /// Quantize weights
+    pub fn quantize_weights(&self, weights: &[dual]) -> Vec<dual> {
+        let step = dual::constant(self.step as f64);
+        self.quant_schedule.quantize_tensor(weights, step)
+    }
+
+    /// Run single compression step
+    ///
+    /// Returns (pruned_weights, quantized_weights)
+    pub fn compress_step(
+        &mut self,
+        weights: &[dual],
+        gradients: &[f64]
+    ) -> (Vec<dual>, Vec<dual>) {
+        // Pruning
+        let mask = self.compute_prune_mask(weights, gradients);
+        var pruned = Vec::new();
+        for i in 0..weights.len() {
+            pruned.push(weights[i] * mask[i]);
+        }
+
+        // Quantization
+        let quantized = self.quantize_weights(&pruned);
+
+        self.step = self.step + 1;
+        (pruned, quantized)
+    }
+
+    /// Check if compression should pause (accuracy degraded)
+    pub fn should_pause(&self, loss_increase: f64) -> bool {
+        loss_increase > self.config.accuracy_threshold ||
+        self.pruning_schedule.should_recover(loss_increase)
+    }
+
+    /// Full compression pipeline
+    pub fn compress<F, V>(
+        &mut self,
+        mut forward_fn: F,  // Forward pass returning loss
+        mut eval_fn: V,     // Evaluation returning accuracy
+        mut weights: Vec<dual>,
+        gradients: &[f64],
+    ) -> Vec<dual>
+    where
+        F: FnMut(&[dual]) -> dual,
+        V: FnMut(&[dual]) -> f64,
+    {
+        // Record original accuracy
+        self.result.original_accuracy = eval_fn(&weights);
+        self.result.original_size = estimate_size(&weights, 32);  // FP32
+
+        // Progressive compression
+        let total_steps = self.config.calibration_steps + self.config.finetune_steps;
+        var prev_loss = 0.0;
+
+        for _ in 0..total_steps {
+            // Compression step
+            let (pruned, quantized) = self.compress_step(&weights, gradients);
+
+            // Evaluate loss
+            let loss = forward_fn(&quantized);
+            let loss_increase = loss.val - prev_loss;
+
+            // Check if should pause
+            if self.should_pause(loss_increase) {
+                // Recovery: reduce compression rate
+                // In practice, we'd adjust schedules here
+            }
+
+            prev_loss = loss.val;
+            weights = quantized;
+        }
+
+        // Final evaluation
+        self.result.final_accuracy = eval_fn(&weights);
+        self.result.compressed_size = estimate_size(&weights, self.config.target_bits as u32);
+        self.result.compute_ratios();
+
+        weights
+    }
+
+    /// Get compression progress
+    pub fn progress(&self) -> f64 {
+        let total = self.config.calibration_steps + self.config.finetune_steps;
+        if total == 0 {
+            1.0
+        } else {
+            self.step as f64 / total as f64
+        }
+    }
+}
+
+impl Default for CompressionPipeline {
+    fn default() -> CompressionPipeline {
+        CompressionPipeline::new(CompressionConfig::default())
+    }
+}
+
+/// Estimate model size in bytes
+fn estimate_size(weights: &[dual], bits: u32) -> u64 {
+    let weight_count = weights.len() as u64;
+    let bits_total = weight_count * (bits as u64);
+    bits_total / 8  // Convert to bytes
+}

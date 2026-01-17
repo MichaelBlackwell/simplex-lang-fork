@@ -1,0 +1,147 @@
+// File I/O Error Handling Unit Tests
+// Tests file operations, error handling, and edge cases
+
+fn test_file_not_found() -> i64 {
+ println(" Testing file not found handling...");
+
+ // Try to read non-existent file
+ let path: i64 = "/nonexistent/path/file.txt";
+ let exists: i64 = file_exists(path);
+
+ if exists == 0 {
+ println(" PASS: Non-existent file correctly detected");
+ 0
+ } else {
+ println(" FAIL: Non-existent file reported as existing");
+ 1
+ }
+}
+
+fn test_file_write_read() -> i64 {
+ println(" Testing file write and read...");
+
+ let test_path: i64 = "/tmp/simplex_fileio_test.txt";
+ let content: i64 = "Hello from file I/O test!";
+
+ // Write file
+ file_write(test_path, content);
+
+ // Verify it exists
+ if file_exists(test_path) == 0 {
+ println(" FAIL: Written file does not exist");
+ 1
+ } else {
+ // Read it back
+ let read_content: i64 = file_read(test_path);
+
+ // Verify content (basic check)
+ if string_len(read_content) > 0 {
+ println(" PASS: File write/read cycle works");
+ file_delete(test_path);
+ 0
+ } else {
+ println(" FAIL: Read content is empty");
+ file_delete(test_path);
+ 1
+ }
+ }
+}
+
+fn test_empty_file() -> i64 {
+ println(" Testing empty file handling...");
+
+ let test_path: i64 = "/tmp/simplex_empty_test.txt";
+
+ // Write empty content
+ file_write(test_path, "");
+
+ // Read it back
+ let content: i64 = file_read(test_path);
+
+ // Empty file should have length 0
+ if string_len(content) == 0 {
+ println(" PASS: Empty file handled correctly");
+ file_delete(test_path);
+ 0
+ } else {
+ println(" FAIL: Empty file not handled correctly");
+ file_delete(test_path);
+ 1
+ }
+}
+
+fn test_special_characters() -> i64 {
+ println(" Testing special characters in files...");
+
+ let test_path: i64 = "/tmp/simplex_special_test.txt";
+ let content: i64 = "Line1\nLine2\tTabbed";
+
+ // Write file with special chars
+ file_write(test_path, content);
+
+ // Read it back
+ let read_content: i64 = file_read(test_path);
+
+ if string_len(read_content) > 0 {
+ println(" PASS: Special characters handled");
+ file_delete(test_path);
+ 0
+ } else {
+ println(" FAIL: Special characters caused issues");
+ file_delete(test_path);
+ 1
+ }
+}
+
+fn test_large_file() -> i64 {
+ println(" Testing large file handling...");
+
+ let test_path: i64 = "/tmp/simplex_large_test.txt";
+
+ // Build large content using concatenation
+ var content: i64 = "";
+ for i in 0..100 {
+ content = string_concat(content, "This is line number ");
+ content = string_concat(content, int_to_string(i));
+ content = string_concat(content, " of the test file.\n");
+ }
+
+ // Write large file
+ file_write(test_path, content);
+
+ // Read it back
+ let read_content: i64 = file_read(test_path);
+
+ // Verify size
+ if string_len(read_content) > 1000 {
+ println(" PASS: Large file (>1KB) handled");
+ file_delete(test_path);
+ 0
+ } else {
+ println(" FAIL: Large file handling failed");
+ file_delete(test_path);
+ 1
+ }
+}
+
+fn main() -> i64 {
+ println("=== File I/O Unit Tests ===");
+ println("");
+
+ var failures: i64 = 0;
+
+ failures = failures + test_file_not_found();
+ failures = failures + test_file_write_read();
+ failures = failures + test_empty_file();
+ failures = failures + test_special_characters();
+ failures = failures + test_large_file();
+
+ println("");
+ if failures == 0 {
+ println("=== ALL FILE I/O TESTS PASSED ===");
+ } else {
+ println("=== FILE I/O TESTS FAILED ===");
+ }
+
+ failures
+}

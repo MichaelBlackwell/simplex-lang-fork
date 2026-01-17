@@ -1,17 +1,117 @@
 # Simplex v0.9.0 Release Notes
 
 **Release Date:** 2026-01-11
-**Codename:** Self-Learning Annealing
+**Codename:** Edge Intelligence
 
 ---
 
 ## Overview
 
-Simplex v0.9.0 introduces **Self-Learning Annealing**, where optimization schedules (cooling rates, reheating triggers, temperature bounds) are learned through meta-gradients rather than hand-tuned. This release also includes a major **test suite restructure** with 156 tests across 13 categories, and a new **library architecture** with simplex-training for self-optimizing model training pipelines.
+Simplex v0.9.0 introduces two major features: **Edge Hive** for running autonomous intelligence on user devices, and **Self-Learning Annealing** where optimization schedules are learned through meta-gradients rather than hand-tuned. This release also includes a major **test suite restructure** with 156 tests across 13 categories, and a new **library architecture** with simplex-training for self-optimizing model training pipelines.
 
 ---
 
 ## Major Features
+
+### Edge Hive
+
+The Edge Hive brings autonomous cognitive capabilities to edge devices, from smartwatches to desktop computers. Unlike traditional "thin client" approaches where edge devices merely execute cloud commands, the Edge Hive is a living piece of the cognitive hive with local intelligence.
+
+```simplex
+// Create an Edge Hive instance
+let hive: i64 = create_edge_hive(string_from("wss://hive.example.com"));
+
+// Connect to cloud for delegation
+edge_hive_connect(hive);
+
+// Handle requests locally when confident, delegate when needed
+let response: i64 = edge_hive_query(hive, query);
+
+// User preferences are learned and persisted
+hive_set_preference(hive, string_from("theme"), 1);
+
+// Maintenance cycle for sync and learning
+hive_maintenance_cycle(hive);
+
+// Clean shutdown
+hive_shutdown(hive);
+```
+
+#### Key Capabilities
+
+| Feature | Description |
+|---------|-------------|
+| **Local-First** | Processing happens on-device, cloud is fallback |
+| **User Advocacy** | Represents user interests, not provider interests |
+| **Adaptive** | Scales from watch (100 beliefs) to desktop (1M beliefs) |
+| **Offline** | Works without network connectivity |
+| **Privacy** | All data local by default |
+
+#### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                       Edge Hive                             │
+├─────────────────────────────────────────────────────────────┤
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
+│  │   Device    │  │   Belief    │  │     Specialist      │  │
+│  │   Profile   │  │    Store    │  │      Registry       │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
+│         │                │                    │              │
+│         └────────────────┼────────────────────┘              │
+│                          │                                   │
+│                ┌─────────▼─────────┐                        │
+│                │  Cognitive Loop   │                        │
+│                └─────────┬─────────┘                        │
+│                          │                                   │
+│                ┌─────────▼─────────┐                        │
+│                │    Federation     │                        │
+│                │     Manager       │                        │
+│                └─────────┬─────────┘                        │
+└──────────────────────────┼──────────────────────────────────┘
+                           │
+               ┌───────────┴───────────┐
+               │                       │
+        ┌──────▼──────┐        ┌───────▼──────┐
+        │ Cloud Hives │        │ Peer Devices │
+        └─────────────┘        └──────────────┘
+```
+
+#### Device Support
+
+| Device | Max Model | Beliefs | Cache | Sync Strategy |
+|--------|-----------|---------|-------|---------------|
+| Watch | 0 | 100 | 1 MB | Aggressive |
+| Phone | 500M | 10K | 50 MB | Balanced |
+| Tablet | 1B | 50K | 100 MB | Balanced |
+| Laptop | 7B | 100K | 500 MB | Local-First |
+| Desktop | 70B | 1M | 1 GB | Local-First |
+
+#### Specialist System
+
+Local specialists handle domain-specific requests:
+- **Context Specialist**: Learns user patterns and time-based behaviors
+- **Task Specialist**: Manages user tasks with priorities
+- **Notification Specialist**: Filters and prioritizes notifications
+- **Quick Specialist**: Fast responses for constrained devices (watch/wearable)
+- **Calendar Specialist**: Schedule management (phone and above)
+- **Conversation Specialist**: Full dialogue (tablet and above)
+- **Health Specialist**: Health data processing (devices with sensors)
+
+#### Cognitive Loop
+
+1. Request arrives at the Edge Hive
+2. Check response cache
+3. Enrich with current context
+4. Find best local specialist
+5. If confidence >= threshold: handle locally
+6. Otherwise: delegate to cloud
+7. Cache successful responses
+8. Learn from interaction
+
+See full specification: [spec/16-edge-hive.md](spec/16-edge-hive.md)
+
+---
 
 ### Self-Learning Annealing
 
@@ -950,6 +1050,7 @@ generate_token(byte_len) -> String
 
 ## What's Next
 
+- v0.9.1: Enhanced Edge Hive features (local model integration, secure peer sync)
 - v0.10.0: GPU acceleration for tensor operations
 - v1.0.0: Production-ready release with full documentation
 
@@ -957,13 +1058,18 @@ generate_token(byte_len) -> String
 
 ## Credits
 
-Self-Learning Annealing was designed and implemented by Rod Higgins ([@senuamedia](https://github.com/senuamedia)).
+Edge Hive and Self-Learning Annealing were designed and implemented by Rod Higgins ([@senuamedia](https://github.com/senuamedia)).
 
-Key influences:
+Key influences for Edge Hive:
+- Distributed systems principles from Erlang/OTP
+- Local-first software design from Ink & Switch
+- Privacy-preserving machine learning research
+
+Key influences for Self-Learning Annealing:
 - Kirkpatrick et al., "Optimization by Simulated Annealing" (1983)
 - Maclaurin et al., "Gradient-based Hyperparameter Optimization" (2015)
 - Lorraine et al., "Optimizing Millions of Hyperparameters by Implicit Differentiation" (2020)
 
 ---
 
-*"Schedules that learn themselves."*
+*"Intelligence everywhere, owned by you."*

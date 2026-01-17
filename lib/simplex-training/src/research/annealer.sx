@@ -1,0 +1,789 @@
+// TASK-015: Dataset Annealer
+//
+// Applies epistemic annealing to training datasets.
+//
+// The key insight: Training examples are themselves beliefs about
+// what the model should learn. They should be treated with the
+// same epistemic rigor as runtime beliefs.
+//
+// Dataset Annealing:
+// - Each example has a "temperature" reflecting epistemic uncertainty
+// - High temperature = uncertain, needs validation
+// - Low temperature = well-validated, high confidence
+//
+// Temperature increases (HEAT) when:
+// - Sources disagree about the example
+// - No authoritative backing found
+// - Example contradicts specifications
+// - Evidence is stale (API changed, spec updated)
+// - Multiple validation attempts fail
+//
+// Temperature decreases (COOL) when:
+// - Multiple authoritative sources confirm
+// - Specification explicitly validates
+// - Peer-reviewed source confirms
+// - Consistent with other validated examples
+
+use simplex_std::vec::Vec;
+use simplex_std::string::String;
+use simplex_std::option::Option;
+use simplex_std::dual::dual;
+use super::researcher::{ResearchSpecialist, ValidationOutcome};
+use super::validator::{DataValidator, ValidationResult};
+
+/// Configuration for dataset annealing
+#[derive(Clone)]
+pub struct AnnealerConfig {
+    /// Initial temperature for new examples
+    pub initial_temp: f64,
+
+    /// Minimum temperature (well-validated)
+    pub min_temp: f64,
+
+    /// Maximum temperature (highly uncertain)
+    pub max_temp: f64,
+
+    /// Cooling rate when validation succeeds
+    pub cooling_rate: f64,
+
+    /// Heating rate when validation fails
+    pub heating_rate: f64,
+
+    /// Temperature threshold for inclusion
+    pub inclusion_threshold: f64,
+
+    /// Temperature threshold for pruning
+    pub pruning_threshold: f64,
+
+    /// Number of validation attempts before deciding
+    pub max_validation_attempts: usize,
+
+    /// Enable scheduled dissent (periodic revalidation)
+    pub enable_dissent: bool,
+
+    /// Dissent period (examples between dissent checks)
+    pub dissent_period: usize,
+
+    /// Fraction of examples to re-check during dissent
+    pub dissent_fraction: f64,
+}
+
+impl Default for AnnealerConfig {
+    fn default() -> Self {
+        AnnealerConfig {
+            initial_temp: 1.0,
+            min_temp: 0.1,
+            max_temp: 5.0,
+            cooling_rate: 0.8,
+            heating_rate: 1.5,
+            inclusion_threshold: 0.5,
+            pruning_threshold: 3.0,
+            max_validation_attempts: 3,
+            enable_dissent: true,
+            dissent_period: 1000,
+            dissent_fraction: 0.05,
+        }
+    }
+}
+
+/// Temperature state for a training example
+#[derive(Clone)]
+pub struct DatasetTemperature {
+    /// Current temperature
+    pub temperature: dual,
+
+    /// Validation attempts made
+    pub validation_attempts: usize,
+
+    /// Last validation result
+    pub last_validation: Option<ValidationResult>,
+
+    /// History of temperature changes
+    pub temperature_history: Vec<f64>,
+
+    /// Reasons for current temperature
+    pub reasons: Vec<TemperatureReason>,
+
+    /// Is this example currently frozen (validated, stable)?
+    pub frozen: bool,
+
+    /// Timestamp of last update
+    pub last_updated: u64,
+}
+
+impl DatasetTemperature {
+    /// Create new temperature state
+    pub fn new(initial_temp: f64) -> Self {
+        DatasetTemperature {
+            temperature: dual::variable(initial_temp),
+            validation_attempts: 0,
+            last_validation: None,
+            temperature_history: vec![initial_temp],
+            reasons: Vec::new(),
+            frozen: false,
+            last_updated: 0,
+        }
+    }
+
+    /// Get current temperature value
+    pub fn current(&self) -> f64 {
+        self.temperature.val
+    }
+
+    /// Is this example "hot" (uncertain)?
+    pub fn is_hot(&self, threshold: f64) -> bool {
+        self.temperature.val > threshold
+    }
+
+    /// Is this example "cold" (well-validated)?
+    pub fn is_cold(&self, threshold: f64) -> bool {
+        self.temperature.val < threshold
+    }
+
+    /// Apply heating
+    pub fn heat(&mut self, factor: f64, reason: &str, max_temp: f64) {
+        let new_temp = (self.temperature.val * factor).min(max_temp);
+        self.temperature = dual::variable(new_temp);
+        self.temperature_history.push(new_temp);
+        self.reasons.push(TemperatureReason {
+            change: TemperatureChange::Heat,
+            amount: factor,
+            reason: reason.to_string(),
+        });
+        self.frozen = false;
+    }
+
+    /// Apply cooling
+    pub fn cool(&mut self, factor: f64, reason: &str, min_temp: f64) {
+        let new_temp = (self.temperature.val * factor).max(min_temp);
+        self.temperature = dual::variable(new_temp);
+        self.temperature_history.push(new_temp);
+        self.reasons.push(TemperatureReason {
+            change: TemperatureChange::Cool,
+            amount: factor,
+            reason: reason.to_string(),
+        });
+    }
+
+    /// Freeze this example (no more changes)
+    pub fn freeze(&mut self) {
+        self.frozen = true;
+    }
+
+    /// Unfreeze for re-validation
+    pub fn unfreeze(&mut self) {
+        self.frozen = false;
+    }
+
+    /// Get trend (is temperature rising or falling?)
+    pub fn trend(&self) -> TemperatureTrend {
+        if self.temperature_history.len() < 3 {
+            return TemperatureTrend::Stable;
+        }
+
+        let recent: Vec<f64> = self.temperature_history.iter()
+            .rev()
+            .take(5)
+            .cloned()
+            .collect();
+
+        let avg_recent: f64 = recent.iter().sum::<f64>() / recent.len() as f64;
+        let current = self.temperature.val;
+
+        if current > avg_recent * 1.1 {
+            TemperatureTrend::Rising
+        } else if current < avg_recent * 0.9 {
+            TemperatureTrend::Falling
+        } else {
+            TemperatureTrend::Stable
+        }
+    }
+}
+
+/// Reason for temperature change
+#[derive(Clone)]
+pub struct TemperatureReason {
+    /// Type of change
+    pub change: TemperatureChange,
+
+    /// Amount of change (multiplier)
+    pub amount: f64,
+
+    /// Reason description
+    pub reason: String,
+}
+
+/// Type of temperature change
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TemperatureChange {
+    Heat,
+    Cool,
+}
+
+/// Temperature trend
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TemperatureTrend {
+    Rising,
+    Falling,
+    Stable,
+}
+
+/// An annealed training example
+#[derive(Clone)]
+pub struct AnnealedExample {
+    /// The training example content
+    pub prompt: String,
+    pub response: String,
+    pub domain: String,
+
+    /// Temperature state
+    pub temperature: DatasetTemperature,
+
+    /// Validation status
+    pub validation_status: ValidationStatus,
+
+    /// Provenance of this example
+    pub provenance: ExampleProvenance,
+
+    /// Unique identifier
+    pub id: String,
+
+    /// Metadata
+    pub metadata: ExampleMetadata,
+}
+
+impl AnnealedExample {
+    /// Create new example
+    pub fn new(prompt: &str, response: &str, domain: &str) -> Self {
+        AnnealedExample {
+            prompt: prompt.to_string(),
+            response: response.to_string(),
+            domain: domain.to_string(),
+            temperature: DatasetTemperature::new(1.0),
+            validation_status: ValidationStatus::Unvalidated,
+            provenance: ExampleProvenance::Unknown,
+            id: generate_example_id(prompt, response),
+            metadata: ExampleMetadata::default(),
+        }
+    }
+
+    /// Create from existing training example
+    pub fn from_raw(prompt: &str, response: &str, domain: &str, source: &str) -> Self {
+        let mut example = AnnealedExample::new(prompt, response, domain);
+        example.provenance = ExampleProvenance::from_source(source);
+        example
+    }
+
+    /// Should this example be included in training?
+    pub fn should_include(&self, config: &AnnealerConfig) -> bool {
+        // Don't include if too hot (uncertain)
+        if self.temperature.current() > config.inclusion_threshold {
+            return false;
+        }
+
+        // Don't include if validation failed
+        if matches!(self.validation_status, ValidationStatus::Invalid | ValidationStatus::Conflicted) {
+            return false;
+        }
+
+        true
+    }
+
+    /// Should this example be pruned (removed)?
+    pub fn should_prune(&self, config: &AnnealerConfig) -> bool {
+        // Prune if temperature exceeds threshold
+        if self.temperature.current() > config.pruning_threshold {
+            return true;
+        }
+
+        // Prune if explicitly invalid
+        if matches!(self.validation_status, ValidationStatus::Invalid) {
+            return true;
+        }
+
+        // Prune if too many failed validation attempts
+        if self.temperature.validation_attempts >= config.max_validation_attempts {
+            if !matches!(self.validation_status, ValidationStatus::Validated | ValidationStatus::PartiallyValidated) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Get confidence score (inverse of temperature)
+    pub fn confidence(&self) -> f64 {
+        1.0 / (1.0 + self.temperature.current())
+    }
+}
+
+/// Validation status of an example
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ValidationStatus {
+    /// Not yet validated
+    Unvalidated,
+
+    /// Validated by authoritative sources
+    Validated,
+
+    /// Partially validated (some support, not conclusive)
+    PartiallyValidated,
+
+    /// Found to be invalid
+    Invalid,
+
+    /// Sources conflict on this example
+    Conflicted,
+
+    /// Validation pending
+    Pending,
+}
+
+/// Provenance of a training example
+#[derive(Clone)]
+pub enum ExampleProvenance {
+    /// Generated synthetically
+    Synthetic { generator: String },
+
+    /// From a curated dataset
+    CuratedDataset { dataset: String, index: usize },
+
+    /// Extracted from documentation
+    Documentation { source_url: String },
+
+    /// From academic paper
+    AcademicPaper { doi: String },
+
+    /// From specification
+    Specification { spec_id: String, section: String },
+
+    /// Human-validated
+    HumanValidated { validator_id: String },
+
+    /// Unknown origin
+    Unknown,
+}
+
+impl ExampleProvenance {
+    /// Create from source string
+    pub fn from_source(source: &str) -> Self {
+        if source.starts_with("synthetic:") {
+            ExampleProvenance::Synthetic {
+                generator: source.trim_start_matches("synthetic:").to_string()
+            }
+        } else if source.starts_with("dataset:") {
+            ExampleProvenance::CuratedDataset {
+                dataset: source.trim_start_matches("dataset:").to_string(),
+                index: 0,
+            }
+        } else if source.starts_with("doc:") || source.contains("docs.") {
+            ExampleProvenance::Documentation {
+                source_url: source.to_string()
+            }
+        } else if source.contains("arxiv.org") || source.contains("doi.org") {
+            ExampleProvenance::AcademicPaper {
+                doi: source.to_string()
+            }
+        } else {
+            ExampleProvenance::Unknown
+        }
+    }
+
+    /// Credibility multiplier based on provenance
+    pub fn credibility_multiplier(&self) -> f64 {
+        match self {
+            ExampleProvenance::Specification { .. } => 1.0,
+            ExampleProvenance::AcademicPaper { .. } => 0.95,
+            ExampleProvenance::Documentation { .. } => 0.9,
+            ExampleProvenance::HumanValidated { .. } => 0.85,
+            ExampleProvenance::CuratedDataset { .. } => 0.75,
+            ExampleProvenance::Synthetic { .. } => 0.6,
+            ExampleProvenance::Unknown => 0.5,
+        }
+    }
+}
+
+/// Metadata for annealed examples
+#[derive(Clone, Default)]
+pub struct ExampleMetadata {
+    /// Tags
+    pub tags: Vec<String>,
+
+    /// Difficulty estimate
+    pub difficulty: f64,
+
+    /// Quality score
+    pub quality: f64,
+
+    /// Creation timestamp
+    pub created_at: u64,
+
+    /// Number of times used in training
+    pub usage_count: usize,
+}
+
+/// The Dataset Annealer
+///
+/// Applies epistemic annealing to training datasets, improving
+/// data quality through research and validation.
+pub struct DatasetAnnealer {
+    /// Configuration
+    config: AnnealerConfig,
+
+    /// Research specialist for validation
+    researcher: ResearchSpecialist,
+
+    /// Data validator
+    validator: DataValidator,
+
+    /// Examples being annealed
+    examples: Vec<AnnealedExample>,
+
+    /// Statistics
+    stats: AnnealerStats,
+
+    /// Current step (for dissent scheduling)
+    step: usize,
+}
+
+impl DatasetAnnealer {
+    /// Create new annealer
+    pub fn new(config: AnnealerConfig) -> Self {
+        DatasetAnnealer {
+            config,
+            researcher: ResearchSpecialist::default_specialist(),
+            validator: DataValidator::new(),
+            examples: Vec::new(),
+            stats: AnnealerStats::default(),
+            step: 0,
+        }
+    }
+
+    /// Create with default config
+    pub fn default_annealer() -> Self {
+        DatasetAnnealer::new(AnnealerConfig::default())
+    }
+
+    /// Add example to be annealed
+    pub fn add_example(&mut self, example: AnnealedExample) {
+        self.examples.push(example);
+        self.stats.total_examples += 1;
+    }
+
+    /// Add raw training example
+    pub fn add_raw(&mut self, prompt: &str, response: &str, domain: &str, source: &str) {
+        let example = AnnealedExample::from_raw(prompt, response, domain, source);
+        self.add_example(example);
+    }
+
+    /// Run one annealing step
+    pub fn step(&mut self) {
+        self.step += 1;
+
+        // Process each unfrozen example
+        for example in &mut self.examples {
+            if example.temperature.frozen {
+                continue;
+            }
+
+            // Validate and update temperature
+            self.validate_and_update(example);
+        }
+
+        // Run dissent if enabled and it's time
+        if self.config.enable_dissent && self.step % self.config.dissent_period == 0 {
+            self.run_dissent();
+        }
+
+        // Update statistics
+        self.update_stats();
+    }
+
+    /// Validate an example and update its temperature
+    fn validate_and_update(&mut self, example: &mut AnnealedExample) {
+        // Skip if at max attempts
+        if example.temperature.validation_attempts >= self.config.max_validation_attempts {
+            return;
+        }
+
+        example.temperature.validation_attempts += 1;
+
+        // Research the claim in the example
+        let outcome = self.researcher.validate_example(&example.response, &example.domain);
+
+        match outcome {
+            ValidationOutcome::Validated(confidence) => {
+                // Cool down - this is well supported
+                example.temperature.cool(
+                    self.config.cooling_rate,
+                    &format!("Validated with confidence {:.2}", confidence),
+                    self.config.min_temp
+                );
+                example.validation_status = ValidationStatus::Validated;
+
+                // Freeze if cold enough
+                if example.temperature.current() <= self.config.min_temp * 1.1 {
+                    example.temperature.freeze();
+                }
+            }
+
+            ValidationOutcome::PartiallySupported(confidence) => {
+                // Slight cooling
+                let factor = self.config.cooling_rate + (1.0 - self.config.cooling_rate) * 0.5;
+                example.temperature.cool(
+                    factor,
+                    &format!("Partially supported ({:.2})", confidence),
+                    self.config.min_temp
+                );
+                example.validation_status = ValidationStatus::PartiallyValidated;
+            }
+
+            ValidationOutcome::Unverified => {
+                // Heat up - no evidence found
+                example.temperature.heat(
+                    self.config.heating_rate,
+                    "No supporting evidence found",
+                    self.config.max_temp
+                );
+                // Keep status as unvalidated
+            }
+
+            ValidationOutcome::Conflicted(conflicts) => {
+                // Heat significantly - sources disagree
+                example.temperature.heat(
+                    self.config.heating_rate * 1.5,
+                    &format!("Sources conflict ({} conflicts)", conflicts.len()),
+                    self.config.max_temp
+                );
+                example.validation_status = ValidationStatus::Conflicted;
+            }
+
+            ValidationOutcome::Unknown(error) => {
+                // Slight heat - validation failed
+                example.temperature.heat(
+                    1.1,
+                    &format!("Validation error: {}", error),
+                    self.config.max_temp
+                );
+            }
+        }
+    }
+
+    /// Run scheduled dissent - re-validate some frozen examples
+    fn run_dissent(&mut self) {
+        let frozen_examples: Vec<usize> = self.examples
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.temperature.frozen)
+            .map(|(i, _)| i)
+            .collect();
+
+        if frozen_examples.is_empty() {
+            return;
+        }
+
+        // Select fraction for re-validation
+        let num_to_check = (frozen_examples.len() as f64 * self.config.dissent_fraction).ceil() as usize;
+        let num_to_check = num_to_check.max(1);
+
+        // Simple selection (in practice, would be random)
+        for i in frozen_examples.into_iter().take(num_to_check) {
+            self.examples[i].temperature.unfreeze();
+            self.examples[i].temperature.validation_attempts = 0;
+            self.stats.dissent_rechecks += 1;
+        }
+    }
+
+    /// Update statistics
+    fn update_stats(&mut self) {
+        let total = self.examples.len();
+        if total == 0 {
+            return;
+        }
+
+        self.stats.validated = self.examples.iter()
+            .filter(|e| matches!(e.validation_status, ValidationStatus::Validated))
+            .count();
+
+        self.stats.conflicted = self.examples.iter()
+            .filter(|e| matches!(e.validation_status, ValidationStatus::Conflicted))
+            .count();
+
+        self.stats.pruned = self.examples.iter()
+            .filter(|e| e.should_prune(&self.config))
+            .count();
+
+        self.stats.frozen = self.examples.iter()
+            .filter(|e| e.temperature.frozen)
+            .count();
+
+        self.stats.avg_temperature = self.examples.iter()
+            .map(|e| e.temperature.current())
+            .sum::<f64>() / total as f64;
+    }
+
+    /// Get examples that should be included in training
+    pub fn get_training_examples(&self) -> Vec<&AnnealedExample> {
+        self.examples.iter()
+            .filter(|e| e.should_include(&self.config))
+            .collect()
+    }
+
+    /// Get examples that should be pruned
+    pub fn get_pruned_examples(&self) -> Vec<&AnnealedExample> {
+        self.examples.iter()
+            .filter(|e| e.should_prune(&self.config))
+            .collect()
+    }
+
+    /// Get examples needing more validation
+    pub fn get_uncertain_examples(&self) -> Vec<&AnnealedExample> {
+        self.examples.iter()
+            .filter(|e| e.temperature.is_hot(self.config.inclusion_threshold) &&
+                        !e.should_prune(&self.config))
+            .collect()
+    }
+
+    /// Prune examples that should be removed
+    pub fn prune(&mut self) {
+        let before = self.examples.len();
+        self.examples.retain(|e| !e.should_prune(&self.config));
+        let pruned = before - self.examples.len();
+        self.stats.total_pruned += pruned;
+    }
+
+    /// Get statistics
+    pub fn stats(&self) -> &AnnealerStats {
+        &self.stats
+    }
+
+    /// Get summary report
+    pub fn summary(&self) -> String {
+        format!(
+            "Dataset Annealing Summary:\n\
+             Total examples: {}\n\
+             Validated: {} ({:.1}%)\n\
+             Conflicted: {} ({:.1}%)\n\
+             Frozen: {} ({:.1}%)\n\
+             Pruned: {} ({:.1}%)\n\
+             Average temperature: {:.3}\n\
+             Dissent rechecks: {}",
+            self.stats.total_examples,
+            self.stats.validated,
+            self.stats.validated as f64 / self.stats.total_examples.max(1) as f64 * 100.0,
+            self.stats.conflicted,
+            self.stats.conflicted as f64 / self.stats.total_examples.max(1) as f64 * 100.0,
+            self.stats.frozen,
+            self.stats.frozen as f64 / self.stats.total_examples.max(1) as f64 * 100.0,
+            self.stats.pruned,
+            self.stats.pruned as f64 / self.stats.total_examples.max(1) as f64 * 100.0,
+            self.stats.avg_temperature,
+            self.stats.dissent_rechecks
+        )
+    }
+}
+
+/// Annealing statistics
+#[derive(Clone, Default)]
+pub struct AnnealerStats {
+    /// Total examples processed
+    pub total_examples: usize,
+
+    /// Examples fully validated
+    pub validated: usize,
+
+    /// Examples with conflicts
+    pub conflicted: usize,
+
+    /// Examples currently frozen
+    pub frozen: usize,
+
+    /// Examples marked for pruning
+    pub pruned: usize,
+
+    /// Total examples pruned
+    pub total_pruned: usize,
+
+    /// Average temperature
+    pub avg_temperature: f64,
+
+    /// Dissent rechecks performed
+    pub dissent_rechecks: usize,
+}
+
+/// Generate unique ID for an example
+fn generate_example_id(prompt: &str, response: &str) -> String {
+    // Simple hash-based ID
+    let combined = format!("{}|{}", prompt, response);
+    let hash = simple_hash(&combined);
+    format!("ex_{:016x}", hash)
+}
+
+/// Simple hash function
+fn simple_hash(s: &str) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in s.bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_temperature_heating() {
+        let mut temp = DatasetTemperature::new(1.0);
+
+        temp.heat(1.5, "Test heating", 5.0);
+        assert!((temp.current() - 1.5).abs() < 0.01);
+
+        temp.heat(1.5, "More heating", 5.0);
+        assert!((temp.current() - 2.25).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_temperature_cooling() {
+        let mut temp = DatasetTemperature::new(1.0);
+
+        temp.cool(0.8, "Test cooling", 0.1);
+        assert!((temp.current() - 0.8).abs() < 0.01);
+
+        // Should not go below minimum
+        for _ in 0..10 {
+            temp.cool(0.5, "Keep cooling", 0.1);
+        }
+        assert!(temp.current() >= 0.1);
+    }
+
+    #[test]
+    fn test_example_inclusion() {
+        let config = AnnealerConfig::default();
+
+        let mut example = AnnealedExample::new("test prompt", "test response", "test");
+        example.temperature = DatasetTemperature::new(0.3); // Below threshold
+        example.validation_status = ValidationStatus::Validated;
+
+        assert!(example.should_include(&config));
+
+        // Hot example should not be included
+        example.temperature = DatasetTemperature::new(2.0);
+        assert!(!example.should_include(&config));
+    }
+
+    #[test]
+    fn test_example_pruning() {
+        let config = AnnealerConfig::default();
+
+        let mut example = AnnealedExample::new("test", "test", "test");
+        example.temperature = DatasetTemperature::new(4.0); // Above threshold
+
+        assert!(example.should_prune(&config));
+
+        example.validation_status = ValidationStatus::Invalid;
+        example.temperature = DatasetTemperature::new(1.0);
+        assert!(example.should_prune(&config));
+    }
+}

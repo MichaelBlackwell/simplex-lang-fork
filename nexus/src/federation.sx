@@ -1,0 +1,862 @@
+// Nexus Protocol - Federation Protocol
+//
+// Phase 5: Implements multi-hive clustering and discovery
+//
+// Federation enables:
+// - Hive discovery and joining clusters
+// - Service announcement and discovery
+// - Work distribution and leader election
+// - Graceful cluster membership changes
+
+// =============================================================================
+// Federation Message Types (from types.sx)
+// =============================================================================
+
+// MSG_JOIN (48) - Request to join a cluster
+// MSG_LEAVE (49) - Graceful departure from cluster
+// MSG_ANNOUNCE (50) - Announce capabilities/services
+// MSG_DISCOVER (51) - Query for services
+// MSG_HANDOFF (52) - Work/leadership transfer
+
+// =============================================================================
+// Cluster Member Structure
+// =============================================================================
+
+// Member Layout:
+// - Node ID (4 bytes): Unique node identifier
+// - Address: Actor address of the member
+// - Capabilities: Bitfield of supported features
+// - Status: JOINING, ACTIVE, LEAVING, FAILED
+// - Last seen: Timestamp of last heartbeat
+// - Services: List of announced services
+
+fn MEMBER_STATUS_JOINING() -> i64 { 0 }
+fn MEMBER_STATUS_ACTIVE() -> i64 { 1 }
+fn MEMBER_STATUS_LEAVING() -> i64 { 2 }
+fn MEMBER_STATUS_FAILED() -> i64 { 3 }
+
+fn fed_member_new(node_id: i64, address: i64) -> i64 {
+    let member = vec_new();
+    vec_push(member, node_id);           // Slot 0: node ID
+    vec_push(member, address);           // Slot 1: actor address
+    vec_push(member, 0);                 // Slot 2: capabilities
+    vec_push(member, MEMBER_STATUS_JOINING());  // Slot 3: status
+    vec_push(member, 0);                 // Slot 4: last seen timestamp
+    vec_push(member, vec_new());         // Slot 5: services
+    member
+}
+
+fn fed_member_node_id(member: i64) -> i64 { vec_get(member, 0) }
+fn fed_member_address(member: i64) -> i64 { vec_get(member, 1) }
+fn fed_member_capabilities(member: i64) -> i64 { vec_get(member, 2) }
+fn fed_member_status(member: i64) -> i64 { vec_get(member, 3) }
+fn fed_member_last_seen(member: i64) -> i64 { vec_get(member, 4) }
+fn fed_member_services(member: i64) -> i64 { vec_get(member, 5) }
+
+fn fed_member_set_capabilities(member: i64, caps: i64) -> i64 {
+    vec_set(member, 2, caps);
+    0
+}
+
+fn fed_member_set_status(member: i64, status: i64) -> i64 {
+    vec_set(member, 3, status);
+    0
+}
+
+fn fed_member_set_last_seen(member: i64, timestamp: i64) -> i64 {
+    vec_set(member, 4, timestamp);
+    0
+}
+
+fn fed_member_add_service(member: i64, service_id: i64) -> i64 {
+    let services = fed_member_services(member);
+    vec_push(services, service_id);
+    0
+}
+
+// =============================================================================
+// Capability Flags
+// =============================================================================
+
+fn CAP_BELIEFS() -> i64 { 1 }          // Can store/sync beliefs
+fn CAP_GOALS() -> i64 { 2 }            // Can process goals
+fn CAP_INTENTIONS() -> i64 { 4 }       // Can execute intentions
+fn CAP_INFERENCE() -> i64 { 8 }        // Has inference capabilities
+fn CAP_LEARNING() -> i64 { 16 }        // Can learn from experience
+fn CAP_PLANNING() -> i64 { 32 }        // Can create plans
+fn CAP_PERSISTENCE() -> i64 { 64 }     // Has persistent storage
+fn CAP_FEDERATION() -> i64 { 128 }     // Supports federation protocol
+
+// =============================================================================
+// Cluster Structure
+// =============================================================================
+
+// Cluster Layout:
+// - Cluster ID
+// - Local node ID
+// - Members list
+// - Leader node ID (0 if no leader)
+// - Vector clock for cluster state
+// - Pending joins/leaves
+
+fn fed_cluster_new(fed_cluster_id: i64, local_node_id: i64) -> i64 {
+    let cluster = vec_new();
+    vec_push(cluster, fed_cluster_id);           // Slot 0: cluster ID
+    vec_push(cluster, local_node_id);        // Slot 1: local node ID
+    vec_push(cluster, vec_new());            // Slot 2: members
+    vec_push(cluster, 0);                    // Slot 3: leader node ID
+    vec_push(cluster, nex_vclock_new(local_node_id));  // Slot 4: vector clock
+    vec_push(cluster, vec_new());            // Slot 5: pending operations
+    cluster
+}
+
+fn fed_cluster_id(cluster: i64) -> i64 { vec_get(cluster, 0) }
+fn fed_cluster_local_node(cluster: i64) -> i64 { vec_get(cluster, 1) }
+fn fed_cluster_members(cluster: i64) -> i64 { vec_get(cluster, 2) }
+fn fed_cluster_leader(cluster: i64) -> i64 { vec_get(cluster, 3) }
+fn fed_cluster_vclock(cluster: i64) -> i64 { vec_get(cluster, 4) }
+fn fed_cluster_pending(cluster: i64) -> i64 { vec_get(cluster, 5) }
+
+fn fed_cluster_set_leader(cluster: i64, leader_id: i64) -> i64 {
+    vec_set(cluster, 3, leader_id);
+    0
+}
+
+// Find member by node ID
+fn fed_cluster_find_member(cluster: i64, node_id: i64) -> i64 {
+    let members = fed_cluster_members(cluster);
+    let len = vec_len(members);
+    let i = 0;
+    while i < len {
+        let member = vec_get(members, i);
+        if fed_member_node_id(member) == node_id {
+            return member;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+// Check if node is a member
+fn fed_cluster_has_member(cluster: i64, node_id: i64) -> i64 {
+    fed_cluster_find_member(cluster, node_id) != 0
+}
+
+// Get count of active members
+fn fed_cluster_active_count(cluster: i64) -> i64 {
+    let members = fed_cluster_members(cluster);
+    let len = vec_len(members);
+    let count = 0;
+    let i = 0;
+    while i < len {
+        let member = vec_get(members, i);
+        if fed_member_status(member) == MEMBER_STATUS_ACTIVE() {
+            count = count + 1;
+        }
+        i = i + 1;
+    }
+    count
+}
+
+// =============================================================================
+// JOIN Protocol
+// =============================================================================
+
+// JOIN Payload:
+// - Node ID (4 bytes)
+// - Cluster ID (4 bytes)
+// - Capabilities (4 bytes)
+// - Address (12 bytes): Actor address
+// - Service count (1 byte)
+// - Services (4 bytes each)
+
+fn join_payload_new(node_id: i64, fed_cluster_id: i64, capabilities: i64, address: i64) -> i64 {
+    let payload = vec_new();
+
+    // Node ID (4 bytes)
+    vec_push(payload, (node_id >> 24) & 255);
+    vec_push(payload, (node_id >> 16) & 255);
+    vec_push(payload, (node_id >> 8) & 255);
+    vec_push(payload, node_id & 255);
+
+    // Cluster ID (4 bytes)
+    vec_push(payload, (fed_cluster_id >> 24) & 255);
+    vec_push(payload, (fed_cluster_id >> 16) & 255);
+    vec_push(payload, (fed_cluster_id >> 8) & 255);
+    vec_push(payload, fed_cluster_id & 255);
+
+    // Capabilities (4 bytes)
+    vec_push(payload, (capabilities >> 24) & 255);
+    vec_push(payload, (capabilities >> 16) & 255);
+    vec_push(payload, (capabilities >> 8) & 255);
+    vec_push(payload, capabilities & 255);
+
+    // Address (12 bytes inline)
+    let addr_node = actor_addr_node(address);
+    vec_push(payload, (addr_node >> 24) & 255);
+    vec_push(payload, (addr_node >> 16) & 255);
+    vec_push(payload, (addr_node >> 8) & 255);
+    vec_push(payload, addr_node & 255);
+
+    let addr_hive = actor_addr_hive(address);
+    vec_push(payload, (addr_hive >> 8) & 255);
+    vec_push(payload, addr_hive & 255);
+
+    let addr_specialist = actor_addr_specialist(address);
+    vec_push(payload, (addr_specialist >> 8) & 255);
+    vec_push(payload, addr_specialist & 255);
+
+    let addr_instance = actor_addr_instance(address);
+    vec_push(payload, (addr_instance >> 24) & 255);
+    vec_push(payload, (addr_instance >> 16) & 255);
+    vec_push(payload, (addr_instance >> 8) & 255);
+    vec_push(payload, addr_instance & 255);
+
+    // Service count (placeholder - 0 for now)
+    vec_push(payload, 0);
+
+    payload
+}
+
+fn join_payload_parse(payload: i64) -> i64 {
+    if vec_len(payload) < 25 {
+        return 0;
+    }
+
+    let result = vec_new();
+    let pos = 0;
+
+    // Node ID
+    let node_id = (vec_get(payload, pos) << 24) |
+                  (vec_get(payload, pos + 1) << 16) |
+                  (vec_get(payload, pos + 2) << 8) |
+                  vec_get(payload, pos + 3);
+    vec_push(result, node_id);
+    pos = pos + 4;
+
+    // Cluster ID
+    let fed_cluster_id = (vec_get(payload, pos) << 24) |
+                     (vec_get(payload, pos + 1) << 16) |
+                     (vec_get(payload, pos + 2) << 8) |
+                     vec_get(payload, pos + 3);
+    vec_push(result, fed_cluster_id);
+    pos = pos + 4;
+
+    // Capabilities
+    let capabilities = (vec_get(payload, pos) << 24) |
+                       (vec_get(payload, pos + 1) << 16) |
+                       (vec_get(payload, pos + 2) << 8) |
+                       vec_get(payload, pos + 3);
+    vec_push(result, capabilities);
+    pos = pos + 4;
+
+    // Address
+    let addr_node = (vec_get(payload, pos) << 24) |
+                    (vec_get(payload, pos + 1) << 16) |
+                    (vec_get(payload, pos + 2) << 8) |
+                    vec_get(payload, pos + 3);
+    pos = pos + 4;
+
+    let addr_hive = (vec_get(payload, pos) << 8) | vec_get(payload, pos + 1);
+    pos = pos + 2;
+
+    let addr_specialist = (vec_get(payload, pos) << 8) | vec_get(payload, pos + 1);
+    pos = pos + 2;
+
+    let addr_instance = (vec_get(payload, pos) << 24) |
+                        (vec_get(payload, pos + 1) << 16) |
+                        (vec_get(payload, pos + 2) << 8) |
+                        vec_get(payload, pos + 3);
+    pos = pos + 4;
+
+    let address = actor_addr_new(addr_node, addr_hive, addr_specialist, addr_instance);
+    vec_push(result, address);
+
+    result
+}
+
+// Create JOIN message
+fn federation_join_message(node_id: i64, fed_cluster_id: i64, capabilities: i64, address: i64) -> i64 {
+    let msg = message_new(MSG_JOIN());
+    let payload = join_payload_new(node_id, fed_cluster_id, capabilities, address);
+    message_set_payload(msg, payload);
+    msg
+}
+
+// Handle JOIN request
+fn fed_cluster_handle_join(cluster: i64, payload: i64, timestamp: i64) -> i64 {
+    let parsed = join_payload_parse(payload);
+    if parsed == 0 {
+        return ERR_DECODE_ERROR();
+    }
+
+    let node_id = vec_get(parsed, 0);
+    let req_fed_cluster_id = vec_get(parsed, 1);
+    let capabilities = vec_get(parsed, 2);
+    let address = vec_get(parsed, 3);
+
+    // Verify cluster ID matches
+    if req_fed_cluster_id != fed_cluster_id(cluster) {
+        return ERR_INVALID_FRAME_TYPE();  // Wrong cluster
+    }
+
+    // Check if already a member
+    if fed_cluster_has_member(cluster, node_id) != 0 {
+        // Update existing member
+        let member = fed_cluster_find_member(cluster, node_id);
+        fed_member_set_status(member, MEMBER_STATUS_ACTIVE());
+        fed_member_set_last_seen(member, timestamp);
+        fed_member_set_capabilities(member, capabilities);
+    } else {
+        // Add new member
+        let member = fed_member_new(node_id, address);
+        fed_member_set_capabilities(member, capabilities);
+        fed_member_set_status(member, MEMBER_STATUS_ACTIVE());
+        fed_member_set_last_seen(member, timestamp);
+
+        let members = fed_cluster_members(cluster);
+        vec_push(members, member);
+    }
+
+    // Update vector clock
+    nex_vclock_increment(fed_cluster_vclock(cluster));
+
+    ERR_NONE()
+}
+
+// =============================================================================
+// LEAVE Protocol
+// =============================================================================
+
+// LEAVE Payload:
+// - Node ID (4 bytes)
+// - Reason code (1 byte)
+// - Handoff target (4 bytes): Node to hand off work to, or 0
+
+fn LEAVE_REASON_SHUTDOWN() -> i64 { 0 }
+fn LEAVE_REASON_MAINTENANCE() -> i64 { 1 }
+fn LEAVE_REASON_OVERLOAD() -> i64 { 2 }
+fn LEAVE_REASON_FAILURE() -> i64 { 3 }
+
+fn leave_payload_new(node_id: i64, reason: i64, handoff_target: i64) -> i64 {
+    let payload = vec_new();
+
+    // Node ID (4 bytes)
+    vec_push(payload, (node_id >> 24) & 255);
+    vec_push(payload, (node_id >> 16) & 255);
+    vec_push(payload, (node_id >> 8) & 255);
+    vec_push(payload, node_id & 255);
+
+    // Reason (1 byte)
+    vec_push(payload, reason & 255);
+
+    // Handoff target (4 bytes)
+    vec_push(payload, (handoff_target >> 24) & 255);
+    vec_push(payload, (handoff_target >> 16) & 255);
+    vec_push(payload, (handoff_target >> 8) & 255);
+    vec_push(payload, handoff_target & 255);
+
+    payload
+}
+
+fn leave_payload_parse(payload: i64) -> i64 {
+    if vec_len(payload) < 9 {
+        return 0;
+    }
+
+    let result = vec_new();
+
+    // Node ID
+    let node_id = (vec_get(payload, 0) << 24) |
+                  (vec_get(payload, 1) << 16) |
+                  (vec_get(payload, 2) << 8) |
+                  vec_get(payload, 3);
+    vec_push(result, node_id);
+
+    // Reason
+    vec_push(result, vec_get(payload, 4));
+
+    // Handoff target
+    let handoff = (vec_get(payload, 5) << 24) |
+                  (vec_get(payload, 6) << 16) |
+                  (vec_get(payload, 7) << 8) |
+                  vec_get(payload, 8);
+    vec_push(result, handoff);
+
+    result
+}
+
+// Create LEAVE message
+fn federation_leave_message(node_id: i64, reason: i64, handoff_target: i64) -> i64 {
+    let msg = message_new(MSG_LEAVE());
+    let payload = leave_payload_new(node_id, reason, handoff_target);
+    message_set_payload(msg, payload);
+    msg
+}
+
+// Handle LEAVE request
+fn fed_cluster_handle_leave(cluster: i64, payload: i64) -> i64 {
+    let parsed = leave_payload_parse(payload);
+    if parsed == 0 {
+        return ERR_DECODE_ERROR();
+    }
+
+    let node_id = vec_get(parsed, 0);
+    let reason = vec_get(parsed, 1);
+    let handoff_target = vec_get(parsed, 2);
+
+    let member = fed_cluster_find_member(cluster, node_id);
+    if member == 0 {
+        return ERR_NONE();  // Already gone
+    }
+
+    fed_member_set_status(member, MEMBER_STATUS_LEAVING());
+
+    // If this was the leader, we may need election
+    if fed_cluster_leader(cluster) == node_id {
+        fed_cluster_set_leader(cluster, 0);  // Clear leader, trigger election
+    }
+
+    // Update vector clock
+    nex_vclock_increment(fed_cluster_vclock(cluster));
+
+    ERR_NONE()
+}
+
+// =============================================================================
+// ANNOUNCE Protocol
+// =============================================================================
+
+// ANNOUNCE Payload:
+// - Node ID (4 bytes)
+// - Service count (1 byte)
+// - Services: (service_id: 4 bytes, metadata_len: 2 bytes, metadata: variable)
+
+fn announce_payload_new(node_id: i64, services: i64) -> i64 {
+    let payload = vec_new();
+
+    // Node ID (4 bytes)
+    vec_push(payload, (node_id >> 24) & 255);
+    vec_push(payload, (node_id >> 16) & 255);
+    vec_push(payload, (node_id >> 8) & 255);
+    vec_push(payload, node_id & 255);
+
+    // Service count
+    let service_count = vec_len(services);
+    if service_count > 255 { service_count = 255; }
+    vec_push(payload, service_count);
+
+    // Services (simplified: just service IDs for now)
+    let i = 0;
+    while i < service_count {
+        let service_id = vec_get(services, i);
+        vec_push(payload, (service_id >> 24) & 255);
+        vec_push(payload, (service_id >> 16) & 255);
+        vec_push(payload, (service_id >> 8) & 255);
+        vec_push(payload, service_id & 255);
+        // Empty metadata
+        vec_push(payload, 0);
+        vec_push(payload, 0);
+        i = i + 1;
+    }
+
+    payload
+}
+
+fn announce_payload_parse(payload: i64) -> i64 {
+    if vec_len(payload) < 5 {
+        return 0;
+    }
+
+    let result = vec_new();
+
+    // Node ID
+    let node_id = (vec_get(payload, 0) << 24) |
+                  (vec_get(payload, 1) << 16) |
+                  (vec_get(payload, 2) << 8) |
+                  vec_get(payload, 3);
+    vec_push(result, node_id);
+
+    // Service count
+    let service_count = vec_get(payload, 4);
+    vec_push(result, service_count);
+
+    // Services
+    let services = vec_new();
+    let pos = 5;
+    let i = 0;
+    while i < service_count && pos + 6 <= vec_len(payload) {
+        let service_id = (vec_get(payload, pos) << 24) |
+                         (vec_get(payload, pos + 1) << 16) |
+                         (vec_get(payload, pos + 2) << 8) |
+                         vec_get(payload, pos + 3);
+        vec_push(services, service_id);
+        pos = pos + 4;
+
+        // Skip metadata
+        let meta_len = (vec_get(payload, pos) << 8) | vec_get(payload, pos + 1);
+        pos = pos + 2 + meta_len;
+
+        i = i + 1;
+    }
+    vec_push(result, services);
+
+    result
+}
+
+// Create ANNOUNCE message
+fn federation_announce_message(node_id: i64, services: i64) -> i64 {
+    let msg = message_new(MSG_ANNOUNCE());
+    let payload = announce_payload_new(node_id, services);
+    message_set_payload(msg, payload);
+    msg
+}
+
+// Handle ANNOUNCE
+fn fed_cluster_handle_announce(cluster: i64, payload: i64) -> i64 {
+    let parsed = announce_payload_parse(payload);
+    if parsed == 0 {
+        return ERR_DECODE_ERROR();
+    }
+
+    let node_id = vec_get(parsed, 0);
+    let services = vec_get(parsed, 2);
+
+    let member = fed_cluster_find_member(cluster, node_id);
+    if member == 0 {
+        return ERR_NONE();  // Unknown member
+    }
+
+    // Update member's services
+    let member_services = fed_member_services(member);
+    // Clear existing and add new
+    while vec_len(member_services) > 0 {
+        vec_pop(member_services);
+    }
+
+    let i = 0;
+    while i < vec_len(services) {
+        vec_push(member_services, vec_get(services, i));
+        i = i + 1;
+    }
+
+    ERR_NONE()
+}
+
+// =============================================================================
+// DISCOVER Protocol
+// =============================================================================
+
+// DISCOVER Payload:
+// - Query type (1 byte): SERVICE, CAPABILITY, NODE
+// - Query value (4 bytes): Service ID or capability flags
+// - Max results (1 byte)
+
+fn DISCOVER_TYPE_SERVICE() -> i64 { 1 }
+fn DISCOVER_TYPE_CAPABILITY() -> i64 { 2 }
+fn DISCOVER_TYPE_NODE() -> i64 { 3 }
+
+fn discover_payload_new(query_type: i64, query_value: i64, max_results: i64) -> i64 {
+    let payload = vec_new();
+
+    // Query type (1 byte)
+    vec_push(payload, query_type & 255);
+
+    // Query value (4 bytes)
+    vec_push(payload, (query_value >> 24) & 255);
+    vec_push(payload, (query_value >> 16) & 255);
+    vec_push(payload, (query_value >> 8) & 255);
+    vec_push(payload, query_value & 255);
+
+    // Max results (1 byte)
+    vec_push(payload, max_results & 255);
+
+    payload
+}
+
+fn discover_payload_parse(payload: i64) -> i64 {
+    if vec_len(payload) < 6 {
+        return 0;
+    }
+
+    let result = vec_new();
+
+    // Query type
+    vec_push(result, vec_get(payload, 0));
+
+    // Query value
+    let query_value = (vec_get(payload, 1) << 24) |
+                      (vec_get(payload, 2) << 16) |
+                      (vec_get(payload, 3) << 8) |
+                      vec_get(payload, 4);
+    vec_push(result, query_value);
+
+    // Max results
+    vec_push(result, vec_get(payload, 5));
+
+    result
+}
+
+// Create DISCOVER message
+fn federation_discover_message(query_type: i64, query_value: i64, max_results: i64) -> i64 {
+    let msg = message_new(MSG_DISCOVER());
+    let payload = discover_payload_new(query_type, query_value, max_results);
+    message_set_payload(msg, payload);
+    msg
+}
+
+// Handle DISCOVER - returns list of matching node IDs
+fn fed_cluster_handle_discover(cluster: i64, payload: i64) -> i64 {
+    let parsed = discover_payload_parse(payload);
+    if parsed == 0 {
+        return vec_new();  // Return empty list
+    }
+
+    let query_type = vec_get(parsed, 0);
+    let query_value = vec_get(parsed, 1);
+    let max_results = vec_get(parsed, 2);
+
+    let results = vec_new();
+    let members = fed_cluster_members(cluster);
+    let len = vec_len(members);
+    let i = 0;
+
+    while i < len && vec_len(results) < max_results {
+        let member = vec_get(members, i);
+
+        if fed_member_status(member) == MEMBER_STATUS_ACTIVE() {
+            let is_match = 0;
+
+            if query_type == DISCOVER_TYPE_SERVICE() {
+                // Check if member has this service
+                let services = fed_member_services(member);
+                let j = 0;
+                while j < vec_len(services) {
+                    if vec_get(services, j) == query_value {
+                        is_match = 1;
+                    }
+                    j = j + 1;
+                }
+            } else if query_type == DISCOVER_TYPE_CAPABILITY() {
+                // Check if member has all requested capabilities
+                let caps = fed_member_capabilities(member);
+                if (caps & query_value) == query_value {
+                    is_match = 1;
+                }
+            } else if query_type == DISCOVER_TYPE_NODE() {
+                // Direct node lookup
+                if fed_member_node_id(member) == query_value {
+                    is_match = 1;
+                }
+            }
+
+            if is_match != 0 {
+                vec_push(results, fed_member_node_id(member));
+            }
+        }
+
+        i = i + 1;
+    }
+
+    results
+}
+
+// =============================================================================
+// HANDOFF Protocol
+// =============================================================================
+
+// HANDOFF Payload:
+// - Source node ID (4 bytes)
+// - Target node ID (4 bytes)
+// - Handoff type (1 byte): LEADERSHIP, WORK, DATA
+// - Data length (2 bytes)
+// - Data (variable): Handoff-specific data
+
+fn HANDOFF_TYPE_LEADERSHIP() -> i64 { 1 }
+fn HANDOFF_TYPE_WORK() -> i64 { 2 }
+fn HANDOFF_TYPE_DATA() -> i64 { 3 }
+
+fn handoff_payload_new(source_id: i64, target_id: i64, handoff_type: i64, data: i64) -> i64 {
+    let payload = vec_new();
+
+    // Source node ID (4 bytes)
+    vec_push(payload, (source_id >> 24) & 255);
+    vec_push(payload, (source_id >> 16) & 255);
+    vec_push(payload, (source_id >> 8) & 255);
+    vec_push(payload, source_id & 255);
+
+    // Target node ID (4 bytes)
+    vec_push(payload, (target_id >> 24) & 255);
+    vec_push(payload, (target_id >> 16) & 255);
+    vec_push(payload, (target_id >> 8) & 255);
+    vec_push(payload, target_id & 255);
+
+    // Handoff type (1 byte)
+    vec_push(payload, handoff_type & 255);
+
+    // Data
+    let data_len = vec_len(data);
+    vec_push(payload, (data_len >> 8) & 255);
+    vec_push(payload, data_len & 255);
+
+    let i = 0;
+    while i < data_len {
+        vec_push(payload, vec_get(data, i));
+        i = i + 1;
+    }
+
+    payload
+}
+
+fn handoff_payload_parse(payload: i64) -> i64 {
+    if vec_len(payload) < 11 {
+        return 0;
+    }
+
+    let result = vec_new();
+
+    // Source node ID
+    let source_id = (vec_get(payload, 0) << 24) |
+                    (vec_get(payload, 1) << 16) |
+                    (vec_get(payload, 2) << 8) |
+                    vec_get(payload, 3);
+    vec_push(result, source_id);
+
+    // Target node ID
+    let target_id = (vec_get(payload, 4) << 24) |
+                    (vec_get(payload, 5) << 16) |
+                    (vec_get(payload, 6) << 8) |
+                    vec_get(payload, 7);
+    vec_push(result, target_id);
+
+    // Handoff type
+    vec_push(result, vec_get(payload, 8));
+
+    // Data
+    let data_len = (vec_get(payload, 9) << 8) | vec_get(payload, 10);
+    let data = vec_new();
+    let i = 0;
+    while i < data_len && 11 + i < vec_len(payload) {
+        vec_push(data, vec_get(payload, 11 + i));
+        i = i + 1;
+    }
+    vec_push(result, data);
+
+    result
+}
+
+// Create HANDOFF message
+fn federation_handoff_message(source_id: i64, target_id: i64, handoff_type: i64, data: i64) -> i64 {
+    let msg = message_new(MSG_HANDOFF());
+    let payload = handoff_payload_new(source_id, target_id, handoff_type, data);
+    message_set_payload(msg, payload);
+    msg
+}
+
+// Handle HANDOFF
+fn fed_cluster_handle_handoff(cluster: i64, payload: i64) -> i64 {
+    let parsed = handoff_payload_parse(payload);
+    if parsed == 0 {
+        return ERR_DECODE_ERROR();
+    }
+
+    let source_id = vec_get(parsed, 0);
+    let target_id = vec_get(parsed, 1);
+    let handoff_type = vec_get(parsed, 2);
+    let data = vec_get(parsed, 3);
+
+    // Verify target is us
+    if target_id != fed_cluster_local_node(cluster) {
+        return ERR_NONE();  // Not for us
+    }
+
+    if handoff_type == HANDOFF_TYPE_LEADERSHIP() {
+        // Accept leadership
+        fed_cluster_set_leader(cluster, target_id);
+    }
+
+    // Update vector clock
+    nex_vclock_increment(fed_cluster_vclock(cluster));
+
+    ERR_NONE()
+}
+
+// =============================================================================
+// Leader Election (Simple Bully Algorithm)
+// =============================================================================
+
+// Elect leader based on highest node ID among active members
+fn fed_cluster_elect_leader(cluster: i64) -> i64 {
+    let members = fed_cluster_members(cluster);
+    let len = vec_len(members);
+    let highest_id = 0;
+
+    let i = 0;
+    while i < len {
+        let member = vec_get(members, i);
+        if fed_member_status(member) == MEMBER_STATUS_ACTIVE() {
+            let node_id = fed_member_node_id(member);
+            if node_id > highest_id {
+                highest_id = node_id;
+            }
+        }
+        i = i + 1;
+    }
+
+    if highest_id > 0 {
+        fed_cluster_set_leader(cluster, highest_id);
+    }
+
+    highest_id
+}
+
+// Check if local node is leader
+fn fed_cluster_is_leader(cluster: i64) -> i64 {
+    fed_cluster_leader(cluster) == fed_cluster_local_node(cluster)
+}
+
+// =============================================================================
+// Debug/Print Helpers
+// =============================================================================
+
+fn fed_member_print(member: i64) -> i64 {
+    print("Member(node=");
+    print_i64(fed_member_node_id(member));
+    print(", status=");
+    let status = fed_member_status(member);
+    if status == MEMBER_STATUS_JOINING() { print("JOINING"); }
+    else if status == MEMBER_STATUS_ACTIVE() { print("ACTIVE"); }
+    else if status == MEMBER_STATUS_LEAVING() { print("LEAVING"); }
+    else if status == MEMBER_STATUS_FAILED() { print("FAILED"); }
+    else { print("UNKNOWN"); }
+    print(", caps=");
+    print_i64(fed_member_capabilities(member));
+    print(")");
+    0
+}
+
+fn fed_cluster_print(cluster: i64) -> i64 {
+    print("Cluster(id=");
+    print_i64(fed_cluster_id(cluster));
+    print(", local=");
+    print_i64(fed_cluster_local_node(cluster));
+    print(", leader=");
+    print_i64(fed_cluster_leader(cluster));
+    print(", members=");
+    print_i64(vec_len(fed_cluster_members(cluster)));
+    print(", active=");
+    print_i64(fed_cluster_active_count(cluster));
+    print(")\n");
+
+    let members = fed_cluster_members(cluster);
+    let len = vec_len(members);
+    let i = 0;
+    while i < len {
+        print("  ");
+        fed_member_print(vec_get(members, i));
+        print("\n");
+        i = i + 1;
+    }
+
+    0
+}

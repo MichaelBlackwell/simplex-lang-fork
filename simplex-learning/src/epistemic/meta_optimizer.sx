@@ -1,0 +1,829 @@
+// TASK-014: Epistemic Meta-Optimizer
+//
+// The meta-optimizer ties together all epistemic components:
+// - Grounded beliefs with provenance and calibration
+// - Epistemic health monitoring
+// - Anti-confirmation annealing with dissent windows
+// - Skeptic challenges and counterfactual probing
+// - No-learn zones and invariants
+//
+// This is the top-level component for epistemic-safe learning.
+
+use std::collections::HashMap;
+
+use crate::belief::{GroundedBelief, BeliefId, CalibratedConfidence};
+use crate::safety::{
+    ZoneRegistry, SafeLearningGuard, Invariant, NoLearnZone, NoGradientZone,
+    InvariantAction,
+};
+use super::monitors::{EpistemicMonitors, EpistemicHealth};
+use super::schedule::EpistemicSchedule;
+use super::dissent::{DissentConfig, DissentWindow, DissentPhase};
+use super::skeptic::{Skeptic, SkepticConfig, SkepticRunner};
+use super::counterfactual::BeliefRevision;
+use super::integration::{
+    EpistemicIntegration, EpistemicIntegrationConfig, EpistemicStepResult,
+};
+
+// =============================================================================
+// Meta-Optimizer Configuration
+// =============================================================================
+
+/// Full configuration for the epistemic meta-optimizer
+#[derive(Clone)]
+pub struct MetaOptimizerConfig {
+    /// Base learning rate
+    pub base_learning_rate: f64,
+
+    /// Minimum learning rate (even under poor epistemic health)
+    pub min_learning_rate: f64,
+
+    /// Base temperature for sampling/exploration
+    pub base_temperature: f64,
+
+    /// Epistemic integration configuration
+    pub epistemic: EpistemicIntegrationConfig,
+
+    /// Enable parameter freezing via zones
+    pub enable_zones: bool,
+
+    /// Automatically add finite invariant
+    pub require_finite_params: bool,
+
+    /// Maximum parameter change per step (for stability)
+    pub max_param_change: Option<f64>,
+
+    /// Enable belief tracking
+    pub track_beliefs: bool,
+
+    /// Checkpoint interval (steps)
+    pub checkpoint_interval: Option<u64>,
+
+    /// Enable verbose logging
+    pub verbose: bool,
+}
+
+impl Default for MetaOptimizerConfig {
+    fn default() -> Self {
+        MetaOptimizerConfig {
+            base_learning_rate: 0.001,
+            min_learning_rate: 0.00001,
+            base_temperature: 1.0,
+            epistemic: EpistemicIntegrationConfig::default(),
+            enable_zones: true,
+            require_finite_params: true,
+            max_param_change: Some(1.0),
+            track_beliefs: true,
+            checkpoint_interval: Some(1000),
+            verbose: false,
+        }
+    }
+}
+
+impl MetaOptimizerConfig {
+    /// Production configuration (conservative, safe)
+    pub fn production() -> Self {
+        MetaOptimizerConfig {
+            base_learning_rate: 0.0001,
+            min_learning_rate: 0.000001,
+            base_temperature: 1.0,
+            epistemic: EpistemicIntegrationConfig::production(),
+            enable_zones: true,
+            require_finite_params: true,
+            max_param_change: Some(0.5),
+            track_beliefs: true,
+            checkpoint_interval: Some(5000),
+            verbose: false,
+        }
+    }
+
+    /// Development configuration (faster iteration, more logging)
+    pub fn development() -> Self {
+        MetaOptimizerConfig {
+            base_learning_rate: 0.001,
+            min_learning_rate: 0.0001,
+            base_temperature: 1.0,
+            epistemic: EpistemicIntegrationConfig::development(),
+            enable_zones: true,
+            require_finite_params: true,
+            max_param_change: Some(2.0),
+            track_beliefs: true,
+            checkpoint_interval: Some(100),
+            verbose: true,
+        }
+    }
+
+    /// High-risk configuration (for research, not production)
+    pub fn research() -> Self {
+        MetaOptimizerConfig {
+            base_learning_rate: 0.01,
+            min_learning_rate: 0.001,
+            base_temperature: 2.0,
+            epistemic: EpistemicIntegrationConfig {
+                skeptic: SkepticConfig::aggressive(),
+                dissent: DissentConfig::aggressive(),
+                ..EpistemicIntegrationConfig::development()
+            },
+            enable_zones: false,
+            require_finite_params: true,
+            max_param_change: None,
+            track_beliefs: true,
+            checkpoint_interval: Some(50),
+            verbose: true,
+        }
+    }
+}
+
+// =============================================================================
+// Meta-Optimizer State
+// =============================================================================
+
+/// Statistics from the meta-optimizer
+#[derive(Clone, Default)]
+pub struct MetaOptimizerStats {
+    /// Total steps executed
+    pub steps: u64,
+
+    /// Updates performed
+    pub updates: u64,
+
+    /// Updates blocked (by zones or invariants)
+    pub updates_blocked: u64,
+
+    /// Updates reverted (invariant violations)
+    pub updates_reverted: u64,
+
+    /// Belief revisions recommended
+    pub belief_revisions: u64,
+
+    /// Belief revisions applied
+    pub revisions_applied: u64,
+
+    /// Checkpoints saved
+    pub checkpoints: u64,
+
+    /// Average epistemic health score
+    pub avg_health: f64,
+
+    /// Minimum epistemic health seen
+    pub min_health: f64,
+
+    /// Maximum epistemic health seen
+    pub max_health: f64,
+
+    /// Time spent in dissent windows (steps)
+    pub dissent_steps: u64,
+}
+
+/// Checkpoint of optimizer state
+#[derive(Clone)]
+pub struct OptimizerCheckpoint {
+    /// Step number
+    pub step: u64,
+
+    /// Parameter values
+    pub params: Vec<f64>,
+
+    /// Epistemic health at checkpoint
+    pub health: EpistemicHealth,
+
+    /// Beliefs at checkpoint
+    pub beliefs: Vec<GroundedBelief<String>>,
+}
+
+// =============================================================================
+// Main Meta-Optimizer
+// =============================================================================
+
+/// The epistemic meta-optimizer
+///
+/// Wraps learning updates with full epistemic safety:
+/// - Zone checking (no-learn, no-gradient)
+/// - Invariant verification
+/// - Epistemic health monitoring
+/// - Belief challenging via Skeptic
+/// - Automatic learning rate and temperature modulation
+///
+/// # Example
+///
+/// ```simplex
+/// use simplex_learning::epistemic::{EpistemicMetaOptimizer, MetaOptimizerConfig};
+///
+/// let mut optimizer = EpistemicMetaOptimizer::new(MetaOptimizerConfig::production());
+///
+/// // Add safety zones
+/// optimizer.freeze_indices("safety_critical", &[0, 1, 2]);
+/// optimizer.add_invariant(Invariant::all_finite("params_finite"));
+///
+/// // In training loop:
+/// loop {
+///     let observations = collect_observations();
+///     let beliefs = get_current_beliefs();
+///
+///     // Prepare update (checks zones, backs up params)
+///     let update_context = optimizer.prepare_update(&params, &all_indices)?;
+///
+///     // Compute gradients (masked by no-gradient zones)
+///     let mut gradients = compute_gradients();
+///     optimizer.mask_gradients(&mut gradients);
+///
+///     // Apply update with modulated learning rate
+///     let lr = optimizer.current_learning_rate();
+///     apply_gradients(&mut params, &gradients, lr);
+///
+///     // Finalize (check invariants, run epistemic step)
+///     let result = optimizer.finalize_update(&mut params, &beliefs, &observations)?;
+///
+///     // Handle belief revisions
+///     for revision in result.revisions {
+///         apply_belief_revision(&revision);
+///     }
+/// }
+/// ```
+pub struct EpistemicMetaOptimizer {
+    /// Configuration
+    config: MetaOptimizerConfig,
+
+    /// Zone registry for safety enforcement
+    zones: ZoneRegistry,
+
+    /// Epistemic integration
+    epistemic: EpistemicIntegration,
+
+    /// Current step
+    step: u64,
+
+    /// Statistics
+    stats: MetaOptimizerStats,
+
+    /// Checkpoint history
+    checkpoints: Vec<OptimizerCheckpoint>,
+
+    /// Maximum checkpoints to keep
+    max_checkpoints: usize,
+
+    /// Current learning rate (modulated)
+    current_lr: f64,
+
+    /// Current temperature (modulated)
+    current_temp: f64,
+
+    /// Health history for averaging
+    health_history: Vec<f64>,
+}
+
+impl EpistemicMetaOptimizer {
+    /// Create a new meta-optimizer
+    pub fn new(config: MetaOptimizerConfig) -> Self {
+        let mut zones = ZoneRegistry::new().verbose(config.verbose);
+
+        // Add finite params invariant if required
+        if config.require_finite_params {
+            zones.add_invariant(
+                Invariant::all_finite("params_must_be_finite")
+                    .with_action(InvariantAction::Revert)
+            );
+        }
+
+        // Add max param change invariant if configured
+        if let Some(max_change) = config.max_param_change {
+            zones.add_invariant(
+                Invariant::in_range("param_change_bounded", -max_change, max_change)
+                    .with_action(InvariantAction::Clamp)
+            );
+        }
+
+        let epistemic = EpistemicIntegration::new(config.epistemic.clone());
+
+        EpistemicMetaOptimizer {
+            current_lr: config.base_learning_rate,
+            current_temp: config.base_temperature,
+            config,
+            zones,
+            epistemic,
+            step: 0,
+            stats: MetaOptimizerStats::default(),
+            checkpoints: Vec::new(),
+            max_checkpoints: 10,
+            health_history: Vec::new(),
+        }
+    }
+
+    /// Create with default configuration
+    pub fn default_optimizer() -> Self {
+        EpistemicMetaOptimizer::new(MetaOptimizerConfig::default())
+    }
+
+    // -------------------------------------------------------------------------
+    // Zone Management
+    // -------------------------------------------------------------------------
+
+    /// Freeze parameters at given indices (no-learn zone)
+    pub fn freeze_indices(&mut self, name: &str, indices: &[usize]) {
+        if self.config.enable_zones {
+            self.zones.no_learn_indices(name, indices);
+        }
+    }
+
+    /// Freeze parameters by name (no-learn zone)
+    pub fn freeze_params(&mut self, name: &str, params: &[&str]) {
+        if self.config.enable_zones {
+            self.zones.no_learn_params(name, params);
+        }
+    }
+
+    /// Block gradients at given indices (no-gradient zone)
+    pub fn block_gradients(&mut self, name: &str, indices: &[usize]) {
+        if self.config.enable_zones {
+            self.zones.no_gradient_indices(name, indices);
+        }
+    }
+
+    /// Add a custom invariant
+    pub fn add_invariant(&mut self, invariant: Invariant) {
+        self.zones.add_invariant(invariant);
+    }
+
+    /// Add a range invariant for all parameters
+    pub fn require_in_range(&mut self, name: &str, min: f64, max: f64) {
+        self.zones.add_invariant(
+            Invariant::in_range(name, min, max).with_action(InvariantAction::Clamp)
+        );
+    }
+
+    /// Add a norm bound invariant
+    pub fn require_norm_bounded(&mut self, name: &str, max_norm: f64) {
+        self.zones.add_invariant(
+            Invariant::norm_bounded(name, max_norm).with_action(InvariantAction::Revert)
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Learning Rate and Temperature
+    // -------------------------------------------------------------------------
+
+    /// Get current (modulated) learning rate
+    pub fn current_learning_rate(&self) -> f64 {
+        self.current_lr.max(self.config.min_learning_rate)
+    }
+
+    /// Get current (modulated) temperature
+    pub fn current_temperature(&self) -> f64 {
+        self.current_temp
+    }
+
+    /// Get base learning rate
+    pub fn base_learning_rate(&self) -> f64 {
+        self.config.base_learning_rate
+    }
+
+    /// Get base temperature
+    pub fn base_temperature(&self) -> f64 {
+        self.config.base_temperature
+    }
+
+    // -------------------------------------------------------------------------
+    // Update Workflow
+    // -------------------------------------------------------------------------
+
+    /// Prepare for a parameter update
+    ///
+    /// - Backs up current parameters
+    /// - Checks no-learn zones
+    /// - Returns indices where gradients should be zeroed
+    pub fn prepare_update(
+        &mut self,
+        params: &[f64],
+        indices_to_update: &[usize],
+    ) -> Result<UpdateContext, String> {
+        // Backup params for potential reversion
+        self.zones.backup_params(params);
+
+        // Check zones
+        let check = self.zones.check_before_update(indices_to_update);
+
+        if !check.allowed {
+            self.stats.updates_blocked += 1;
+            return Err(check.reason.unwrap_or_else(|| "Update blocked by zone".to_string()));
+        }
+
+        Ok(UpdateContext {
+            zero_gradient_indices: check.zero_gradient_indices,
+            warnings: check.warnings,
+        })
+    }
+
+    /// Mask gradients according to no-gradient zones
+    pub fn mask_gradients(&self, gradients: &mut [f64]) {
+        if self.config.enable_zones {
+            self.zones.apply_gradient_mask(gradients);
+        }
+    }
+
+    /// Finalize an update after gradients have been applied
+    ///
+    /// - Checks invariants
+    /// - Runs epistemic step (skeptic, monitors)
+    /// - Updates learning rate and temperature
+    /// - May revert if invariants violated
+    pub fn finalize_update(
+        &mut self,
+        params: &mut [f64],
+        beliefs: &[GroundedBelief<String>],
+        observations: &[(String, f64)],
+    ) -> Result<UpdateResult, UpdateError> {
+        self.step += 1;
+
+        // Check invariants
+        let invariant_result = self.zones.check_invariants(params);
+
+        if !invariant_result.all_hold {
+            match invariant_result.action {
+                InvariantAction::Warn => {
+                    // Continue but record
+                    if self.config.verbose {
+                        for v in &invariant_result.violations {
+                            println!("[MetaOptimizer] Warning: invariant '{}' violated", v.name);
+                        }
+                    }
+                }
+                InvariantAction::Revert => {
+                    self.zones.revert(params);
+                    self.stats.updates_reverted += 1;
+                    return Err(UpdateError::InvariantViolation(invariant_result.violations));
+                }
+                InvariantAction::Clamp => {
+                    // Find range and clamp
+                    // This is a simplification - real impl would track per-invariant
+                    if let Some(max_change) = self.config.max_param_change {
+                        self.zones.clamp_to_range(params, -max_change, max_change);
+                    }
+                }
+                InvariantAction::Panic => {
+                    panic!("Critical invariant violated!");
+                }
+            }
+        }
+
+        // Run epistemic step
+        let epistemic_result = self.epistemic.step(beliefs, observations);
+
+        // Update modulated values
+        self.current_lr = epistemic_result.learning_rate;
+        self.current_temp = epistemic_result.temperature;
+
+        // Track health
+        self.health_history.push(epistemic_result.health.score);
+        if self.health_history.len() > 1000 {
+            self.health_history.remove(0);
+        }
+
+        // Update stats
+        self.stats.updates += 1;
+        self.stats.belief_revisions += epistemic_result.revisions.len() as u64;
+        self.stats.revisions_applied += epistemic_result.applied_revisions.len() as u64;
+
+        if epistemic_result.skeptic_active {
+            self.stats.dissent_steps += 1;
+        }
+
+        // Update health stats
+        let health = epistemic_result.health.score;
+        if self.stats.steps == 1 {
+            self.stats.min_health = health;
+            self.stats.max_health = health;
+        } else {
+            self.stats.min_health = self.stats.min_health.min(health);
+            self.stats.max_health = self.stats.max_health.max(health);
+        }
+        self.stats.avg_health = self.health_history.iter().sum::<f64>()
+            / self.health_history.len() as f64;
+
+        // Checkpoint if needed
+        if let Some(interval) = self.config.checkpoint_interval {
+            if self.step % interval == 0 {
+                self.save_checkpoint(params, &epistemic_result.health, beliefs);
+            }
+        }
+
+        Ok(UpdateResult {
+            step: self.step,
+            learning_rate: self.current_lr,
+            temperature: self.current_temp,
+            health: epistemic_result.health,
+            revisions: epistemic_result.revisions,
+            applied_revisions: epistemic_result.applied_revisions,
+            phase: epistemic_result.phase,
+            invariant_warnings: if invariant_result.all_hold {
+                Vec::new()
+            } else {
+                invariant_result.violations
+            },
+        })
+    }
+
+    /// Run a complete update step (prepare + apply + finalize)
+    pub fn step(
+        &mut self,
+        params: &mut [f64],
+        gradients: &mut [f64],
+        beliefs: &[GroundedBelief<String>],
+        observations: &[(String, f64)],
+    ) -> Result<UpdateResult, UpdateError> {
+        // Prepare
+        let indices: Vec<usize> = (0..params.len()).collect();
+        let _ctx = self.prepare_update(params, &indices)
+            .map_err(|e| UpdateError::ZoneBlocked(e))?;
+
+        // Mask gradients
+        self.mask_gradients(gradients);
+
+        // Apply gradients (simple SGD - real impl would use configured optimizer)
+        let lr = self.current_learning_rate();
+        for (p, g) in params.iter_mut().zip(gradients.iter()) {
+            *p -= lr * g;
+        }
+
+        // Finalize
+        self.finalize_update(params, beliefs, observations)
+    }
+
+    // -------------------------------------------------------------------------
+    // Checkpointing
+    // -------------------------------------------------------------------------
+
+    fn save_checkpoint(
+        &mut self,
+        params: &[f64],
+        health: &EpistemicHealth,
+        beliefs: &[GroundedBelief<String>],
+    ) {
+        let checkpoint = OptimizerCheckpoint {
+            step: self.step,
+            params: params.to_vec(),
+            health: health.clone(),
+            beliefs: beliefs.to_vec(),
+        };
+
+        self.checkpoints.push(checkpoint);
+        self.stats.checkpoints += 1;
+
+        // Keep only recent checkpoints
+        while self.checkpoints.len() > self.max_checkpoints {
+            self.checkpoints.remove(0);
+        }
+
+        if self.config.verbose {
+            println!(
+                "[MetaOptimizer] Checkpoint at step {} (health: {:.3})",
+                self.step, health.score
+            );
+        }
+    }
+
+    /// Get most recent checkpoint
+    pub fn latest_checkpoint(&self) -> Option<&OptimizerCheckpoint> {
+        self.checkpoints.last()
+    }
+
+    /// Restore from a checkpoint
+    pub fn restore_checkpoint(&mut self, checkpoint: &OptimizerCheckpoint, params: &mut [f64]) {
+        if checkpoint.params.len() == params.len() {
+            params.copy_from_slice(&checkpoint.params);
+            self.step = checkpoint.step;
+
+            if self.config.verbose {
+                println!(
+                    "[MetaOptimizer] Restored to checkpoint at step {}",
+                    checkpoint.step
+                );
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Accessors
+    // -------------------------------------------------------------------------
+
+    /// Get current step
+    pub fn current_step(&self) -> u64 {
+        self.step
+    }
+
+    /// Get current epistemic health
+    pub fn current_health(&self) -> EpistemicHealth {
+        self.epistemic.current_health()
+    }
+
+    /// Is the system in a dissent window?
+    pub fn in_dissent_window(&self) -> bool {
+        self.epistemic.in_dissent_window()
+    }
+
+    /// Get current dissent phase
+    pub fn dissent_phase(&self) -> DissentPhase {
+        self.epistemic.current_phase()
+    }
+
+    /// Get pending belief revisions
+    pub fn pending_revisions(&self) -> &[BeliefRevision] {
+        self.epistemic.pending_revisions()
+    }
+
+    /// Get statistics
+    pub fn stats(&self) -> &MetaOptimizerStats {
+        &self.stats
+    }
+
+    /// Get zone statistics
+    pub fn zone_stats(&self) -> &crate::safety::ZoneStats {
+        self.zones.stats()
+    }
+
+    /// Get summary
+    pub fn summary(&self) -> String {
+        format!(
+            "EpistemicMetaOptimizer (step {})\n\
+             LR: {:.6} | Temp: {:.3} | Health: {:.3} (avg: {:.3}, min: {:.3}, max: {:.3})\n\
+             Updates: {} | Blocked: {} | Reverted: {} | Revisions: {}/{}\n\
+             Dissent steps: {} | Checkpoints: {}\n\
+             {}",
+            self.step,
+            self.current_lr,
+            self.current_temp,
+            self.current_health().score,
+            self.stats.avg_health,
+            self.stats.min_health,
+            self.stats.max_health,
+            self.stats.updates,
+            self.stats.updates_blocked,
+            self.stats.updates_reverted,
+            self.stats.revisions_applied,
+            self.stats.belief_revisions,
+            self.stats.dissent_steps,
+            self.stats.checkpoints,
+            self.zones.summary()
+        )
+    }
+
+    /// Reset the optimizer (keeps configuration)
+    pub fn reset(&mut self) {
+        self.step = 0;
+        self.stats = MetaOptimizerStats::default();
+        self.checkpoints.clear();
+        self.health_history.clear();
+        self.current_lr = self.config.base_learning_rate;
+        self.current_temp = self.config.base_temperature;
+        self.epistemic.reset();
+    }
+}
+
+impl Default for EpistemicMetaOptimizer {
+    fn default() -> Self {
+        EpistemicMetaOptimizer::default_optimizer()
+    }
+}
+
+// =============================================================================
+// Helper Types
+// =============================================================================
+
+/// Context returned from prepare_update
+pub struct UpdateContext {
+    /// Indices where gradients should be zeroed
+    pub zero_gradient_indices: Vec<usize>,
+
+    /// Warnings generated
+    pub warnings: Vec<String>,
+}
+
+/// Result of a successful update
+pub struct UpdateResult {
+    /// Step number
+    pub step: u64,
+
+    /// Current learning rate
+    pub learning_rate: f64,
+
+    /// Current temperature
+    pub temperature: f64,
+
+    /// Current epistemic health
+    pub health: EpistemicHealth,
+
+    /// Belief revisions recommended
+    pub revisions: Vec<BeliefRevision>,
+
+    /// Revisions that were auto-applied
+    pub applied_revisions: Vec<BeliefRevision>,
+
+    /// Current dissent phase
+    pub phase: DissentPhase,
+
+    /// Invariant warnings (if any violations were just warned, not blocked)
+    pub invariant_warnings: Vec<crate::safety::InvariantViolation>,
+}
+
+/// Error from an update
+#[derive(Debug)]
+pub enum UpdateError {
+    /// Update blocked by a no-learn zone
+    ZoneBlocked(String),
+
+    /// Invariant was violated
+    InvariantViolation(Vec<crate::safety::InvariantViolation>),
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_meta_optimizer_creation() {
+        let optimizer = EpistemicMetaOptimizer::new(MetaOptimizerConfig::development());
+        assert_eq!(optimizer.current_step(), 0);
+        assert!(optimizer.current_learning_rate() > 0.0);
+    }
+
+    #[test]
+    fn test_zone_enforcement() {
+        let mut optimizer = EpistemicMetaOptimizer::new(MetaOptimizerConfig::default());
+        optimizer.freeze_indices("frozen", &[0, 1]);
+
+        let params = vec![1.0, 2.0, 3.0, 4.0];
+
+        // Try to update frozen indices
+        let result = optimizer.prepare_update(&params, &[0, 1, 2]);
+        assert!(result.is_err());
+
+        // Update only non-frozen indices
+        let result = optimizer.prepare_update(&params, &[2, 3]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_invariant_enforcement() {
+        let mut optimizer = EpistemicMetaOptimizer::new(MetaOptimizerConfig {
+            require_finite_params: true,
+            ..Default::default()
+        });
+
+        let mut params = vec![1.0, 2.0, 3.0];
+        let beliefs: Vec<GroundedBelief<String>> = Vec::new();
+        let observations: Vec<(String, f64)> = Vec::new();
+
+        // Prepare update
+        let _ = optimizer.prepare_update(&params, &[0, 1, 2]).unwrap();
+
+        // Corrupt params
+        params[1] = f64::NAN;
+
+        // Finalize should fail and revert
+        let result = optimizer.finalize_update(&mut params, &beliefs, &observations);
+        assert!(result.is_err());
+
+        // Params should be reverted to original
+        assert!(params[1].is_finite());
+    }
+
+    #[test]
+    fn test_gradient_masking() {
+        let mut optimizer = EpistemicMetaOptimizer::new(MetaOptimizerConfig::default());
+        optimizer.block_gradients("blocked", &[1, 2]);
+
+        let mut gradients = vec![1.0, 2.0, 3.0, 4.0];
+        optimizer.mask_gradients(&mut gradients);
+
+        assert_eq!(gradients[0], 1.0);
+        assert_eq!(gradients[1], 0.0);
+        assert_eq!(gradients[2], 0.0);
+        assert_eq!(gradients[3], 4.0);
+    }
+
+    #[test]
+    fn test_learning_rate_modulation() {
+        let mut optimizer = EpistemicMetaOptimizer::new(MetaOptimizerConfig {
+            base_learning_rate: 0.01,
+            ..Default::default()
+        });
+
+        // Run some steps
+        let mut params = vec![0.5; 10];
+        let mut gradients = vec![0.1; 10];
+        let beliefs: Vec<GroundedBelief<String>> = Vec::new();
+        let observations: Vec<(String, f64)> = Vec::new();
+
+        for _ in 0..10 {
+            let _ = optimizer.step(&mut params, &mut gradients, &beliefs, &observations);
+        }
+
+        // Learning rate should be modulated based on epistemic health
+        let lr = optimizer.current_learning_rate();
+        assert!(lr > 0.0);
+        assert!(lr <= optimizer.base_learning_rate());
+    }
+}

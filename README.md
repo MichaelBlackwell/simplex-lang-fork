@@ -1,6 +1,6 @@
 # Simplex Programming Language
 
-**Version 0.9.2**
+**Version 0.9.5**
 
 Simplex is a modern systems programming language designed for AI-native applications, featuring first-class support for actors, cognitive agents, and distributed computing.
 
@@ -10,11 +10,15 @@ Simplex is a modern systems programming language designed for AI-native applicat
 - **Cognitive Agents**: First-class AI specialist agents with inference capabilities
 - **Per-Hive SLM**: Each cognitive hive provisions its own shared language model
 - **HiveMnemonic**: Shared consciousness across specialists within a hive
+- **Edge Hive**: Lightweight autonomous hives for edge devices with local AI inference (v0.9.5)
+- **Nexus Protocol**: High-frequency hive-to-hive communication with 237x compression (v0.9.5)
 - **Neural IR**: Differentiable program execution with learnable control flow (v0.6.0)
 - **Real-Time Learning**: Online training during inference without retraining (v0.7.0)
 - **Dual Numbers**: Native forward-mode automatic differentiation (v0.8.0)
 - **Self-Learning Annealing**: Optimization schedules that learn themselves (v0.9.0)
+- **Epistemic Data Refinement**: Research-validated training data with provenance (v0.9.5)
 - **Self-Hosted**: Compiler written in Simplex itself (bootstrapped from Python)
+- **Cross-Platform**: Native compilation for macOS (x86_64, arm64) and Linux (x86_64)
 - **LLVM Backend**: Compiles to optimized native code via LLVM IR
 - **Rust-Inspired Syntax**: Familiar syntax with enums, traits, and pattern matching
 - **Async/Await**: Native async support with state machine generation
@@ -232,6 +236,55 @@ specialist SecurityAnalyzer {
 }
 ```
 
+### Edge Hive - Local AI on Edge Devices (v0.9.5)
+
+```simplex
+use edge_hive::{edge_hive_login, hive_infer_local, hive_shutdown_secure};
+
+fn main() {
+    // Login and create secure edge hive
+    let hive = edge_hive_login("user@example.com", "password", "wss://hub.example.com");
+
+    // Model auto-selected based on device (phone -> SmolLM-360M)
+    let response = hive_infer_local(hive, "Summarize today's meetings");
+    println(response);
+
+    // Secure shutdown clears all keys from memory
+    hive_shutdown_secure(hive);
+}
+```
+
+Features:
+- Automatic model selection: SmolLM (135M-1.7B), Qwen (0.5B-1.5B), Phi-3 (3.8B), Llama (1B-3B), Gemma (2B)
+- AES-256-GCM encryption at rest, PBKDF2 authentication
+- Battery-aware degradation, offline capability
+- Federation with other edge hives
+
+### Nexus Protocol - High-Frequency Hive Sync (v0.9.5)
+
+```simplex
+use nexus::{NexusSession, BitPackedBeliefSync};
+
+fn main() {
+    // Create nexus session between hives
+    let session = NexusSession::connect("wss://peer-hive.example.com");
+
+    // Sync beliefs with 237x compression
+    let sync = BitPackedBeliefSync::new();
+    sync.add_belief("code_quality_high", 0.92);
+    sync.add_belief("security_verified", 0.88);
+
+    // Delta encoding: only changes transmitted
+    session.sync_beliefs(sync);  // ~0.76 bytes for 2 beliefs vs 180 naive
+
+    // Receive updates
+    let updates = session.receive_updates();
+    for belief in updates {
+        println(f"Received: {belief.key} = {belief.confidence}");
+    }
+}
+```
+
 ## Project Structure
 
 ```
@@ -253,6 +306,20 @@ simplex-lang/
 │   ├── cursus.sx           # Bytecode VM
 │   ├── sxdoc.sx            # Documentation generator
 │   └── sxlsp.sx            # Language server protocol
+├── edge-hive/              # Edge computing framework
+│   ├── src/                # Local AI inference, federation, security
+│   └── tests/              # Edge hive test suite
+├── nexus/                  # High-frequency hive communication
+│   ├── src/                # 28 modules for bit-packed sync
+│   └── tests/              # Protocol tests
+├── lib/
+│   ├── version.sx          # Centralized version management
+│   ├── platform.sx         # Cross-platform utilities
+│   ├── safety.sx           # Runtime safety primitives
+│   └── simplex-training/   # Self-optimizing training pipelines
+│       ├── src/schedules/  # Learnable schedules (LR, distillation)
+│       ├── src/research/   # Epistemic data refinement
+│       └── src/trainer/    # MetaTrainer for meta-optimization
 ├── tests/                  # 156 tests across 13 categories
 │   ├── language/           # Core language features (40)
 │   ├── types/              # Type system tests (24)
@@ -279,13 +346,71 @@ simplex-lang/
 
 | Tool | Version | Description |
 |------|---------|-------------|
-| **sxc** | 0.9.0 | Simplex Compiler with Neural IR and Dual Numbers |
-| **sxpm** | 0.9.0 | Package Manager with SLM provisioning |
-| **cursus** | 0.9.0 | Bytecode Virtual Machine |
-| **sxdoc** | 0.9.0 | Documentation Generator |
-| **sxlsp** | 0.9.0 | Language Server Protocol |
+| **sxc** | 0.9.5 | Simplex Compiler with Neural IR and Dual Numbers |
+| **sxpm** | 0.9.5 | Package Manager with SLM provisioning |
+| **cursus** | 0.9.5 | Bytecode Virtual Machine |
+| **sxdoc** | 0.9.5 | Documentation Generator |
+| **sxlsp** | 0.9.5 | Language Server Protocol |
 
 ## Release History
+
+### v0.9.5 (2026-01-17) - Consolidated Foundations
+
+**Edge Hive (TASK-013):**
+- Complete edge computing framework for IoT and mobile devices
+- Local AI inference with 9 supported models (SmolLM, Qwen, Phi-3, Llama, Gemma)
+- Device-aware model selection and battery-aware degradation
+- Comprehensive security: AES-256-GCM encryption, PBKDF2 auth, TLS 1.3 mandatory
+- Federation support with offline capability
+
+**Nexus Protocol (TASK-012):**
+- Full implementation with 28 protocol modules
+- 237x compression over naive approaches (0.38 bytes/belief vs 90)
+- Bit-packed delta streams with variable-length encoding
+- Multiple transports: TCP, UDP, WebSocket, shared memory
+- Dual number support for belief trajectories
+
+**Epistemic Data Refinement (TASK-015):**
+- Research module for training data validation
+- Source credibility scoring from official specs/docs
+- Corroboration requirements across multiple sources
+- GroundedBelief with full provenance tracking
+
+**Cross-Platform Build:**
+- Linux x86_64 compiler successfully built and tested
+- AWS infrastructure for CI/CD testing
+- Pre-built binaries for macOS and Linux
+
+**Centralized Version Management:**
+- Single source of truth for all versions in `lib/version.sx`
+- Version comparison utilities and feature flags
+- All 11+ version locations now import from central module
+
+See [RELEASE-0.9.5.md](simplex-docs/RELEASE-0.9.5.md) for details.
+
+### v0.9.2 (2026-01-14) - Toolchain Improvements
+
+**Version Consolidation Prep:**
+- Identified all version string locations across toolchain
+- Prepared `lib/version.sx` module structure
+- Updated internal tooling for version management
+
+**Parser and Codegen Fixes:**
+- Multi-file module system improvements
+- Better error messages for malformed input
+- Codegen optimization for common patterns
+
+### v0.9.1 (2026-01-12) - Edge Hive Refinements
+
+**Edge Hive Enhancements:**
+- Improved device profile auto-detection
+- Better offline mode handling
+- Federation manager reliability improvements
+
+**Runtime Safety:**
+- Added NULL checks for critical allocations
+- Improved error handling in file operations
+- Better thread safety for hive router operations
 
 ### v0.9.0 (2026-01-11) - Self-Learning Annealing
 
@@ -510,12 +635,16 @@ sxpm model install <name> # Install a model
 - Anima cognitive agents
 - HiveMnemonic shared consciousness
 - Per-hive SLM provisioning
+- Edge Hive for edge devices (v0.9.5)
+- Nexus Protocol for hive-to-hive sync (v0.9.5)
+- Dual numbers for automatic differentiation (v0.8.0)
+- Neural IR for differentiable execution (v0.6.0)
 
 ### In Development
-- Full trait bounds and where clauses
-- Module system improvements
 - GPU acceleration for SLMs
-- Distributed hive clustering
+- Full trait bounds and where clauses
+- Hardware security module (HSM) integration
+- Peer-to-peer hive discovery
 
 ## Running Tests
 
@@ -548,6 +677,9 @@ sxc run tests/learning/unit_dual_numbers.sx
 - [Tutorial](simplex-docs/tutorial/)
 - [Testing Documentation](simplex-docs/testing/)
 - [Getting Started Guide](simplex-docs/guides/getting-started.md)
+- [Edge Hive Documentation](edge-hive/README.md) - Edge computing and local AI
+- [Nexus Protocol](nexus/) - High-frequency hive communication
+- [Release Notes v0.9.5](simplex-docs/RELEASE-0.9.5.md) - Consolidated Foundations
 - [Release Notes v0.9.0](simplex-docs/RELEASE-0.9.0.md) - Self-Learning Annealing
 - [Release Notes v0.8.0](simplex-docs/RELEASE-0.8.0.md) - Dual Numbers
 - [Release Notes v0.7.0](simplex-docs/RELEASE-0.7.0.md) - Real-Time Learning

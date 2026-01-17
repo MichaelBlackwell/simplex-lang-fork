@@ -8,38 +8,38 @@
 // =============================================================================
 
 fn test_gzip_header() -> i64 {
-    println("  Testing gzip header format...");
+ println(" Testing gzip header format...");
 
-    // Gzip magic bytes: 0x1f 0x8b
-    let magic1: i64 = 0x1f;
-    let magic2: i64 = 0x8b;
+ // Gzip magic bytes: 31 (0x1f) and 139 (0x8b)
+ let magic1: i64 = 31;
+ let magic2: i64 = 139;
 
-    if magic1 != 31 {
-        println("    FAIL: first magic byte should be 0x1f");
-        return 1;
-    }
+ if magic1 != 31 {
+ println(" FAIL: first magic byte should be 0x1f");
+ return 1;
+ }
 
-    if magic2 != 139 {
-        println("    FAIL: second magic byte should be 0x8b");
-        return 1;
-    }
+ if magic2 != 139 {
+ println(" FAIL: second magic byte should be 0x8b");
+ return 1;
+ }
 
-    // Compression method: 8 = deflate
-    let compression_method: i64 = 8;
-    if compression_method != 8 {
-        println("    FAIL: compression method should be 8 (deflate)");
-        return 1;
-    }
+ // Compression method: 8 = deflate
+ let compression_method: i64 = 8;
+ if compression_method != 8 {
+ println(" FAIL: compression method should be 8 (deflate)");
+ return 1;
+ }
 
-    // Minimum header size: 10 bytes
-    let min_header_size: i64 = 10;
-    if min_header_size != 10 {
-        println("    FAIL: minimum header should be 10 bytes");
-        return 1;
-    }
+ // Minimum header size: 10 bytes
+ let min_header_size: i64 = 10;
+ if min_header_size != 10 {
+ println(" FAIL: minimum header should be 10 bytes");
+ return 1;
+ }
 
-    println("    PASS: gzip header format");
-    0
+ println(" PASS: gzip header format");
+ 0
 }
 
 // =============================================================================
@@ -47,32 +47,32 @@ fn test_gzip_header() -> i64 {
 // =============================================================================
 
 fn test_gzip_trailer() -> i64 {
-    println("  Testing gzip trailer format...");
+ println(" Testing gzip trailer format...");
 
-    // Trailer has CRC32 (4 bytes) + uncompressed size (4 bytes)
-    let trailer_size: i64 = 8;
+ // Trailer has CRC32 (4 bytes) + uncompressed size (4 bytes)
+ let trailer_size: i64 = 8;
 
-    if trailer_size != 8 {
-        println("    FAIL: trailer should be 8 bytes");
-        return 1;
-    }
+ if trailer_size != 8 {
+ println(" FAIL: trailer should be 8 bytes");
+ return 1;
+ }
 
-    // CRC32 is 32 bits = 4 bytes
-    let crc_size: i64 = 4;
-    if crc_size != 4 {
-        println("    FAIL: CRC32 should be 4 bytes");
-        return 1;
-    }
+ // CRC32 is 32 bits = 4 bytes
+ let crc_size: i64 = 4;
+ if crc_size != 4 {
+ println(" FAIL: CRC32 should be 4 bytes");
+ return 1;
+ }
 
-    // Size is mod 2^32 (4 bytes)
-    let size_field: i64 = 4;
-    if size_field != 4 {
-        println("    FAIL: size field should be 4 bytes");
-        return 1;
-    }
+ // Size is mod 2^32 (4 bytes)
+ let size_field: i64 = 4;
+ if size_field != 4 {
+ println(" FAIL: size field should be 4 bytes");
+ return 1;
+ }
 
-    println("    PASS: gzip trailer format");
-    0
+ println(" PASS: gzip trailer format");
+ 0
 }
 
 // =============================================================================
@@ -80,39 +80,39 @@ fn test_gzip_trailer() -> i64 {
 // =============================================================================
 
 fn test_compression_levels() -> i64 {
-    println("  Testing compression levels...");
+ println(" Testing compression levels...");
 
-    // Valid levels: 0-9
-    let min_level: i64 = 0;  // No compression
-    let max_level: i64 = 9;  // Maximum compression
-    let default_level: i64 = 6;  // Default balance
+ // Valid levels: 0-9
+ let min_level: i64 = 0; // No compression
+ let max_level: i64 = 9; // Maximum compression
+ let default_level: i64 = 6; // Default balance
 
-    if min_level != 0 {
-        println("    FAIL: min level should be 0");
-        return 1;
-    }
+ if min_level != 0 {
+ println(" FAIL: min level should be 0");
+ return 1;
+ }
 
-    if max_level != 9 {
-        println("    FAIL: max level should be 9");
-        return 1;
-    }
+ if max_level != 9 {
+ println(" FAIL: max level should be 9");
+ return 1;
+ }
 
-    if default_level != 6 {
-        println("    FAIL: default level should be 6");
-        return 1;
-    }
+ if default_level != 6 {
+ println(" FAIL: default level should be 6");
+ return 1;
+ }
 
-    // Higher levels = better compression, slower
-    let level1_ratio: i64 = 50;  // 50% of original
-    let level9_ratio: i64 = 40;  // 40% of original
+ // Higher levels = better compression, slower
+ let level1_ratio: i64 = 50; // 50% of original
+ let level9_ratio: i64 = 40; // 40% of original
 
-    if level9_ratio >= level1_ratio {
-        println("    FAIL: higher level should compress better");
-        return 1;
-    }
+ if level9_ratio >= level1_ratio {
+ println(" FAIL: higher level should compress better");
+ return 1;
+ }
 
-    println("    PASS: compression levels");
-    0
+ println(" PASS: compression levels");
+ 0
 }
 
 // =============================================================================
@@ -120,31 +120,31 @@ fn test_compression_levels() -> i64 {
 // =============================================================================
 
 fn test_deflate_format() -> i64 {
-    println("  Testing deflate format...");
+ println(" Testing deflate format...");
 
-    // Deflate is raw compressed data (no header/trailer)
-    let has_header: i64 = 0;
-    let has_trailer: i64 = 0;
+ // Deflate is raw compressed data (no header/trailer)
+ let has_header: i64 = 0;
+ let has_trailer: i64 = 0;
 
-    if has_header != 0 {
-        println("    FAIL: deflate should have no header");
-        return 1;
-    }
+ if has_header != 0 {
+ println(" FAIL: deflate should have no header");
+ return 1;
+ }
 
-    if has_trailer != 0 {
-        println("    FAIL: deflate should have no trailer");
-        return 1;
-    }
+ if has_trailer != 0 {
+ println(" FAIL: deflate should have no trailer");
+ return 1;
+ }
 
-    // Deflate blocks can be stored, fixed Huffman, or dynamic Huffman
-    let block_types: i64 = 3;
-    if block_types != 3 {
-        println("    FAIL: should have 3 block types");
-        return 1;
-    }
+ // Deflate blocks can be stored, fixed Huffman, or dynamic Huffman
+ let block_types: i64 = 3;
+ if block_types != 3 {
+ println(" FAIL: should have 3 block types");
+ return 1;
+ }
 
-    println("    PASS: deflate format");
-    0
+ println(" PASS: deflate format");
+ 0
 }
 
 // =============================================================================
@@ -152,39 +152,39 @@ fn test_deflate_format() -> i64 {
 // =============================================================================
 
 fn test_compression_ratio() -> i64 {
-    println("  Testing compression ratio...");
+ println(" Testing compression ratio...");
 
-    // Text typically compresses well (30-50% of original)
-    let text_original: i64 = 1000;
-    let text_compressed: i64 = 400;
+ // Text typically compresses well (30-50% of original)
+ let text_original: i64 = 1000;
+ let text_compressed: i64 = 400;
 
-    let text_ratio: i64 = (text_compressed * 100) / text_original;
-    if text_ratio > 60 {
-        println("    FAIL: text should compress to under 60%");
-        return 1;
-    }
+ let text_ratio: i64 = (text_compressed * 100) / text_original;
+ if text_ratio > 60 {
+ println(" FAIL: text should compress to under 60%");
+ return 1;
+ }
 
-    // Already compressed data doesn't compress well
-    let binary_original: i64 = 1000;
-    let binary_compressed: i64 = 950;
+ // Already compressed data doesn't compress well
+ let binary_original: i64 = 1000;
+ let binary_compressed: i64 = 950;
 
-    let binary_ratio: i64 = (binary_compressed * 100) / binary_original;
-    if binary_ratio < 90 {
-        println("    FAIL: binary may not compress much");
-        // Not a failure - just different behavior
-    }
+ let binary_ratio: i64 = (binary_compressed * 100) / binary_original;
+ if binary_ratio < 90 {
+ println(" FAIL: binary may not compress much");
+ // Not a failure - just different behavior
+ }
 
-    // Random data may expand slightly
-    let random_original: i64 = 1000;
-    let random_compressed: i64 = 1010;
+ // Random data may expand slightly
+ let random_original: i64 = 1000;
+ let random_compressed: i64 = 1010;
 
-    if random_compressed < random_original {
-        println("    FAIL: random data may expand");
-        // Also not a failure
-    }
+ if random_compressed < random_original {
+ println(" FAIL: random data may expand");
+ // Also not a failure
+ }
 
-    println("    PASS: compression ratio");
-    0
+ println(" PASS: compression ratio");
+ 0
 }
 
 // =============================================================================
@@ -192,31 +192,35 @@ fn test_compression_ratio() -> i64 {
 // =============================================================================
 
 fn test_gzip_encoder() -> i64 {
-    println("  Testing GzipEncoder...");
+ println(" Testing GzipEncoder...");
 
-    // GzipEncoder has a handle
-    let handle: i64 = 12345;
-    if handle <= 0 {
-        println("    FAIL: encoder handle should be positive");
-        return 1;
-    }
+ // GzipEncoder has a handle
+ let handle: i64 = 12345;
+ if handle <= 0 {
+ println(" FAIL: encoder handle should be positive");
+ return 1;
+ }
 
-    // Default level is 6
-    let default_level: i64 = 6;
-    if default_level != 6 {
-        println("    FAIL: default level should be 6");
-        return 1;
-    }
+ // Default level is 6
+ let default_level: i64 = 6;
+ if default_level != 6 {
+ println(" FAIL: default level should be 6");
+ return 1;
+ }
 
-    // with_level accepts custom level
-    let custom_level: i64 = 9;
-    if custom_level < 0 || custom_level > 9 {
-        println("    FAIL: custom level should be 0-9");
-        return 1;
-    }
+ // with_level accepts custom level
+ let custom_level: i64 = 9;
+ if custom_level < 0 {
+ println(" FAIL: custom level should be 0-9");
+ return 1;
+ }
+ if custom_level > 9 {
+ println(" FAIL: custom level should be 0-9");
+ return 1;
+ }
 
-    println("    PASS: GzipEncoder");
-    0
+ println(" PASS: GzipEncoder");
+ 0
 }
 
 // =============================================================================
@@ -224,31 +228,31 @@ fn test_gzip_encoder() -> i64 {
 // =============================================================================
 
 fn test_gzip_decoder() -> i64 {
-    println("  Testing GzipDecoder...");
+ println(" Testing GzipDecoder...");
 
-    // GzipDecoder has a handle
-    let handle: i64 = 54321;
-    if handle <= 0 {
-        println("    FAIL: decoder handle should be positive");
-        return 1;
-    }
+ // GzipDecoder has a handle
+ let handle: i64 = 54321;
+ if handle <= 0 {
+ println(" FAIL: decoder handle should be positive");
+ return 1;
+ }
 
-    // Decoder validates magic bytes
-    let validates_magic: i64 = 1;
-    if validates_magic != 1 {
-        println("    FAIL: should validate magic bytes");
-        return 1;
-    }
+ // Decoder validates magic bytes
+ let validates_magic: i64 = 1;
+ if validates_magic != 1 {
+ println(" FAIL: should validate magic bytes");
+ return 1;
+ }
 
-    // Decoder checks CRC32
-    let checks_crc: i64 = 1;
-    if checks_crc != 1 {
-        println("    FAIL: should check CRC32");
-        return 1;
-    }
+ // Decoder checks CRC32
+ let checks_crc: i64 = 1;
+ if checks_crc != 1 {
+ println(" FAIL: should check CRC32");
+ return 1;
+ }
 
-    println("    PASS: GzipDecoder");
-    0
+ println(" PASS: GzipDecoder");
+ 0
 }
 
 // =============================================================================
@@ -256,37 +260,37 @@ fn test_gzip_decoder() -> i64 {
 // =============================================================================
 
 fn test_streaming_compression() -> i64 {
-    println("  Testing streaming compression...");
+ println(" Testing streaming compression...");
 
-    // compress() processes a chunk
-    let chunk1_size: i64 = 1024;
-    let chunk1_output: i64 = 512;
+ // compress() processes a chunk
+ let chunk1_size: i64 = 1024;
+ let chunk1_output: i64 = 512;
 
-    if chunk1_output > chunk1_size {
-        println("    FAIL: compressed should be smaller (usually)");
-        // Not always true, so just note it
-    }
+ if chunk1_output > chunk1_size {
+ println(" FAIL: compressed should be smaller (usually)");
+ // Not always true, so just note it
+ }
 
-    // Multiple chunks can be compressed
-    let chunk2_size: i64 = 2048;
-    let chunk2_output: i64 = 1024;
+ // Multiple chunks can be compressed
+ let chunk2_size: i64 = 2048;
+ let chunk2_output: i64 = 1024;
 
-    // finish() returns final bytes
-    let finish_output: i64 = 100;
-    if finish_output < 0 {
-        println("    FAIL: finish output should be >= 0");
-        return 1;
-    }
+ // finish() returns final bytes
+ let finish_output: i64 = 100;
+ if finish_output < 0 {
+ println(" FAIL: finish output should be >= 0");
+ return 1;
+ }
 
-    // Total output = sum of all chunks + finish
-    let total_output: i64 = chunk1_output + chunk2_output + finish_output;
-    if total_output <= 0 {
-        println("    FAIL: total output should be positive");
-        return 1;
-    }
+ // Total output = sum of all chunks + finish
+ let total_output: i64 = chunk1_output + chunk2_output + finish_output;
+ if total_output <= 0 {
+ println(" FAIL: total output should be positive");
+ return 1;
+ }
 
-    println("    PASS: streaming compression");
-    0
+ println(" PASS: streaming compression");
+ 0
 }
 
 // =============================================================================
@@ -294,30 +298,30 @@ fn test_streaming_compression() -> i64 {
 // =============================================================================
 
 fn test_streaming_decompression() -> i64 {
-    println("  Testing streaming decompression...");
+ println(" Testing streaming decompression...");
 
-    // decompress() processes compressed chunk
-    let compressed_chunk: i64 = 512;
-    let decompressed_output: i64 = 1024;
+ // decompress() processes compressed chunk
+ let compressed_chunk: i64 = 512;
+ let decompressed_output: i64 = 1024;
 
-    if decompressed_output < compressed_chunk {
-        println("    FAIL: decompressed should be larger (usually)");
-        // Not always true
-    }
+ if decompressed_output < compressed_chunk {
+ println(" FAIL: decompressed should be larger (usually)");
+ // Not always true
+ }
 
-    // Multiple chunks can be decompressed
-    let chunk2_input: i64 = 1024;
-    let chunk2_output: i64 = 2048;
+ // Multiple chunks can be decompressed
+ let chunk2_input: i64 = 1024;
+ let chunk2_output: i64 = 2048;
 
-    // finish() completes decompression
-    let finish_output: i64 = 100;
-    if finish_output < 0 {
-        println("    FAIL: finish output should be >= 0");
-        return 1;
-    }
+ // finish() completes decompression
+ let finish_output: i64 = 100;
+ if finish_output < 0 {
+ println(" FAIL: finish output should be >= 0");
+ return 1;
+ }
 
-    println("    PASS: streaming decompression");
-    0
+ println(" PASS: streaming decompression");
+ 0
 }
 
 // =============================================================================
@@ -325,40 +329,40 @@ fn test_streaming_decompression() -> i64 {
 // =============================================================================
 
 fn test_compress_errors() -> i64 {
-    println("  Testing CompressError variants...");
+ println(" Testing CompressError variants...");
 
-    // InvalidData - corrupt compressed data
-    let invalid_data: i64 = 1;
+ // InvalidData - corrupt compressed data
+ let invalid_data: i64 = 1;
 
-    // BufferTooSmall - output buffer insufficient
-    let buffer_small: i64 = 2;
+ // BufferTooSmall - output buffer insufficient
+ let buffer_small: i64 = 2;
 
-    // CompressionFailed - compression error
-    let compress_failed: i64 = 3;
+ // CompressionFailed - compression error
+ let compress_failed: i64 = 3;
 
-    // DecompressionFailed - decompression error
-    let decompress_failed: i64 = 4;
+ // DecompressionFailed - decompression error
+ let decompress_failed: i64 = 4;
 
-    // All variants distinct
-    if invalid_data == buffer_small {
-        println("    FAIL: error variants should be distinct");
-        return 1;
-    }
+ // All variants distinct
+ if invalid_data == buffer_small {
+ println(" FAIL: error variants should be distinct");
+ return 1;
+ }
 
-    if compress_failed == decompress_failed {
-        println("    FAIL: error variants should be distinct");
-        return 1;
-    }
+ if compress_failed == decompress_failed {
+ println(" FAIL: error variants should be distinct");
+ return 1;
+ }
 
-    // 4 total error variants
-    let total_variants: i64 = 4;
-    if decompress_failed != total_variants {
-        println("    FAIL: should have 4 error variants");
-        return 1;
-    }
+ // 4 total error variants
+ let total_variants: i64 = 4;
+ if decompress_failed != total_variants {
+ println(" FAIL: should have 4 error variants");
+ return 1;
+ }
 
-    println("    PASS: CompressError variants");
-    0
+ println(" PASS: CompressError variants");
+ 0
 }
 
 // =============================================================================
@@ -366,39 +370,39 @@ fn test_compress_errors() -> i64 {
 // =============================================================================
 
 fn test_roundtrip() -> i64 {
-    println("  Testing roundtrip integrity...");
+ println(" Testing roundtrip integrity...");
 
-    // gzip -> gunzip should preserve data
-    let original_len: i64 = 1000;
-    let compressed_len: i64 = 400;
-    let decompressed_len: i64 = 1000;
+ // gzip -> gunzip should preserve data
+ let original_len: i64 = 1000;
+ let compressed_len: i64 = 400;
+ let decompressed_len: i64 = 1000;
 
-    if decompressed_len != original_len {
-        println("    FAIL: roundtrip should preserve length");
-        return 1;
-    }
+ if decompressed_len != original_len {
+ println(" FAIL: roundtrip should preserve length");
+ return 1;
+ }
 
-    // deflate -> inflate should preserve data
-    let deflate_original: i64 = 500;
-    let deflate_compressed: i64 = 200;
-    let inflate_output: i64 = 500;
+ // deflate -> inflate should preserve data
+ let deflate_original: i64 = 500;
+ let deflate_compressed: i64 = 200;
+ let inflate_output: i64 = 500;
 
-    if inflate_output != deflate_original {
-        println("    FAIL: deflate roundtrip should preserve length");
-        return 1;
-    }
+ if inflate_output != deflate_original {
+ println(" FAIL: deflate roundtrip should preserve length");
+ return 1;
+ }
 
-    // Data integrity (simulated)
-    let original_checksum: i64 = 12345678;
-    let roundtrip_checksum: i64 = 12345678;
+ // Data integrity (simulated)
+ let original_checksum: i64 = 12345678;
+ let roundtrip_checksum: i64 = 12345678;
 
-    if original_checksum != roundtrip_checksum {
-        println("    FAIL: checksums should match after roundtrip");
-        return 1;
-    }
+ if original_checksum != roundtrip_checksum {
+ println(" FAIL: checksums should match after roundtrip");
+ return 1;
+ }
 
-    println("    PASS: roundtrip integrity");
-    0
+ println(" PASS: roundtrip integrity");
+ 0
 }
 
 // =============================================================================
@@ -406,31 +410,31 @@ fn test_roundtrip() -> i64 {
 // =============================================================================
 
 fn test_resource_cleanup() -> i64 {
-    println("  Testing resource cleanup...");
+ println(" Testing resource cleanup...");
 
-    // GzipEncoder::drop calls gzip_encoder_free
-    let encoder_freed: i64 = 1;
-    if encoder_freed != 1 {
-        println("    FAIL: encoder should be freed on drop");
-        return 1;
-    }
+ // GzipEncoder::drop calls gzip_encoder_free
+ let encoder_freed: i64 = 1;
+ if encoder_freed != 1 {
+ println(" FAIL: encoder should be freed on drop");
+ return 1;
+ }
 
-    // GzipDecoder::drop calls gzip_decoder_free
-    let decoder_freed: i64 = 1;
-    if decoder_freed != 1 {
-        println("    FAIL: decoder should be freed on drop");
-        return 1;
-    }
+ // GzipDecoder::drop calls gzip_decoder_free
+ let decoder_freed: i64 = 1;
+ if decoder_freed != 1 {
+ println(" FAIL: decoder should be freed on drop");
+ return 1;
+ }
 
-    // No memory leak after scope exit
-    let memory_leaked: i64 = 0;
-    if memory_leaked != 0 {
-        println("    FAIL: should not leak memory");
-        return 1;
-    }
+ // No memory leak after scope exit
+ let memory_leaked: i64 = 0;
+ if memory_leaked != 0 {
+ println(" FAIL: should not leak memory");
+ return 1;
+ }
 
-    println("    PASS: resource cleanup");
-    0
+ println(" PASS: resource cleanup");
+ 0
 }
 
 // =============================================================================
@@ -438,34 +442,34 @@ fn test_resource_cleanup() -> i64 {
 // =============================================================================
 
 fn test_empty_input() -> i64 {
-    println("  Testing empty input...");
+ println(" Testing empty input...");
 
-    // Compressing empty data
-    let empty_original: i64 = 0;
-    let empty_compressed: i64 = 20;  // Header + trailer overhead
+ // Compressing empty data
+ let empty_original: i64 = 0;
+ let empty_compressed: i64 = 20; // Header + trailer overhead
 
-    // Empty data still produces valid output
-    if empty_compressed <= 0 {
-        println("    FAIL: empty compress should produce header/trailer");
-        return 1;
-    }
+ // Empty data still produces valid output
+ if empty_compressed <= 0 {
+ println(" FAIL: empty compress should produce header/trailer");
+ return 1;
+ }
 
-    // Decompressing that output gives empty
-    let empty_decompressed: i64 = 0;
-    if empty_decompressed != 0 {
-        println("    FAIL: empty should decompress to empty");
-        return 1;
-    }
+ // Decompressing that output gives empty
+ let empty_decompressed: i64 = 0;
+ if empty_decompressed != 0 {
+ println(" FAIL: empty should decompress to empty");
+ return 1;
+ }
 
-    // Deflate of empty is minimal
-    let deflate_empty: i64 = 2;  // Very small
-    if deflate_empty > 10 {
-        println("    FAIL: deflate of empty should be minimal");
-        return 1;
-    }
+ // Deflate of empty is minimal
+ let deflate_empty: i64 = 2; // Very small
+ if deflate_empty > 10 {
+ println(" FAIL: deflate of empty should be minimal");
+ return 1;
+ }
 
-    println("    PASS: empty input");
-    0
+ println(" PASS: empty input");
+ 0
 }
 
 // =============================================================================
@@ -473,37 +477,37 @@ fn test_empty_input() -> i64 {
 // =============================================================================
 
 fn test_large_input() -> i64 {
-    println("  Testing large input...");
+ println(" Testing large input...");
 
-    // Large input (1MB)
-    let large_size: i64 = 1048576;
+ // Large input (1MB)
+ let large_size: i64 = 1048576;
 
-    // Should compress successfully
-    let large_compressed: i64 = 500000;  // ~50% compression
+ // Should compress successfully
+ let large_compressed: i64 = 500000; // ~50% compression
 
-    if large_compressed >= large_size {
-        println("    FAIL: large input should compress");
-        // May not always compress, depending on data
-    }
+ if large_compressed >= large_size {
+ println(" FAIL: large input should compress");
+ // May not always compress, depending on data
+ }
 
-    // Streaming handles large data in chunks
-    let chunk_size: i64 = 65536;  // 64KB chunks
-    let num_chunks: i64 = large_size / chunk_size;
+ // Streaming handles large data in chunks
+ let chunk_size: i64 = 65536; // 64KB chunks
+ let num_chunks: i64 = large_size / chunk_size;
 
-    if num_chunks < 1 {
-        println("    FAIL: should have multiple chunks");
-        return 1;
-    }
+ if num_chunks < 1 {
+ println(" FAIL: should have multiple chunks");
+ return 1;
+ }
 
-    // Memory usage should be bounded
-    let max_memory: i64 = 262144;  // 256KB buffer max
-    if max_memory > 1048576 {
-        println("    FAIL: memory should be bounded");
-        return 1;
-    }
+ // Memory usage should be bounded
+ let max_memory: i64 = 262144; // 256KB buffer max
+ if max_memory > 1048576 {
+ println(" FAIL: memory should be bounded");
+ return 1;
+ }
 
-    println("    PASS: large input");
-    0
+ println(" PASS: large input");
+ 0
 }
 
 // =============================================================================
@@ -511,38 +515,38 @@ fn test_large_input() -> i64 {
 // =============================================================================
 
 fn test_error_messages() -> i64 {
-    println("  Testing error messages...");
+ println(" Testing error messages...");
 
-    // InvalidData message
-    let invalid_msg_len: i64 = 23;  // "invalid compressed data"
-    if invalid_msg_len <= 0 {
-        println("    FAIL: InvalidData message should exist");
-        return 1;
-    }
+ // InvalidData message
+ let invalid_msg_len: i64 = 23; // "invalid compressed data"
+ if invalid_msg_len <= 0 {
+ println(" FAIL: InvalidData message should exist");
+ return 1;
+ }
 
-    // BufferTooSmall message
-    let buffer_msg_len: i64 = 23;  // "output buffer too small"
-    if buffer_msg_len <= 0 {
-        println("    FAIL: BufferTooSmall message should exist");
-        return 1;
-    }
+ // BufferTooSmall message
+ let buffer_msg_len: i64 = 23; // "output buffer too small"
+ if buffer_msg_len <= 0 {
+ println(" FAIL: BufferTooSmall message should exist");
+ return 1;
+ }
 
-    // CompressionFailed includes details
-    let compress_msg_len: i64 = 30;  // "compression failed: <details>"
-    if compress_msg_len <= 0 {
-        println("    FAIL: CompressionFailed message should exist");
-        return 1;
-    }
+ // CompressionFailed includes details
+ let compress_msg_len: i64 = 30; // "compression failed: <details>"
+ if compress_msg_len <= 0 {
+ println(" FAIL: CompressionFailed message should exist");
+ return 1;
+ }
 
-    // DecompressionFailed includes details
-    let decompress_msg_len: i64 = 32;  // "decompression failed: <details>"
-    if decompress_msg_len <= 0 {
-        println("    FAIL: DecompressionFailed message should exist");
-        return 1;
-    }
+ // DecompressionFailed includes details
+ let decompress_msg_len: i64 = 32; // "decompression failed: <details>"
+ if decompress_msg_len <= 0 {
+ println(" FAIL: DecompressionFailed message should exist");
+ return 1;
+ }
 
-    println("    PASS: error messages");
-    0
+ println(" PASS: error messages");
+ 0
 }
 
 // =============================================================================
@@ -550,33 +554,33 @@ fn test_error_messages() -> i64 {
 // =============================================================================
 
 fn main() -> i64 {
-    println("=== Compress Module Tests ===");
-    println("");
+ println("=== Compress Module Tests ===");
+ println("");
 
-    let f1: i64 = test_gzip_header();
-    let f2: i64 = test_gzip_trailer();
-    let f3: i64 = test_compression_levels();
-    let f4: i64 = test_deflate_format();
-    let f5: i64 = test_compression_ratio();
-    let f6: i64 = test_gzip_encoder();
-    let f7: i64 = test_gzip_decoder();
-    let f8: i64 = test_streaming_compression();
-    let f9: i64 = test_streaming_decompression();
-    let f10: i64 = test_compress_errors();
-    let f11: i64 = test_roundtrip();
-    let f12: i64 = test_resource_cleanup();
-    let f13: i64 = test_empty_input();
-    let f14: i64 = test_large_input();
-    let f15: i64 = test_error_messages();
+ let f1: i64 = test_gzip_header();
+ let f2: i64 = test_gzip_trailer();
+ let f3: i64 = test_compression_levels();
+ let f4: i64 = test_deflate_format();
+ let f5: i64 = test_compression_ratio();
+ let f6: i64 = test_gzip_encoder();
+ let f7: i64 = test_gzip_decoder();
+ let f8: i64 = test_streaming_compression();
+ let f9: i64 = test_streaming_decompression();
+ let f10: i64 = test_compress_errors();
+ let f11: i64 = test_roundtrip();
+ let f12: i64 = test_resource_cleanup();
+ let f13: i64 = test_empty_input();
+ let f14: i64 = test_large_input();
+ let f15: i64 = test_error_messages();
 
-    let failures: i64 = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10 + f11 + f12 + f13 + f14 + f15;
+ let failures: i64 = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10 + f11 + f12 + f13 + f14 + f15;
 
-    println("");
-    if failures == 0 {
-        println("All Compress Module tests passed!");
-    } else {
-        println("Some Compress Module tests failed");
-    }
+ println("");
+ if failures == 0 {
+ println("All Compress Module tests passed!");
+ } else {
+ println("Some Compress Module tests failed");
+ }
 
-    failures
+ failures
 }

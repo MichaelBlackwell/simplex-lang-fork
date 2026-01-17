@@ -1,0 +1,582 @@
+// Unit tests for LoRA (Low-Rank Adaptation) implementation
+//
+// Tests LoRA layers, configs, adapters, and model integration.
+
+use simplex_std::dual;
+use simplex_std::vec::Vec;
+use simplex_learning::tensor::DualTensor;
+use simplex_training::{
+ LoRALayer, LoRAConfig, LoRAModel, LoRAAdapter,
+ Linear, LinearConfig,
+};
+
+#[cfg(test)]
+mod lora_config_tests {
+ use super::*;
+
+ #[test]
+ fn test_simple_config() {
+ let config = LoRAConfig::simple();
+
+ assert_eq!(config.rank, 8);
+ assert!((config.alpha - 16.0).abs() < 1e-10);
+ assert!((config.dropout - 0.0).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_standard_config() {
+ let config = LoRAConfig::standard();
+
+ assert_eq!(config.rank, 16);
+ assert!((config.alpha - 32.0).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_complex_config() {
+ let config = LoRAConfig::complex();
+
+ assert_eq!(config.rank, 32);
+ assert!((config.alpha - 64.0).abs() < 1e-10);
+ assert!((config.dropout - 0.05).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_code_config() {
+ let config = LoRAConfig::code();
+
+ assert_eq!(config.rank, 64);
+ assert!((config.alpha - 128.0).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_config_builder() {
+ let config = LoRAConfig::builder()
+ .rank(24)
+ .alpha(48.0)
+ .dropout(0.1)
+ .build();
+
+ assert_eq!(config.rank, 24);
+ assert!((config.alpha - 48.0).abs() < 1e-10);
+ assert!((config.dropout - 0.1).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_target_modules() {
+ let config = LoRAConfig::standard();
+
+ assert!(config.target_modules.contains(&"q_proj".to_string()));
+ assert!(config.target_modules.contains(&"v_proj".to_string()));
+ }
+
+ #[test]
+ fn test_scaling_factor() {
+ let config = LoRAConfig::standard();
+
+ // scaling = alpha / rank = 32 / 16 = 2.0
+ let scaling = config.alpha / config.rank as f64;
+ assert!((scaling - 2.0).abs() < 1e-10);
+ }
+}
+
+#[cfg(test)]
+mod lora_layer_tests {
+ use super::*;
+
+ #[test]
+ fn test_layer_creation() {
+ let config = LoRAConfig::simple();
+ let layer = LoRALayer::new(512, 512, &config);
+
+ assert_eq!(layer.in_features(), 512);
+ assert_eq!(layer.out_features(), 512);
+ assert_eq!(layer.rank(), 8);
+ }
+
+ #[test]
+ fn test_layer_from_linear() {
+ let linear_config = LinearConfig {
+ in_features: 256,
+ out_features: 256,
+ bias: true,
+ };
+ let linear = Linear::new(linear_config);
+ let lora_config = LoRAConfig::simple();
+
+ let lora_layer = LoRALayer::from_linear(&linear, &lora_config);
+
+ assert_eq!(lora_layer.in_features(), 256);
+ assert_eq!(lora_layer.out_features(), 256);
+ }
+
+ #[test]
+ fn test_layer_forward_shape() {
+ let config = LoRAConfig::simple();
+ let layer = LoRALayer::new(64, 128, &config);
+
+ // Input: [batch=2, seq=10, hidden=64]
+ let input = DualTensor::randn(&[2, 10, 64], 42);
+ let output = layer.forward(&input);
+
+ // Output should be [2, 10, 128]
+ assert_eq!(output.shape(), &[2, 10, 128]);
+ }
+
+ #[test]
+ fn test_layer_forward_no_nan() {
+ let config = LoRAConfig::simple();
+ let layer = LoRALayer::new(64, 64, &config);
+
+ let input = DualTensor::randn(&[4, 64], 42);
+ let output = layer.forward(&input);
+
+ // No NaN values
+ for val in output.data() {
+ assert!(!val.val.is_nan());
+ }
+ }
+
+ #[test]
+ fn test_layer_trainable_params() {
+ let config = LoRAConfig::simple(); // rank=8
+ let layer = LoRALayer::new(512, 512, &config);
+
+ // lora_a: [512, 8], lora_b: [8, 512]
+ // Total LoRA params: 512*8 + 8*512 = 8192
+ let trainable = layer.trainable_parameters();
+ assert_eq!(trainable, 8192);
+ }
+
+ #[test]
+ fn test_layer_merge() {
+ let config = LoRAConfig::simple();
+ let mut layer = LoRALayer::new(64, 64, &config);
+
+ // Before merge, LoRA is active
+ assert!(!layer.is_merged());
+
+ layer.merge();
+
+ // After merge, LoRA weights are absorbed
+ assert!(layer.is_merged());
+ }
+
+ #[test]
+ fn test_layer_unmerge() {
+ let config = LoRAConfig::simple();
+ let mut layer = LoRALayer::new(64, 64, &config);
+
+ layer.merge();
+ assert!(layer.is_merged());
+
+ layer.unmerge();
+ assert!(!layer.is_merged());
+ }
+
+ #[test]
+ fn test_merged_forward_equivalent() {
+ let config = LoRAConfig::simple();
+ let layer = LoRALayer::new(64, 64, &config);
+
+ let input = DualTensor::randn(&[2, 64], 42);
+
+ // Forward before merge
+ let out_before = layer.forward(&input);
+
+ // Create copy, merge, forward
+ let mut layer_copy = layer.clone();
+ layer_copy.merge();
+ let out_after = layer_copy.forward(&input);
+
+ // Results should be approximately equal
+ for (a, b) in out_before.data().iter().zip(out_after.data().iter()) {
+ assert!((a.val - b.val).abs() < 1e-5);
+ }
+ }
+
+ #[test]
+ fn test_layer_scaling() {
+ // Verify scaling is applied correctly
+ let config = LoRAConfig::builder()
+ .rank(4)
+ .alpha(8.0) // scaling = 2.0
+ .build();
+
+ let layer = LoRALayer::new(32, 32, &config);
+
+ assert!((layer.scaling() - 2.0).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_layer_dropout_inference() {
+ let config = LoRAConfig::builder()
+ .rank(8)
+ .dropout(0.5)
+ .build();
+
+ let layer = LoRALayer::new(64, 64, &config);
+
+ // In inference mode (training=false), dropout should not affect output
+ let input = DualTensor::randn(&[10, 64], 42);
+ let out1 = layer.forward_inference(&input);
+ let out2 = layer.forward_inference(&input);
+
+ // Outputs should be identical
+ for (a, b) in out1.data().iter().zip(out2.data().iter()) {
+ assert!((a.val - b.val).abs() < 1e-10);
+ }
+ }
+}
+
+#[cfg(test)]
+mod lora_adapter_tests {
+ use super::*;
+
+ #[test]
+ fn test_adapter_creation() {
+ let config = LoRAConfig::simple();
+ let adapter = LoRAAdapter::new("test_adapter".to_string(), config);
+
+ assert_eq!(adapter.name(), "test_adapter");
+ assert!(!adapter.is_enabled());
+ }
+
+ #[test]
+ fn test_adapter_enable_disable() {
+ let config = LoRAConfig::simple();
+ let mut adapter = LoRAAdapter::new("test".to_string(), config);
+
+ adapter.enable();
+ assert!(adapter.is_enabled());
+
+ adapter.disable();
+ assert!(!adapter.is_enabled());
+ }
+
+ #[test]
+ fn test_adapter_register_layer() {
+ let config = LoRAConfig::simple();
+ let mut adapter = LoRAAdapter::new("test".to_string(), config);
+
+ adapter.register_layer("layer1.q_proj", 256, 256);
+ adapter.register_layer("layer1.v_proj", 256, 256);
+
+ assert_eq!(adapter.num_layers(), 2);
+ }
+
+ #[test]
+ fn test_adapter_total_params() {
+ let config = LoRAConfig::simple(); // rank=8
+ let mut adapter = LoRAAdapter::new("test".to_string(), config);
+
+ // Register two 256x256 layers
+ adapter.register_layer("q", 256, 256);
+ adapter.register_layer("v", 256, 256);
+
+ // Each layer: 256*8 + 8*256 = 4096
+ // Total: 4096 * 2 = 8192
+ let total = adapter.trainable_parameters();
+ assert_eq!(total, 8192);
+ }
+
+ #[test]
+ fn test_adapter_get_layer() {
+ let config = LoRAConfig::simple();
+ let mut adapter = LoRAAdapter::new("test".to_string(), config);
+
+ adapter.register_layer("my_layer", 128, 128);
+
+ let layer = adapter.get_layer("my_layer");
+ assert!(layer.is_some());
+
+ let missing = adapter.get_layer("nonexistent");
+ assert!(missing.is_none());
+ }
+
+ #[test]
+ fn test_adapter_merge_all() {
+ let config = LoRAConfig::simple();
+ let mut adapter = LoRAAdapter::new("test".to_string(), config);
+
+ adapter.register_layer("l1", 64, 64);
+ adapter.register_layer("l2", 64, 64);
+
+ adapter.merge_all();
+
+ // All layers should be merged
+ assert!(adapter.get_layer("l1").unwrap().is_merged());
+ assert!(adapter.get_layer("l2").unwrap().is_merged());
+ }
+}
+
+#[cfg(test)]
+mod lora_model_tests {
+ use super::*;
+
+ #[test]
+ fn test_model_creation() {
+ let config = LoRAConfig::standard();
+ let model = LoRAModel::new(config);
+
+ assert_eq!(model.num_adapters(), 0);
+ }
+
+ #[test]
+ fn test_model_add_adapter() {
+ let config = LoRAConfig::standard();
+ let mut model = LoRAModel::new(config.clone());
+
+ model.add_adapter("adapter1");
+ assert_eq!(model.num_adapters(), 1);
+
+ model.add_adapter("adapter2");
+ assert_eq!(model.num_adapters(), 2);
+ }
+
+ #[test]
+ fn test_model_set_active_adapter() {
+ let config = LoRAConfig::standard();
+ let mut model = LoRAModel::new(config);
+
+ model.add_adapter("a1");
+ model.add_adapter("a2");
+
+ model.set_active_adapter("a1");
+ assert_eq!(model.active_adapter(), Some("a1"));
+
+ model.set_active_adapter("a2");
+ assert_eq!(model.active_adapter(), Some("a2"));
+ }
+
+ #[test]
+ fn test_model_disable_all() {
+ let config = LoRAConfig::standard();
+ let mut model = LoRAModel::new(config);
+
+ model.add_adapter("a1");
+ model.set_active_adapter("a1");
+
+ model.disable_adapters();
+ assert!(model.active_adapter().is_none());
+ }
+
+ #[test]
+ fn test_model_builder() {
+ let model = LoRAModel::builder()
+ .config(LoRAConfig::standard())
+ .adapter("main")
+ .adapter("secondary")
+ .active("main")
+ .build();
+
+ assert_eq!(model.num_adapters(), 2);
+ assert_eq!(model.active_adapter(), Some("main"));
+ }
+
+ #[test]
+ fn test_model_forward_passthrough() {
+ // With no active adapter, forward should be passthrough
+ let config = LoRAConfig::simple();
+ let model = LoRAModel::new(config);
+
+ let input = DualTensor::randn(&[4, 128], 42);
+ let output = model.forward_base(&input);
+
+ // Without any registered layers, this tests the basic flow
+ assert!(!output.data().is_empty());
+ }
+
+ #[test]
+ fn test_model_save_load_config() {
+ let config = LoRAConfig::builder()
+ .rank(32)
+ .alpha(64.0)
+ .dropout(0.1)
+ .build();
+ let model = LoRAModel::new(config.clone());
+
+ // Serialize config to test reproducibility
+ let serialized = model.config();
+
+ assert_eq!(serialized.rank, 32);
+ assert!((serialized.alpha - 64.0).abs() < 1e-10);
+ }
+}
+
+#[cfg(test)]
+mod qlora_tests {
+ use super::*;
+
+ #[test]
+ fn test_qlora_config() {
+ // QLoRA uses 4-bit quantized base weights
+ let config = LoRAConfig::builder()
+ .rank(16)
+ .quantize_base(true)
+ .quant_bits(4)
+ .build();
+
+ assert!(config.quantize_base);
+ assert_eq!(config.quant_bits, 4);
+ }
+
+ #[test]
+ fn test_qlora_memory_savings() {
+ // Compare memory footprint
+ let regular_config = LoRAConfig::standard();
+ let qlora_config = LoRAConfig::builder()
+ .rank(16)
+ .quantize_base(true)
+ .quant_bits(4)
+ .build();
+
+ // Base weight: 1024x1024 = 1M params
+ // FP16: 2 bytes/param = 2MB
+ // 4-bit: 0.5 bytes/param = 0.5MB
+ // Savings: 75%
+
+ let fp16_bytes = 1024 * 1024 * 2;
+ let int4_bytes = 1024 * 1024 / 2;
+
+ let savings = 1.0 - (int4_bytes as f64 / fp16_bytes as f64);
+ assert!((savings - 0.75).abs() < 1e-10);
+ }
+}
+
+#[cfg(test)]
+mod gradient_tests {
+ use super::*;
+
+ #[test]
+ fn test_lora_gradient_flow() {
+ let config = LoRAConfig::simple();
+ let layer = LoRALayer::new(32, 32, &config);
+
+ // Create input with gradients enabled
+ let input = DualTensor::full(&[2, 32], dual::variable(1.0));
+ let output = layer.forward(&input);
+
+ // Gradients should flow through
+ for val in output.data() {
+ assert!(!val.dot.is_nan());
+ }
+ }
+
+ #[test]
+ fn test_lora_only_adapters_trainable() {
+ let config = LoRAConfig::simple();
+ let layer = LoRALayer::new(64, 64, &config);
+
+ // Base weight should not have gradients tracked for update
+ // Only LoRA A and B matrices should be trainable
+ let lora_params = layer.trainable_parameters();
+ let total_params = layer.total_parameters();
+
+ // LoRA params should be much smaller than total
+ assert!(lora_params < total_params / 10);
+ }
+
+ #[test]
+ fn test_backward_correctness() {
+ // Verify gradient computation is correct
+ let config = LoRAConfig::simple();
+ let layer = LoRALayer::new(4, 4, &config);
+
+ // Simple input
+ let x = DualTensor::full(&[1, 4], dual::variable(1.0));
+ let y = layer.forward(&x);
+
+ // Sum output to get scalar loss
+ let loss = y.sum();
+
+ // Gradient should be computable
+ assert!(!loss.val.is_nan());
+ assert!(!loss.dot.is_nan());
+ }
+}
+
+#[cfg(test)]
+mod edge_case_tests {
+ use super::*;
+
+ #[test]
+ fn test_zero_dropout() {
+ let config = LoRAConfig::builder()
+ .rank(8)
+ .dropout(0.0)
+ .build();
+
+ let layer = LoRALayer::new(32, 32, &config);
+ let input = DualTensor::randn(&[4, 32], 42);
+
+ // Should work without dropout
+ let output = layer.forward(&input);
+ assert!(!output.data().is_empty());
+ }
+
+ #[test]
+ fn test_rank_one() {
+ // Extreme case: rank 1 LoRA
+ let config = LoRAConfig::builder()
+ .rank(1)
+ .alpha(1.0)
+ .build();
+
+ let layer = LoRALayer::new(32, 32, &config);
+ let input = DualTensor::randn(&[2, 32], 42);
+ let output = layer.forward(&input);
+
+ assert_eq!(output.shape(), &[2, 32]);
+ }
+
+ #[test]
+ fn test_high_rank() {
+ // High rank (approaching full rank)
+ let config = LoRAConfig::builder()
+ .rank(128)
+ .alpha(256.0)
+ .build();
+
+ let layer = LoRALayer::new(256, 256, &config);
+ let input = DualTensor::randn(&[1, 256], 42);
+ let output = layer.forward(&input);
+
+ assert_eq!(output.shape(), &[1, 256]);
+ }
+
+ #[test]
+ fn test_non_square() {
+ let config = LoRAConfig::simple();
+ let layer = LoRALayer::new(128, 512, &config);
+
+ let input = DualTensor::randn(&[4, 128], 42);
+ let output = layer.forward(&input);
+
+ assert_eq!(output.shape(), &[4, 512]);
+ }
+
+ #[test]
+ fn test_batch_dimension() {
+ let config = LoRAConfig::simple();
+ let layer = LoRALayer::new(64, 64, &config);
+
+ // Various batch sizes
+ for batch_size in [1, 4, 16, 32] {
+ let input = DualTensor::randn(&[batch_size, 64], 42);
+ let output = layer.forward(&input);
+ assert_eq!(output.shape()[0], batch_size);
+ }
+ }
+
+ #[test]
+ fn test_3d_input() {
+ let config = LoRAConfig::simple();
+ let layer = LoRALayer::new(64, 64, &config);
+
+ // Sequence input: [batch, seq_len, hidden]
+ let input = DualTensor::randn(&[2, 10, 64], 42);
+ let output = layer.forward(&input);
+
+ assert_eq!(output.shape(), &[2, 10, 64]);
+ }
+}

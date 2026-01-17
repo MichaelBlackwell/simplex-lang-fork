@@ -1,0 +1,172 @@
+// Sentiment analysis data generator
+
+use simplex_std::vec::Vec;
+use simplex_std::string::String;
+use super::super::generator::{DataGenerator, TrainingExample, ExampleMetadata, Rng};
+use super::super::super::SpecialistDomain;
+
+/// Generator for sentiment analysis training data
+pub struct SentimentGenerator {
+    rng: Rng,
+    name: String,
+}
+
+impl SentimentGenerator {
+    pub fn new() -> Self {
+        SentimentGenerator {
+            rng: Rng::new(42),
+            name: "sentiment_generator".to_string(),
+        }
+    }
+
+    fn generate_positive(&mut self) -> TrainingExample {
+        let templates = vec![
+            ("I absolutely love this product! It exceeded all my expectations.", 0.95),
+            ("Best purchase I've ever made. Highly recommend!", 0.92),
+            ("The service was fantastic and the staff were very helpful.", 0.88),
+            ("Really impressed with the quality. Worth every penny.", 0.90),
+            ("This has changed my life for the better. Amazing!", 0.94),
+        ];
+
+        let (text, confidence) = self.rng.choice_clone(&templates);
+
+        TrainingExample {
+            prompt: format!("Analyze the sentiment of this text:\n\n\"{}\"", text),
+            response: format!(
+                "**Sentiment Analysis:**\n\n\
+                 - **Sentiment:** Positive\n\
+                 - **Confidence:** {:.0}%\n\
+                 - **Key indicators:** Enthusiastic language, superlatives, recommendation\n\n\
+                 [confidence: {:.2}]",
+                confidence * 100.0, confidence
+            ),
+            metadata: ExampleMetadata {
+                domain: "sentiment".to_string(),
+                confidence_target: confidence,
+                source: "synthetic".to_string(),
+                difficulty: 0.3,
+                quality: 1.0,
+                tags: vec!["positive".to_string()],
+            },
+        }
+    }
+
+    fn generate_negative(&mut self) -> TrainingExample {
+        let templates = vec![
+            ("Terrible experience. Would not recommend to anyone.", 0.94),
+            ("Complete waste of money. The product broke after one day.", 0.92),
+            ("Worst customer service I've ever encountered. Very disappointed.", 0.90),
+            ("Don't buy this. It's a scam and doesn't work as advertised.", 0.93),
+            ("Extremely frustrating. I want my money back.", 0.88),
+        ];
+
+        let (text, confidence) = self.rng.choice_clone(&templates);
+
+        TrainingExample {
+            prompt: format!("Analyze the sentiment of this text:\n\n\"{}\"", text),
+            response: format!(
+                "**Sentiment Analysis:**\n\n\
+                 - **Sentiment:** Negative\n\
+                 - **Confidence:** {:.0}%\n\
+                 - **Key indicators:** Strong negative words, expressions of disappointment\n\n\
+                 [confidence: {:.2}]",
+                confidence * 100.0, confidence
+            ),
+            metadata: ExampleMetadata {
+                domain: "sentiment".to_string(),
+                confidence_target: confidence,
+                source: "synthetic".to_string(),
+                difficulty: 0.3,
+                quality: 1.0,
+                tags: vec!["negative".to_string()],
+            },
+        }
+    }
+
+    fn generate_neutral(&mut self) -> TrainingExample {
+        let templates = vec![
+            ("The product arrived on time. It's okay, nothing special.", 0.85),
+            ("It works as described. Not great, not terrible.", 0.82),
+            ("Standard quality for the price. Does what it's supposed to do.", 0.80),
+            ("Received the item yesterday. It's functional.", 0.78),
+        ];
+
+        let (text, confidence) = self.rng.choice_clone(&templates);
+
+        TrainingExample {
+            prompt: format!("Analyze the sentiment of this text:\n\n\"{}\"", text),
+            response: format!(
+                "**Sentiment Analysis:**\n\n\
+                 - **Sentiment:** Neutral\n\
+                 - **Confidence:** {:.0}%\n\
+                 - **Key indicators:** Factual statements, balanced language\n\n\
+                 [confidence: {:.2}]",
+                confidence * 100.0, confidence
+            ),
+            metadata: ExampleMetadata {
+                domain: "sentiment".to_string(),
+                confidence_target: confidence,
+                source: "synthetic".to_string(),
+                difficulty: 0.5,
+                quality: 1.0,
+                tags: vec!["neutral".to_string()],
+            },
+        }
+    }
+
+    fn generate_mixed(&mut self) -> TrainingExample {
+        let templates = vec![
+            ("I love the design but the battery life is disappointing.", 0.75),
+            ("Great features, but too expensive for what you get.", 0.72),
+            ("The food was delicious but the service was slow.", 0.78),
+        ];
+
+        let (text, confidence) = self.rng.choice_clone(&templates);
+
+        TrainingExample {
+            prompt: format!("Analyze the sentiment of this text:\n\n\"{}\"", text),
+            response: format!(
+                "**Sentiment Analysis:**\n\n\
+                 - **Sentiment:** Mixed\n\
+                 - **Confidence:** {:.0}%\n\
+                 - **Positive aspects:** Some features praised\n\
+                 - **Negative aspects:** Some concerns raised\n\n\
+                 [confidence: {:.2}]",
+                confidence * 100.0, confidence
+            ),
+            metadata: ExampleMetadata {
+                domain: "sentiment".to_string(),
+                confidence_target: confidence,
+                source: "synthetic".to_string(),
+                difficulty: 0.7,
+                quality: 1.0,
+                tags: vec!["mixed".to_string()],
+            },
+        }
+    }
+}
+
+impl DataGenerator for SentimentGenerator {
+    fn generate(&mut self) -> TrainingExample {
+        match self.rng.int_range(0, 3) {
+            0 => self.generate_positive(),
+            1 => self.generate_negative(),
+            2 => self.generate_neutral(),
+            _ => self.generate_mixed(),
+        }
+    }
+
+    fn domain(&self) -> SpecialistDomain {
+        SpecialistDomain::Classification
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn seed(&mut self, seed: u64) {
+        self.rng.seed(seed);
+    }
+
+    fn reset(&mut self) {}
+}

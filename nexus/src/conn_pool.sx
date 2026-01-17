@@ -1,0 +1,692 @@
+// =============================================================================
+// Nexus Protocol - Phase 9: Connection Pool Management
+// =============================================================================
+//
+// This module provides connection pooling for efficient transport management:
+//   - Connection reuse to avoid handshake overhead
+//   - Maximum connection limits per endpoint
+//   - Idle connection management with timeout
+//   - Connection health checking
+//   - Load balancing across multiple connections
+//
+// =============================================================================
+
+// =============================================================================
+// Pool Configuration Constants
+// =============================================================================
+
+fn POOL_DEFAULT_MAX_CONNS() -> i64 { 10 }        // Max connections per endpoint
+fn POOL_DEFAULT_MAX_IDLE() -> i64 { 5 }          // Max idle connections
+fn POOL_DEFAULT_IDLE_TIMEOUT() -> i64 { 60000 }  // 60 seconds idle timeout
+fn POOL_DEFAULT_MAX_AGE() -> i64 { 300000 }      // 5 minutes max connection age
+fn POOL_DEFAULT_WAIT_TIMEOUT() -> i64 { 30000 }  // 30 seconds wait for connection
+
+// Pool entry states
+fn POOL_ENTRY_IDLE() -> i64 { 0 }
+fn POOL_ENTRY_ACTIVE() -> i64 { 1 }
+fn POOL_ENTRY_DRAINING() -> i64 { 2 }
+fn POOL_ENTRY_CLOSED() -> i64 { 3 }
+
+// Pool strategies
+fn POOL_STRATEGY_ROUND_ROBIN() -> i64 { 0 }
+fn POOL_STRATEGY_LEAST_LOADED() -> i64 { 1 }
+fn POOL_STRATEGY_RANDOM() -> i64 { 2 }
+fn POOL_STRATEGY_LIFO() -> i64 { 3 }  // Last-in-first-out (reuse recent)
+
+// =============================================================================
+// Pool Configuration
+// =============================================================================
+
+// Create pool configuration
+// Structure: [max_conns, max_idle, idle_timeout, max_age, wait_timeout, strategy]
+fn pool_config_new() -> i64 {
+    let config = vec_new();
+    vec_push(config, POOL_DEFAULT_MAX_CONNS());    // 0: max connections
+    vec_push(config, POOL_DEFAULT_MAX_IDLE());     // 1: max idle connections
+    vec_push(config, POOL_DEFAULT_IDLE_TIMEOUT()); // 2: idle timeout ms
+    vec_push(config, POOL_DEFAULT_MAX_AGE());      // 3: max connection age ms
+    vec_push(config, POOL_DEFAULT_WAIT_TIMEOUT()); // 4: wait timeout ms
+    vec_push(config, POOL_STRATEGY_LIFO());        // 5: selection strategy
+    config
+}
+
+fn pool_config_max_conns(config: i64) -> i64 { vec_get(config, 0) }
+fn pool_config_max_idle(config: i64) -> i64 { vec_get(config, 1) }
+fn pool_config_idle_timeout(config: i64) -> i64 { vec_get(config, 2) }
+fn pool_config_max_age(config: i64) -> i64 { vec_get(config, 3) }
+fn pool_config_wait_timeout(config: i64) -> i64 { vec_get(config, 4) }
+fn pool_config_strategy(config: i64) -> i64 { vec_get(config, 5) }
+
+fn pool_config_set_max_conns(config: i64, max: i64) -> i64 {
+    vec_set(config, 0, max);
+    1
+}
+
+fn pool_config_set_max_idle(config: i64, max: i64) -> i64 {
+    vec_set(config, 1, max);
+    1
+}
+
+fn pool_config_set_idle_timeout(config: i64, ms: i64) -> i64 {
+    vec_set(config, 2, ms);
+    1
+}
+
+fn pool_config_set_max_age(config: i64, ms: i64) -> i64 {
+    vec_set(config, 3, ms);
+    1
+}
+
+fn pool_config_set_wait_timeout(config: i64, ms: i64) -> i64 {
+    vec_set(config, 4, ms);
+    1
+}
+
+fn pool_config_set_strategy(config: i64, strategy: i64) -> i64 {
+    vec_set(config, 5, strategy);
+    1
+}
+
+// =============================================================================
+// Pool Entry (Wrapper for pooled connection)
+// =============================================================================
+
+// Create pool entry
+// Structure: [transport, state, created_at, last_used, use_count, endpoint_key]
+fn pool_entry_new(transport: i64, now: i64) -> i64 {
+    let entry = vec_new();
+    vec_push(entry, transport);           // 0: transport handle
+    vec_push(entry, POOL_ENTRY_IDLE());   // 1: state
+    vec_push(entry, now);                 // 2: creation time
+    vec_push(entry, now);                 // 3: last used time
+    vec_push(entry, 0);                   // 4: use count
+    vec_push(entry, 0);                   // 5: endpoint key
+    entry
+}
+
+fn pool_entry_transport(entry: i64) -> i64 { vec_get(entry, 0) }
+fn pool_entry_state(entry: i64) -> i64 { vec_get(entry, 1) }
+fn pool_entry_created(entry: i64) -> i64 { vec_get(entry, 2) }
+fn pool_entry_last_used(entry: i64) -> i64 { vec_get(entry, 3) }
+fn pool_entry_use_count(entry: i64) -> i64 { vec_get(entry, 4) }
+fn pool_entry_endpoint_key(entry: i64) -> i64 { vec_get(entry, 5) }
+
+fn pool_entry_set_state(entry: i64, state: i64) -> i64 {
+    vec_set(entry, 1, state);
+    1
+}
+
+fn pool_entry_set_last_used(entry: i64, time: i64) -> i64 {
+    vec_set(entry, 3, time);
+    1
+}
+
+fn pool_entry_set_endpoint_key(entry: i64, key: i64) -> i64 {
+    vec_set(entry, 5, key);
+    1
+}
+
+fn pool_entry_inc_use(entry: i64) -> i64 {
+    let count = vec_get(entry, 4);
+    vec_set(entry, 4, count + 1);
+    count + 1
+}
+
+// Check if entry is valid for use
+fn pool_entry_is_valid(entry: i64, config: i64, now: i64) -> i64 {
+    let state = pool_entry_state(entry);
+    if state != POOL_ENTRY_IDLE() {
+        return 0;
+    }
+
+    let transport = pool_entry_transport(entry);
+    if transport_is_connected(transport) == 0 {
+        return 0;
+    }
+
+    // Check age
+    let created = pool_entry_created(entry);
+    let max_age = pool_config_max_age(config);
+    if now - created > max_age {
+        return 0;
+    }
+
+    // Check idle timeout
+    let last_used = pool_entry_last_used(entry);
+    let idle_timeout = pool_config_idle_timeout(config);
+    if now - last_used > idle_timeout {
+        return 0;
+    }
+
+    1
+}
+
+// =============================================================================
+// Endpoint Key (for grouping connections)
+// =============================================================================
+
+// Create endpoint key from endpoint
+// Key format: type:host:port (as a simple hash)
+fn endpoint_key_create(endpoint: i64) -> i64 {
+    let trans_type = transport_endpoint_type(endpoint);
+    let host = transport_endpoint_host(endpoint);
+    let port = transport_endpoint_port(endpoint);
+
+    // Simple hash combining all components
+    let key = trans_type * 1000000 + port;
+
+    // Add host bytes to key
+    if host != 0 {
+        let host_len = vec_len(host);
+        let i = 0;
+        while i < host_len {
+            key = key * 31 + vec_get(host, i);
+            i = i + 1;
+        }
+    }
+
+    key
+}
+
+// Compare two endpoints for equality
+fn endpoint_equals(a: i64, b: i64) -> i64 {
+    if transport_endpoint_type(a) != transport_endpoint_type(b) {
+        return 0;
+    }
+    if transport_endpoint_port(a) != transport_endpoint_port(b) {
+        return 0;
+    }
+
+    let host_a = transport_endpoint_host(a);
+    let host_b = transport_endpoint_host(b);
+
+    if host_a == 0 && host_b == 0 {
+        return 1;
+    }
+    if host_a == 0 || host_b == 0 {
+        return 0;
+    }
+
+    let len_a = vec_len(host_a);
+    let len_b = vec_len(host_b);
+    if len_a != len_b {
+        return 0;
+    }
+
+    let i = 0;
+    while i < len_a {
+        if vec_get(host_a, i) != vec_get(host_b, i) {
+            return 0;
+        }
+        i = i + 1;
+    }
+
+    1
+}
+
+// =============================================================================
+// Connection Pool
+// =============================================================================
+
+// Create connection pool
+// Structure: [config, transport_config, entries, endpoint_counts,
+//             total_active, total_idle, stats]
+fn conn_pool_new(config: i64, transport_config: i64) -> i64 {
+    let pool = vec_new();
+    vec_push(pool, config);                 // 0: pool config
+    vec_push(pool, transport_config);       // 1: transport config for new conns
+    vec_push(pool, vec_new());              // 2: all entries
+    vec_push(pool, vec_new());              // 3: endpoint -> count map (pairs)
+    vec_push(pool, 0);                      // 4: total active connections
+    vec_push(pool, 0);                      // 5: total idle connections
+    vec_push(pool, pool_stats_new());       // 6: statistics
+    pool
+}
+
+fn conn_pool_config(pool: i64) -> i64 { vec_get(pool, 0) }
+fn conn_pool_transport_config(pool: i64) -> i64 { vec_get(pool, 1) }
+fn conn_pool_entries(pool: i64) -> i64 { vec_get(pool, 2) }
+fn conn_pool_endpoint_counts(pool: i64) -> i64 { vec_get(pool, 3) }
+fn conn_pool_active_count(pool: i64) -> i64 { vec_get(pool, 4) }
+fn conn_pool_idle_count(pool: i64) -> i64 { vec_get(pool, 5) }
+fn conn_pool_stats(pool: i64) -> i64 { vec_get(pool, 6) }
+
+fn conn_pool_set_active_count(pool: i64, count: i64) -> i64 {
+    vec_set(pool, 4, count);
+    1
+}
+
+fn conn_pool_set_idle_count(pool: i64, count: i64) -> i64 {
+    vec_set(pool, 5, count);
+    1
+}
+
+// =============================================================================
+// Pool Statistics
+// =============================================================================
+
+// Create pool statistics
+fn pool_stats_new() -> i64 {
+    let stats = vec_new();
+    vec_push(stats, 0);  // 0: connections created
+    vec_push(stats, 0);  // 1: connections closed
+    vec_push(stats, 0);  // 2: connections reused
+    vec_push(stats, 0);  // 3: wait timeouts
+    vec_push(stats, 0);  // 4: idle timeouts
+    vec_push(stats, 0);  // 5: max age closures
+    vec_push(stats, 0);  // 6: health check failures
+    vec_push(stats, 0);  // 7: total checkouts
+    vec_push(stats, 0);  // 8: total checkins
+    stats
+}
+
+fn pool_stats_created(stats: i64) -> i64 { vec_get(stats, 0) }
+fn pool_stats_closed(stats: i64) -> i64 { vec_get(stats, 1) }
+fn pool_stats_reused(stats: i64) -> i64 { vec_get(stats, 2) }
+fn pool_stats_wait_timeouts(stats: i64) -> i64 { vec_get(stats, 3) }
+fn pool_stats_idle_timeouts(stats: i64) -> i64 { vec_get(stats, 4) }
+fn pool_stats_max_age(stats: i64) -> i64 { vec_get(stats, 5) }
+fn pool_stats_health_failures(stats: i64) -> i64 { vec_get(stats, 6) }
+fn pool_stats_checkouts(stats: i64) -> i64 { vec_get(stats, 7) }
+fn pool_stats_checkins(stats: i64) -> i64 { vec_get(stats, 8) }
+
+fn pool_stats_inc(stats: i64, idx: i64) -> i64 {
+    let current = vec_get(stats, idx);
+    vec_set(stats, idx, current + 1);
+    current + 1
+}
+
+// =============================================================================
+// Endpoint Connection Counting
+// =============================================================================
+
+// Get connection count for endpoint
+fn conn_pool_endpoint_count(pool: i64, endpoint_key: i64) -> i64 {
+    let counts = conn_pool_endpoint_counts(pool);
+    let len = vec_len(counts);
+
+    let i = 0;
+    while i < len {
+        let key = vec_get(counts, i);
+        if key == endpoint_key {
+            return vec_get(counts, i + 1);
+        }
+        i = i + 2;
+    }
+
+    0
+}
+
+// Set connection count for endpoint
+fn conn_pool_set_endpoint_count(pool: i64, endpoint_key: i64, count: i64) -> i64 {
+    let counts = conn_pool_endpoint_counts(pool);
+    let len = vec_len(counts);
+
+    // Find existing entry
+    let i = 0;
+    while i < len {
+        let key = vec_get(counts, i);
+        if key == endpoint_key {
+            vec_set(counts, i + 1, count);
+            return 1;
+        }
+        i = i + 2;
+    }
+
+    // Add new entry
+    vec_push(counts, endpoint_key);
+    vec_push(counts, count);
+    1
+}
+
+// Increment endpoint count
+fn conn_pool_inc_endpoint_count(pool: i64, endpoint_key: i64) -> i64 {
+    let current = conn_pool_endpoint_count(pool, endpoint_key);
+    conn_pool_set_endpoint_count(pool, endpoint_key, current + 1)
+}
+
+// Decrement endpoint count
+fn conn_pool_dec_endpoint_count(pool: i64, endpoint_key: i64) -> i64 {
+    let current = conn_pool_endpoint_count(pool, endpoint_key);
+    if current > 0 {
+        conn_pool_set_endpoint_count(pool, endpoint_key, current - 1);
+    }
+    1
+}
+
+// =============================================================================
+// Pool Operations
+// =============================================================================
+
+// Get a connection from the pool (or create new)
+// Returns: pool entry or 0 if unavailable
+fn conn_pool_checkout(pool: i64, endpoint: i64, now: i64) -> i64 {
+    let config = conn_pool_config(pool);
+    let entries = conn_pool_entries(pool);
+    let endpoint_key = endpoint_key_create(endpoint);
+    let stats = conn_pool_stats(pool);
+
+    pool_stats_inc(stats, 7);  // checkouts
+
+    // Try to find an existing idle connection
+    let strategy = pool_config_strategy(config);
+    let entry = conn_pool_find_idle(pool, endpoint_key, strategy, now);
+
+    if entry != 0 {
+        pool_entry_set_state(entry, POOL_ENTRY_ACTIVE());
+        pool_entry_set_last_used(entry, now);
+        pool_entry_inc_use(entry);
+
+        let active = conn_pool_active_count(pool);
+        conn_pool_set_active_count(pool, active + 1);
+
+        let idle = conn_pool_idle_count(pool);
+        conn_pool_set_idle_count(pool, idle - 1);
+
+        pool_stats_inc(stats, 2);  // reused
+        return entry;
+    }
+
+    // Check if we can create a new connection
+    let max_conns = pool_config_max_conns(config);
+    let current = conn_pool_endpoint_count(pool, endpoint_key);
+
+    if current >= max_conns {
+        // Pool exhausted for this endpoint
+        return 0;
+    }
+
+    // Create new connection
+    let transport_config = conn_pool_transport_config(pool);
+    let transport = transport_new(endpoint, transport_config);
+
+    if transport_connect(transport) == 0 {
+        return 0;
+    }
+
+    entry = pool_entry_new(transport, now);
+    pool_entry_set_state(entry, POOL_ENTRY_ACTIVE());
+    pool_entry_set_endpoint_key(entry, endpoint_key);
+
+    // Add to pool
+    vec_push(entries, entry);
+    conn_pool_inc_endpoint_count(pool, endpoint_key);
+
+    let active = conn_pool_active_count(pool);
+    conn_pool_set_active_count(pool, active + 1);
+
+    pool_stats_inc(stats, 0);  // created
+
+    entry
+}
+
+// Find an idle connection using the configured strategy
+fn conn_pool_find_idle(pool: i64, endpoint_key: i64, strategy: i64, now: i64) -> i64 {
+    let config = conn_pool_config(pool);
+    let entries = conn_pool_entries(pool);
+    let len = vec_len(entries);
+
+    if strategy == POOL_STRATEGY_LIFO() {
+        // Search from end (most recently used)
+        let i = len - 1;
+        while i >= 0 {
+            let entry = vec_get(entries, i);
+            let entry_key = pool_entry_endpoint_key(entry);
+            if entry_key == endpoint_key {
+                if pool_entry_is_valid(entry, config, now) == 1 {
+                    return entry;
+                }
+            }
+            i = i - 1;
+        }
+    } else if strategy == POOL_STRATEGY_ROUND_ROBIN() {
+        // Search from beginning
+        let i = 0;
+        while i < len {
+            let entry = vec_get(entries, i);
+            let entry_key = pool_entry_endpoint_key(entry);
+            if entry_key == endpoint_key {
+                if pool_entry_is_valid(entry, config, now) == 1 {
+                    return entry;
+                }
+            }
+            i = i + 1;
+        }
+    } else if strategy == POOL_STRATEGY_LEAST_LOADED() {
+        // Find entry with lowest use count
+        let best_entry = 0;
+        let best_count = 999999999;
+
+        let i = 0;
+        while i < len {
+            let entry = vec_get(entries, i);
+            let entry_key = pool_entry_endpoint_key(entry);
+            if entry_key == endpoint_key {
+                if pool_entry_is_valid(entry, config, now) == 1 {
+                    let count = pool_entry_use_count(entry);
+                    if count < best_count {
+                        best_entry = entry;
+                        best_count = count;
+                    }
+                }
+            }
+            i = i + 1;
+        }
+        return best_entry;
+    }
+
+    0
+}
+
+// Return a connection to the pool
+fn conn_pool_checkin(pool: i64, entry: i64, now: i64) -> i64 {
+    let config = conn_pool_config(pool);
+    let stats = conn_pool_stats(pool);
+
+    pool_stats_inc(stats, 8);  // checkins
+
+    let state = pool_entry_state(entry);
+    if state != POOL_ENTRY_ACTIVE() {
+        return 0;
+    }
+
+    let transport = pool_entry_transport(entry);
+
+    // Check if connection is still healthy
+    if transport_has_error(transport) == 1 || transport_is_connected(transport) == 0 {
+        conn_pool_remove_entry(pool, entry);
+        pool_stats_inc(stats, 6);  // health failure
+        return 0;
+    }
+
+    // Check max age
+    let created = pool_entry_created(entry);
+    let max_age = pool_config_max_age(config);
+    if now - created > max_age {
+        conn_pool_remove_entry(pool, entry);
+        pool_stats_inc(stats, 5);  // max age
+        return 0;
+    }
+
+    // Check if we have too many idle connections
+    let idle = conn_pool_idle_count(pool);
+    let max_idle = pool_config_max_idle(config);
+
+    if idle >= max_idle {
+        conn_pool_remove_entry(pool, entry);
+        return 1;
+    }
+
+    // Return to idle pool
+    pool_entry_set_state(entry, POOL_ENTRY_IDLE());
+    pool_entry_set_last_used(entry, now);
+
+    let active = conn_pool_active_count(pool);
+    conn_pool_set_active_count(pool, active - 1);
+    conn_pool_set_idle_count(pool, idle + 1);
+
+    1
+}
+
+// Remove an entry from the pool
+fn conn_pool_remove_entry(pool: i64, entry: i64) -> i64 {
+    let entries = conn_pool_entries(pool);
+    let stats = conn_pool_stats(pool);
+    let endpoint_key = pool_entry_endpoint_key(entry);
+
+    // Close transport
+    let transport = pool_entry_transport(entry);
+    transport_close(transport);
+
+    // Update state
+    let was_active = pool_entry_state(entry) == POOL_ENTRY_ACTIVE();
+    pool_entry_set_state(entry, POOL_ENTRY_CLOSED());
+
+    // Remove from entries list
+    let new_entries = vec_new();
+    let len = vec_len(entries);
+    let i = 0;
+    while i < len {
+        let e = vec_get(entries, i);
+        if e != entry {
+            vec_push(new_entries, e);
+        }
+        i = i + 1;
+    }
+    vec_set(pool, 2, new_entries);
+
+    // Update counts
+    conn_pool_dec_endpoint_count(pool, endpoint_key);
+
+    if was_active == 1 {
+        let active = conn_pool_active_count(pool);
+        conn_pool_set_active_count(pool, active - 1);
+    } else {
+        let idle = conn_pool_idle_count(pool);
+        conn_pool_set_idle_count(pool, idle - 1);
+    }
+
+    pool_stats_inc(stats, 1);  // closed
+
+    1
+}
+
+// =============================================================================
+// Pool Maintenance
+// =============================================================================
+
+// Clean up expired and idle connections
+fn conn_pool_cleanup(pool: i64, now: i64) -> i64 {
+    let config = conn_pool_config(pool);
+    let entries = conn_pool_entries(pool);
+    let stats = conn_pool_stats(pool);
+
+    let idle_timeout = pool_config_idle_timeout(config);
+    let max_age = pool_config_max_age(config);
+
+    let to_remove = vec_new();
+    let len = vec_len(entries);
+    let i = 0;
+
+    while i < len {
+        let entry = vec_get(entries, i);
+        let state = pool_entry_state(entry);
+
+        if state == POOL_ENTRY_IDLE() {
+            let created = pool_entry_created(entry);
+            let last_used = pool_entry_last_used(entry);
+
+            // Check max age
+            if now - created > max_age {
+                vec_push(to_remove, entry);
+                pool_stats_inc(stats, 5);
+            }
+            // Check idle timeout
+            else if now - last_used > idle_timeout {
+                vec_push(to_remove, entry);
+                pool_stats_inc(stats, 4);
+            }
+            // Health check
+            else {
+                let transport = pool_entry_transport(entry);
+                if transport_has_error(transport) == 1 {
+                    vec_push(to_remove, entry);
+                    pool_stats_inc(stats, 6);
+                }
+            }
+        }
+
+        i = i + 1;
+    }
+
+    // Remove expired entries
+    let remove_len = vec_len(to_remove);
+    i = 0;
+    while i < remove_len {
+        let entry = vec_get(to_remove, i);
+        conn_pool_remove_entry(pool, entry);
+        i = i + 1;
+    }
+
+    remove_len
+}
+
+// Close all connections in the pool
+fn conn_pool_close_all(pool: i64) -> i64 {
+    let entries = conn_pool_entries(pool);
+    let len = vec_len(entries);
+
+    // Close all entries
+    let i = 0;
+    while i < len {
+        let entry = vec_get(entries, i);
+        let transport = pool_entry_transport(entry);
+        transport_close(transport);
+        pool_entry_set_state(entry, POOL_ENTRY_CLOSED());
+        i = i + 1;
+    }
+
+    // Clear entries
+    vec_set(pool, 2, vec_new());
+    vec_set(pool, 3, vec_new());
+    conn_pool_set_active_count(pool, 0);
+    conn_pool_set_idle_count(pool, 0);
+
+    len
+}
+
+// =============================================================================
+// Pool Information
+// =============================================================================
+
+// Get total connection count
+fn conn_pool_total_count(pool: i64) -> i64 {
+    conn_pool_active_count(pool) + conn_pool_idle_count(pool)
+}
+
+// Get pool snapshot for monitoring
+fn conn_pool_snapshot(pool: i64) -> i64 {
+    let snapshot = vec_new();
+    vec_push(snapshot, conn_pool_active_count(pool));
+    vec_push(snapshot, conn_pool_idle_count(pool));
+    vec_push(snapshot, conn_pool_total_count(pool));
+
+    // Copy stats
+    let stats = conn_pool_stats(pool);
+    vec_push(snapshot, pool_stats_created(stats));
+    vec_push(snapshot, pool_stats_closed(stats));
+    vec_push(snapshot, pool_stats_reused(stats));
+    vec_push(snapshot, pool_stats_checkouts(stats));
+    vec_push(snapshot, pool_stats_checkins(stats));
+
+    snapshot
+}
+
+fn pool_snapshot_active(snap: i64) -> i64 { vec_get(snap, 0) }
+fn pool_snapshot_idle(snap: i64) -> i64 { vec_get(snap, 1) }
+fn pool_snapshot_total(snap: i64) -> i64 { vec_get(snap, 2) }
+fn pool_snapshot_created(snap: i64) -> i64 { vec_get(snap, 3) }
+fn pool_snapshot_closed(snap: i64) -> i64 { vec_get(snap, 4) }
+fn pool_snapshot_reused(snap: i64) -> i64 { vec_get(snap, 5) }
+fn pool_snapshot_checkouts(snap: i64) -> i64 { vec_get(snap, 6) }
+fn pool_snapshot_checkins(snap: i64) -> i64 { vec_get(snap, 7) }

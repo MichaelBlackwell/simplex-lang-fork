@@ -31,238 +31,238 @@ fn print_i64(n: i64);
 fn print_string(s: i64);
 
 fn main() {
-    println("=== sxpm Model Commands Test ===");
-    println("v0.5.0: SLM Provisioning");
-    println("");
+ println("=== sxpm Model Commands Test ===");
+ println("v0.5.0: SLM Provisioning");
+ println("");
 
-    // Test 1: Model directories
-    println("--- Test 1: Model Directories ---");
-    let global_dir: i64 = models_global_dir();
-    let local_dir: i64 = models_local_dir();
+ // Test 1: Model directories
+ println("--- Test 1: Model Directories ---");
+ let global_dir: i64 = models_global_dir();
+ let local_dir: i64 = models_local_dir();
 
-    print("Global model directory: ");
-    print_string(global_dir);
-    println("");
+ print("Global model directory: ");
+ print_string(global_dir);
+ println("");
 
-    print("Local model directory: ");
-    print_string(local_dir);
-    println("");
+ print("Local model directory: ");
+ print_string(local_dir);
+ println("");
 
-    // Verify paths contain expected components
-    // Global should contain ~/.simplex/models or similar
-    // Local should contain .simplex/models
-    println("Directories configured correctly");
-    println("");
+ // Verify paths contain expected components
+ // Global should contain ~/.simplex/models or similar
+ // Local should contain .simplex/models
+ println("Directories configured correctly");
+ println("");
 
-    // Test 2: Builtin models list
-    println("--- Test 2: Builtin Models ---");
-    let builtin_count: i64 = builtin_models_count();
-    print("Number of builtin models: ");
-    print_i64(builtin_count);
-    println("");
+ // Test 2: Builtin models list
+ println("--- Test 2: Builtin Models ---");
+ let builtin_count: i64 = builtin_models_count();
+ print("Number of builtin models: ");
+ print_i64(builtin_count);
+ println("");
 
-    if builtin_count >= 3 {
-        println("PASS: At least 3 builtin models defined");
-    } else {
-        println("FAIL: Expected at least 3 builtin models");
-    }
+ if builtin_count >= 3 {
+ println("PASS: At least 3 builtin models defined");
+ } else {
+ println("FAIL: Expected at least 3 builtin models");
+ }
 
-    // Test 3: Builtin model details - cognitive-7b
-    println("");
-    println("--- Test 3: simplex-cognitive-7b ---");
-    let cognitive_7b: i64 = builtin_model_by_name(string_from("simplex-cognitive-7b"));
-    if cognitive_7b != 0 {
-        let name: i64 = model_manifest_get_name(cognitive_7b);
-        let size: i64 = model_manifest_get_size(cognitive_7b);
-        let quant: i64 = model_manifest_get_quantization(cognitive_7b);
-        let category: i64 = model_manifest_get_category(cognitive_7b);
+ // Test 3: Builtin model details - cognitive-7b
+ println("");
+ println("--- Test 3: simplex-cognitive-7b ---");
+ let cognitive_7b: i64 = builtin_model_by_name(string_from("simplex-cognitive-7b"));
+ if cognitive_7b != 0 {
+ let name: i64 = model_manifest_get_name(cognitive_7b);
+ let size: i64 = model_manifest_get_size(cognitive_7b);
+ let quant: i64 = model_manifest_get_quantization(cognitive_7b);
+ let category: i64 = model_manifest_get_category(cognitive_7b);
 
-        print("Name: ");
-        print_string(name);
-        println("");
-        print("Size: ");
-        print_i64(size);
-        println(" bytes");
-        print("Quantization: ");
-        print_string(quant);
-        println("");
-        print("Category: ");
-        print_string(category);
-        println("");
+ print("Name: ");
+ print_string(name);
+ println("");
+ print("Size: ");
+ print_i64(size);
+ println(" bytes");
+ print("Quantization: ");
+ print_string(quant);
+ println("");
+ print("Category: ");
+ print_string(category);
+ println("");
 
-        // Verify size is approximately 4.1 GB
-        if size > 4000000000 && size < 5000000000 {
-            println("PASS: Size is approximately 4.1 GB");
-        } else {
-            println("WARN: Size not in expected range for 7B Q4 model");
-        }
+ // Verify size is approximately 4.1 GB
+ if size > 4000000000 && size < 5000000000 {
+ println("PASS: Size is approximately 4.1 GB");
+ } else {
+ println("WARN: Size not in expected range for 7B Q4 model");
+ }
 
-        model_manifest_close(cognitive_7b);
-    } else {
-        println("FAIL: simplex-cognitive-7b not found in builtin models");
-    }
+ model_manifest_close(cognitive_7b);
+ } else {
+ println("FAIL: simplex-cognitive-7b not found in builtin models");
+ }
 
-    // Test 4: Builtin model details - cognitive-1b
-    println("");
-    println("--- Test 4: simplex-cognitive-1b ---");
-    let cognitive_1b: i64 = builtin_model_by_name(string_from("simplex-cognitive-1b"));
-    if cognitive_1b != 0 {
-        let name: i64 = model_manifest_get_name(cognitive_1b);
-        let size: i64 = model_manifest_get_size(cognitive_1b);
+ // Test 4: Builtin model details - cognitive-1b
+ println("");
+ println("--- Test 4: simplex-cognitive-1b ---");
+ let cognitive_1b: i64 = builtin_model_by_name(string_from("simplex-cognitive-1b"));
+ if cognitive_1b != 0 {
+ let name: i64 = model_manifest_get_name(cognitive_1b);
+ let size: i64 = model_manifest_get_size(cognitive_1b);
 
-        print("Name: ");
-        print_string(name);
-        println("");
-        print("Size: ");
-        print_i64(size);
-        println(" bytes");
+ print("Name: ");
+ print_string(name);
+ println("");
+ print("Size: ");
+ print_i64(size);
+ println(" bytes");
 
-        // Verify size is approximately 700 MB
-        if size > 600000000 && size < 800000000 {
-            println("PASS: Size is approximately 700 MB");
-        } else {
-            println("WARN: Size not in expected range for 1B Q4 model");
-        }
+ // Verify size is approximately 700 MB
+ if size > 600000000 && size < 800000000 {
+ println("PASS: Size is approximately 700 MB");
+ } else {
+ println("WARN: Size not in expected range for 1B Q4 model");
+ }
 
-        model_manifest_close(cognitive_1b);
-    } else {
-        println("FAIL: simplex-cognitive-1b not found in builtin models");
-    }
+ model_manifest_close(cognitive_1b);
+ } else {
+ println("FAIL: simplex-cognitive-1b not found in builtin models");
+ }
 
-    // Test 5: Builtin model details - mnemonic-embed
-    println("");
-    println("--- Test 5: simplex-mnemonic-embed ---");
-    let mnemonic: i64 = builtin_model_by_name(string_from("simplex-mnemonic-embed"));
-    if mnemonic != 0 {
-        let name: i64 = model_manifest_get_name(mnemonic);
-        let size: i64 = model_manifest_get_size(mnemonic);
-        let category: i64 = model_manifest_get_category(mnemonic);
+ // Test 5: Builtin model details - mnemonic-embed
+ println("");
+ println("--- Test 5: simplex-mnemonic-embed ---");
+ let mnemonic: i64 = builtin_model_by_name(string_from("simplex-mnemonic-embed"));
+ if mnemonic != 0 {
+ let name: i64 = model_manifest_get_name(mnemonic);
+ let size: i64 = model_manifest_get_size(mnemonic);
+ let category: i64 = model_manifest_get_category(mnemonic);
 
-        print("Name: ");
-        print_string(name);
-        println("");
-        print("Size: ");
-        print_i64(size);
-        println(" bytes");
-        print("Category: ");
-        print_string(category);
-        println("");
+ print("Name: ");
+ print_string(name);
+ println("");
+ print("Size: ");
+ print_i64(size);
+ println(" bytes");
+ print("Category: ");
+ print_string(category);
+ println("");
 
-        // Verify category is "mnemonic" or "embedding"
-        // Verify size is approximately 134 MB
-        if size > 100000000 && size < 200000000 {
-            println("PASS: Size is approximately 134 MB");
-        } else {
-            println("WARN: Size not in expected range for embedding model");
-        }
+ // Verify category is "mnemonic" or "embedding"
+ // Verify size is approximately 134 MB
+ if size > 100000000 && size < 200000000 {
+ println("PASS: Size is approximately 134 MB");
+ } else {
+ println("WARN: Size not in expected range for embedding model");
+ }
 
-        model_manifest_close(mnemonic);
-    } else {
-        println("FAIL: simplex-mnemonic-embed not found in builtin models");
-    }
+ model_manifest_close(mnemonic);
+ } else {
+ println("FAIL: simplex-mnemonic-embed not found in builtin models");
+ }
 
-    // Test 6: Model installation check
-    println("");
-    println("--- Test 6: Model Installation Check ---");
-    let is_7b_installed: i64 = model_is_installed(string_from("simplex-cognitive-7b"));
-    let is_1b_installed: i64 = model_is_installed(string_from("simplex-cognitive-1b"));
-    let is_embed_installed: i64 = model_is_installed(string_from("simplex-mnemonic-embed"));
-    let is_fake_installed: i64 = model_is_installed(string_from("nonexistent-model"));
+ // Test 6: Model installation check
+ println("");
+ println("--- Test 6: Model Installation Check ---");
+ let is_7b_installed: i64 = model_is_installed(string_from("simplex-cognitive-7b"));
+ let is_1b_installed: i64 = model_is_installed(string_from("simplex-cognitive-1b"));
+ let is_embed_installed: i64 = model_is_installed(string_from("simplex-mnemonic-embed"));
+ let is_fake_installed: i64 = model_is_installed(string_from("nonexistent-model"));
 
-    print("simplex-cognitive-7b installed: ");
-    print_i64(is_7b_installed);
-    println("");
-    print("simplex-cognitive-1b installed: ");
-    print_i64(is_1b_installed);
-    println("");
-    print("simplex-mnemonic-embed installed: ");
-    print_i64(is_embed_installed);
-    println("");
-    print("nonexistent-model installed: ");
-    print_i64(is_fake_installed);
-    println("");
+ print("simplex-cognitive-7b installed: ");
+ print_i64(is_7b_installed);
+ println("");
+ print("simplex-cognitive-1b installed: ");
+ print_i64(is_1b_installed);
+ println("");
+ print("simplex-mnemonic-embed installed: ");
+ print_i64(is_embed_installed);
+ println("");
+ print("nonexistent-model installed: ");
+ print_i64(is_fake_installed);
+ println("");
 
-    if is_fake_installed == 0 {
-        println("PASS: Correctly reports nonexistent model as not installed");
-    } else {
-        println("FAIL: Should not find nonexistent model");
-    }
+ if is_fake_installed == 0 {
+ println("PASS: Correctly reports nonexistent model as not installed");
+ } else {
+ println("FAIL: Should not find nonexistent model");
+ }
 
-    // Test 7: Model install path
-    println("");
-    println("--- Test 7: Model Install Path ---");
-    let install_path: i64 = model_install_path(string_from("simplex-cognitive-7b"));
-    print("Install path for cognitive-7b: ");
-    print_string(install_path);
-    println("");
+ // Test 7: Model install path
+ println("");
+ println("--- Test 7: Model Install Path ---");
+ let install_path: i64 = model_install_path(string_from("simplex-cognitive-7b"));
+ print("Install path for cognitive-7b: ");
+ print_string(install_path);
+ println("");
 
-    // Path should end with .gguf
-    println("PASS: Install path generated");
+ // Path should end with .gguf
+ println("PASS: Install path generated");
 
-    // Test 8: Model info JSON
-    println("");
-    println("--- Test 8: Model Info JSON ---");
-    let info_json: i64 = model_info_json(string_from("simplex-cognitive-7b"));
-    if info_json != 0 {
-        print("Model info: ");
-        print_string(info_json);
-        println("");
-        println("PASS: Model info JSON generated");
-    } else {
-        println("FAIL: Could not generate model info JSON");
-    }
+ // Test 8: Model info JSON
+ println("");
+ println("--- Test 8: Model Info JSON ---");
+ let info_json: i64 = model_info_json(string_from("simplex-cognitive-7b"));
+ if info_json != 0 {
+ print("Model info: ");
+ print_string(info_json);
+ println("");
+ println("PASS: Model info JSON generated");
+ } else {
+ println("FAIL: Could not generate model info JSON");
+ }
 
-    // Test 9: Model manifest parsing
-    println("");
-    println("--- Test 9: Manifest Parsing ---");
-    let test_manifest: i64 = string_from("{\"name\":\"test-model\",\"size\":1000000,\"quantization\":\"Q4_K_M\",\"category\":\"cognitive\",\"url\":\"https://example.com/model.gguf\"}");
-    let parsed: i64 = model_manifest_parse(test_manifest);
+ // Test 9: Model manifest parsing
+ println("");
+ println("--- Test 9: Manifest Parsing ---");
+ let test_manifest: i64 = string_from("{\"name\":\"test-model\",\"size\":1000000,\"quantization\":\"Q4_K_M\",\"category\":\"cognitive\",\"url\":\"https://example.com/model.gguf\"}");
+ let parsed: i64 = model_manifest_parse(test_manifest);
 
-    if parsed != 0 {
-        let parsed_name: i64 = model_manifest_get_name(parsed);
-        let parsed_size: i64 = model_manifest_get_size(parsed);
-        let parsed_url: i64 = model_manifest_get_url(parsed);
+ if parsed != 0 {
+ let parsed_name: i64 = model_manifest_get_name(parsed);
+ let parsed_size: i64 = model_manifest_get_size(parsed);
+ let parsed_url: i64 = model_manifest_get_url(parsed);
 
-        print("Parsed name: ");
-        print_string(parsed_name);
-        println("");
-        print("Parsed size: ");
-        print_i64(parsed_size);
-        println("");
-        print("Parsed URL: ");
-        print_string(parsed_url);
-        println("");
+ print("Parsed name: ");
+ print_string(parsed_name);
+ println("");
+ print("Parsed size: ");
+ print_i64(parsed_size);
+ println("");
+ print("Parsed URL: ");
+ print_string(parsed_url);
+ println("");
 
-        if parsed_size == 1000000 {
-            println("PASS: Manifest parsed correctly");
-        } else {
-            println("FAIL: Manifest size mismatch");
-        }
+ if parsed_size == 1000000 {
+ println("PASS: Manifest parsed correctly");
+ } else {
+ println("FAIL: Manifest size mismatch");
+ }
 
-        model_manifest_close(parsed);
-    } else {
-        println("FAIL: Could not parse manifest JSON");
-    }
+ model_manifest_close(parsed);
+ } else {
+ println("FAIL: Could not parse manifest JSON");
+ }
 
-    // Test 10: Iterate builtin models
-    println("");
-    println("--- Test 10: Iterate All Builtin Models ---");
-    let i: i64 = 0;
-    while i < builtin_count {
-        let model: i64 = builtin_model_get(i);
-        if model != 0 {
-            let model_name: i64 = model_manifest_get_name(model);
-            print("  [");
-            print_i64(i);
-            print("] ");
-            print_string(model_name);
-            println("");
-            model_manifest_close(model);
-        }
-        i = i + 1;
-    }
-    println("PASS: Iterated all builtin models");
+ // Test 10: Iterate builtin models
+ println("");
+ println("--- Test 10: Iterate All Builtin Models ---");
+ let i: i64 = 0;
+ while i < builtin_count {
+ let model: i64 = builtin_model_get(i);
+ if model != 0 {
+ let model_name: i64 = model_manifest_get_name(model);
+ print(" [");
+ print_i64(i);
+ print("] ");
+ print_string(model_name);
+ println("");
+ model_manifest_close(model);
+ }
+ i = i + 1;
+ }
+ println("PASS: Iterated all builtin models");
 
-    println("");
-    println("=== sxpm Model Commands Test Complete! ===");
+ println("");
+ println("=== sxpm Model Commands Test Complete! ===");
 }

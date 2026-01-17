@@ -14,20 +14,20 @@
 // ============================================================================
 
 // A dual number represents a value and its derivative simultaneously:
-//   Dual { val: f(x), der: f'(x) }
+// Dual { val: f(x), der: f'(x) }
 struct Dual {
-    val: f64,
-    der: f64,
+ val: f64,
+ der: f64,
 }
 
 // Create a variable (derivative seed = 1)
 fn dual_variable(val: f64) -> Dual {
-    Dual { val: val, der: 1.0 }
+ Dual { val: val, der: 1.0 }
 }
 
 // Create a constant (derivative = 0)
 fn dual_constant(val: f64) -> Dual {
-    Dual { val: val, der: 0.0 }
+ Dual { val: val, der: 0.0 }
 }
 
 // ============================================================================
@@ -36,48 +36,48 @@ fn dual_constant(val: f64) -> Dual {
 
 // Addition: (a + bε) + (c + dε) = (a+c) + (b+d)ε
 fn dual_add(a: Dual, b: Dual) -> Dual {
-    Dual {
-        val: a.val + b.val,
-        der: a.der + b.der,
-    }
+ Dual {
+ val: a.val + b.val,
+ der: a.der + b.der,
+ }
 }
 
 // Subtraction
 fn dual_sub(a: Dual, b: Dual) -> Dual {
-    Dual {
-        val: a.val - b.val,
-        der: a.der - b.der,
-    }
+ Dual {
+ val: a.val - b.val,
+ der: a.der - b.der,
+ }
 }
 
 // Multiplication (product rule): (fg)' = f'g + fg'
 fn dual_mul(a: Dual, b: Dual) -> Dual {
-    Dual {
-        val: a.val * b.val,
-        der: a.val * b.der + a.der * b.val,
-    }
+ Dual {
+ val: a.val * b.val,
+ der: a.val * b.der + a.der * b.val,
+ }
 }
 
 // Division (quotient rule): (f/g)' = (f'g - fg') / g²
 fn dual_div(a: Dual, b: Dual) -> Dual {
-    let val: f64 = a.val / b.val;
-    let der: f64 = (a.der * b.val - a.val * b.der) / (b.val * b.val);
-    Dual { val: val, der: der }
+ let val: f64 = a.val / b.val;
+ let der: f64 = (a.der * b.val - a.val * b.der) / (b.val * b.val);
+ Dual { val: val, der: der }
 }
 
 // Negation
 fn dual_neg(a: Dual) -> Dual {
-    Dual { val: -a.val, der: -a.der }
+ Dual { val: -a.val, der: -a.der }
 }
 
 // Scalar multiplication
 fn dual_mul_scalar(a: Dual, s: f64) -> Dual {
-    Dual { val: a.val * s, der: a.der * s }
+ Dual { val: a.val * s, der: a.der * s }
 }
 
 // Add scalar
 fn dual_add_scalar(a: Dual, s: f64) -> Dual {
-    Dual { val: a.val + s, der: a.der }
+ Dual { val: a.val + s, der: a.der }
 }
 
 // ============================================================================
@@ -86,65 +86,65 @@ fn dual_add_scalar(a: Dual, s: f64) -> Dual {
 
 // sin(a + bε) = sin(a) + b·cos(a)·ε
 fn dual_sin(x: Dual) -> Dual {
-    Dual {
-        val: sin(x.val),
-        der: x.der * cos(x.val),
-    }
+ Dual {
+ val: sin(x.val),
+ der: x.der * cos(x.val),
+ }
 }
 
 // cos(a + bε) = cos(a) - b·sin(a)·ε
 fn dual_cos(x: Dual) -> Dual {
-    Dual {
-        val: cos(x.val),
-        der: -x.der * sin(x.val),
-    }
+ Dual {
+ val: cos(x.val),
+ der: -x.der * sin(x.val),
+ }
 }
 
 // exp(a + bε) = exp(a) + b·exp(a)·ε
 fn dual_exp(x: Dual) -> Dual {
-    let e: f64 = exp(x.val);
-    Dual { val: e, der: x.der * e }
+ let e: f64 = exp(x.val);
+ Dual { val: e, der: x.der * e }
 }
 
 // ln(a + bε) = ln(a) + (b/a)·ε
 fn dual_ln(x: Dual) -> Dual {
-    Dual {
-        val: ln(x.val),
-        der: x.der / x.val,
-    }
+ Dual {
+ val: ln(x.val),
+ der: x.der / x.val,
+ }
 }
 
 // sqrt(a + bε) = sqrt(a) + b/(2·sqrt(a))·ε
 fn dual_sqrt(x: Dual) -> Dual {
-    let s: f64 = sqrt(x.val);
-    Dual { val: s, der: x.der / (2.0 * s) }
+ let s: f64 = sqrt(x.val);
+ Dual { val: s, der: x.der / (2.0 * s) }
 }
 
 // x^n for integer power
 fn dual_powi(x: Dual, n: i64) -> Dual {
-    let val: f64 = pow(x.val, n);
-    let nf: f64 = n as f64;
-    let der: f64 = x.der * nf * pow(x.val, n - 1);
-    Dual { val: val, der: der }
+ let val: f64 = pow(x.val, n);
+ let nf: f64 = n as f64;
+ let der: f64 = x.der * nf * pow(x.val, n - 1);
+ Dual { val: val, der: der }
 }
 
 // tanh(a + bε) = tanh(a) + b·(1 - tanh²(a))·ε
 fn dual_tanh(x: Dual) -> Dual {
-    let t: f64 = tanh(x.val);
-    Dual {
-        val: t,
-        der: x.der * (1.0 - t * t),
-    }
+ let t: f64 = tanh(x.val);
+ Dual {
+ val: t,
+ der: x.der * (1.0 - t * t),
+ }
 }
 
 // sigmoid(x) = 1/(1 + exp(-x))
 // sigmoid'(x) = sigmoid(x) * (1 - sigmoid(x))
 fn dual_sigmoid(x: Dual) -> Dual {
-    let s: f64 = 1.0 / (1.0 + exp(-x.val));
-    Dual {
-        val: s,
-        der: x.der * s * (1.0 - s),
-    }
+ let s: f64 = 1.0 / (1.0 + exp(-x.val));
+ Dual {
+ val: s,
+ der: x.der * s * (1.0 - s),
+ }
 }
 
 // ============================================================================
@@ -152,20 +152,20 @@ fn dual_sigmoid(x: Dual) -> Dual {
 // ============================================================================
 
 fn abs_f64(x: f64) -> f64 {
-    if x >= 0.0 {
-        x
-    } else {
-        -x
-    }
+ if x >= 0.0 {
+ x
+ } else {
+ -x
+ }
 }
 
 fn approx_eq(a: f64, b: f64, tol: f64) -> bool {
-    abs_f64(a - b) < tol
+ abs_f64(a - b) < tol
 }
 
 // Check if NOT approximately equal (for test assertions)
 fn not_approx_eq(a: f64, b: f64, tol: f64) -> bool {
-    abs_f64(a - b) >= tol
+ abs_f64(a - b) >= tol
 }
 
 // ============================================================================
@@ -173,23 +173,23 @@ fn not_approx_eq(a: f64, b: f64, tol: f64) -> bool {
 // ============================================================================
 
 fn test_addition() -> i64 {
-    println("  Testing addition...");
+ println(" Testing addition...");
 
-    let a: Dual = Dual { val: 3.0, der: 1.0 };
-    let b: Dual = Dual { val: 5.0, der: 2.0 };
-    let c: Dual = dual_add(a, b);
+ let a: Dual = Dual { val: 3.0, der: 1.0 };
+ let b: Dual = Dual { val: 5.0, der: 2.0 };
+ let c: Dual = dual_add(a, b);
 
-    if not_approx_eq(c.val, 8.0, 0.0001) {
-        println("    FAIL: addition value");
-        return 0;
-    }
-    if not_approx_eq(c.der, 3.0, 0.0001) {
-        println("    FAIL: addition derivative");
-        return 0;
-    }
+ if not_approx_eq(c.val, 8.0, 0.0001) {
+ println(" FAIL: addition value");
+ return 0;
+ }
+ if not_approx_eq(c.der, 3.0, 0.0001) {
+ println(" FAIL: addition derivative");
+ return 0;
+ }
 
-    println("    PASS: addition");
-    1
+ println(" PASS: addition");
+ 1
 }
 
 // ============================================================================
@@ -197,24 +197,24 @@ fn test_addition() -> i64 {
 // ============================================================================
 
 fn test_multiplication() -> i64 {
-    println("  Testing multiplication (product rule)...");
+ println(" Testing multiplication (product rule)...");
 
-    // f(x) = x, g(x) = x at x = 5
-    // (fg)' = f'g + fg' = 1*5 + 5*1 = 10
-    let x: Dual = dual_variable(5.0);
-    let x2: Dual = dual_mul(x, x);
+ // f(x) = x, g(x) = x at x = 5
+ // (fg)' = f'g + fg' = 1*5 + 5*1 = 10
+ let x: Dual = dual_variable(5.0);
+ let x2: Dual = dual_mul(x, x);
 
-    if not_approx_eq(x2.val, 25.0, 0.0001) {
-        println("    FAIL: x^2 value");
-        return 0;
-    }
-    if not_approx_eq(x2.der, 10.0, 0.0001) {
-        println("    FAIL: x^2 derivative (should be 2x = 10)");
-        return 0;
-    }
+ if not_approx_eq(x2.val, 25.0, 0.0001) {
+ println(" FAIL: x^2 value");
+ return 0;
+ }
+ if not_approx_eq(x2.der, 10.0, 0.0001) {
+ println(" FAIL: x^2 derivative (should be 2x = 10)");
+ return 0;
+ }
 
-    println("    PASS: multiplication (product rule)");
-    1
+ println(" PASS: multiplication (product rule)");
+ 1
 }
 
 // ============================================================================
@@ -222,24 +222,24 @@ fn test_multiplication() -> i64 {
 // ============================================================================
 
 fn test_division() -> i64 {
-    println("  Testing division (quotient rule)...");
+ println(" Testing division (quotient rule)...");
 
-    // 1/x at x=2: value = 0.5, derivative = -1/x² = -0.25
-    let x: Dual = dual_variable(2.0);
-    let one: Dual = dual_constant(1.0);
-    let inv_x: Dual = dual_div(one, x);
+ // 1/x at x=2: value = 0.5, derivative = -1/x² = -0.25
+ let x: Dual = dual_variable(2.0);
+ let one: Dual = dual_constant(1.0);
+ let inv_x: Dual = dual_div(one, x);
 
-    if not_approx_eq(inv_x.val, 0.5, 0.0001) {
-        println("    FAIL: 1/x value");
-        return 0;
-    }
-    if not_approx_eq(inv_x.der, -0.25, 0.0001) {
-        println("    FAIL: 1/x derivative (should be -1/x² = -0.25)");
-        return 0;
-    }
+ if not_approx_eq(inv_x.val, 0.5, 0.0001) {
+ println(" FAIL: 1/x value");
+ return 0;
+ }
+ if not_approx_eq(inv_x.der, -0.25, 0.0001) {
+ println(" FAIL: 1/x derivative (should be -1/x² = -0.25)");
+ return 0;
+ }
 
-    println("    PASS: division (quotient rule)");
-    1
+ println(" PASS: division (quotient rule)");
+ 1
 }
 
 // ============================================================================
@@ -247,34 +247,34 @@ fn test_division() -> i64 {
 // ============================================================================
 
 fn test_sin_cos() -> i64 {
-    println("  Testing sin and cos...");
+ println(" Testing sin and cos...");
 
-    // sin(0) = 0, sin'(0) = cos(0) = 1
-    let x0: Dual = dual_variable(0.0);
-    let s0: Dual = dual_sin(x0);
+ // sin(0) = 0, sin'(0) = cos(0) = 1
+ let x0: Dual = dual_variable(0.0);
+ let s0: Dual = dual_sin(x0);
 
-    if not_approx_eq(s0.val, 0.0, 0.0001) {
-        println("    FAIL: sin(0) value");
-        return 0;
-    }
-    if not_approx_eq(s0.der, 1.0, 0.0001) {
-        println("    FAIL: sin(0) derivative");
-        return 0;
-    }
+ if not_approx_eq(s0.val, 0.0, 0.0001) {
+ println(" FAIL: sin(0) value");
+ return 0;
+ }
+ if not_approx_eq(s0.der, 1.0, 0.0001) {
+ println(" FAIL: sin(0) derivative");
+ return 0;
+ }
 
-    // cos(0) = 1, cos'(0) = -sin(0) = 0
-    let c0: Dual = dual_cos(x0);
-    if not_approx_eq(c0.val, 1.0, 0.0001) {
-        println("    FAIL: cos(0) value");
-        return 0;
-    }
-    if not_approx_eq(c0.der, 0.0, 0.0001) {
-        println("    FAIL: cos(0) derivative");
-        return 0;
-    }
+ // cos(0) = 1, cos'(0) = -sin(0) = 0
+ let c0: Dual = dual_cos(x0);
+ if not_approx_eq(c0.val, 1.0, 0.0001) {
+ println(" FAIL: cos(0) value");
+ return 0;
+ }
+ if not_approx_eq(c0.der, 0.0, 0.0001) {
+ println(" FAIL: cos(0) derivative");
+ return 0;
+ }
 
-    println("    PASS: sin/cos");
-    1
+ println(" PASS: sin/cos");
+ 1
 }
 
 // ============================================================================
@@ -282,36 +282,36 @@ fn test_sin_cos() -> i64 {
 // ============================================================================
 
 fn test_exp_ln() -> i64 {
-    println("  Testing exp and ln...");
+ println(" Testing exp and ln...");
 
-    // exp(0) = 1, exp'(0) = 1
-    let x0: Dual = dual_variable(0.0);
-    let e0: Dual = dual_exp(x0);
+ // exp(0) = 1, exp'(0) = 1
+ let x0: Dual = dual_variable(0.0);
+ let e0: Dual = dual_exp(x0);
 
-    if not_approx_eq(e0.val, 1.0, 0.0001) {
-        println("    FAIL: exp(0) value");
-        return 0;
-    }
-    if not_approx_eq(e0.der, 1.0, 0.0001) {
-        println("    FAIL: exp(0) derivative");
-        return 0;
-    }
+ if not_approx_eq(e0.val, 1.0, 0.0001) {
+ println(" FAIL: exp(0) value");
+ return 0;
+ }
+ if not_approx_eq(e0.der, 1.0, 0.0001) {
+ println(" FAIL: exp(0) derivative");
+ return 0;
+ }
 
-    // ln(1) = 0, ln'(1) = 1/1 = 1
-    let x1: Dual = dual_variable(1.0);
-    let l1: Dual = dual_ln(x1);
+ // ln(1) = 0, ln'(1) = 1/1 = 1
+ let x1: Dual = dual_variable(1.0);
+ let l1: Dual = dual_ln(x1);
 
-    if not_approx_eq(l1.val, 0.0, 0.0001) {
-        println("    FAIL: ln(1) value");
-        return 0;
-    }
-    if not_approx_eq(l1.der, 1.0, 0.0001) {
-        println("    FAIL: ln(1) derivative");
-        return 0;
-    }
+ if not_approx_eq(l1.val, 0.0, 0.0001) {
+ println(" FAIL: ln(1) value");
+ return 0;
+ }
+ if not_approx_eq(l1.der, 1.0, 0.0001) {
+ println(" FAIL: ln(1) derivative");
+ return 0;
+ }
 
-    println("    PASS: exp/ln");
-    1
+ println(" PASS: exp/ln");
+ 1
 }
 
 // ============================================================================
@@ -319,23 +319,23 @@ fn test_exp_ln() -> i64 {
 // ============================================================================
 
 fn test_sqrt() -> i64 {
-    println("  Testing sqrt...");
+ println(" Testing sqrt...");
 
-    // sqrt(4) = 2, sqrt'(4) = 1/(2*sqrt(4)) = 1/4 = 0.25
-    let x4: Dual = dual_variable(4.0);
-    let s4: Dual = dual_sqrt(x4);
+ // sqrt(4) = 2, sqrt'(4) = 1/(2*sqrt(4)) = 1/4 = 0.25
+ let x4: Dual = dual_variable(4.0);
+ let s4: Dual = dual_sqrt(x4);
 
-    if not_approx_eq(s4.val, 2.0, 0.0001) {
-        println("    FAIL: sqrt(4) value");
-        return 0;
-    }
-    if not_approx_eq(s4.der, 0.25, 0.0001) {
-        println("    FAIL: sqrt(4) derivative");
-        return 0;
-    }
+ if not_approx_eq(s4.val, 2.0, 0.0001) {
+ println(" FAIL: sqrt(4) value");
+ return 0;
+ }
+ if not_approx_eq(s4.der, 0.25, 0.0001) {
+ println(" FAIL: sqrt(4) derivative");
+ return 0;
+ }
 
-    println("    PASS: sqrt");
-    1
+ println(" PASS: sqrt");
+ 1
 }
 
 // ============================================================================
@@ -343,23 +343,23 @@ fn test_sqrt() -> i64 {
 // ============================================================================
 
 fn test_power() -> i64 {
-    println("  Testing power function...");
+ println(" Testing power function...");
 
-    // x^3 at x=2: value = 8, derivative = 3*x² = 12
-    let x2: Dual = dual_variable(2.0);
-    let cube: Dual = dual_powi(x2, 3);
+ // x^3 at x=2: value = 8, derivative = 3*x² = 12
+ let x2: Dual = dual_variable(2.0);
+ let cube: Dual = dual_powi(x2, 3);
 
-    if not_approx_eq(cube.val, 8.0, 0.0001) {
-        println("    FAIL: x^3 value");
-        return 0;
-    }
-    if not_approx_eq(cube.der, 12.0, 0.0001) {
-        println("    FAIL: x^3 derivative");
-        return 0;
-    }
+ if not_approx_eq(cube.val, 8.0, 0.0001) {
+ println(" FAIL: x^3 value");
+ return 0;
+ }
+ if not_approx_eq(cube.der, 12.0, 0.0001) {
+ println(" FAIL: x^3 derivative");
+ return 0;
+ }
 
-    println("    PASS: power function");
-    1
+ println(" PASS: power function");
+ 1
 }
 
 // ============================================================================
@@ -367,23 +367,23 @@ fn test_power() -> i64 {
 // ============================================================================
 
 fn test_tanh() -> i64 {
-    println("  Testing tanh...");
+ println(" Testing tanh...");
 
-    // tanh(0) = 0, tanh'(0) = 1 - tanh²(0) = 1
-    let x0: Dual = dual_variable(0.0);
-    let t0: Dual = dual_tanh(x0);
+ // tanh(0) = 0, tanh'(0) = 1 - tanh²(0) = 1
+ let x0: Dual = dual_variable(0.0);
+ let t0: Dual = dual_tanh(x0);
 
-    if not_approx_eq(t0.val, 0.0, 0.0001) {
-        println("    FAIL: tanh(0) value");
-        return 0;
-    }
-    if not_approx_eq(t0.der, 1.0, 0.0001) {
-        println("    FAIL: tanh(0) derivative");
-        return 0;
-    }
+ if not_approx_eq(t0.val, 0.0, 0.0001) {
+ println(" FAIL: tanh(0) value");
+ return 0;
+ }
+ if not_approx_eq(t0.der, 1.0, 0.0001) {
+ println(" FAIL: tanh(0) derivative");
+ return 0;
+ }
 
-    println("    PASS: tanh");
-    1
+ println(" PASS: tanh");
+ 1
 }
 
 // ============================================================================
@@ -391,23 +391,23 @@ fn test_tanh() -> i64 {
 // ============================================================================
 
 fn test_sigmoid() -> i64 {
-    println("  Testing sigmoid...");
+ println(" Testing sigmoid...");
 
-    // sigmoid(0) = 0.5, sigmoid'(0) = 0.5 * 0.5 = 0.25
-    let x0: Dual = dual_variable(0.0);
-    let s0: Dual = dual_sigmoid(x0);
+ // sigmoid(0) = 0.5, sigmoid'(0) = 0.5 * 0.5 = 0.25
+ let x0: Dual = dual_variable(0.0);
+ let s0: Dual = dual_sigmoid(x0);
 
-    if not_approx_eq(s0.val, 0.5, 0.0001) {
-        println("    FAIL: sigmoid(0) value");
-        return 0;
-    }
-    if not_approx_eq(s0.der, 0.25, 0.0001) {
-        println("    FAIL: sigmoid(0) derivative");
-        return 0;
-    }
+ if not_approx_eq(s0.val, 0.5, 0.0001) {
+ println(" FAIL: sigmoid(0) value");
+ return 0;
+ }
+ if not_approx_eq(s0.der, 0.25, 0.0001) {
+ println(" FAIL: sigmoid(0) derivative");
+ return 0;
+ }
 
-    println("    PASS: sigmoid");
-    1
+ println(" PASS: sigmoid");
+ 1
 }
 
 // ============================================================================
@@ -415,29 +415,29 @@ fn test_sigmoid() -> i64 {
 // ============================================================================
 
 fn test_chain_rule() -> i64 {
-    println("  Testing chain rule...");
+ println(" Testing chain rule...");
 
-    // f(x) = sin(x²) at x=1
-    // f'(x) = cos(x²) * 2x
-    // f'(1) = cos(1) * 2
-    let x: Dual = dual_variable(1.0);
-    let x2: Dual = dual_mul(x, x);
-    let f: Dual = dual_sin(x2);
+ // f(x) = sin(x²) at x=1
+ // f'(x) = cos(x²) * 2x
+ // f'(1) = cos(1) * 2
+ let x: Dual = dual_variable(1.0);
+ let x2: Dual = dual_mul(x, x);
+ let f: Dual = dual_sin(x2);
 
-    let expected_val: f64 = sin(1.0);
-    let expected_der: f64 = cos(1.0) * 2.0;
+ let expected_val: f64 = sin(1.0);
+ let expected_der: f64 = cos(1.0) * 2.0;
 
-    if not_approx_eq(f.val, expected_val, 0.0001) {
-        println("    FAIL: sin(x²) value");
-        return 0;
-    }
-    if not_approx_eq(f.der, expected_der, 0.0001) {
-        println("    FAIL: sin(x²) derivative (chain rule)");
-        return 0;
-    }
+ if not_approx_eq(f.val, expected_val, 0.0001) {
+ println(" FAIL: sin(x²) value");
+ return 0;
+ }
+ if not_approx_eq(f.der, expected_der, 0.0001) {
+ println(" FAIL: sin(x²) derivative (chain rule)");
+ return 0;
+ }
 
-    println("    PASS: chain rule");
-    1
+ println(" PASS: chain rule");
+ 1
 }
 
 // ============================================================================
@@ -445,37 +445,37 @@ fn test_chain_rule() -> i64 {
 // ============================================================================
 
 fn test_polynomial() -> i64 {
-    println("  Testing polynomial derivative...");
+ println(" Testing polynomial derivative...");
 
-    // f(x) = x³ - 2x² + 3x - 5 at x=2
-    // f(2) = 8 - 8 + 6 - 5 = 1
-    // f'(x) = 3x² - 4x + 3
-    // f'(2) = 12 - 8 + 3 = 7
-    let x: Dual = dual_variable(2.0);
-    let x2: Dual = dual_mul(x, x);
-    let x3: Dual = dual_mul(x2, x);
+ // f(x) = x³ - 2x² + 3x - 5 at x=2
+ // f(2) = 8 - 8 + 6 - 5 = 1
+ // f'(x) = 3x² - 4x + 3
+ // f'(2) = 12 - 8 + 3 = 7
+ let x: Dual = dual_variable(2.0);
+ let x2: Dual = dual_mul(x, x);
+ let x3: Dual = dual_mul(x2, x);
 
-    // x³ - 2x² + 3x - 5
-    let term1: Dual = x3;
-    let term2: Dual = dual_mul_scalar(x2, -2.0);
-    let term3: Dual = dual_mul_scalar(x, 3.0);
-    let term4: Dual = dual_constant(-5.0);
+ // x³ - 2x² + 3x - 5
+ let term1: Dual = x3;
+ let term2: Dual = dual_mul_scalar(x2, -2.0);
+ let term3: Dual = dual_mul_scalar(x, 3.0);
+ let term4: Dual = dual_constant(-5.0);
 
-    let sum1: Dual = dual_add(term1, term2);
-    let sum2: Dual = dual_add(sum1, term3);
-    let f: Dual = dual_add(sum2, term4);
+ let sum1: Dual = dual_add(term1, term2);
+ let sum2: Dual = dual_add(sum1, term3);
+ let f: Dual = dual_add(sum2, term4);
 
-    if not_approx_eq(f.val, 1.0, 0.0001) {
-        println("    FAIL: polynomial value");
-        return 0;
-    }
-    if not_approx_eq(f.der, 7.0, 0.0001) {
-        println("    FAIL: polynomial derivative");
-        return 0;
-    }
+ if not_approx_eq(f.val, 1.0, 0.0001) {
+ println(" FAIL: polynomial value");
+ return 0;
+ }
+ if not_approx_eq(f.der, 7.0, 0.0001) {
+ println(" FAIL: polynomial derivative");
+ return 0;
+ }
 
-    println("    PASS: polynomial");
-    1
+ println(" PASS: polynomial");
+ 1
 }
 
 // ============================================================================
@@ -483,24 +483,24 @@ fn test_polynomial() -> i64 {
 // ============================================================================
 
 fn test_identity() -> i64 {
-    println("  Testing exp(ln(x)) = x identity...");
+ println(" Testing exp(ln(x)) = x identity...");
 
-    // exp(ln(x)) = x, so derivative should be 1
-    let x: Dual = dual_variable(5.0);
-    let ln_x: Dual = dual_ln(x);
-    let identity: Dual = dual_exp(ln_x);
+ // exp(ln(x)) = x, so derivative should be 1
+ let x: Dual = dual_variable(5.0);
+ let ln_x: Dual = dual_ln(x);
+ let identity: Dual = dual_exp(ln_x);
 
-    if not_approx_eq(identity.val, 5.0, 0.0001) {
-        println("    FAIL: exp(ln(x)) value");
-        return 0;
-    }
-    if not_approx_eq(identity.der, 1.0, 0.0001) {
-        println("    FAIL: exp(ln(x)) derivative (should be 1)");
-        return 0;
-    }
+ if not_approx_eq(identity.val, 5.0, 0.0001) {
+ println(" FAIL: exp(ln(x)) value");
+ return 0;
+ }
+ if not_approx_eq(identity.der, 1.0, 0.0001) {
+ println(" FAIL: exp(ln(x)) derivative (should be 1)");
+ return 0;
+ }
 
-    println("    PASS: identity");
-    1
+ println(" PASS: identity");
+ 1
 }
 
 // ============================================================================
@@ -508,46 +508,46 @@ fn test_identity() -> i64 {
 // ============================================================================
 
 fn main() -> i64 {
-    println("=== Dual Numbers Test Suite ===");
-    println("Forward-mode Automatic Differentiation");
-    println("");
+ println("=== Dual Numbers Test Suite ===");
+ println("Forward-mode Automatic Differentiation");
+ println("");
 
-    let passed: i64 = 0;
-    let total: i64 = 12;
+ let passed: i64 = 0;
+ let total: i64 = 12;
 
-    println("Running arithmetic tests...");
-    if test_addition() == 1 { passed = passed + 1; }
-    if test_multiplication() == 1 { passed = passed + 1; }
-    if test_division() == 1 { passed = passed + 1; }
+ println("Running arithmetic tests...");
+ if test_addition() == 1 { passed = passed + 1; }
+ if test_multiplication() == 1 { passed = passed + 1; }
+ if test_division() == 1 { passed = passed + 1; }
 
-    println("");
-    println("Running transcendental function tests...");
-    if test_sin_cos() == 1 { passed = passed + 1; }
-    if test_exp_ln() == 1 { passed = passed + 1; }
-    if test_sqrt() == 1 { passed = passed + 1; }
-    if test_power() == 1 { passed = passed + 1; }
-    if test_tanh() == 1 { passed = passed + 1; }
-    if test_sigmoid() == 1 { passed = passed + 1; }
+ println("");
+ println("Running transcendental function tests...");
+ if test_sin_cos() == 1 { passed = passed + 1; }
+ if test_exp_ln() == 1 { passed = passed + 1; }
+ if test_sqrt() == 1 { passed = passed + 1; }
+ if test_power() == 1 { passed = passed + 1; }
+ if test_tanh() == 1 { passed = passed + 1; }
+ if test_sigmoid() == 1 { passed = passed + 1; }
 
-    println("");
-    println("Running composite function tests...");
-    if test_chain_rule() == 1 { passed = passed + 1; }
-    if test_polynomial() == 1 { passed = passed + 1; }
-    if test_identity() == 1 { passed = passed + 1; }
+ println("");
+ println("Running composite function tests...");
+ if test_chain_rule() == 1 { passed = passed + 1; }
+ if test_polynomial() == 1 { passed = passed + 1; }
+ if test_identity() == 1 { passed = passed + 1; }
 
-    println("");
-    println("=== Results ===");
-    print("Passed: ");
-    print_i64(passed);
-    print(" / ");
-    print_i64(total);
-    println("");
+ println("");
+ println("=== Results ===");
+ print("Passed: ");
+ print_i64(passed);
+ print(" / ");
+ print_i64(total);
+ println("");
 
-    if passed == total {
-        println("ALL TESTS PASSED");
-        return 0;
-    } else {
-        println("SOME TESTS FAILED");
-        return 1;
-    }
+ if passed == total {
+ println("ALL TESTS PASSED");
+ return 0;
+ } else {
+ println("SOME TESTS FAILED");
+ return 1;
+ }
 }

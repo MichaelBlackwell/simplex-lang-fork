@@ -1,0 +1,420 @@
+// Normalization layers
+//
+// Provides layer normalization and RMS normalization for transformers.
+
+use simplex_std::dual;
+use simplex_std::vec::Vec;
+use simplex_learning::tensor::DualTensor;
+
+/// Layer normalization
+///
+/// Normalizes inputs across the last dimension:
+/// y = (x - mean) / sqrt(var + eps) * gamma + beta
+pub struct LayerNorm {
+    /// Normalized shape (features in last dimension)
+    normalized_shape: usize,
+
+    /// Learnable scale parameter (gamma)
+    weight: DualTensor,
+
+    /// Learnable shift parameter (beta)
+    bias: DualTensor,
+
+    /// Epsilon for numerical stability
+    eps: f64,
+
+    /// Whether to use learnable parameters
+    elementwise_affine: bool,
+}
+
+impl LayerNorm {
+    /// Create layer normalization
+    pub fn new(normalized_shape: usize) -> Self {
+        LayerNorm {
+            normalized_shape,
+            weight: DualTensor::ones_shape(&[normalized_shape]),
+            bias: DualTensor::zeros_shape(&[normalized_shape]),
+            eps: 1e-5,
+            elementwise_affine: true,
+        }
+    }
+
+    /// Create with custom epsilon
+    pub fn with_eps(normalized_shape: usize, eps: f64) -> Self {
+        let mut ln = Self::new(normalized_shape);
+        ln.eps = eps;
+        ln
+    }
+
+    /// Create without learnable parameters
+    pub fn without_affine(normalized_shape: usize) -> Self {
+        LayerNorm {
+            normalized_shape,
+            weight: DualTensor::ones_shape(&[normalized_shape]),
+            bias: DualTensor::zeros_shape(&[normalized_shape]),
+            eps: 1e-5,
+            elementwise_affine: false,
+        }
+    }
+
+    /// Forward pass
+    ///
+    /// Input: [..., normalized_shape]
+    /// Output: same shape, normalized
+    pub fn forward(&self, x: &DualTensor) -> DualTensor {
+        let shape = x.shape();
+        let last_dim = shape.dims()[shape.ndims() - 1];
+        assert_eq!(last_dim, self.normalized_shape);
+
+        // Compute mean and variance over last dimension
+        let normalized = x.layer_norm(self.eps);
+
+        // Apply affine transformation
+        if self.elementwise_affine {
+            normalized.hadamard(&self.weight).plus(&self.bias)
+        } else {
+            normalized
+        }
+    }
+
+    /// Get learnable parameters
+    pub fn parameters(&self) -> Vec<&DualTensor> {
+        if self.elementwise_affine {
+            vec![&self.weight, &self.bias]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Number of parameters
+    pub fn num_parameters(&self) -> usize {
+        if self.elementwise_affine {
+            2 * self.normalized_shape
+        } else {
+            0
+        }
+    }
+}
+
+/// RMS normalization
+///
+/// Root Mean Square normalization (used in LLaMA):
+/// y = x / sqrt(mean(x^2) + eps) * gamma
+///
+/// Simpler and sometimes more effective than LayerNorm.
+pub struct RMSNorm {
+    /// Normalized shape
+    normalized_shape: usize,
+
+    /// Learnable scale parameter
+    weight: DualTensor,
+
+    /// Epsilon for numerical stability
+    eps: f64,
+}
+
+impl RMSNorm {
+    /// Create RMS normalization
+    pub fn new(normalized_shape: usize) -> Self {
+        RMSNorm {
+            normalized_shape,
+            weight: DualTensor::ones_shape(&[normalized_shape]),
+            eps: 1e-5,
+        }
+    }
+
+    /// Create with custom epsilon
+    pub fn with_eps(normalized_shape: usize, eps: f64) -> Self {
+        RMSNorm {
+            normalized_shape,
+            weight: DualTensor::ones_shape(&[normalized_shape]),
+            eps,
+        }
+    }
+
+    /// Forward pass
+    pub fn forward(&self, x: &DualTensor) -> DualTensor {
+        let shape = x.shape();
+        let last_dim = shape.dims()[shape.ndims() - 1];
+        assert_eq!(last_dim, self.normalized_shape);
+
+        // Compute RMS: sqrt(mean(x^2))
+        let squared = x.hadamard(x);
+        let mean_sq = squared.mean_over(shape.ndims() - 1);
+
+        // Add epsilon and take sqrt
+        let rms = mean_sq.add_f64(self.eps).sqrt();
+
+        // Normalize and scale
+        let normalized = x.elem_div(&rms.unsqueeze_at(shape.ndims() - 1));
+        normalized.hadamard(&self.weight)
+    }
+
+    /// Get learnable parameters
+    pub fn parameters(&self) -> Vec<&DualTensor> {
+        vec![&self.weight]
+    }
+
+    /// Number of parameters
+    pub fn num_parameters(&self) -> usize {
+        self.normalized_shape
+    }
+}
+
+/// Group normalization
+///
+/// Divides channels into groups and normalizes within each group.
+/// More stable than batch norm for small batch sizes.
+pub struct GroupNorm {
+    /// Number of groups
+    num_groups: usize,
+
+    /// Number of channels
+    num_channels: usize,
+
+    /// Learnable scale
+    weight: DualTensor,
+
+    /// Learnable shift
+    bias: DualTensor,
+
+    /// Epsilon
+    eps: f64,
+}
+
+impl GroupNorm {
+    /// Create group normalization
+    pub fn new(num_groups: usize, num_channels: usize) -> Self {
+        assert_eq!(num_channels % num_groups, 0,
+                   "num_channels must be divisible by num_groups");
+
+        GroupNorm {
+            num_groups,
+            num_channels,
+            weight: DualTensor::ones_shape(&[num_channels]),
+            bias: DualTensor::zeros_shape(&[num_channels]),
+            eps: 1e-5,
+        }
+    }
+
+    /// Forward pass
+    ///
+    /// Input: [batch, channels, ...]
+    /// Output: same shape, normalized within groups
+    pub fn forward(&self, x: &DualTensor) -> DualTensor {
+        let shape = x.shape();
+        let dims = shape.dims();
+        let batch = dims[0];
+        let channels = dims[1];
+
+        assert_eq!(channels, self.num_channels);
+
+        let channels_per_group = channels / self.num_groups;
+
+        // For multi-dimensional input, get spatial dimensions
+        let spatial: usize = dims[2..].iter().product();
+
+        // Reshape to [batch, num_groups, channels_per_group * spatial]
+        let reshaped = x.reshape_to(&[batch, self.num_groups, channels_per_group * spatial]);
+
+        // Normalize within each group (over last dimension)
+        let normalized = reshaped.layer_norm(self.eps);
+
+        // Reshape back to original shape
+        let output = normalized.reshape_to(dims);
+
+        // Expand weight and bias for broadcasting over spatial dims
+        // Apply affine transformation
+        self.apply_affine(&output, dims)
+    }
+
+    /// Apply affine transformation with proper broadcasting
+    fn apply_affine(&self, x: &DualTensor, dims: &[usize]) -> DualTensor {
+        let batch = dims[0];
+        let channels = dims[1];
+        let spatial: usize = dims[2..].iter().product();
+
+        let mut result_data = Vec::with_capacity(x.numel());
+        let x_data = x.data();
+        let w_data = self.weight.data();
+        let b_data = self.bias.data();
+
+        for b_idx in 0..batch {
+            for c in 0..channels {
+                let w = w_data[c];
+                let bias = b_data[c];
+
+                for s in 0..spatial {
+                    let idx = b_idx * (channels * spatial) + c * spatial + s;
+                    let val = x_data[idx].mul(w).add(bias);
+                    result_data.push(val);
+                }
+            }
+        }
+
+        DualTensor::from_vec(result_data, dims)
+    }
+
+    /// Number of parameters
+    pub fn num_parameters(&self) -> usize {
+        2 * self.num_channels
+    }
+}
+
+/// Batch normalization (for reference, less common in transformers)
+///
+/// Normalizes over batch dimension. Includes running statistics for inference.
+pub struct BatchNorm {
+    /// Number of features
+    num_features: usize,
+
+    /// Learnable scale
+    weight: DualTensor,
+
+    /// Learnable shift
+    bias: DualTensor,
+
+    /// Running mean (for inference)
+    running_mean: DualTensor,
+
+    /// Running variance (for inference)
+    running_var: DualTensor,
+
+    /// Momentum for running stats
+    momentum: f64,
+
+    /// Epsilon
+    eps: f64,
+
+    /// Whether in training mode
+    training: bool,
+}
+
+impl BatchNorm {
+    /// Create batch normalization
+    pub fn new(num_features: usize) -> Self {
+        BatchNorm {
+            num_features,
+            weight: DualTensor::ones_shape(&[num_features]),
+            bias: DualTensor::zeros_shape(&[num_features]),
+            running_mean: DualTensor::zeros_shape(&[num_features]),
+            running_var: DualTensor::ones_shape(&[num_features]),
+            momentum: 0.1,
+            eps: 1e-5,
+            training: true,
+        }
+    }
+
+    /// Set training mode
+    pub fn train(&mut self) {
+        self.training = true;
+    }
+
+    /// Set eval mode
+    pub fn eval(&mut self) {
+        self.training = false;
+    }
+
+    /// Forward pass
+    pub fn forward(&mut self, x: &DualTensor) -> DualTensor {
+        let shape = x.shape();
+        let dims = shape.dims();
+
+        if self.training {
+            // Use batch statistics: compute mean/var over batch dimension (0)
+            let mean = x.mean_over(0);
+            let var = x.var_axis(0);
+
+            // Update running stats
+            // running_mean = (1 - momentum) * running_mean + momentum * mean
+            let one_minus_momentum = 1.0 - self.momentum;
+            self.running_mean = self.running_mean.mul_f64(one_minus_momentum)
+                .plus(&mean.mul_f64(self.momentum));
+            self.running_var = self.running_var.mul_f64(one_minus_momentum)
+                .plus(&var.mul_f64(self.momentum));
+
+            // Normalize: (x - mean) / sqrt(var + eps)
+            self.normalize_batch(x, &mean, &var, dims)
+        } else {
+            // Use running statistics
+            self.normalize_batch(x, &self.running_mean.clone(), &self.running_var.clone(), dims)
+        }
+    }
+
+    /// Normalize a batch using given mean and variance
+    fn normalize_batch(&self, x: &DualTensor, mean: &DualTensor, var: &DualTensor, dims: &[usize]) -> DualTensor {
+        let batch = dims[0];
+        let features = dims[1];
+        let spatial: usize = if dims.len() > 2 { dims[2..].iter().product() } else { 1 };
+
+        let mut result_data = Vec::with_capacity(x.numel());
+        let x_data = x.data();
+        let mean_data = mean.data();
+        let var_data = var.data();
+        let w_data = self.weight.data();
+        let b_data = self.bias.data();
+
+        for b_idx in 0..batch {
+            for f in 0..features {
+                let m = mean_data[f];
+                let v = var_data[f];
+                let std = v.add(simplex_std::dual::Dual::constant(self.eps)).sqrt();
+                let w = w_data[f];
+                let bias = b_data[f];
+
+                for s in 0..spatial {
+                    let idx = b_idx * (features * spatial) + f * spatial + s;
+                    // normalized = (x - mean) / std * weight + bias
+                    let val = x_data[idx].sub(m).div(std).mul(w).add(bias);
+                    result_data.push(val);
+                }
+            }
+        }
+
+        DualTensor::from_vec(result_data, dims)
+    }
+
+    /// Number of parameters
+    pub fn num_parameters(&self) -> usize {
+        2 * self.num_features
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_layer_norm() {
+        let ln = LayerNorm::new(64);
+
+        let x = DualTensor::randn(&[2, 10, 64]);
+        let output = ln.forward(&x);
+
+        assert_eq!(output.shape().dims(), &[2, 10, 64]);
+    }
+
+    #[test]
+    fn test_rms_norm() {
+        let rms = RMSNorm::new(64);
+
+        let x = DualTensor::randn(&[2, 10, 64]);
+        let output = rms.forward(&x);
+
+        assert_eq!(output.shape().dims(), &[2, 10, 64]);
+    }
+
+    #[test]
+    fn test_group_norm() {
+        let gn = GroupNorm::new(4, 64);
+
+        assert_eq!(gn.num_parameters(), 128);
+    }
+
+    #[test]
+    fn test_batch_norm() {
+        let bn = BatchNorm::new(64);
+
+        assert_eq!(bn.num_parameters(), 128);
+    }
+}

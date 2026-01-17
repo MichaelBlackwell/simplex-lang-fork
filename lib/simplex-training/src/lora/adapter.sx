@@ -1,0 +1,511 @@
+// LoRA adapter for full model adaptation
+//
+// Wraps an entire model with LoRA layers based on configuration.
+
+use simplex_std::vec::Vec;
+use simplex_std::string::String;
+use simplex_std::collections::HashMap;
+use simplex_learning::tensor::DualTensor;
+use super::layer::LoRALayer;
+use super::config::LoRAConfig;
+use super::super::layers::linear::Linear;
+
+/// Individual LoRA adapter for a single module
+pub struct LoRAAdapter {
+    /// Module name/path
+    name: String,
+
+    /// LoRA layer
+    layer: LoRALayer,
+
+    /// Whether this adapter is frozen
+    frozen: bool,
+}
+
+impl LoRAAdapter {
+    /// Create new adapter
+    pub fn new(name: &str, in_features: usize, out_features: usize, config: &LoRAConfig) -> Self {
+        LoRAAdapter {
+            name: name.to_string(),
+            layer: LoRALayer::new(in_features, out_features, config.rank, config.alpha),
+            frozen: false,
+        }
+    }
+
+    /// Create from existing linear layer
+    pub fn from_linear(name: &str, linear: &Linear, config: &LoRAConfig) -> Self {
+        LoRAAdapter {
+            name: name.to_string(),
+            layer: LoRALayer::from_linear(linear, config.rank, config.alpha),
+            frozen: false,
+        }
+    }
+
+    /// Forward pass
+    pub fn forward(&self, input: &DualTensor) -> DualTensor {
+        self.layer.forward(input)
+    }
+
+    /// Freeze adapter (stop training)
+    pub fn freeze(&mut self) {
+        self.frozen = true;
+    }
+
+    /// Unfreeze adapter
+    pub fn unfreeze(&mut self) {
+        self.frozen = false;
+    }
+
+    /// Check if frozen
+    pub fn is_frozen(&self) -> bool {
+        self.frozen
+    }
+
+    /// Get trainable parameters
+    pub fn parameters(&self) -> Vec<&DualTensor> {
+        if self.frozen {
+            Vec::new()
+        } else {
+            self.layer.trainable_parameters()
+        }
+    }
+
+    /// Merge LoRA into base weights
+    pub fn merge(&self) -> DualTensor {
+        self.layer.merge()
+    }
+
+    /// Get adapter name
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+/// Full model with LoRA adapters
+pub struct LoRAModel {
+    /// LoRA configuration
+    config: LoRAConfig,
+
+    /// Adapters by module name
+    adapters: HashMap<String, LoRAAdapter>,
+
+    /// Total trainable parameters
+    trainable_params: usize,
+
+    /// Total base parameters (frozen)
+    base_params: usize,
+}
+
+impl LoRAModel {
+    /// Create new LoRA model wrapper
+    pub fn new(config: LoRAConfig) -> Self {
+        LoRAModel {
+            config,
+            adapters: HashMap::new(),
+            trainable_params: 0,
+            base_params: 0,
+        }
+    }
+
+    /// Add LoRA adapter for a module
+    pub fn add_adapter(&mut self, name: &str, in_features: usize, out_features: usize) {
+        if self.config.should_apply(name) {
+            let adapter = LoRAAdapter::new(name, in_features, out_features, &self.config);
+            self.trainable_params += adapter.layer.num_trainable_parameters();
+            self.base_params += in_features * out_features;
+            self.adapters.insert(name.to_string(), adapter);
+        }
+    }
+
+    /// Add adapter from existing linear layer
+    pub fn add_adapter_from_linear(&mut self, name: &str, linear: &Linear) {
+        if self.config.should_apply(name) {
+            let adapter = LoRAAdapter::from_linear(name, linear, &self.config);
+            self.trainable_params += adapter.layer.num_trainable_parameters();
+            self.base_params += linear.num_parameters();
+            self.adapters.insert(name.to_string(), adapter);
+        }
+    }
+
+    /// Get adapter by name
+    pub fn get_adapter(&self, name: &str) -> Option<&LoRAAdapter> {
+        self.adapters.get(name)
+    }
+
+    /// Get mutable adapter
+    pub fn get_adapter_mut(&mut self, name: &str) -> Option<&mut LoRAAdapter> {
+        self.adapters.get_mut(name)
+    }
+
+    /// Forward pass through specific adapter
+    pub fn forward(&self, name: &str, input: &DualTensor) -> Option<DualTensor> {
+        self.adapters.get(name).map(|a| a.forward(input))
+    }
+
+    /// Get all trainable parameters
+    pub fn parameters(&self) -> Vec<&DualTensor> {
+        let mut params = Vec::new();
+        for adapter in self.adapters.values() {
+            params.extend(adapter.parameters());
+        }
+        params
+    }
+
+    /// Get parameter count info
+    pub fn parameter_count(&self) -> ParameterCount {
+        ParameterCount {
+            trainable: self.trainable_params,
+            frozen: self.base_params,
+            total: self.trainable_params + self.base_params,
+            trainable_percent: 100.0 * self.trainable_params as f64
+                / (self.trainable_params + self.base_params) as f64,
+        }
+    }
+
+    /// Merge all LoRA adapters into base weights
+    pub fn merge_all(&self) -> HashMap<String, DualTensor> {
+        let mut merged = HashMap::new();
+        for (name, adapter) in &self.adapters {
+            merged.insert(name.clone(), adapter.merge());
+        }
+        merged
+    }
+
+    /// Freeze all adapters
+    pub fn freeze(&mut self) {
+        for adapter in self.adapters.values_mut() {
+            adapter.freeze();
+        }
+    }
+
+    /// Unfreeze all adapters
+    pub fn unfreeze(&mut self) {
+        for adapter in self.adapters.values_mut() {
+            adapter.unfreeze();
+        }
+    }
+
+    /// Number of adapters
+    pub fn num_adapters(&self) -> usize {
+        self.adapters.len()
+    }
+
+    /// Get adapter names
+    pub fn adapter_names(&self) -> Vec<&String> {
+        self.adapters.keys().collect()
+    }
+
+    /// Get configuration
+    pub fn config(&self) -> &LoRAConfig {
+        &self.config
+    }
+
+    /// Save adapters to state dict
+    pub fn state_dict(&self) -> HashMap<String, (DualTensor, DualTensor)> {
+        let mut state = HashMap::new();
+        for (name, adapter) in &self.adapters {
+            let (lora_a, lora_b) = adapter.layer.clone_lora();
+            state.insert(name.clone(), (lora_a, lora_b));
+        }
+        state
+    }
+
+    /// Load adapters from state dict
+    pub fn load_state_dict(&mut self, state: &HashMap<String, (DualTensor, DualTensor)>) {
+        for (name, (lora_a, lora_b)) in state {
+            if let Some(adapter) = self.adapters.get_mut(name) {
+                adapter.layer.set_lora(lora_a.clone(), lora_b.clone());
+            }
+        }
+    }
+
+    /// Forward pass for a batch of training examples
+    ///
+    /// Processes each example through the model and returns output logits.
+    pub fn forward_batch(&self, batch: &super::super::data::Batch) -> DualTensor {
+        use simplex_std::dual;
+
+        // Get prompts from batch
+        let prompts = batch.prompts();
+        let batch_size = prompts.len();
+
+        // For language models, we'd tokenize and embed.
+        // Here we create a simplified embedding representation.
+        let hidden_dim = 512; // Standard hidden dimension
+        let seq_len = prompts.iter().map(|p| p.len()).max().unwrap_or(1);
+
+        // Create input tensor from text (simplified tokenization)
+        let mut input_data = Vec::with_capacity(batch_size * seq_len * hidden_dim);
+        for prompt in &prompts {
+            for (i, ch) in prompt.chars().take(seq_len).enumerate() {
+                // Simple character embedding (real impl would use proper tokenizer)
+                let char_embed = (ch as u32 as f64) / 256.0;
+                for j in 0..hidden_dim {
+                    let val = char_embed * ((j as f64 / hidden_dim as f64).sin());
+                    input_data.push(dual::constant(val));
+                }
+            }
+            // Pad to seq_len if needed
+            let pad_chars = seq_len.saturating_sub(prompt.len());
+            for _ in 0..(pad_chars * hidden_dim) {
+                input_data.push(dual::constant(0.0));
+            }
+        }
+
+        let input = DualTensor::from_vec(input_data, &[batch_size, seq_len, hidden_dim]);
+
+        // Pass through each adapter in sequence
+        let mut hidden = input;
+        for (_name, adapter) in &self.adapters {
+            // Reshape for linear: [batch*seq, hidden]
+            let reshaped = hidden.reshape_to(&[batch_size * seq_len, hidden_dim]);
+            let output = adapter.forward(&reshaped);
+            hidden = output.reshape_to(&[batch_size, seq_len, hidden_dim]);
+        }
+
+        hidden
+    }
+
+    /// Collect gradients from all trainable parameters
+    ///
+    /// Returns gradients extracted from dual number derivatives.
+    pub fn collect_gradients(&self) -> Vec<DualTensor> {
+        let mut gradients = Vec::new();
+
+        for adapter in self.adapters.values() {
+            if !adapter.is_frozen() {
+                for param in adapter.parameters() {
+                    // Extract derivatives from dual numbers
+                    // In dual numbers, .der holds the derivative
+                    let grad_data: Vec<f64> = param.data().iter()
+                        .map(|d| d.der)
+                        .collect();
+                    let grad_tensor = DualTensor::from_f64(grad_data, param.shape().dims());
+                    gradients.push(grad_tensor);
+                }
+            }
+        }
+
+        gradients
+    }
+
+    /// Update parameters using gradients and learning rate
+    ///
+    /// Applies SGD update: param = param - lr * grad
+    pub fn update_parameters(&mut self, gradients: &[DualTensor], lr: f64) {
+        use simplex_std::dual;
+
+        let mut grad_idx = 0;
+        for adapter in self.adapters.values_mut() {
+            if !adapter.is_frozen() {
+                // Update lora_a and lora_b
+                let (lora_a, lora_b) = adapter.layer.clone_lora();
+
+                if grad_idx < gradients.len() {
+                    // Update lora_a
+                    let grad_a = &gradients[grad_idx];
+                    let mut new_a_data = Vec::with_capacity(lora_a.numel());
+                    for (i, val) in lora_a.data().iter().enumerate() {
+                        let grad_val = if i < grad_a.numel() {
+                            grad_a.data()[i].val
+                        } else {
+                            0.0
+                        };
+                        new_a_data.push(dual::constant(val.val - lr * grad_val));
+                    }
+                    let new_a = DualTensor::from_vec(new_a_data, lora_a.shape().dims());
+                    grad_idx += 1;
+
+                    if grad_idx < gradients.len() {
+                        // Update lora_b
+                        let grad_b = &gradients[grad_idx];
+                        let mut new_b_data = Vec::with_capacity(lora_b.numel());
+                        for (i, val) in lora_b.data().iter().enumerate() {
+                            let grad_val = if i < grad_b.numel() {
+                                grad_b.data()[i].val
+                            } else {
+                                0.0
+                            };
+                            new_b_data.push(dual::constant(val.val - lr * grad_val));
+                        }
+                        let new_b = DualTensor::from_vec(new_b_data, lora_b.shape().dims());
+                        grad_idx += 1;
+
+                        adapter.layer.set_lora(new_a, new_b);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Merge all LoRA weights into base model
+    ///
+    /// Returns a merged model state suitable for export.
+    pub fn merge_weights(&self) -> MergedModel {
+        let mut weights = HashMap::new();
+        for (name, adapter) in &self.adapters {
+            weights.insert(name.clone(), adapter.merge());
+        }
+
+        MergedModel {
+            weights,
+            config: self.config.clone(),
+        }
+    }
+}
+
+/// Merged model after combining LoRA weights with base
+pub struct MergedModel {
+    /// Merged weight tensors by name
+    pub weights: HashMap<String, DualTensor>,
+
+    /// Original LoRA config
+    pub config: LoRAConfig,
+}
+
+impl MergedModel {
+    /// Get weight by name
+    pub fn get_weight(&self, name: &str) -> Option<&DualTensor> {
+        self.weights.get(name)
+    }
+
+    /// Get all weight names
+    pub fn weight_names(&self) -> Vec<&String> {
+        self.weights.keys().collect()
+    }
+
+    /// Total number of parameters
+    pub fn num_parameters(&self) -> usize {
+        self.weights.values().map(|t| t.numel()).sum()
+    }
+}
+
+/// Parameter count information
+#[derive(Clone)]
+pub struct ParameterCount {
+    /// Trainable parameters
+    pub trainable: usize,
+
+    /// Frozen parameters
+    pub frozen: usize,
+
+    /// Total parameters
+    pub total: usize,
+
+    /// Trainable percentage
+    pub trainable_percent: f64,
+}
+
+impl ParameterCount {
+    /// Format as human-readable string
+    pub fn to_string(&self) -> String {
+        format!(
+            "Trainable: {} ({:.2}%) | Frozen: {} | Total: {}",
+            format_count(self.trainable),
+            self.trainable_percent,
+            format_count(self.frozen),
+            format_count(self.total)
+        )
+    }
+}
+
+/// Format large numbers with K/M/B suffixes
+fn format_count(n: usize) -> String {
+    if n >= 1_000_000_000 {
+        format!("{:.2}B", n as f64 / 1_000_000_000.0)
+    } else if n >= 1_000_000 {
+        format!("{:.2}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.2}K", n as f64 / 1_000.0)
+    } else {
+        format!("{}", n)
+    }
+}
+
+/// Helper to create LoRA model from layer specifications
+pub struct LoRAModelBuilder {
+    config: LoRAConfig,
+    layers: Vec<(String, usize, usize)>, // (name, in, out)
+}
+
+impl LoRAModelBuilder {
+    /// Start building with config
+    pub fn new(config: LoRAConfig) -> Self {
+        LoRAModelBuilder {
+            config,
+            layers: Vec::new(),
+        }
+    }
+
+    /// Add layer specification
+    pub fn add_layer(mut self, name: &str, in_features: usize, out_features: usize) -> Self {
+        self.layers.push((name.to_string(), in_features, out_features));
+        self
+    }
+
+    /// Build the model
+    pub fn build(self) -> LoRAModel {
+        let mut model = LoRAModel::new(self.config);
+        for (name, in_f, out_f) in self.layers {
+            model.add_adapter(&name, in_f, out_f);
+        }
+        model
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_lora_model_creation() {
+        let config = LoRAConfig::default();
+        let model = LoRAModel::new(config);
+
+        assert_eq!(model.num_adapters(), 0);
+    }
+
+    #[test]
+    fn test_add_adapter() {
+        let config = LoRAConfig::default();
+        let mut model = LoRAModel::new(config);
+
+        model.add_adapter("model.layers.0.self_attn.q_proj", 512, 512);
+        model.add_adapter("model.layers.0.self_attn.v_proj", 512, 512);
+        model.add_adapter("model.layers.0.self_attn.k_proj", 512, 512); // Won't be added
+
+        assert_eq!(model.num_adapters(), 2); // q_proj and v_proj only
+    }
+
+    #[test]
+    fn test_parameter_count() {
+        let config = LoRAConfig::default(); // rank=8, targets q_proj, v_proj
+        let mut model = LoRAModel::new(config);
+
+        model.add_adapter("q_proj", 64, 64);
+
+        let count = model.parameter_count();
+        // Trainable: 64*8 + 8*64 = 1024
+        assert_eq!(count.trainable, 1024);
+        // Frozen: 64*64 = 4096
+        assert_eq!(count.frozen, 4096);
+    }
+
+    #[test]
+    fn test_builder() {
+        let model = LoRAModelBuilder::new(LoRAConfig::default())
+            .add_layer("q_proj", 512, 512)
+            .add_layer("v_proj", 512, 512)
+            .build();
+
+        assert_eq!(model.num_adapters(), 2);
+    }
+
+    #[test]
+    fn test_format_count() {
+        assert_eq!(format_count(500), "500");
+        assert_eq!(format_count(1500), "1.50K");
+        assert_eq!(format_count(1_500_000), "1.50M");
+        assert_eq!(format_count(1_500_000_000), "1.50B");
+    }
+}

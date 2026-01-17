@@ -1,0 +1,364 @@
+// Simplex SLM (Small Language Model) Runtime Library
+// Implements the unified SLM architecture for Cognitive Hive AI
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0 - see LICENSE file
+// https://github.com/senuamedia/simplex
+//
+// Architecture:
+// - Divine SLM: Solution-wide model with global memory context
+// - Hive SLM: Per-hive model with mnemonic (shared memory) context
+// - Specialist Anima: Individual cognitive memory fed into Hive SLM
+//
+// The SLM serves as both memory store AND reasoning engine:
+// - Memory embeddings are part of the model's context
+// - Inference uses accumulated memories as context
+
+// ============================================================================
+// SLM Model Configuration
+// ============================================================================
+
+// Model quantization levels for local inference
+enum Quantization {
+    Q4,      // 4-bit quantization - smallest, fastest
+    Q5,      // 5-bit quantization
+    Q8,      // 8-bit quantization
+    F16,     // 16-bit float - highest quality
+    F32      // 32-bit float - full precision
+}
+
+// SLM Model specification
+struct SLMConfig {
+    model_path: String,      // Path to GGUF model file
+    quantization: Quantization,
+    context_size: i64,       // Context window size
+    threads: i64,            // Number of CPU threads
+    gpu_layers: i64,         // Layers to offload to GPU
+    batch_size: i64,         // Batch size for inference
+    temperature: i64,        // Default temperature (0-100)
+    top_p: i64,              // Top-p sampling (0-100)
+    top_k: i64               // Top-k sampling
+}
+
+// Create default SLM configuration
+fn slm_config_default() -> SLMConfig {
+    SLMConfig {
+        model_path: string_from(""),
+        quantization: Quantization::Q4,
+        context_size: 4096,
+        threads: 4,
+        gpu_layers: 0,
+        batch_size: 512,
+        temperature: 70,
+        top_p: 95,
+        top_k: 40
+    }
+}
+
+// Create configuration for a specific model
+fn slm_config_new(model_path: String, ctx_size: i64) -> SLMConfig {
+    SLMConfig {
+        model_path: model_path,
+        quantization: Quantization::Q4,
+        context_size: ctx_size,
+        threads: 4,
+        gpu_layers: 0,
+        batch_size: 512,
+        temperature: 70,
+        top_p: 95,
+        top_k: 40
+    }
+}
+
+// ============================================================================
+// SLM Instance - A loaded model ready for inference
+// ============================================================================
+
+// SLM instance handle (opaque pointer to native model)
+struct SLMInstance {
+    handle: i64,             // Native model handle
+    config: SLMConfig,
+    context_used: i64,       // Current context usage
+    memory_context: String   // Accumulated memory context
+}
+
+// Load an SLM model
+fn slm_load(config: SLMConfig) -> SLMInstance {
+    let handle: i64 = slm_native_load(config.model_path, config.context_size, config.threads);
+    SLMInstance {
+        handle: handle,
+        config: config,
+        context_used: 0,
+        memory_context: string_from("")
+    }
+}
+
+// Unload an SLM model
+fn slm_unload(instance: SLMInstance) {
+    slm_native_unload(instance.handle);
+}
+
+// ============================================================================
+// Memory-Augmented SLM - SLM with cognitive memory integration
+// ============================================================================
+
+// Memory-augmented SLM that embeds anima memories into context
+struct MemoryAugmentedSLM {
+    slm: SLMInstance,
+    episodic_context: String,  // Formatted episodic memories
+    semantic_context: String,  // Formatted semantic facts
+    belief_context: String,    // Formatted beliefs
+    context_budget: i64        // Max tokens for memory context
+}
+
+// Create a memory-augmented SLM
+fn maslm_new(config: SLMConfig) -> MemoryAugmentedSLM {
+    MemoryAugmentedSLM {
+        slm: slm_load(config),
+        episodic_context: string_from(""),
+        semantic_context: string_from(""),
+        belief_context: string_from(""),
+        context_budget: 2048  // Reserve 2K tokens for memory
+    }
+}
+
+// Update memory context from an Anima
+fn maslm_update_from_anima(maslm: MemoryAugmentedSLM, anima: Anima) -> MemoryAugmentedSLM {
+    // Format episodic memories
+    let episodic_str: String = format_memories(
+        anima.episodic.entries,
+        string_from("Recent experiences:")
+    );
+
+    // Format semantic facts
+    let semantic_str: String = format_memories(
+        anima.semantic.facts,
+        string_from("Known facts:")
+    );
+
+    // Format beliefs
+    let belief_str: String = format_beliefs(anima.beliefs.beliefs);
+
+    MemoryAugmentedSLM {
+        slm: maslm.slm,
+        episodic_context: episodic_str,
+        semantic_context: semantic_str,
+        belief_context: belief_str,
+        context_budget: maslm.context_budget
+    }
+}
+
+// Format memory entries as context string
+fn format_memories(entries: Vec<MemoryEntry>, header: String) -> String {
+    let result: String = header;
+    let i: i64 = 0;
+    let len: i64 = vec_len(entries);
+
+    while i < len {
+        let entry: MemoryEntry = vec_get(entries, i);
+        result = string_concat(result, string_from("\n- "));
+        result = string_concat(result, entry.content);
+        i = i + 1;
+    }
+    result
+}
+
+// Format beliefs as context string
+fn format_beliefs(beliefs: Vec<Belief>) -> String {
+    let result: String = string_from("Current beliefs:");
+    let i: i64 = 0;
+    let len: i64 = vec_len(beliefs);
+
+    while i < len {
+        let b: Belief = vec_get(beliefs, i);
+        result = string_concat(result, string_from("\n- "));
+        result = string_concat(result, b.content);
+        result = string_concat(result, string_from(" (confidence: "));
+        result = string_concat(result, int_to_string(b.confidence));
+        result = string_concat(result, string_from("%)"));
+        i = i + 1;
+    }
+    result
+}
+
+// Perform inference with memory-augmented context
+fn maslm_infer(maslm: MemoryAugmentedSLM, prompt: String) -> String {
+    // Build full context: memories + prompt
+    let full_context: String = string_from("<context>\n");
+    full_context = string_concat(full_context, maslm.episodic_context);
+    full_context = string_concat(full_context, string_from("\n\n"));
+    full_context = string_concat(full_context, maslm.semantic_context);
+    full_context = string_concat(full_context, string_from("\n\n"));
+    full_context = string_concat(full_context, maslm.belief_context);
+    full_context = string_concat(full_context, string_from("\n</context>\n\n"));
+    full_context = string_concat(full_context, prompt);
+
+    // Call native SLM inference
+    slm_native_infer(maslm.slm.handle, full_context, maslm.slm.config.temperature)
+}
+
+// ============================================================================
+// Hive SLM - Shared SLM for entire hive with mnemonic integration
+// ============================================================================
+
+// Hive SLM that aggregates memories from all specialists
+struct HiveSLM {
+    slm: MemoryAugmentedSLM,
+    hive_name: String,
+    specialist_count: i64,
+    mnemonic_context: String  // Shared hive memory context
+}
+
+// Create a new Hive SLM
+fn hive_slm_new(config: SLMConfig, hive_name: String) -> HiveSLM {
+    HiveSLM {
+        slm: maslm_new(config),
+        hive_name: hive_name,
+        specialist_count: 0,
+        mnemonic_context: string_from("")
+    }
+}
+
+// Update hive SLM with mnemonic (shared memory)
+fn hive_slm_update_mnemonic(hslm: HiveSLM, mnemonic: HiveMnemonic) -> HiveSLM {
+    // Format shared episodic memories
+    let shared_episodic: String = format_memories(
+        mnemonic.episodic.entries,
+        string_from("Shared hive experiences:")
+    );
+
+    // Format shared semantic facts
+    let shared_semantic: String = format_memories(
+        mnemonic.semantic.facts,
+        string_from("Shared hive knowledge:")
+    );
+
+    // Format shared beliefs
+    let shared_beliefs: String = format_beliefs(mnemonic.beliefs.beliefs);
+
+    let mnemonic_ctx: String = string_concat(shared_episodic, string_from("\n\n"));
+    mnemonic_ctx = string_concat(mnemonic_ctx, shared_semantic);
+    mnemonic_ctx = string_concat(mnemonic_ctx, string_from("\n\n"));
+    mnemonic_ctx = string_concat(mnemonic_ctx, shared_beliefs);
+
+    HiveSLM {
+        slm: hslm.slm,
+        hive_name: hslm.hive_name,
+        specialist_count: hslm.specialist_count,
+        mnemonic_context: mnemonic_ctx
+    }
+}
+
+// Infer using hive context (all specialists' memories + mnemonic)
+fn hive_slm_infer(hslm: HiveSLM, prompt: String) -> String {
+    // Build hive-aware context
+    let full_context: String = string_from("<hive name=\"");
+    full_context = string_concat(full_context, hslm.hive_name);
+    full_context = string_concat(full_context, string_from("\">\n"));
+    full_context = string_concat(full_context, hslm.mnemonic_context);
+    full_context = string_concat(full_context, string_from("\n</hive>\n\n"));
+    full_context = string_concat(full_context, prompt);
+
+    slm_native_infer(hslm.slm.slm.handle, full_context, hslm.slm.slm.config.temperature)
+}
+
+// ============================================================================
+// Divine SLM - Global solution-wide SLM
+// ============================================================================
+
+// Divine SLM that aggregates all hives' memories
+struct DivineSLM {
+    slm: MemoryAugmentedSLM,
+    hive_contexts: Vec<String>,  // Context from each hive
+    global_beliefs: BeliefStore  // Solution-wide beliefs
+}
+
+// Create the Divine SLM (singleton for entire solution)
+fn divine_slm_new(config: SLMConfig) -> DivineSLM {
+    DivineSLM {
+        slm: maslm_new(config),
+        hive_contexts: Vec::new(),
+        global_beliefs: beliefs_new(70)  // High threshold for global beliefs
+    }
+}
+
+// Register a hive with the Divine SLM
+fn divine_slm_register_hive(dslm: DivineSLM, hive_context: String) -> DivineSLM {
+    let mut contexts: Vec<String> = dslm.hive_contexts;
+    vec_push(contexts, hive_context);
+    DivineSLM {
+        slm: dslm.slm,
+        hive_contexts: contexts,
+        global_beliefs: dslm.global_beliefs
+    }
+}
+
+// Add a global belief
+fn divine_slm_add_belief(dslm: DivineSLM, belief: String, confidence: i64) -> DivineSLM {
+    DivineSLM {
+        slm: dslm.slm,
+        hive_contexts: dslm.hive_contexts,
+        global_beliefs: beliefs_add(dslm.global_beliefs, belief, confidence, string_from("divine"))
+    }
+}
+
+// Infer using divine context (all hives' memories + global beliefs)
+fn divine_slm_infer(dslm: DivineSLM, prompt: String) -> String {
+    // Build divine context with all hive contexts
+    let full_context: String = string_from("<divine>\n");
+
+    // Add global beliefs
+    full_context = string_concat(full_context, format_beliefs(dslm.global_beliefs.beliefs));
+    full_context = string_concat(full_context, string_from("\n\n"));
+
+    // Add all hive contexts
+    let i: i64 = 0;
+    let len: i64 = vec_len(dslm.hive_contexts);
+    while i < len {
+        let hive_ctx: String = vec_get(dslm.hive_contexts, i);
+        full_context = string_concat(full_context, hive_ctx);
+        full_context = string_concat(full_context, string_from("\n\n"));
+        i = i + 1;
+    }
+
+    full_context = string_concat(full_context, string_from("</divine>\n\n"));
+    full_context = string_concat(full_context, prompt);
+
+    slm_native_infer(dslm.slm.slm.handle, full_context, dslm.slm.slm.config.temperature)
+}
+
+// ============================================================================
+// Native SLM bindings (implemented in C/GGML)
+// ============================================================================
+
+// Load a GGUF model file
+fn slm_native_load(model_path: String, ctx_size: i64, threads: i64) -> i64;
+
+// Unload a model
+fn slm_native_unload(handle: i64);
+
+// Run inference on the model
+fn slm_native_infer(handle: i64, prompt: String, temperature: i64) -> String;
+
+// Get model metadata
+fn slm_native_context_size(handle: i64) -> i64;
+fn slm_native_embedding_size(handle: i64) -> i64;
+
+// Embeddings for semantic search
+fn slm_native_embed(handle: i64, text: String) -> Vec<f64>;
+fn slm_native_similarity(a: Vec<f64>, b: Vec<f64>) -> f64;
+
+// ============================================================================
+// Helper imports
+// ============================================================================
+
+fn string_from(s: String) -> String;
+fn string_concat(a: String, b: String) -> String;
+fn int_to_string(n: i64) -> String;
+fn vec_len(v: Vec<i64>) -> i64;
+fn vec_get(v: Vec<i64>, idx: i64) -> i64;
+fn vec_push(v: Vec<i64>, item: i64);
+
+// Import from ai.sx
+use ai::{MemoryEntry, Belief, BeliefStore, Anima, HiveMnemonic};
+use ai::{beliefs_new, beliefs_add};

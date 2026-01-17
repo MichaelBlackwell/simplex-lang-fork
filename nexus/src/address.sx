@@ -1,0 +1,702 @@
+// =============================================================================
+// Nexus Protocol - Phase 9: Address Resolution & Endpoint Mapping
+// =============================================================================
+//
+// This module provides address resolution and endpoint management:
+//   - Actor address to network endpoint mapping
+//   - Hive discovery and registration
+//   - DNS resolution (simulated)
+//   - Endpoint caching for performance
+//   - Multi-address support for failover
+//
+// =============================================================================
+
+// =============================================================================
+// Address Type Constants
+// =============================================================================
+
+fn ADDR_TYPE_UNKNOWN() -> i64 { 0 }
+fn ADDR_TYPE_HIVE() -> i64 { 1 }       // Hive address
+fn ADDR_TYPE_ACTOR() -> i64 { 2 }      // Actor within hive
+fn ADDR_TYPE_SERVICE() -> i64 { 3 }    // Named service
+fn ADDR_TYPE_MULTICAST() -> i64 { 4 }  // Multicast group
+
+// Resolution status
+fn RESOLVE_OK() -> i64 { 0 }
+fn RESOLVE_NOT_FOUND() -> i64 { 1 }
+fn RESOLVE_TIMEOUT() -> i64 { 2 }
+fn RESOLVE_ERROR() -> i64 { 3 }
+fn RESOLVE_CACHED() -> i64 { 4 }
+
+// Cache TTL defaults (milliseconds)
+fn ADDR_CACHE_TTL() -> i64 { 300000 }         // 5 minutes default TTL
+fn ADDR_CACHE_NEGATIVE_TTL() -> i64 { 60000 } // 1 minute negative cache
+fn ADDR_CACHE_MAX_SIZE() -> i64 { 1000 }      // Max cached entries
+
+// =============================================================================
+// Network Hive Address (distinct from STF hive serialization)
+// =============================================================================
+
+// Create a network hive address
+// Structure: [hive_id, region, zone, name_hash]
+fn net_hive_addr_new(hive_id: i64) -> i64 {
+    let addr = vec_new();
+    vec_push(addr, hive_id);   // 0: unique hive identifier
+    vec_push(addr, 0);         // 1: region code
+    vec_push(addr, 0);         // 2: zone code
+    vec_push(addr, 0);         // 3: name hash (for named hives)
+    addr
+}
+
+fn net_hive_addr_id(addr: i64) -> i64 { vec_get(addr, 0) }
+fn net_hive_addr_region(addr: i64) -> i64 { vec_get(addr, 1) }
+fn net_hive_addr_zone(addr: i64) -> i64 { vec_get(addr, 2) }
+fn net_hive_addr_name_hash(addr: i64) -> i64 { vec_get(addr, 3) }
+
+fn net_hive_addr_set_region(addr: i64, region: i64) -> i64 {
+    vec_set(addr, 1, region);
+    1
+}
+
+fn net_hive_addr_set_zone(addr: i64, zone: i64) -> i64 {
+    vec_set(addr, 2, zone);
+    1
+}
+
+fn net_hive_addr_set_name_hash(addr: i64, hash: i64) -> i64 {
+    vec_set(addr, 3, hash);
+    1
+}
+
+// Create hive address from name string
+fn net_hive_addr_from_name(name: i64) -> i64 {
+    // Hash the name to create a deterministic ID
+    let hash = 0;
+    let len = vec_len(name);
+    let i = 0;
+    while i < len {
+        hash = hash * 31 + vec_get(name, i);
+        i = i + 1;
+    }
+
+    let addr = net_hive_addr_new(hash);
+    net_hive_addr_set_name_hash(addr, hash);
+    addr
+}
+
+// Compare two hive addresses
+fn net_hive_addr_equals(a: i64, b: i64) -> i64 {
+    if net_hive_addr_id(a) != net_hive_addr_id(b) {
+        return 0;
+    }
+    1
+}
+
+// =============================================================================
+// Network Actor Address (distinct from STF actor serialization)
+// =============================================================================
+
+// Create a network actor address
+// Structure: [hive_addr, actor_id, generation, mailbox_hint]
+fn net_actor_addr_new(hive_addr: i64, actor_id: i64) -> i64 {
+    let addr = vec_new();
+    vec_push(addr, hive_addr);   // 0: parent hive address
+    vec_push(addr, actor_id);    // 1: actor ID within hive
+    vec_push(addr, 0);           // 2: generation (for actor restart)
+    vec_push(addr, 0);           // 3: mailbox hint (for routing)
+    addr
+}
+
+fn net_actor_addr_hive(addr: i64) -> i64 { vec_get(addr, 0) }
+fn net_actor_addr_id(addr: i64) -> i64 { vec_get(addr, 1) }
+fn net_actor_addr_generation(addr: i64) -> i64 { vec_get(addr, 2) }
+fn net_actor_addr_mailbox_hint(addr: i64) -> i64 { vec_get(addr, 3) }
+
+fn net_actor_addr_set_generation(addr: i64, gen: i64) -> i64 {
+    vec_set(addr, 2, gen);
+    1
+}
+
+fn net_actor_addr_set_mailbox_hint(addr: i64, hint: i64) -> i64 {
+    vec_set(addr, 3, hint);
+    1
+}
+
+// Compare two actor addresses
+fn net_actor_addr_equals(a: i64, b: i64) -> i64 {
+    if net_actor_addr_id(a) != net_actor_addr_id(b) {
+        return 0;
+    }
+
+    let hive_a = net_actor_addr_hive(a);
+    let hive_b = net_actor_addr_hive(b);
+
+    net_hive_addr_equals(hive_a, hive_b)
+}
+
+// =============================================================================
+// Network Endpoint
+// =============================================================================
+
+// Create network endpoint entry
+// Structure: [transport_endpoint, priority, weight, ttl, created_at, healthy]
+fn net_endpoint_new(transport_endpoint: i64) -> i64 {
+    let entry = vec_new();
+    vec_push(entry, transport_endpoint);  // 0: underlying transport endpoint
+    vec_push(entry, 10);                  // 1: priority (lower = better)
+    vec_push(entry, 100);                 // 2: weight (for load balancing)
+    vec_push(entry, ADDR_CACHE_TTL());    // 3: TTL in ms
+    vec_push(entry, 0);                   // 4: creation timestamp
+    vec_push(entry, 1);                   // 5: healthy flag
+    entry
+}
+
+fn net_endpoint_transport(ep: i64) -> i64 { vec_get(ep, 0) }
+fn net_endpoint_priority(ep: i64) -> i64 { vec_get(ep, 1) }
+fn net_endpoint_weight(ep: i64) -> i64 { vec_get(ep, 2) }
+fn net_endpoint_ttl(ep: i64) -> i64 { vec_get(ep, 3) }
+fn net_endpoint_created(ep: i64) -> i64 { vec_get(ep, 4) }
+fn net_endpoint_healthy(ep: i64) -> i64 { vec_get(ep, 5) }
+
+fn net_endpoint_set_priority(ep: i64, priority: i64) -> i64 {
+    vec_set(ep, 1, priority);
+    1
+}
+
+fn net_endpoint_set_weight(ep: i64, weight: i64) -> i64 {
+    vec_set(ep, 2, weight);
+    1
+}
+
+fn net_endpoint_set_ttl(ep: i64, ttl: i64) -> i64 {
+    vec_set(ep, 3, ttl);
+    1
+}
+
+fn net_endpoint_set_created(ep: i64, time: i64) -> i64 {
+    vec_set(ep, 4, time);
+    1
+}
+
+fn net_endpoint_set_healthy(ep: i64, healthy: i64) -> i64 {
+    vec_set(ep, 5, healthy);
+    1
+}
+
+// Check if endpoint is expired
+fn net_endpoint_is_expired(ep: i64, now: i64) -> i64 {
+    let created = net_endpoint_created(ep);
+    let ttl = net_endpoint_ttl(ep);
+    if now - created > ttl { 1 } else { 0 }
+}
+
+// =============================================================================
+// Address Resolution Result
+// =============================================================================
+
+// Create resolution result
+// Structure: [status, endpoints, resolved_at, source]
+fn resolve_result_new(status: i64) -> i64 {
+    let result = vec_new();
+    vec_push(result, status);     // 0: resolution status
+    vec_push(result, vec_new());  // 1: list of endpoints
+    vec_push(result, 0);          // 2: resolved timestamp
+    vec_push(result, 0);          // 3: source (cache/dns/discovery)
+    result
+}
+
+fn resolve_result_status(r: i64) -> i64 { vec_get(r, 0) }
+fn resolve_result_endpoints(r: i64) -> i64 { vec_get(r, 1) }
+fn resolve_result_time(r: i64) -> i64 { vec_get(r, 2) }
+fn resolve_result_source(r: i64) -> i64 { vec_get(r, 3) }
+
+fn resolve_result_set_status(r: i64, status: i64) -> i64 {
+    vec_set(r, 0, status);
+    1
+}
+
+fn resolve_result_set_time(r: i64, time: i64) -> i64 {
+    vec_set(r, 2, time);
+    1
+}
+
+fn resolve_result_set_source(r: i64, source: i64) -> i64 {
+    vec_set(r, 3, source);
+    1
+}
+
+fn resolve_result_add_endpoint(r: i64, ep: i64) -> i64 {
+    let endpoints = vec_get(r, 1);
+    vec_push(endpoints, ep);
+    1
+}
+
+// Get best endpoint from result (highest priority, healthy)
+fn resolve_result_best_endpoint(r: i64) -> i64 {
+    let endpoints = resolve_result_endpoints(r);
+    let len = vec_len(endpoints);
+
+    if len == 0 {
+        return 0;
+    }
+
+    let best = 0;
+    let best_priority = 999999;
+
+    let i = 0;
+    while i < len {
+        let ep = vec_get(endpoints, i);
+        if net_endpoint_healthy(ep) == 1 {
+            let priority = net_endpoint_priority(ep);
+            if priority < best_priority {
+                best = ep;
+                best_priority = priority;
+            }
+        }
+        i = i + 1;
+    }
+
+    best
+}
+
+// =============================================================================
+// Address Cache
+// =============================================================================
+
+// Create address cache
+// Structure: [entries, max_size, hits, misses]
+fn addr_cache_new() -> i64 {
+    let cache = vec_new();
+    vec_push(cache, vec_new());              // 0: cache entries
+    vec_push(cache, ADDR_CACHE_MAX_SIZE());  // 1: max size
+    vec_push(cache, 0);                      // 2: cache hits
+    vec_push(cache, 0);                      // 3: cache misses
+    cache
+}
+
+fn addr_cache_entries(cache: i64) -> i64 { vec_get(cache, 0) }
+fn addr_cache_max_size(cache: i64) -> i64 { vec_get(cache, 1) }
+fn addr_cache_hits(cache: i64) -> i64 { vec_get(cache, 2) }
+fn addr_cache_misses(cache: i64) -> i64 { vec_get(cache, 3) }
+
+fn addr_cache_inc_hits(cache: i64) -> i64 {
+    let hits = vec_get(cache, 2);
+    vec_set(cache, 2, hits + 1);
+    hits + 1
+}
+
+fn addr_cache_inc_misses(cache: i64) -> i64 {
+    let misses = vec_get(cache, 3);
+    vec_set(cache, 3, misses + 1);
+    misses + 1
+}
+
+// Cache entry structure: [key, result, expires_at]
+fn cache_entry_new(key: i64, result: i64, expires_at: i64) -> i64 {
+    let entry = vec_new();
+    vec_push(entry, key);
+    vec_push(entry, result);
+    vec_push(entry, expires_at);
+    entry
+}
+
+fn cache_entry_key(e: i64) -> i64 { vec_get(e, 0) }
+fn cache_entry_result(e: i64) -> i64 { vec_get(e, 1) }
+fn cache_entry_expires(e: i64) -> i64 { vec_get(e, 2) }
+
+// Look up in cache
+fn addr_cache_get(cache: i64, key: i64, now: i64) -> i64 {
+    let entries = addr_cache_entries(cache);
+    let len = vec_len(entries);
+
+    let i = 0;
+    while i < len {
+        let entry = vec_get(entries, i);
+        if cache_entry_key(entry) == key {
+            let expires = cache_entry_expires(entry);
+            if now < expires {
+                addr_cache_inc_hits(cache);
+                return cache_entry_result(entry);
+            }
+            // Expired - will be cleaned up
+        }
+        i = i + 1;
+    }
+
+    addr_cache_inc_misses(cache);
+    0
+}
+
+// Store in cache
+fn addr_cache_put(cache: i64, key: i64, result: i64, ttl: i64, now: i64) -> i64 {
+    let entries = addr_cache_entries(cache);
+    let max_size = addr_cache_max_size(cache);
+    let expires_at = now + ttl;
+
+    // Check for existing entry
+    let len = vec_len(entries);
+    let i = 0;
+    while i < len {
+        let entry = vec_get(entries, i);
+        if cache_entry_key(entry) == key {
+            // Update existing
+            vec_set(entry, 1, result);
+            vec_set(entry, 2, expires_at);
+            return 1;
+        }
+        i = i + 1;
+    }
+
+    // Evict if at capacity
+    if len >= max_size {
+        addr_cache_evict_oldest(cache, now);
+    }
+
+    // Add new entry
+    let entry = cache_entry_new(key, result, expires_at);
+    vec_push(entries, entry);
+
+    1
+}
+
+// Evict oldest/expired entries
+fn addr_cache_evict_oldest(cache: i64, now: i64) -> i64 {
+    let entries = addr_cache_entries(cache);
+    let len = vec_len(entries);
+
+    // First pass: remove expired
+    let new_entries = vec_new();
+    let i = 0;
+    while i < len {
+        let entry = vec_get(entries, i);
+        let expires = cache_entry_expires(entry);
+        if now < expires {
+            vec_push(new_entries, entry);
+        }
+        i = i + 1;
+    }
+
+    // If still at capacity, remove oldest (first entry)
+    if vec_len(new_entries) >= addr_cache_max_size(cache) {
+        let newer_entries = vec_new();
+        i = 1;
+        while i < vec_len(new_entries) {
+            vec_push(newer_entries, vec_get(new_entries, i));
+            i = i + 1;
+        }
+        new_entries = newer_entries;
+    }
+
+    vec_set(cache, 0, new_entries);
+    len - vec_len(new_entries)
+}
+
+// Clear cache
+fn addr_cache_clear(cache: i64) -> i64 {
+    vec_set(cache, 0, vec_new());
+    1
+}
+
+// =============================================================================
+// Address Resolver
+// =============================================================================
+
+// Create address resolver
+// Structure: [cache, registrations, discovery_endpoints, config]
+fn addr_resolver_new() -> i64 {
+    let resolver = vec_new();
+    vec_push(resolver, addr_cache_new());  // 0: cache
+    vec_push(resolver, vec_new());         // 1: static registrations
+    vec_push(resolver, vec_new());         // 2: discovery endpoints
+    vec_push(resolver, resolver_config_new()); // 3: config
+    resolver
+}
+
+fn addr_resolver_cache(r: i64) -> i64 { vec_get(r, 0) }
+fn addr_resolver_registrations(r: i64) -> i64 { vec_get(r, 1) }
+fn addr_resolver_discovery(r: i64) -> i64 { vec_get(r, 2) }
+fn addr_resolver_config(r: i64) -> i64 { vec_get(r, 3) }
+
+// Resolver configuration
+fn resolver_config_new() -> i64 {
+    let config = vec_new();
+    vec_push(config, ADDR_CACHE_TTL());          // 0: default TTL
+    vec_push(config, ADDR_CACHE_NEGATIVE_TTL()); // 1: negative TTL
+    vec_push(config, 3000);                      // 2: resolve timeout ms
+    vec_push(config, 1);                         // 3: use cache
+    config
+}
+
+fn resolver_config_ttl(config: i64) -> i64 { vec_get(config, 0) }
+fn resolver_config_negative_ttl(config: i64) -> i64 { vec_get(config, 1) }
+fn resolver_config_timeout(config: i64) -> i64 { vec_get(config, 2) }
+fn resolver_config_use_cache(config: i64) -> i64 { vec_get(config, 3) }
+
+// =============================================================================
+// Static Registration
+// =============================================================================
+
+// Registration entry: [hive_id, endpoints]
+fn registration_new(hive_id: i64) -> i64 {
+    let reg = vec_new();
+    vec_push(reg, hive_id);
+    vec_push(reg, vec_new());
+    reg
+}
+
+fn registration_hive_id(reg: i64) -> i64 { vec_get(reg, 0) }
+fn registration_endpoints(reg: i64) -> i64 { vec_get(reg, 1) }
+
+// Register a hive with endpoint(s)
+fn addr_resolver_register(resolver: i64, hive_id: i64, endpoint: i64, now: i64) -> i64 {
+    let regs = addr_resolver_registrations(resolver);
+    let len = vec_len(regs);
+
+    // Find existing registration
+    let i = 0;
+    while i < len {
+        let reg = vec_get(regs, i);
+        if registration_hive_id(reg) == hive_id {
+            let endpoints = registration_endpoints(reg);
+            let net_ep = net_endpoint_new(endpoint);
+            net_endpoint_set_created(net_ep, now);
+            vec_push(endpoints, net_ep);
+            return 1;
+        }
+        i = i + 1;
+    }
+
+    // Create new registration
+    let reg = registration_new(hive_id);
+    let net_ep = net_endpoint_new(endpoint);
+    net_endpoint_set_created(net_ep, now);
+    let endpoints = registration_endpoints(reg);
+    vec_push(endpoints, net_ep);
+    vec_push(regs, reg);
+
+    1
+}
+
+// Unregister a hive
+fn addr_resolver_unregister(resolver: i64, hive_id: i64) -> i64 {
+    let regs = addr_resolver_registrations(resolver);
+    let new_regs = vec_new();
+    let len = vec_len(regs);
+
+    let i = 0;
+    while i < len {
+        let reg = vec_get(regs, i);
+        if registration_hive_id(reg) != hive_id {
+            vec_push(new_regs, reg);
+        }
+        i = i + 1;
+    }
+
+    vec_set(resolver, 1, new_regs);
+    1
+}
+
+// =============================================================================
+// Resolution Operations
+// =============================================================================
+
+// Resolve hive address to network endpoints
+fn addr_resolver_resolve_hive(resolver: i64, hive_address: i64, now: i64) -> i64 {
+    let hive_id = net_hive_addr_id(hive_address);
+    let config = addr_resolver_config(resolver);
+    let cache = addr_resolver_cache(resolver);
+
+    // Check cache first
+    if resolver_config_use_cache(config) == 1 {
+        let cached = addr_cache_get(cache, hive_id, now);
+        if cached != 0 {
+            resolve_result_set_source(cached, RESOLVE_CACHED());
+            return cached;
+        }
+    }
+
+    // Check static registrations
+    let regs = addr_resolver_registrations(resolver);
+    let len = vec_len(regs);
+
+    let i = 0;
+    while i < len {
+        let reg = vec_get(regs, i);
+        if registration_hive_id(reg) == hive_id {
+            let result = resolve_result_new(RESOLVE_OK());
+            let endpoints = registration_endpoints(reg);
+            let ep_len = vec_len(endpoints);
+
+            let j = 0;
+            while j < ep_len {
+                let ep = vec_get(endpoints, j);
+                resolve_result_add_endpoint(result, ep);
+                j = j + 1;
+            }
+
+            resolve_result_set_time(result, now);
+
+            // Cache the result
+            let ttl = resolver_config_ttl(config);
+            addr_cache_put(cache, hive_id, result, ttl, now);
+
+            return result;
+        }
+        i = i + 1;
+    }
+
+    // Try discovery (would query discovery service)
+    let discovery_result = addr_resolver_discover(resolver, hive_id, now);
+    if discovery_result != 0 {
+        let ttl = resolver_config_ttl(config);
+        addr_cache_put(cache, hive_id, discovery_result, ttl, now);
+        return discovery_result;
+    }
+
+    // Not found - cache negative result
+    let neg_result = resolve_result_new(RESOLVE_NOT_FOUND());
+    resolve_result_set_time(neg_result, now);
+    let neg_ttl = resolver_config_negative_ttl(config);
+    addr_cache_put(cache, hive_id, neg_result, neg_ttl, now);
+
+    neg_result
+}
+
+// Resolve actor address to network endpoint
+fn addr_resolver_resolve_actor(resolver: i64, actor_address: i64, now: i64) -> i64 {
+    // First resolve the containing hive
+    let hive_address = net_actor_addr_hive(actor_address);
+    addr_resolver_resolve_hive(resolver, hive_address, now)
+}
+
+// Discovery service query (simulated)
+fn addr_resolver_discover(resolver: i64, hive_id: i64, now: i64) -> i64 {
+    let discovery_eps = addr_resolver_discovery(resolver);
+    let len = vec_len(discovery_eps);
+
+    if len == 0 {
+        return 0;
+    }
+
+    // Simulate discovery - would actually query service
+    // For simulation, return nothing (not found via discovery)
+    0
+}
+
+// =============================================================================
+// Discovery Service Configuration
+// =============================================================================
+
+// Add discovery service endpoint
+fn addr_resolver_add_discovery(resolver: i64, endpoint: i64) -> i64 {
+    let discovery = addr_resolver_discovery(resolver);
+    vec_push(discovery, endpoint);
+    1
+}
+
+// Remove discovery service endpoint
+fn addr_resolver_remove_discovery(resolver: i64, endpoint: i64) -> i64 {
+    let discovery = addr_resolver_discovery(resolver);
+    let new_discovery = vec_new();
+    let len = vec_len(discovery);
+
+    let i = 0;
+    while i < len {
+        let ep = vec_get(discovery, i);
+        if endpoint_equals(ep, endpoint) == 0 {
+            vec_push(new_discovery, ep);
+        }
+        i = i + 1;
+    }
+
+    vec_set(resolver, 2, new_discovery);
+    1
+}
+
+// =============================================================================
+// Endpoint Health Management
+// =============================================================================
+
+// Mark endpoint as unhealthy
+fn addr_resolver_mark_unhealthy(resolver: i64, hive_id: i64, endpoint: i64) -> i64 {
+    let regs = addr_resolver_registrations(resolver);
+    let len = vec_len(regs);
+
+    let i = 0;
+    while i < len {
+        let reg = vec_get(regs, i);
+        if registration_hive_id(reg) == hive_id {
+            let endpoints = registration_endpoints(reg);
+            let ep_len = vec_len(endpoints);
+
+            let j = 0;
+            while j < ep_len {
+                let ep = vec_get(endpoints, j);
+                let trans_ep = net_endpoint_transport(ep);
+                if endpoint_equals(trans_ep, endpoint) == 1 {
+                    net_endpoint_set_healthy(ep, 0);
+                    return 1;
+                }
+                j = j + 1;
+            }
+        }
+        i = i + 1;
+    }
+
+    0
+}
+
+// Mark endpoint as healthy
+fn addr_resolver_mark_healthy(resolver: i64, hive_id: i64, endpoint: i64) -> i64 {
+    let regs = addr_resolver_registrations(resolver);
+    let len = vec_len(regs);
+
+    let i = 0;
+    while i < len {
+        let reg = vec_get(regs, i);
+        if registration_hive_id(reg) == hive_id {
+            let endpoints = registration_endpoints(reg);
+            let ep_len = vec_len(endpoints);
+
+            let j = 0;
+            while j < ep_len {
+                let ep = vec_get(endpoints, j);
+                let trans_ep = net_endpoint_transport(ep);
+                if endpoint_equals(trans_ep, endpoint) == 1 {
+                    net_endpoint_set_healthy(ep, 1);
+                    return 1;
+                }
+                j = j + 1;
+            }
+        }
+        i = i + 1;
+    }
+
+    0
+}
+
+// =============================================================================
+// Statistics
+// =============================================================================
+
+// Get resolver statistics
+fn addr_resolver_stats(resolver: i64) -> i64 {
+    let cache = addr_resolver_cache(resolver);
+    let regs = addr_resolver_registrations(resolver);
+    let discovery = addr_resolver_discovery(resolver);
+
+    let stats = vec_new();
+    vec_push(stats, addr_cache_hits(cache));
+    vec_push(stats, addr_cache_misses(cache));
+    vec_push(stats, vec_len(addr_cache_entries(cache)));
+    vec_push(stats, vec_len(regs));
+    vec_push(stats, vec_len(discovery));
+
+    stats
+}
+
+fn resolver_stats_cache_hits(stats: i64) -> i64 { vec_get(stats, 0) }
+fn resolver_stats_cache_misses(stats: i64) -> i64 { vec_get(stats, 1) }
+fn resolver_stats_cache_size(stats: i64) -> i64 { vec_get(stats, 2) }
+fn resolver_stats_registrations(stats: i64) -> i64 { vec_get(stats, 3) }
+fn resolver_stats_discovery_endpoints(stats: i64) -> i64 { vec_get(stats, 4) }

@@ -1,0 +1,153 @@
+// simplex-std/signal - OS signal handling
+//
+// Provides async signal handling for graceful shutdown and signal-based
+// communication.
+//
+// # Example
+//
+// ```simplex
+// use simplex_std::signal;
+//
+// async fn main() {
+//     signal::ctrl_c().await;
+//     println!("Received Ctrl+C");
+// }
+// ```
+
+// =============================================================================
+// Signal Futures
+// =============================================================================
+
+/// Wait for SIGINT (Ctrl+C).
+///
+/// Returns a future that completes when SIGINT is received.
+pub async fn ctrl_c() {
+    SignalFuture::new(Signal::Interrupt).await
+}
+
+/// Wait for SIGTERM (termination signal).
+///
+/// Returns a future that completes when SIGTERM is received.
+pub async fn terminate() {
+    SignalFuture::new(Signal::Terminate).await
+}
+
+/// Wait for SIGHUP (hangup signal).
+///
+/// Returns a future that completes when SIGHUP is received.
+pub async fn hangup() {
+    SignalFuture::new(Signal::Hangup).await
+}
+
+/// Wait for SIGUSR1 (user signal 1).
+pub async fn user1() {
+    SignalFuture::new(Signal::User1).await
+}
+
+/// Wait for SIGUSR2 (user signal 2).
+pub async fn user2() {
+    SignalFuture::new(Signal::User2).await
+}
+
+// =============================================================================
+// Signal Types
+// =============================================================================
+
+/// OS signal types
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Signal {
+    /// SIGINT - Interrupt (Ctrl+C)
+    Interrupt,
+    /// SIGTERM - Termination request
+    Terminate,
+    /// SIGHUP - Hangup
+    Hangup,
+    /// SIGUSR1 - User-defined signal 1
+    User1,
+    /// SIGUSR2 - User-defined signal 2
+    User2,
+}
+
+impl Signal {
+    fn to_signum(self) -> i32 {
+        match self {
+            Signal::Interrupt => 2,   // SIGINT
+            Signal::Terminate => 15,  // SIGTERM
+            Signal::Hangup => 1,      // SIGHUP
+            Signal::User1 => 10,      // SIGUSR1 (on most platforms)
+            Signal::User2 => 12,      // SIGUSR2 (on most platforms)
+        }
+    }
+}
+
+// =============================================================================
+// Signal Future
+// =============================================================================
+
+/// Future that completes when a signal is received
+struct SignalFuture {
+    signal: Signal,
+    handle: i64,
+    registered: bool,
+}
+
+impl SignalFuture {
+    fn new(signal: Signal) -> Self {
+        SignalFuture {
+            signal,
+            handle: 0,
+            registered: false,
+        }
+    }
+}
+
+impl Future for SignalFuture {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if !self.registered {
+            // Register signal handler
+            unsafe {
+                self.handle = signal_register(self.signal.to_signum());
+            }
+            self.registered = true;
+        }
+
+        // Check if signal has been received
+        unsafe {
+            if signal_poll(self.handle) != 0 {
+                signal_unregister(self.handle);
+                return Poll::Ready(());
+            }
+        }
+
+        // Not ready yet - register waker
+        cx.waker().wake_by_ref();
+        Poll::Pending
+    }
+}
+
+impl Drop for SignalFuture {
+    fn drop(&mut self) {
+        if self.registered {
+            unsafe {
+                signal_unregister(self.handle);
+            }
+        }
+    }
+}
+
+// =============================================================================
+// FFI Declarations
+// =============================================================================
+
+extern "C" {
+    fn signal_register(signum: i32) -> i64;
+    fn signal_poll(handle: i64) -> i32;
+    fn signal_unregister(handle: i64);
+}
+
+// Standard library imports
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};

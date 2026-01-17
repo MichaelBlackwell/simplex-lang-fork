@@ -1,0 +1,464 @@
+// simplex-training::compress::quantization - Quantization Pipeline
+//
+// Implements model quantization strategies:
+// - Post-training quantization (PTQ)
+// - Quantization-aware training (QAT)
+// - Mixed-precision quantization
+// - Dynamic calibration
+
+use simplex_std::dual::dual;
+use simplex_std::{Clone, Default, Vec};
+use crate::schedules::LearnableQuantization;
+
+/// Quantization method
+#[derive(Clone, Copy)]
+pub enum QuantMethod {
+    /// Post-training static quantization
+    PostTraining,
+    /// Quantization-aware training
+    QAT,
+    /// Dynamic quantization
+    Dynamic,
+    /// Mixed precision per layer
+    MixedPrecision,
+}
+
+/// Quantization data type
+#[derive(Clone, Copy)]
+pub enum QuantDtype {
+    /// 8-bit integer
+    Int8,
+    /// 4-bit integer
+    Int4,
+    /// 2-bit (ternary-ish)
+    Int2,
+    /// 16-bit float
+    Float16,
+    /// Brain float 16
+    BFloat16,
+    /// Custom bit width
+    Custom(u8),
+}
+
+impl QuantDtype {
+    pub fn bits(&self) -> u8 {
+        match self {
+            QuantDtype::Int8 => 8,
+            QuantDtype::Int4 => 4,
+            QuantDtype::Int2 => 2,
+            QuantDtype::Float16 => 16,
+            QuantDtype::BFloat16 => 16,
+            QuantDtype::Custom(b) => *b,
+        }
+    }
+
+    pub fn is_integer(&self) -> bool {
+        match self {
+            QuantDtype::Int8 | QuantDtype::Int4 | QuantDtype::Int2 | QuantDtype::Custom(_) => true,
+            _ => false,
+        }
+    }
+}
+
+/// Configuration for quantization
+#[derive(Clone)]
+pub struct QuantConfig {
+    /// Quantization method
+    pub method: QuantMethod,
+    /// Target data type
+    pub dtype: QuantDtype,
+    /// Calibration dataset size
+    pub calibration_samples: u64,
+    /// Per-channel quantization
+    pub per_channel: bool,
+    /// Symmetric quantization
+    pub symmetric: bool,
+    /// STE gradient scale for QAT
+    pub ste_scale: f64,
+    /// Noise scale for QAT
+    pub noise_scale: f64,
+}
+
+impl QuantConfig {
+    pub fn new(method: QuantMethod, dtype: QuantDtype) -> QuantConfig {
+        QuantConfig {
+            method,
+            dtype,
+            calibration_samples: 100,
+            per_channel: true,
+            symmetric: true,
+            ste_scale: 1.0,
+            noise_scale: 0.1,
+        }
+    }
+
+    /// PTQ to INT8
+    pub fn ptq_int8() -> QuantConfig {
+        QuantConfig::new(QuantMethod::PostTraining, QuantDtype::Int8)
+    }
+
+    /// QAT to INT4
+    pub fn qat_int4() -> QuantConfig {
+        var config = QuantConfig::new(QuantMethod::QAT, QuantDtype::Int4);
+        config.ste_scale = 1.0;
+        config.noise_scale = 0.2;
+        config
+    }
+
+    /// Dynamic INT8
+    pub fn dynamic_int8() -> QuantConfig {
+        QuantConfig::new(QuantMethod::Dynamic, QuantDtype::Int8)
+    }
+
+    /// Mixed precision
+    pub fn mixed_precision() -> QuantConfig {
+        QuantConfig::new(QuantMethod::MixedPrecision, QuantDtype::Int8)
+    }
+}
+
+impl Default for QuantConfig {
+    fn default() -> QuantConfig {
+        QuantConfig::ptq_int8()
+    }
+}
+
+/// Quantization parameters for a tensor
+#[derive(Clone)]
+pub struct QuantParams {
+    /// Scale factor
+    pub scale: f64,
+    /// Zero point
+    pub zero_point: i32,
+    /// Minimum quantized value
+    pub qmin: i32,
+    /// Maximum quantized value
+    pub qmax: i32,
+}
+
+impl QuantParams {
+    /// Compute quantization parameters from tensor statistics
+    pub fn from_minmax(min_val: f64, max_val: f64, bits: u8, symmetric: bool) -> QuantParams {
+        let qmin = if symmetric { -(1 << (bits - 1)) } else { 0 };
+        let qmax = if symmetric { (1 << (bits - 1)) - 1 } else { (1 << bits) - 1 };
+
+        let (scale, zero_point) = if symmetric {
+            let max_abs = max_val.abs().max(min_val.abs());
+            let scale = max_abs / (qmax as f64);
+            (scale, 0)
+        } else {
+            let scale = (max_val - min_val) / ((qmax - qmin) as f64);
+            let zp = qmin as f64 - min_val / scale;
+            (scale, zp.round() as i32)
+        };
+
+        QuantParams {
+            scale: if scale == 0.0 { 1.0 } else { scale },
+            zero_point,
+            qmin,
+            qmax,
+        }
+    }
+
+    /// Quantize a value
+    pub fn quantize(&self, x: f64) -> i32 {
+        let q = (x / self.scale).round() as i32 + self.zero_point;
+        q.max(self.qmin).min(self.qmax)
+    }
+
+    /// Dequantize a value
+    pub fn dequantize(&self, q: i32) -> f64 {
+        ((q - self.zero_point) as f64) * self.scale
+    }
+}
+
+impl Default for QuantParams {
+    fn default() -> QuantParams {
+        QuantParams::from_minmax(-1.0, 1.0, 8, true)
+    }
+}
+
+/// Result of quantization
+#[derive(Clone)]
+pub struct QuantResult {
+    /// Target bits achieved
+    pub bits: u8,
+    /// Original size (bytes)
+    pub original_size: u64,
+    /// Quantized size (bytes)
+    pub quantized_size: u64,
+    /// Compression ratio
+    pub compression_ratio: f64,
+    /// Mean quantization error
+    pub mean_error: f64,
+    /// Max quantization error
+    pub max_error: f64,
+    /// Accuracy before
+    pub accuracy_before: f64,
+    /// Accuracy after
+    pub accuracy_after: f64,
+}
+
+impl QuantResult {
+    pub fn new() -> QuantResult {
+        QuantResult {
+            bits: 8,
+            original_size: 0,
+            quantized_size: 0,
+            compression_ratio: 1.0,
+            mean_error: 0.0,
+            max_error: 0.0,
+            accuracy_before: 0.0,
+            accuracy_after: 0.0,
+        }
+    }
+}
+
+impl Default for QuantResult {
+    fn default() -> QuantResult {
+        QuantResult::new()
+    }
+}
+
+/// Quantization pipeline
+pub struct QuantizationPipeline {
+    /// Configuration
+    pub config: QuantConfig,
+    /// Learnable schedule
+    pub schedule: LearnableQuantization,
+    /// Current step
+    pub step: u64,
+    /// Calibration statistics
+    calibration_min: Vec<f64>,
+    calibration_max: Vec<f64>,
+    /// Per-layer quantization params
+    layer_params: Vec<QuantParams>,
+}
+
+impl QuantizationPipeline {
+    /// Create new quantization pipeline
+    pub fn new(config: QuantConfig) -> QuantizationPipeline {
+        var schedule = LearnableQuantization::new();
+        schedule.final_bits = dual::variable(config.dtype.bits() as f64);
+        schedule.ste_slope = dual::variable(config.ste_scale);
+        schedule.noise_scale = dual::variable(config.noise_scale);
+
+        QuantizationPipeline {
+            config,
+            schedule,
+            step: 0,
+            calibration_min: Vec::new(),
+            calibration_max: Vec::new(),
+            layer_params: Vec::new(),
+        }
+    }
+
+    /// Collect calibration statistics
+    pub fn calibrate(&mut self, weights: &[dual]) {
+        // Find min/max
+        var min_val = f64::MAX;
+        var max_val = f64::MIN;
+
+        for w in weights {
+            if w.val < min_val {
+                min_val = w.val;
+            }
+            if w.val > max_val {
+                max_val = w.val;
+            }
+        }
+
+        self.calibration_min.push(min_val);
+        self.calibration_max.push(max_val);
+
+        // Update running statistics
+        // (In practice, would use histogram or moving average)
+    }
+
+    /// Compute quantization parameters from calibration
+    pub fn compute_params(&mut self) {
+        if self.calibration_min.len() == 0 {
+            self.layer_params = vec![QuantParams::default()];
+            return;
+        }
+
+        // Aggregate calibration stats
+        var global_min = f64::MAX;
+        var global_max = f64::MIN;
+        for m in self.calibration_min.iter() {
+            if *m < global_min {
+                global_min = *m;
+            }
+        }
+        for m in self.calibration_max.iter() {
+            if *m > global_max {
+                global_max = *m;
+            }
+        }
+
+        let params = QuantParams::from_minmax(
+            global_min,
+            global_max,
+            self.config.dtype.bits(),
+            self.config.symmetric
+        );
+
+        self.layer_params = vec![params];
+    }
+
+    /// Quantize weights (PTQ style)
+    pub fn quantize_ptq(&self, weights: &[dual]) -> Vec<dual> {
+        if self.layer_params.len() == 0 {
+            return weights.to_vec();
+        }
+
+        let params = &self.layer_params[0];
+        var quantized = Vec::new();
+
+        for w in weights {
+            let q = params.quantize(w.val);
+            let dq = params.dequantize(q);
+            // Use STE: forward=quantized, backward=identity (scaled)
+            quantized.push(dual::new(dq, w.der * self.config.ste_scale));
+        }
+
+        quantized
+    }
+
+    /// Quantize weights (QAT style with noise)
+    pub fn quantize_qat(&self, weights: &[dual]) -> Vec<dual> {
+        let step_dual = dual::constant(self.step as f64);
+
+        var quantized = Vec::new();
+        for w in weights {
+            // Add QAT noise before quantization
+            let noisy = self.schedule.add_qat_noise(*w, step_dual);
+            // Quantize
+            let q = self.schedule.quantize_value(noisy, step_dual);
+            quantized.push(q);
+        }
+
+        quantized
+    }
+
+    /// Quantize based on method
+    pub fn quantize(&mut self, weights: &[dual]) -> Vec<dual> {
+        self.step = self.step + 1;
+
+        match self.config.method {
+            QuantMethod::PostTraining => {
+                self.quantize_ptq(weights)
+            }
+            QuantMethod::QAT => {
+                self.quantize_qat(weights)
+            }
+            QuantMethod::Dynamic => {
+                // Recalibrate each step
+                self.calibrate(weights);
+                self.compute_params();
+                self.quantize_ptq(weights)
+            }
+            QuantMethod::MixedPrecision => {
+                // For now, just use uniform precision
+                self.quantize_ptq(weights)
+            }
+        }
+    }
+
+    /// Compute quantization error
+    pub fn compute_error(&self, original: &[dual], quantized: &[dual]) -> (f64, f64) {
+        var sum_error = 0.0;
+        var max_error = 0.0;
+
+        for i in 0..original.len() {
+            let err = (original[i].val - quantized[i].val).abs();
+            sum_error = sum_error + err;
+            if err > max_error {
+                max_error = err;
+            }
+        }
+
+        let mean_error = if original.len() > 0 {
+            sum_error / (original.len() as f64)
+        } else {
+            0.0
+        };
+
+        (mean_error, max_error)
+    }
+
+    /// Get quantization result
+    pub fn result(&self, original: &[dual], quantized: &[dual]) -> QuantResult {
+        var result = QuantResult::new();
+        result.bits = self.config.dtype.bits();
+        result.original_size = (original.len() * 4) as u64;  // FP32
+        result.quantized_size = (quantized.len() as u64 * result.bits as u64) / 8;
+
+        if result.quantized_size > 0 {
+            result.compression_ratio = result.original_size as f64 / result.quantized_size as f64;
+        }
+
+        let (mean_err, max_err) = self.compute_error(original, quantized);
+        result.mean_error = mean_err;
+        result.max_error = max_err;
+
+        result
+    }
+
+    /// Full quantization pipeline
+    pub fn quantize_full<F>(
+        &mut self,
+        weights: &[dual],
+        calibration_data: &[Vec<dual>],
+        mut eval_fn: F,
+    ) -> (Vec<dual>, QuantResult)
+    where
+        F: FnMut(&[dual]) -> f64,
+    {
+        var result = QuantResult::new();
+        result.bits = self.config.dtype.bits();
+        result.original_size = (weights.len() * 4) as u64;
+
+        // Evaluate before
+        result.accuracy_before = eval_fn(weights);
+
+        // Calibration
+        for sample in calibration_data {
+            self.calibrate(sample);
+        }
+        self.calibrate(weights);
+        self.compute_params();
+
+        // Quantize
+        let quantized = self.quantize(weights);
+
+        // Evaluate after
+        result.accuracy_after = eval_fn(&quantized);
+
+        // Compute errors
+        let (mean_err, max_err) = self.compute_error(weights, &quantized);
+        result.mean_error = mean_err;
+        result.max_error = max_err;
+
+        result.quantized_size = (quantized.len() as u64 * result.bits as u64) / 8;
+        if result.quantized_size > 0 {
+            result.compression_ratio = result.original_size as f64 / result.quantized_size as f64;
+        }
+
+        (quantized, result)
+    }
+}
+
+impl Default for QuantizationPipeline {
+    fn default() -> QuantizationPipeline {
+        QuantizationPipeline::new(QuantConfig::default())
+    }
+}
+
+// Helper for conversion
+fn to_vec(weights: &[dual]) -> Vec<dual> {
+    var v = Vec::new();
+    for w in weights {
+        v.push(*w);
+    }
+    v
+}

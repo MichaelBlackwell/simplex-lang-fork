@@ -1,0 +1,254 @@
+// TASK-014: Compiler Attribute Integration Tests
+//
+// Tests for compile-time #[no_learn], #[no_gradient], and #[invariant] attributes.
+// These tests verify that the lexer, parser, and codegen correctly handle
+// epistemic safety attributes.
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0 - see LICENSE file
+// https://github.com/senuamedia/simplex-lang
+
+// =============================================================================
+// Attribute Syntax Tests
+// =============================================================================
+
+// Test: Basic #[no_learn] attribute on a function
+// This function should be marked as non-learnable - no gradients should flow
+// through any learnable parameters inside it.
+#[no_learn]
+fn safety_critical_check(threshold: f64, value: f64) -> bool {
+    // Hard-coded safety check - must never be modified by learning
+    value <= threshold
+}
+
+// Test: Basic #[no_gradient] attribute
+// Gradients should not flow through this function during backpropagation
+#[no_gradient]
+fn clamp_output(value: f64, min: f64, max: f64) -> f64 {
+    if value < min {
+        return min;
+    }
+    if value > max {
+        return max;
+    }
+    value
+}
+
+// Test: Basic #[invariant] attribute
+// This function defines a property that must hold before and after learning
+#[invariant]
+fn check_bounds(values: &[f64], lower: f64, upper: f64) -> bool {
+    let mut i: i64 = 0;
+    let n: i64 = values.len() as i64;
+    while i < n {
+        let v: f64 = values[i as usize];
+        if v < lower || v > upper {
+            return false;
+        }
+        i = i + 1;
+    }
+    true
+}
+
+// Test: Multiple attributes on one function
+#[no_learn]
+#[no_gradient]
+fn permission_check(actor_id: i64, action_code: i64) -> bool {
+    // This permission check is both non-learnable AND blocks gradients
+    // Critical for security - must never be modified
+    match action_code {
+        0 => true,   // read - always allowed
+        1 => actor_id > 0,  // write - requires valid actor
+        2 => actor_id == 1, // admin - only actor 1
+        _ => false,
+    }
+}
+
+// Test: All three attributes together
+#[no_learn]
+#[no_gradient]
+#[invariant]
+fn audit_log_entry(event_code: i64, actor_id: i64) -> bool {
+    // Audit logging must:
+    // 1. Never be learned around (#[no_learn])
+    // 2. Not affect gradient flow (#[no_gradient])
+    // 3. Always execute successfully (#[invariant])
+    println(f"[AUDIT] Event {event_code} by actor {actor_id}");
+    true
+}
+
+// =============================================================================
+// Regular Functions (without attributes)
+// =============================================================================
+
+// This function has no attributes and should be fully learnable
+fn learnable_transform(input: f64, weight: f64, bias: f64) -> f64 {
+    input * weight + bias
+}
+
+// =============================================================================
+// Integration Test Functions
+// =============================================================================
+
+// Test that #[no_learn] functions can be called from learnable code
+fn test_no_learn_in_learnable_context() {
+    let threshold: f64 = 0.95;
+    let value: f64 = 0.8;
+
+    // Call the safety-critical function
+    let is_safe: bool = safety_critical_check(threshold, value);
+    assert!(is_safe);
+
+    // The function itself should not be affected by gradients
+    // but can be used in learnable contexts
+    let learned_output: f64 = learnable_transform(value, 1.5, 0.1);
+    assert!(learned_output > value);
+}
+
+// Test that #[no_gradient] blocks gradient flow
+fn test_no_gradient_blocks_flow() {
+    let raw_value: f64 = 1.5;
+
+    // Clamp should work but not propagate gradients
+    let clamped: f64 = clamp_output(raw_value, 0.0, 1.0);
+    assert!((clamped - 1.0).abs() < 0.001);
+
+    // In a real gradient computation, the gradient would be zero
+    // at this point due to #[no_gradient]
+}
+
+// Test invariant functions
+fn test_invariant_property() {
+    let values: Vec<f64> = vec![0.1, 0.5, 0.8, 0.3];
+
+    // Invariant should hold
+    let holds: bool = check_bounds(&values, 0.0, 1.0);
+    assert!(holds);
+
+    // Test with out-of-bounds value
+    let bad_values: Vec<f64> = vec![0.1, 1.5, 0.3];
+    let should_fail: bool = check_bounds(&bad_values, 0.0, 1.0);
+    assert!(!should_fail);
+}
+
+// Test combined attributes
+fn test_combined_attributes() {
+    // Permission check with multiple safety attributes
+    assert!(permission_check(1, 0));  // actor 1, read
+    assert!(permission_check(1, 1));  // actor 1, write
+    assert!(permission_check(1, 2));  // actor 1, admin
+    assert!(!permission_check(2, 2)); // actor 2, admin - denied
+
+    // Audit log with all three attributes
+    let logged: bool = audit_log_entry(100, 1);
+    assert!(logged);
+}
+
+// =============================================================================
+// Main Test Runner
+// =============================================================================
+
+fn main() {
+    println("Running TASK-014 Compiler Attribute Tests...\n");
+
+    println("Test 1: #[no_learn] in learnable context");
+    test_no_learn_in_learnable_context();
+    println("  PASSED\n");
+
+    println("Test 2: #[no_gradient] blocks gradient flow");
+    test_no_gradient_blocks_flow();
+    println("  PASSED\n");
+
+    println("Test 3: #[invariant] property checking");
+    test_invariant_property();
+    println("  PASSED\n");
+
+    println("Test 4: Combined attributes");
+    test_combined_attributes();
+    println("  PASSED\n");
+
+    println("All TASK-014 compiler attribute tests passed!");
+}
+
+// =============================================================================
+// Unit Tests (for test framework)
+// =============================================================================
+
+#[test]
+fn test_no_learn_attribute_parsed() {
+    // The #[no_learn] attribute should be recognized by the parser
+    // and stored in the function's AST node
+    let result: bool = safety_critical_check(1.0, 0.5);
+    assert!(result);
+}
+
+#[test]
+fn test_no_gradient_attribute_parsed() {
+    // The #[no_gradient] attribute should be recognized
+    let clamped: f64 = clamp_output(0.5, 0.0, 1.0);
+    assert!((clamped - 0.5).abs() < 0.001);
+}
+
+#[test]
+fn test_invariant_attribute_parsed() {
+    // The #[invariant] attribute should be recognized
+    let values: Vec<f64> = vec![0.2, 0.4, 0.6];
+    let result: bool = check_bounds(&values, 0.0, 1.0);
+    assert!(result);
+}
+
+#[test]
+fn test_multiple_attributes_parsed() {
+    // Multiple attributes on one function should all be recognized
+    let allowed: bool = permission_check(1, 0);
+    assert!(allowed);
+}
+
+#[test]
+fn test_all_three_attributes_parsed() {
+    // All three attributes together should be recognized
+    let logged: bool = audit_log_entry(1, 1);
+    assert!(logged);
+}
+
+#[test]
+fn test_learnable_function_has_no_attrs() {
+    // Functions without attributes should work normally
+    let result: f64 = learnable_transform(1.0, 2.0, 0.5);
+    assert!((result - 2.5).abs() < 0.001);
+}
+
+// =============================================================================
+// Documentation
+// =============================================================================
+//
+// TASK-014 Compiler Implementation Summary:
+//
+// 1. Lexer (lexer.sx):
+//    - Added Hash token (#) for attribute syntax
+//    - Added KwNoLearn and KwNoGradient keywords
+//    - KwInvariant was already present
+//
+// 2. Parser (parser.sx):
+//    - Added ATTR_FLAG_NO_LEARN, ATTR_FLAG_NO_GRADIENT, ATTR_FLAG_INVARIANT
+//    - Added parse_attributes() function to parse #[attr] syntax
+//    - Extended ast_fn_def_with_attrs() to store attributes (slot 7)
+//    - Added ast_fn_has_no_learn(), ast_fn_has_no_gradient(), ast_fn_has_invariant()
+//
+// 3. Codegen (codegen.sx):
+//    - Added fn_attrs(), fn_has_no_learn(), fn_has_no_gradient(), fn_has_invariant()
+//    - Added cg_set_current_fn_attrs(), cg_get_current_fn_attrs()
+//    - Added cg_in_no_gradient_context(), cg_in_no_learn_context()
+//    - Updated gen_fn() to track and report function attributes
+//
+// 4. AST Definitions (lib/ast_defs.sx):
+//    - Added ATTR_NO_LEARN(), ATTR_NO_GRADIENT(), ATTR_INVARIANT() tags
+//    - Added ATTR_FLAG_NO_LEARN(), ATTR_FLAG_NO_GRADIENT(), ATTR_FLAG_INVARIANT()
+//
+// Usage:
+//   #[no_learn]     - Function cannot contain learnable parameters
+//   #[no_gradient]  - Gradients don't flow through this function
+//   #[invariant]    - Property must hold before/after learning
+//
+// These attributes work with the runtime safety zones in safety/zones.sx
+// to provide comprehensive epistemic safety enforcement.

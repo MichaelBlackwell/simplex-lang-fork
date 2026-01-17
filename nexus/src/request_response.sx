@@ -1,0 +1,851 @@
+// Nexus Protocol - Request/Response Patterns
+//
+// This module provides RPC-style request/response patterns over streams,
+// including correlation, timeouts, and various invocation patterns.
+
+// ============================================================================
+// RPC Invocation Patterns
+// ============================================================================
+
+fn RPC_PATTERN_REQUEST_RESPONSE() -> i64 { 0 }   // Standard request/response
+fn RPC_PATTERN_FIRE_FORGET() -> i64 { 1 }        // Send without response
+fn RPC_PATTERN_REQUEST_STREAM() -> i64 { 2 }     // Request with streaming response
+fn RPC_PATTERN_STREAM_REQUEST() -> i64 { 3 }     // Streaming request, single response
+fn RPC_PATTERN_BIDIRECTIONAL() -> i64 { 4 }      // Bidirectional streaming
+
+// Request/Response status
+fn RPC_STATUS_PENDING() -> i64 { 0 }
+fn RPC_STATUS_SENT() -> i64 { 1 }
+fn RPC_STATUS_RECEIVED() -> i64 { 2 }
+fn RPC_STATUS_PROCESSING() -> i64 { 3 }
+fn RPC_STATUS_COMPLETED() -> i64 { 4 }
+fn RPC_STATUS_FAILED() -> i64 { 5 }
+fn RPC_STATUS_TIMEOUT() -> i64 { 6 }
+fn RPC_STATUS_CANCELLED() -> i64 { 7 }
+
+// RPC error codes
+fn RPC_ERROR_NONE() -> i64 { 0 }
+fn RPC_ERROR_TIMEOUT() -> i64 { 1 }
+fn RPC_ERROR_CANCELLED() -> i64 { 2 }
+fn RPC_ERROR_UNAVAILABLE() -> i64 { 3 }
+fn RPC_ERROR_INTERNAL() -> i64 { 4 }
+fn RPC_ERROR_INVALID_ARG() -> i64 { 5 }
+fn RPC_ERROR_NOT_FOUND() -> i64 { 6 }
+fn RPC_ERROR_ALREADY_EXISTS() -> i64 { 7 }
+fn RPC_ERROR_PERMISSION_DENIED() -> i64 { 8 }
+fn RPC_ERROR_RESOURCE_EXHAUSTED() -> i64 { 9 }
+fn RPC_ERROR_ABORTED() -> i64 { 10 }
+fn RPC_ERROR_UNIMPLEMENTED() -> i64 { 11 }
+
+// ============================================================================
+// Correlation ID
+// ============================================================================
+
+// Simple correlation ID counter (per-session)
+fn CORRELATION_OFFSET_COUNTER() -> i64 { 0 }
+fn CORRELATION_OFFSET_PREFIX() -> i64 { 8 }
+fn CORRELATION_SIZE() -> i64 { 16 }
+
+fn correlation_generator_new(prefix: i64) -> i64 {
+    let g = alloc(CORRELATION_SIZE());
+    store64(g + CORRELATION_OFFSET_COUNTER(), 0);
+    store64(g + CORRELATION_OFFSET_PREFIX(), prefix);
+    g
+}
+
+fn correlation_generator_next(g: i64) -> i64 {
+    let counter = load64(g + CORRELATION_OFFSET_COUNTER());
+    let prefix = load64(g + CORRELATION_OFFSET_PREFIX());
+
+    store64(g + CORRELATION_OFFSET_COUNTER(), counter + 1);
+
+    // Combine prefix and counter (0x100000000 = 4294967296)
+    (prefix * 4294967296) + counter
+}
+
+fn correlation_generator_free(g: i64) {
+    // Dealloc marker
+}
+
+// ============================================================================
+// RPC Request
+// ============================================================================
+
+fn REQUEST_OFFSET_ID() -> i64 { 0 }
+fn REQUEST_OFFSET_METHOD() -> i64 { 8 }
+fn REQUEST_OFFSET_PAYLOAD() -> i64 { 16 }
+fn REQUEST_OFFSET_PAYLOAD_LEN() -> i64 { 24 }
+fn REQUEST_OFFSET_STREAM_ID() -> i64 { 32 }
+fn REQUEST_OFFSET_TIMEOUT() -> i64 { 40 }
+fn REQUEST_OFFSET_DEADLINE() -> i64 { 48 }
+fn REQUEST_OFFSET_STATUS() -> i64 { 56 }
+fn REQUEST_OFFSET_CREATED_AT() -> i64 { 64 }
+fn REQUEST_OFFSET_SENT_AT() -> i64 { 72 }
+fn REQUEST_OFFSET_PATTERN() -> i64 { 80 }
+fn REQUEST_OFFSET_METADATA() -> i64 { 88 }
+fn REQUEST_OFFSET_RETRIES() -> i64 { 96 }
+fn REQUEST_OFFSET_MAX_RETRIES() -> i64 { 104 }
+fn REQUEST_SIZE() -> i64 { 112 }
+
+fn rpc_request_new(id: i64, method: i64, now: i64) -> i64 {
+    let r = alloc(REQUEST_SIZE());
+
+    store64(r + REQUEST_OFFSET_ID(), id);
+    store64(r + REQUEST_OFFSET_METHOD(), method);
+    store64(r + REQUEST_OFFSET_PAYLOAD(), 0);
+    store64(r + REQUEST_OFFSET_PAYLOAD_LEN(), 0);
+    store64(r + REQUEST_OFFSET_STREAM_ID(), 0);
+    store64(r + REQUEST_OFFSET_TIMEOUT(), 30000);  // 30s default
+    store64(r + REQUEST_OFFSET_DEADLINE(), now + 30000);
+    store64(r + REQUEST_OFFSET_STATUS(), RPC_STATUS_PENDING());
+    store64(r + REQUEST_OFFSET_CREATED_AT(), now);
+    store64(r + REQUEST_OFFSET_SENT_AT(), 0);
+    store64(r + REQUEST_OFFSET_PATTERN(), RPC_PATTERN_REQUEST_RESPONSE());
+    store64(r + REQUEST_OFFSET_METADATA(), 0);
+    store64(r + REQUEST_OFFSET_RETRIES(), 0);
+    store64(r + REQUEST_OFFSET_MAX_RETRIES(), 3);
+
+    r
+}
+
+fn rpc_request_id(r: i64) -> i64 { load64(r + REQUEST_OFFSET_ID()) }
+fn rpc_request_method(r: i64) -> i64 { load64(r + REQUEST_OFFSET_METHOD()) }
+fn rpc_request_payload(r: i64) -> i64 { load64(r + REQUEST_OFFSET_PAYLOAD()) }
+fn rpc_request_payload_len(r: i64) -> i64 { load64(r + REQUEST_OFFSET_PAYLOAD_LEN()) }
+fn rpc_request_stream_id(r: i64) -> i64 { load64(r + REQUEST_OFFSET_STREAM_ID()) }
+fn rpc_request_timeout(r: i64) -> i64 { load64(r + REQUEST_OFFSET_TIMEOUT()) }
+fn rpc_request_deadline(r: i64) -> i64 { load64(r + REQUEST_OFFSET_DEADLINE()) }
+fn rpc_request_status(r: i64) -> i64 { load64(r + REQUEST_OFFSET_STATUS()) }
+fn rpc_request_created_at(r: i64) -> i64 { load64(r + REQUEST_OFFSET_CREATED_AT()) }
+fn rpc_request_sent_at(r: i64) -> i64 { load64(r + REQUEST_OFFSET_SENT_AT()) }
+fn rpc_request_pattern(r: i64) -> i64 { load64(r + REQUEST_OFFSET_PATTERN()) }
+fn rpc_request_metadata(r: i64) -> i64 { load64(r + REQUEST_OFFSET_METADATA()) }
+fn rpc_request_retries(r: i64) -> i64 { load64(r + REQUEST_OFFSET_RETRIES()) }
+fn rpc_request_max_retries(r: i64) -> i64 { load64(r + REQUEST_OFFSET_MAX_RETRIES()) }
+
+fn rpc_request_set_payload(r: i64, payload: i64, len: i64) {
+    store64(r + REQUEST_OFFSET_PAYLOAD(), payload);
+    store64(r + REQUEST_OFFSET_PAYLOAD_LEN(), len);
+}
+
+fn rpc_request_set_stream_id(r: i64, sid: i64) { store64(r + REQUEST_OFFSET_STREAM_ID(), sid); }
+fn rpc_request_set_timeout(r: i64, timeout: i64, now: i64) {
+    store64(r + REQUEST_OFFSET_TIMEOUT(), timeout);
+    store64(r + REQUEST_OFFSET_DEADLINE(), now + timeout);
+}
+fn rpc_request_set_status(r: i64, s: i64) { store64(r + REQUEST_OFFSET_STATUS(), s); }
+fn rpc_request_set_sent_at(r: i64, t: i64) { store64(r + REQUEST_OFFSET_SENT_AT(), t); }
+fn rpc_request_set_pattern(r: i64, p: i64) { store64(r + REQUEST_OFFSET_PATTERN(), p); }
+fn rpc_request_set_metadata(r: i64, m: i64) { store64(r + REQUEST_OFFSET_METADATA(), m); }
+fn rpc_request_set_max_retries(r: i64, m: i64) { store64(r + REQUEST_OFFSET_MAX_RETRIES(), m); }
+
+fn rpc_request_increment_retries(r: i64) -> i64 {
+    let retries = rpc_request_retries(r);
+    store64(r + REQUEST_OFFSET_RETRIES(), retries + 1);
+    retries + 1
+}
+
+fn rpc_request_can_retry(r: i64) -> i64 {
+    rpc_request_retries(r) < rpc_request_max_retries(r)
+}
+
+fn rpc_request_is_expired(r: i64, now: i64) -> i64 {
+    now >= rpc_request_deadline(r)
+}
+
+fn rpc_request_mark_sent(r: i64, now: i64) {
+    rpc_request_set_status(r, RPC_STATUS_SENT());
+    rpc_request_set_sent_at(r, now);
+}
+
+fn rpc_request_free(r: i64) {
+    // Dealloc marker
+}
+
+// ============================================================================
+// RPC Response
+// ============================================================================
+
+fn RESPONSE_OFFSET_ID() -> i64 { 0 }
+fn RESPONSE_OFFSET_REQUEST_ID() -> i64 { 8 }
+fn RESPONSE_OFFSET_STATUS_CODE() -> i64 { 16 }
+fn RESPONSE_OFFSET_ERROR_CODE() -> i64 { 24 }
+fn RESPONSE_OFFSET_PAYLOAD() -> i64 { 32 }
+fn RESPONSE_OFFSET_PAYLOAD_LEN() -> i64 { 40 }
+fn RESPONSE_OFFSET_STREAM_ID() -> i64 { 48 }
+fn RESPONSE_OFFSET_CREATED_AT() -> i64 { 56 }
+fn RESPONSE_OFFSET_METADATA() -> i64 { 64 }
+fn RESPONSE_OFFSET_IS_FINAL() -> i64 { 72 }
+fn RESPONSE_SIZE() -> i64 { 80 }
+
+fn rpc_response_new(id: i64, request_id: i64, now: i64) -> i64 {
+    let r = alloc(RESPONSE_SIZE());
+
+    store64(r + RESPONSE_OFFSET_ID(), id);
+    store64(r + RESPONSE_OFFSET_REQUEST_ID(), request_id);
+    store64(r + RESPONSE_OFFSET_STATUS_CODE(), 200);  // OK
+    store64(r + RESPONSE_OFFSET_ERROR_CODE(), RPC_ERROR_NONE());
+    store64(r + RESPONSE_OFFSET_PAYLOAD(), 0);
+    store64(r + RESPONSE_OFFSET_PAYLOAD_LEN(), 0);
+    store64(r + RESPONSE_OFFSET_STREAM_ID(), 0);
+    store64(r + RESPONSE_OFFSET_CREATED_AT(), now);
+    store64(r + RESPONSE_OFFSET_METADATA(), 0);
+    store64(r + RESPONSE_OFFSET_IS_FINAL(), 1);  // Default final
+
+    r
+}
+
+fn rpc_response_id(r: i64) -> i64 { load64(r + RESPONSE_OFFSET_ID()) }
+fn rpc_response_request_id(r: i64) -> i64 { load64(r + RESPONSE_OFFSET_REQUEST_ID()) }
+fn rpc_response_status_code(r: i64) -> i64 { load64(r + RESPONSE_OFFSET_STATUS_CODE()) }
+fn rpc_response_error_code(r: i64) -> i64 { load64(r + RESPONSE_OFFSET_ERROR_CODE()) }
+fn rpc_response_payload(r: i64) -> i64 { load64(r + RESPONSE_OFFSET_PAYLOAD()) }
+fn rpc_response_payload_len(r: i64) -> i64 { load64(r + RESPONSE_OFFSET_PAYLOAD_LEN()) }
+fn rpc_response_stream_id(r: i64) -> i64 { load64(r + RESPONSE_OFFSET_STREAM_ID()) }
+fn rpc_response_created_at(r: i64) -> i64 { load64(r + RESPONSE_OFFSET_CREATED_AT()) }
+fn rpc_response_metadata(r: i64) -> i64 { load64(r + RESPONSE_OFFSET_METADATA()) }
+fn rpc_response_is_final(r: i64) -> i64 { load64(r + RESPONSE_OFFSET_IS_FINAL()) }
+
+fn rpc_response_set_status_code(r: i64, code: i64) { store64(r + RESPONSE_OFFSET_STATUS_CODE(), code); }
+fn rpc_response_set_error_code(r: i64, code: i64) { store64(r + RESPONSE_OFFSET_ERROR_CODE(), code); }
+fn rpc_response_set_payload(r: i64, payload: i64, len: i64) {
+    store64(r + RESPONSE_OFFSET_PAYLOAD(), payload);
+    store64(r + RESPONSE_OFFSET_PAYLOAD_LEN(), len);
+}
+fn rpc_response_set_stream_id(r: i64, sid: i64) { store64(r + RESPONSE_OFFSET_STREAM_ID(), sid); }
+fn rpc_response_set_metadata(r: i64, m: i64) { store64(r + RESPONSE_OFFSET_METADATA(), m); }
+fn rpc_response_set_is_final(r: i64, f: i64) { store64(r + RESPONSE_OFFSET_IS_FINAL(), f); }
+
+fn rpc_response_is_success(r: i64) -> i64 {
+    rpc_response_error_code(r) == RPC_ERROR_NONE()
+}
+
+fn rpc_response_is_error(r: i64) -> i64 {
+    rpc_response_error_code(r) != RPC_ERROR_NONE()
+}
+
+fn rpc_response_free(r: i64) {
+    // Dealloc marker
+}
+
+// ============================================================================
+// Pending Requests Map
+// ============================================================================
+
+fn PENDING_MAP_OFFSET_ENTRIES() -> i64 { 0 }
+fn PENDING_MAP_OFFSET_COUNT() -> i64 { 8 }
+fn PENDING_MAP_OFFSET_CAPACITY() -> i64 { 16 }
+fn PENDING_MAP_SIZE() -> i64 { 24 }
+
+fn pending_map_new() -> i64 {
+    let m = alloc(PENDING_MAP_SIZE());
+    let capacity = 64;
+    let entries = alloc(capacity * 16);  // Each entry: request_id + request ptr
+
+    store64(m + PENDING_MAP_OFFSET_ENTRIES(), entries);
+    store64(m + PENDING_MAP_OFFSET_COUNT(), 0);
+    store64(m + PENDING_MAP_OFFSET_CAPACITY(), capacity);
+
+    m
+}
+
+fn pending_map_count(m: i64) -> i64 { load64(m + PENDING_MAP_OFFSET_COUNT()) }
+
+fn pending_map_add(m: i64, request: i64) -> i64 {
+    let count = pending_map_count(m);
+    let capacity = load64(m + PENDING_MAP_OFFSET_CAPACITY());
+
+    if count >= capacity {
+        // Grow
+        let new_capacity = capacity * 2;
+        let old_entries = load64(m + PENDING_MAP_OFFSET_ENTRIES());
+        let new_entries = alloc(new_capacity * 16);
+
+        let i = 0;
+        while i < count {
+            store64(new_entries + i * 16, load64(old_entries + i * 16));
+            store64(new_entries + i * 16 + 8, load64(old_entries + i * 16 + 8));
+            i = i + 1;
+        }
+
+        store64(m + PENDING_MAP_OFFSET_ENTRIES(), new_entries);
+        store64(m + PENDING_MAP_OFFSET_CAPACITY(), new_capacity);
+    }
+
+    let entries = load64(m + PENDING_MAP_OFFSET_ENTRIES());
+    let req_id = rpc_request_id(request);
+
+    store64(entries + count * 16, req_id);
+    store64(entries + count * 16 + 8, request);
+    store64(m + PENDING_MAP_OFFSET_COUNT(), count + 1);
+
+    1
+}
+
+fn pending_map_find(m: i64, request_id: i64) -> i64 {
+    let entries = load64(m + PENDING_MAP_OFFSET_ENTRIES());
+    let count = pending_map_count(m);
+
+    let i = 0;
+    while i < count {
+        let id = load64(entries + i * 16);
+        if id == request_id {
+            return load64(entries + i * 16 + 8);
+        }
+        i = i + 1;
+    }
+    0
+}
+
+fn pending_map_remove(m: i64, request_id: i64) -> i64 {
+    let entries = load64(m + PENDING_MAP_OFFSET_ENTRIES());
+    let count = pending_map_count(m);
+
+    let i = 0;
+    while i < count {
+        let id = load64(entries + i * 16);
+        if id == request_id {
+            let request = load64(entries + i * 16 + 8);
+
+            // Shift remaining entries
+            let j = i;
+            while j < count - 1 {
+                store64(entries + j * 16, load64(entries + (j + 1) * 16));
+                store64(entries + j * 16 + 8, load64(entries + (j + 1) * 16 + 8));
+                j = j + 1;
+            }
+
+            store64(m + PENDING_MAP_OFFSET_COUNT(), count - 1);
+            return request;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+// Check for timed out requests
+fn pending_map_check_timeouts(m: i64, now: i64) -> i64 {
+    let entries = load64(m + PENDING_MAP_OFFSET_ENTRIES());
+    let count = pending_map_count(m);
+    let timed_out = 0;
+
+    let i = 0;
+    while i < count {
+        let request = load64(entries + i * 16 + 8);
+        if rpc_request_is_expired(request, now) != 0 {
+            rpc_request_set_status(request, RPC_STATUS_TIMEOUT());
+            timed_out = timed_out + 1;
+        }
+        i = i + 1;
+    }
+
+    timed_out
+}
+
+// Get all timed out requests (returns array and sets count)
+fn pending_map_get_expired(m: i64, now: i64, out_count: i64) -> i64 {
+    let entries = load64(m + PENDING_MAP_OFFSET_ENTRIES());
+    let count = pending_map_count(m);
+
+    // Count expired
+    let expired_count = 0;
+    let i = 0;
+    while i < count {
+        let request = load64(entries + i * 16 + 8);
+        if rpc_request_is_expired(request, now) != 0 {
+            expired_count = expired_count + 1;
+        }
+        i = i + 1;
+    }
+
+    if expired_count == 0 {
+        store64(out_count, 0);
+        return 0;
+    }
+
+    // Allocate result array
+    let result = alloc(expired_count * 8);
+    let j = 0;
+    i = 0;
+    while i < count {
+        let request = load64(entries + i * 16 + 8);
+        if rpc_request_is_expired(request, now) != 0 {
+            store64(result + j * 8, request);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    store64(out_count, expired_count);
+    result
+}
+
+fn pending_map_free(m: i64) {
+    // Dealloc marker
+}
+
+// ============================================================================
+// RPC Handler Registration
+// ============================================================================
+
+fn HANDLER_OFFSET_METHOD() -> i64 { 0 }
+fn HANDLER_OFFSET_CALLBACK() -> i64 { 8 }
+fn HANDLER_OFFSET_USER_DATA() -> i64 { 16 }
+fn HANDLER_SIZE() -> i64 { 24 }
+
+fn rpc_handler_new(method: i64, callback: i64, user_data: i64) -> i64 {
+    let h = alloc(HANDLER_SIZE());
+    store64(h + HANDLER_OFFSET_METHOD(), method);
+    store64(h + HANDLER_OFFSET_CALLBACK(), callback);
+    store64(h + HANDLER_OFFSET_USER_DATA(), user_data);
+    h
+}
+
+fn rpc_handler_method(h: i64) -> i64 { load64(h + HANDLER_OFFSET_METHOD()) }
+fn rpc_handler_callback(h: i64) -> i64 { load64(h + HANDLER_OFFSET_CALLBACK()) }
+fn rpc_handler_user_data(h: i64) -> i64 { load64(h + HANDLER_OFFSET_USER_DATA()) }
+
+fn rpc_handler_free(h: i64) {
+    // Dealloc marker
+}
+
+// Handler registry
+fn REGISTRY_OFFSET_HANDLERS() -> i64 { 0 }
+fn REGISTRY_OFFSET_COUNT() -> i64 { 8 }
+fn REGISTRY_OFFSET_CAPACITY() -> i64 { 16 }
+fn REGISTRY_SIZE() -> i64 { 24 }
+
+fn handler_registry_new() -> i64 {
+    let r = alloc(REGISTRY_SIZE());
+    let capacity = 32;
+    let handlers = alloc(capacity * 8);
+
+    store64(r + REGISTRY_OFFSET_HANDLERS(), handlers);
+    store64(r + REGISTRY_OFFSET_COUNT(), 0);
+    store64(r + REGISTRY_OFFSET_CAPACITY(), capacity);
+
+    r
+}
+
+fn handler_registry_register(r: i64, method: i64, callback: i64, user_data: i64) -> i64 {
+    let count = load64(r + REGISTRY_OFFSET_COUNT());
+    let capacity = load64(r + REGISTRY_OFFSET_CAPACITY());
+
+    if count >= capacity {
+        // Grow
+        let new_capacity = capacity * 2;
+        let old_handlers = load64(r + REGISTRY_OFFSET_HANDLERS());
+        let new_handlers = alloc(new_capacity * 8);
+
+        let i = 0;
+        while i < count {
+            store64(new_handlers + i * 8, load64(old_handlers + i * 8));
+            i = i + 1;
+        }
+
+        store64(r + REGISTRY_OFFSET_HANDLERS(), new_handlers);
+        store64(r + REGISTRY_OFFSET_CAPACITY(), new_capacity);
+    }
+
+    let handler = rpc_handler_new(method, callback, user_data);
+    let handlers = load64(r + REGISTRY_OFFSET_HANDLERS());
+
+    store64(handlers + count * 8, handler);
+    store64(r + REGISTRY_OFFSET_COUNT(), count + 1);
+
+    1
+}
+
+fn handler_registry_find(r: i64, method: i64) -> i64 {
+    let handlers = load64(r + REGISTRY_OFFSET_HANDLERS());
+    let count = load64(r + REGISTRY_OFFSET_COUNT());
+
+    let i = 0;
+    while i < count {
+        let h = load64(handlers + i * 8);
+        if rpc_handler_method(h) == method {
+            return h;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+fn handler_registry_unregister(r: i64, method: i64) -> i64 {
+    let handlers = load64(r + REGISTRY_OFFSET_HANDLERS());
+    let count = load64(r + REGISTRY_OFFSET_COUNT());
+
+    let i = 0;
+    while i < count {
+        let h = load64(handlers + i * 8);
+        if rpc_handler_method(h) == method {
+            // Shift remaining
+            let j = i;
+            while j < count - 1 {
+                store64(handlers + j * 8, load64(handlers + (j + 1) * 8));
+                j = j + 1;
+            }
+            store64(r + REGISTRY_OFFSET_COUNT(), count - 1);
+            rpc_handler_free(h);
+            return 1;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+fn handler_registry_count(r: i64) -> i64 {
+    load64(r + REGISTRY_OFFSET_COUNT())
+}
+
+fn handler_registry_free(r: i64) {
+    let handlers = load64(r + REGISTRY_OFFSET_HANDLERS());
+    let count = load64(r + REGISTRY_OFFSET_COUNT());
+
+    let i = 0;
+    while i < count {
+        let h = load64(handlers + i * 8);
+        rpc_handler_free(h);
+        i = i + 1;
+    }
+
+    // Dealloc marker
+}
+
+// ============================================================================
+// RPC Channel
+// ============================================================================
+
+fn RPC_CHANNEL_OFFSET_CORRELATION() -> i64 { 0 }
+fn RPC_CHANNEL_OFFSET_PENDING() -> i64 { 8 }
+fn RPC_CHANNEL_OFFSET_REGISTRY() -> i64 { 16 }
+fn RPC_CHANNEL_OFFSET_MULTIPLEXER() -> i64 { 24 }
+fn RPC_CHANNEL_OFFSET_DEFAULT_TIMEOUT() -> i64 { 32 }
+fn RPC_CHANNEL_OFFSET_REQUESTS_SENT() -> i64 { 40 }
+fn RPC_CHANNEL_OFFSET_RESPONSES_RECV() -> i64 { 48 }
+fn RPC_CHANNEL_OFFSET_REQUESTS_RECV() -> i64 { 56 }
+fn RPC_CHANNEL_OFFSET_RESPONSES_SENT() -> i64 { 64 }
+fn RPC_CHANNEL_OFFSET_ERRORS() -> i64 { 72 }
+fn RPC_CHANNEL_OFFSET_TIMEOUTS() -> i64 { 80 }
+fn RPC_CHANNEL_SIZE() -> i64 { 88 }
+
+fn rpc_channel_new(multiplexer: i64, session_id: i64) -> i64 {
+    let ch = alloc(RPC_CHANNEL_SIZE());
+
+    store64(ch + RPC_CHANNEL_OFFSET_CORRELATION(), correlation_generator_new(session_id));
+    store64(ch + RPC_CHANNEL_OFFSET_PENDING(), pending_map_new());
+    store64(ch + RPC_CHANNEL_OFFSET_REGISTRY(), handler_registry_new());
+    store64(ch + RPC_CHANNEL_OFFSET_MULTIPLEXER(), multiplexer);
+    store64(ch + RPC_CHANNEL_OFFSET_DEFAULT_TIMEOUT(), 30000);
+    store64(ch + RPC_CHANNEL_OFFSET_REQUESTS_SENT(), 0);
+    store64(ch + RPC_CHANNEL_OFFSET_RESPONSES_RECV(), 0);
+    store64(ch + RPC_CHANNEL_OFFSET_REQUESTS_RECV(), 0);
+    store64(ch + RPC_CHANNEL_OFFSET_RESPONSES_SENT(), 0);
+    store64(ch + RPC_CHANNEL_OFFSET_ERRORS(), 0);
+    store64(ch + RPC_CHANNEL_OFFSET_TIMEOUTS(), 0);
+
+    ch
+}
+
+fn rpc_channel_correlation(ch: i64) -> i64 { load64(ch + RPC_CHANNEL_OFFSET_CORRELATION()) }
+fn rpc_channel_pending(ch: i64) -> i64 { load64(ch + RPC_CHANNEL_OFFSET_PENDING()) }
+fn rpc_channel_registry(ch: i64) -> i64 { load64(ch + RPC_CHANNEL_OFFSET_REGISTRY()) }
+fn rpc_channel_multiplexer(ch: i64) -> i64 { load64(ch + RPC_CHANNEL_OFFSET_MULTIPLEXER()) }
+fn rpc_channel_default_timeout(ch: i64) -> i64 { load64(ch + RPC_CHANNEL_OFFSET_DEFAULT_TIMEOUT()) }
+fn rpc_channel_requests_sent(ch: i64) -> i64 { load64(ch + RPC_CHANNEL_OFFSET_REQUESTS_SENT()) }
+fn rpc_channel_responses_recv(ch: i64) -> i64 { load64(ch + RPC_CHANNEL_OFFSET_RESPONSES_RECV()) }
+fn rpc_channel_requests_recv(ch: i64) -> i64 { load64(ch + RPC_CHANNEL_OFFSET_REQUESTS_RECV()) }
+fn rpc_channel_responses_sent(ch: i64) -> i64 { load64(ch + RPC_CHANNEL_OFFSET_RESPONSES_SENT()) }
+fn rpc_channel_errors(ch: i64) -> i64 { load64(ch + RPC_CHANNEL_OFFSET_ERRORS()) }
+fn rpc_channel_timeouts(ch: i64) -> i64 { load64(ch + RPC_CHANNEL_OFFSET_TIMEOUTS()) }
+
+fn rpc_channel_set_default_timeout(ch: i64, t: i64) { store64(ch + RPC_CHANNEL_OFFSET_DEFAULT_TIMEOUT(), t); }
+
+fn rpc_channel_inc_requests_sent(ch: i64) {
+    let v = rpc_channel_requests_sent(ch);
+    store64(ch + RPC_CHANNEL_OFFSET_REQUESTS_SENT(), v + 1);
+}
+
+fn rpc_channel_inc_responses_recv(ch: i64) {
+    let v = rpc_channel_responses_recv(ch);
+    store64(ch + RPC_CHANNEL_OFFSET_RESPONSES_RECV(), v + 1);
+}
+
+fn rpc_channel_inc_requests_recv(ch: i64) {
+    let v = rpc_channel_requests_recv(ch);
+    store64(ch + RPC_CHANNEL_OFFSET_REQUESTS_RECV(), v + 1);
+}
+
+fn rpc_channel_inc_responses_sent(ch: i64) {
+    let v = rpc_channel_responses_sent(ch);
+    store64(ch + RPC_CHANNEL_OFFSET_RESPONSES_SENT(), v + 1);
+}
+
+fn rpc_channel_inc_errors(ch: i64) {
+    let v = rpc_channel_errors(ch);
+    store64(ch + RPC_CHANNEL_OFFSET_ERRORS(), v + 1);
+}
+
+fn rpc_channel_inc_timeouts(ch: i64) {
+    let v = rpc_channel_timeouts(ch);
+    store64(ch + RPC_CHANNEL_OFFSET_TIMEOUTS(), v + 1);
+}
+
+// Register a handler
+fn rpc_channel_register(ch: i64, method: i64, callback: i64, user_data: i64) -> i64 {
+    let registry = rpc_channel_registry(ch);
+    handler_registry_register(registry, method, callback, user_data)
+}
+
+// Unregister a handler
+fn rpc_channel_unregister(ch: i64, method: i64) -> i64 {
+    let registry = rpc_channel_registry(ch);
+    handler_registry_unregister(registry, method)
+}
+
+// Create and send a request
+fn rpc_channel_call(ch: i64, method: i64, payload: i64, payload_len: i64, now: i64) -> i64 {
+    let correlation = rpc_channel_correlation(ch);
+    let id = correlation_generator_next(correlation);
+
+    let request = rpc_request_new(id, method, now);
+    rpc_request_set_payload(request, payload, payload_len);
+    rpc_request_set_timeout(request, rpc_channel_default_timeout(ch), now);
+
+    // Add to pending
+    let pending = rpc_channel_pending(ch);
+    pending_map_add(pending, request);
+
+    rpc_channel_inc_requests_sent(ch);
+
+    request
+}
+
+// Fire and forget (no response expected)
+fn rpc_channel_fire(ch: i64, method: i64, payload: i64, payload_len: i64, now: i64) -> i64 {
+    let correlation = rpc_channel_correlation(ch);
+    let id = correlation_generator_next(correlation);
+
+    let request = rpc_request_new(id, method, now);
+    rpc_request_set_payload(request, payload, payload_len);
+    rpc_request_set_pattern(request, RPC_PATTERN_FIRE_FORGET());
+    rpc_request_mark_sent(request, now);
+
+    // Don't add to pending - no response expected
+    rpc_channel_inc_requests_sent(ch);
+
+    request
+}
+
+// Handle incoming request
+fn rpc_channel_handle_request(ch: i64, request: i64, now: i64) -> i64 {
+    rpc_channel_inc_requests_recv(ch);
+
+    let registry = rpc_channel_registry(ch);
+    let method = rpc_request_method(request);
+
+    let handler = handler_registry_find(registry, method);
+    if handler == 0 {
+        // No handler registered
+        return 0;
+    }
+
+    // Handler found
+    rpc_request_set_status(request, RPC_STATUS_PROCESSING());
+    1
+}
+
+// Complete a pending request with response
+fn rpc_channel_complete(ch: i64, request_id: i64, response: i64, now: i64) -> i64 {
+    let pending = rpc_channel_pending(ch);
+    let request = pending_map_remove(pending, request_id);
+
+    if request == 0 {
+        return 0;  // Request not found
+    }
+
+    rpc_channel_inc_responses_recv(ch);
+
+    if rpc_response_is_error(response) != 0 {
+        rpc_request_set_status(request, RPC_STATUS_FAILED());
+        rpc_channel_inc_errors(ch);
+    } else {
+        rpc_request_set_status(request, RPC_STATUS_COMPLETED());
+    }
+
+    request
+}
+
+// Send response
+fn rpc_channel_respond(ch: i64, request_id: i64, payload: i64, payload_len: i64, now: i64) -> i64 {
+    let correlation = rpc_channel_correlation(ch);
+    let id = correlation_generator_next(correlation);
+
+    let response = rpc_response_new(id, request_id, now);
+    rpc_response_set_payload(response, payload, payload_len);
+
+    rpc_channel_inc_responses_sent(ch);
+
+    response
+}
+
+// Send error response
+fn rpc_channel_respond_error(ch: i64, request_id: i64, error_code: i64, now: i64) -> i64 {
+    let correlation = rpc_channel_correlation(ch);
+    let id = correlation_generator_next(correlation);
+
+    let response = rpc_response_new(id, request_id, now);
+    rpc_response_set_error_code(response, error_code);
+    rpc_response_set_status_code(response, 500);
+
+    rpc_channel_inc_responses_sent(ch);
+    rpc_channel_inc_errors(ch);
+
+    response
+}
+
+// Check for timeouts
+fn rpc_channel_check_timeouts(ch: i64, now: i64) -> i64 {
+    let pending = rpc_channel_pending(ch);
+    let timed_out = pending_map_check_timeouts(pending, now);
+
+    let i = 0;
+    while i < timed_out {
+        rpc_channel_inc_timeouts(ch);
+        i = i + 1;
+    }
+
+    timed_out
+}
+
+// Get pending count
+fn rpc_channel_pending_count(ch: i64) -> i64 {
+    let pending = rpc_channel_pending(ch);
+    pending_map_count(pending)
+}
+
+// Get registered handler count
+fn rpc_channel_handler_count(ch: i64) -> i64 {
+    let registry = rpc_channel_registry(ch);
+    handler_registry_count(registry)
+}
+
+fn rpc_channel_free(ch: i64) {
+    let correlation = rpc_channel_correlation(ch);
+    if correlation != 0 {
+        correlation_generator_free(correlation);
+    }
+
+    let pending = rpc_channel_pending(ch);
+    if pending != 0 {
+        pending_map_free(pending);
+    }
+
+    let registry = rpc_channel_registry(ch);
+    if registry != 0 {
+        handler_registry_free(registry);
+    }
+
+    // Dealloc marker
+}
+
+// ============================================================================
+// RPC Metrics
+// ============================================================================
+
+fn RPC_METRICS_OFFSET_TOTAL_REQUESTS() -> i64 { 0 }
+fn RPC_METRICS_OFFSET_TOTAL_RESPONSES() -> i64 { 8 }
+fn RPC_METRICS_OFFSET_TOTAL_ERRORS() -> i64 { 16 }
+fn RPC_METRICS_OFFSET_TOTAL_TIMEOUTS() -> i64 { 24 }
+fn RPC_METRICS_OFFSET_AVG_LATENCY() -> i64 { 32 }
+fn RPC_METRICS_OFFSET_MAX_LATENCY() -> i64 { 40 }
+fn RPC_METRICS_OFFSET_MIN_LATENCY() -> i64 { 48 }
+fn RPC_METRICS_OFFSET_LATENCY_SUM() -> i64 { 56 }
+fn RPC_METRICS_OFFSET_LATENCY_COUNT() -> i64 { 64 }
+fn RPC_METRICS_SIZE() -> i64 { 72 }
+
+fn rpc_metrics_new() -> i64 {
+    let m = alloc(RPC_METRICS_SIZE());
+
+    store64(m + RPC_METRICS_OFFSET_TOTAL_REQUESTS(), 0);
+    store64(m + RPC_METRICS_OFFSET_TOTAL_RESPONSES(), 0);
+    store64(m + RPC_METRICS_OFFSET_TOTAL_ERRORS(), 0);
+    store64(m + RPC_METRICS_OFFSET_TOTAL_TIMEOUTS(), 0);
+    store64(m + RPC_METRICS_OFFSET_AVG_LATENCY(), 0);
+    store64(m + RPC_METRICS_OFFSET_MAX_LATENCY(), 0);
+    store64(m + RPC_METRICS_OFFSET_MIN_LATENCY(), 9223372036854775807);  // Max i64
+    store64(m + RPC_METRICS_OFFSET_LATENCY_SUM(), 0);
+    store64(m + RPC_METRICS_OFFSET_LATENCY_COUNT(), 0);
+
+    m
+}
+
+fn rpc_metrics_total_requests(m: i64) -> i64 { load64(m + RPC_METRICS_OFFSET_TOTAL_REQUESTS()) }
+fn rpc_metrics_total_responses(m: i64) -> i64 { load64(m + RPC_METRICS_OFFSET_TOTAL_RESPONSES()) }
+fn rpc_metrics_total_errors(m: i64) -> i64 { load64(m + RPC_METRICS_OFFSET_TOTAL_ERRORS()) }
+fn rpc_metrics_total_timeouts(m: i64) -> i64 { load64(m + RPC_METRICS_OFFSET_TOTAL_TIMEOUTS()) }
+fn rpc_metrics_avg_latency(m: i64) -> i64 { load64(m + RPC_METRICS_OFFSET_AVG_LATENCY()) }
+fn rpc_metrics_max_latency(m: i64) -> i64 { load64(m + RPC_METRICS_OFFSET_MAX_LATENCY()) }
+fn rpc_metrics_min_latency(m: i64) -> i64 { load64(m + RPC_METRICS_OFFSET_MIN_LATENCY()) }
+
+fn rpc_metrics_record_request(m: i64) {
+    let v = rpc_metrics_total_requests(m);
+    store64(m + RPC_METRICS_OFFSET_TOTAL_REQUESTS(), v + 1);
+}
+
+fn rpc_metrics_record_response(m: i64, latency: i64) {
+    let v = rpc_metrics_total_responses(m);
+    store64(m + RPC_METRICS_OFFSET_TOTAL_RESPONSES(), v + 1);
+
+    // Update latency stats
+    let latency_sum = load64(m + RPC_METRICS_OFFSET_LATENCY_SUM());
+    let latency_count = load64(m + RPC_METRICS_OFFSET_LATENCY_COUNT());
+
+    latency_sum = latency_sum + latency;
+    latency_count = latency_count + 1;
+
+    store64(m + RPC_METRICS_OFFSET_LATENCY_SUM(), latency_sum);
+    store64(m + RPC_METRICS_OFFSET_LATENCY_COUNT(), latency_count);
+    store64(m + RPC_METRICS_OFFSET_AVG_LATENCY(), latency_sum / latency_count);
+
+    let max_latency = rpc_metrics_max_latency(m);
+    if latency > max_latency {
+        store64(m + RPC_METRICS_OFFSET_MAX_LATENCY(), latency);
+    }
+
+    let min_latency = rpc_metrics_min_latency(m);
+    if latency < min_latency {
+        store64(m + RPC_METRICS_OFFSET_MIN_LATENCY(), latency);
+    }
+}
+
+fn rpc_metrics_record_error(m: i64) {
+    let v = rpc_metrics_total_errors(m);
+    store64(m + RPC_METRICS_OFFSET_TOTAL_ERRORS(), v + 1);
+}
+
+fn rpc_metrics_record_timeout(m: i64) {
+    let v = rpc_metrics_total_timeouts(m);
+    store64(m + RPC_METRICS_OFFSET_TOTAL_TIMEOUTS(), v + 1);
+}
+
+fn rpc_metrics_success_rate(m: i64) -> i64 {
+    let total = rpc_metrics_total_responses(m);
+    let errors = rpc_metrics_total_errors(m);
+    let timeouts = rpc_metrics_total_timeouts(m);
+
+    if total == 0 {
+        return 100;
+    }
+
+    let successful = total - errors - timeouts;
+    if successful < 0 {
+        successful = 0;
+    }
+
+    (successful * 100) / total
+}
+
+fn rpc_metrics_free(m: i64) {
+    // Dealloc marker
+}

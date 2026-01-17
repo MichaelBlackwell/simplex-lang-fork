@@ -1,0 +1,452 @@
+// Edge Hive - Belief Store
+// Persistent storage for user beliefs, preferences, and learned patterns
+//
+// BeliefStore Structure:
+// - beliefs: Vec of (belief_type, key, value, confidence, timestamp)
+// - max_entries: Maximum number of beliefs to store
+// - dirty: Flag indicating unsaved changes
+
+// =============================================================================
+// Belief Entry Encoding
+// Each belief is a vec: [type, key_hash, value, confidence*1000, timestamp]
+// =============================================================================
+
+fn belief_entry_new(belief_type: i64, key: i64, value: i64, confidence: i64) -> i64 {
+    let entry: i64 = vec_new();
+    vec_push(entry, belief_type);
+    vec_push(entry, string_hash(key));  // Store hash for efficient lookup
+    vec_push(entry, value);
+    vec_push(entry, confidence);        // Confidence as integer (0-1000)
+    vec_push(entry, time_now());        // Timestamp
+    entry
+}
+
+fn belief_get_type(entry: i64) -> i64 {
+    vec_get(entry, 0)
+}
+
+fn belief_get_key_hash(entry: i64) -> i64 {
+    vec_get(entry, 1)
+}
+
+fn belief_get_value(entry: i64) -> i64 {
+    vec_get(entry, 2)
+}
+
+fn belief_get_confidence(entry: i64) -> i64 {
+    vec_get(entry, 3)
+}
+
+fn belief_get_timestamp(entry: i64) -> i64 {
+    vec_get(entry, 4)
+}
+
+fn belief_set_value(entry: i64, value: i64) -> i64 {
+    vec_set(entry, 2, value);
+    vec_set(entry, 4, time_now());  // Update timestamp
+    0
+}
+
+fn belief_set_confidence(entry: i64, confidence: i64) -> i64 {
+    vec_set(entry, 3, confidence);
+    0
+}
+
+// =============================================================================
+// BeliefStore Constructor
+// =============================================================================
+
+fn belief_store_new(max_entries: i64) -> i64 {
+    let store: i64 = vec_new();
+    // Slot 0: beliefs vec
+    vec_push(store, vec_new());
+    // Slot 1: max_entries
+    vec_push(store, max_entries);
+    // Slot 2: dirty flag
+    vec_push(store, 0);
+    // Slot 3: stats (queries, updates, evictions)
+    vec_push(store, 0);
+    vec_push(store, 0);
+    vec_push(store, 0);
+    store
+}
+
+fn belief_store_beliefs(store: i64) -> i64 {
+    vec_get(store, 0)
+}
+
+fn belief_store_max_entries(store: i64) -> i64 {
+    vec_get(store, 1)
+}
+
+fn belief_store_is_dirty(store: i64) -> i64 {
+    vec_get(store, 2)
+}
+
+fn belief_store_mark_dirty(store: i64) -> i64 {
+    vec_set(store, 2, 1);
+    0
+}
+
+fn belief_store_mark_clean(store: i64) -> i64 {
+    vec_set(store, 2, 0);
+    0
+}
+
+// =============================================================================
+// Belief Lookup
+// =============================================================================
+
+fn belief_store_find(store: i64, belief_type: i64, key: i64) -> i64 {
+    let beliefs: i64 = belief_store_beliefs(store);
+    let key_hash: i64 = string_hash(key);
+    let len: i64 = vec_len(beliefs);
+
+    // Update query stats
+    let queries: i64 = vec_get(store, 3);
+    vec_set(store, 3, queries + 1);
+
+    let i: i64 = 0;
+    while i < len {
+        let entry: i64 = vec_get(beliefs, i);
+        if belief_get_type(entry) == belief_type {
+            if belief_get_key_hash(entry) == key_hash {
+                return entry;
+            }
+        }
+        i = i + 1;
+    }
+    0  // Not found
+}
+
+fn belief_store_get(store: i64, belief_type: i64, key: i64) -> i64 {
+    let entry: i64 = belief_store_find(store, belief_type, key);
+    if entry != 0 {
+        belief_get_value(entry)
+    } else {
+        0  // Return 0 for not found
+    }
+}
+
+fn belief_store_get_confidence(store: i64, belief_type: i64, key: i64) -> i64 {
+    let entry: i64 = belief_store_find(store, belief_type, key);
+    if entry != 0 {
+        belief_get_confidence(entry)
+    } else {
+        0
+    }
+}
+
+// =============================================================================
+// Belief Updates
+// =============================================================================
+
+fn belief_store_set(store: i64, belief_type: i64, key: i64, value: i64, confidence: i64) -> i64 {
+    let beliefs: i64 = belief_store_beliefs(store);
+    let existing: i64 = belief_store_find(store, belief_type, key);
+
+    // Update stats
+    let updates: i64 = vec_get(store, 4);
+    vec_set(store, 4, updates + 1);
+
+    if existing != 0 {
+        // Update existing belief
+        belief_set_value(existing, value);
+        belief_set_confidence(existing, confidence);
+    } else {
+        // Check if we need to evict
+        let len: i64 = vec_len(beliefs);
+        let max: i64 = belief_store_max_entries(store);
+        if len >= max {
+            belief_store_evict_oldest(store);
+        }
+
+        // Add new belief
+        let entry: i64 = belief_entry_new(belief_type, key, value, confidence);
+        vec_push(beliefs, entry);
+    }
+
+    belief_store_mark_dirty(store);
+    0
+}
+
+fn belief_store_evict_oldest(store: i64) -> i64 {
+    let beliefs: i64 = belief_store_beliefs(store);
+    let len: i64 = vec_len(beliefs);
+
+    if len == 0 {
+        return 0;
+    }
+
+    // Find oldest entry (lowest timestamp)
+    let oldest_idx: i64 = 0;
+    let oldest_time: i64 = belief_get_timestamp(vec_get(beliefs, 0));
+
+    let i: i64 = 1;
+    while i < len {
+        let entry: i64 = vec_get(beliefs, i);
+        let time: i64 = belief_get_timestamp(entry);
+        if time < oldest_time {
+            oldest_time = time;
+            oldest_idx = i;
+        }
+        i = i + 1;
+    }
+
+    // Remove oldest (swap with last and pop)
+    let last_idx: i64 = len - 1;
+    if oldest_idx != last_idx {
+        let last: i64 = vec_get(beliefs, last_idx);
+        vec_set(beliefs, oldest_idx, last);
+    }
+    vec_pop(beliefs);
+
+    // Update eviction stats
+    let evictions: i64 = vec_get(store, 5);
+    vec_set(store, 5, evictions + 1);
+
+    0
+}
+
+// =============================================================================
+// Belief Removal
+// =============================================================================
+
+fn belief_store_remove(store: i64, belief_type: i64, key: i64) -> i64 {
+    let beliefs: i64 = belief_store_beliefs(store);
+    let key_hash: i64 = string_hash(key);
+    let len: i64 = vec_len(beliefs);
+
+    let i: i64 = 0;
+    while i < len {
+        let entry: i64 = vec_get(beliefs, i);
+        if belief_get_type(entry) == belief_type {
+            if belief_get_key_hash(entry) == key_hash {
+                // Found - swap with last and pop
+                let last_idx: i64 = len - 1;
+                if i != last_idx {
+                    let last: i64 = vec_get(beliefs, last_idx);
+                    vec_set(beliefs, i, last);
+                }
+                vec_pop(beliefs);
+                belief_store_mark_dirty(store);
+                return 1;  // Removed
+            }
+        }
+        i = i + 1;
+    }
+    0  // Not found
+}
+
+// =============================================================================
+// Belief Iteration
+// =============================================================================
+
+fn belief_store_count(store: i64) -> i64 {
+    let beliefs: i64 = belief_store_beliefs(store);
+    vec_len(beliefs)
+}
+
+fn belief_store_count_by_type(store: i64, belief_type: i64) -> i64 {
+    let beliefs: i64 = belief_store_beliefs(store);
+    let len: i64 = vec_len(beliefs);
+    let count: i64 = 0;
+
+    let i: i64 = 0;
+    while i < len {
+        let entry: i64 = vec_get(beliefs, i);
+        if belief_get_type(entry) == belief_type {
+            count = count + 1;
+        }
+        i = i + 1;
+    }
+    count
+}
+
+// =============================================================================
+// Confidence Decay (called periodically)
+// =============================================================================
+
+fn belief_store_decay_confidence(store: i64, decay_factor: i64) -> i64 {
+    // decay_factor is 0-1000 (e.g., 990 = 1% decay)
+    let beliefs: i64 = belief_store_beliefs(store);
+    let len: i64 = vec_len(beliefs);
+    let changed: i64 = 0;
+
+    let i: i64 = 0;
+    while i < len {
+        let entry: i64 = vec_get(beliefs, i);
+        let confidence: i64 = belief_get_confidence(entry);
+        let new_confidence: i64 = (confidence * decay_factor) / 1000;
+
+        if new_confidence != confidence {
+            belief_set_confidence(entry, new_confidence);
+            changed = 1;
+        }
+        i = i + 1;
+    }
+
+    if changed == 1 {
+        belief_store_mark_dirty(store);
+    }
+    changed
+}
+
+// =============================================================================
+// Serialization (for sync)
+// =============================================================================
+
+fn belief_store_serialize(store: i64) -> i64 {
+    // Returns a vec of serialized beliefs
+    // Each belief: [type, key_hash, value, confidence, timestamp]
+    let beliefs: i64 = belief_store_beliefs(store);
+    let result: i64 = vec_new();
+    let len: i64 = vec_len(beliefs);
+
+    let i: i64 = 0;
+    while i < len {
+        let entry: i64 = vec_get(beliefs, i);
+        // Clone the entry for serialization
+        let serialized: i64 = vec_new();
+        vec_push(serialized, belief_get_type(entry));
+        vec_push(serialized, belief_get_key_hash(entry));
+        vec_push(serialized, belief_get_value(entry));
+        vec_push(serialized, belief_get_confidence(entry));
+        vec_push(serialized, belief_get_timestamp(entry));
+        vec_push(result, serialized);
+        i = i + 1;
+    }
+    result
+}
+
+fn belief_store_merge(store: i64, incoming: i64) -> i64 {
+    // Merge incoming beliefs using last-write-wins
+    let len: i64 = vec_len(incoming);
+    let merged: i64 = 0;
+
+    let i: i64 = 0;
+    while i < len {
+        let entry: i64 = vec_get(incoming, i);
+        let belief_type: i64 = vec_get(entry, 0);
+        let key_hash: i64 = vec_get(entry, 1);
+        let value: i64 = vec_get(entry, 2);
+        let confidence: i64 = vec_get(entry, 3);
+        let timestamp: i64 = vec_get(entry, 4);
+
+        // Find existing by hash
+        let beliefs: i64 = belief_store_beliefs(store);
+        let beliefs_len: i64 = vec_len(beliefs);
+        let existing: i64 = 0;
+        let existing_time: i64 = 0;
+
+        let j: i64 = 0;
+        while j < beliefs_len {
+            let local: i64 = vec_get(beliefs, j);
+            if belief_get_type(local) == belief_type {
+                if belief_get_key_hash(local) == key_hash {
+                    existing = local;
+                    existing_time = belief_get_timestamp(local);
+                    j = beliefs_len;  // Break
+                }
+            }
+            j = j + 1;
+        }
+
+        if existing != 0 {
+            // Update if incoming is newer
+            if timestamp > existing_time {
+                belief_set_value(existing, value);
+                belief_set_confidence(existing, confidence);
+                vec_set(existing, 4, timestamp);  // Set timestamp directly
+                merged = merged + 1;
+            }
+        } else {
+            // Add new belief
+            let new_entry: i64 = vec_new();
+            vec_push(new_entry, belief_type);
+            vec_push(new_entry, key_hash);
+            vec_push(new_entry, value);
+            vec_push(new_entry, confidence);
+            vec_push(new_entry, timestamp);
+            vec_push(beliefs, new_entry);
+            merged = merged + 1;
+        }
+
+        i = i + 1;
+    }
+
+    if merged > 0 {
+        belief_store_mark_dirty(store);
+    }
+    merged
+}
+
+// =============================================================================
+// Stats and Debugging
+// =============================================================================
+
+fn belief_store_print_stats(store: i64) -> i64 {
+    println(string_from("Belief Store Stats:"));
+    print(string_from("  Entries: "));
+    print_i64(belief_store_count(store));
+    print(string_from(" / "));
+    print_i64(belief_store_max_entries(store));
+    println(string_from(""));
+    print(string_from("  Preferences: "));
+    print_i64(belief_store_count_by_type(store, BELIEF_PREFERENCE()));
+    println(string_from(""));
+    print(string_from("  Patterns: "));
+    print_i64(belief_store_count_by_type(store, BELIEF_PATTERN()));
+    println(string_from(""));
+    print(string_from("  Tasks: "));
+    print_i64(belief_store_count_by_type(store, BELIEF_TASK()));
+    println(string_from(""));
+    print(string_from("  Queries: "));
+    print_i64(vec_get(store, 3));
+    println(string_from(""));
+    print(string_from("  Updates: "));
+    print_i64(vec_get(store, 4));
+    println(string_from(""));
+    print(string_from("  Evictions: "));
+    print_i64(vec_get(store, 5));
+    println(string_from(""));
+    print(string_from("  Dirty: "));
+    if belief_store_is_dirty(store) == 1 {
+        println(string_from("yes"));
+    } else {
+        println(string_from("no"));
+    }
+    0
+}
+
+// =============================================================================
+// Convenience Methods for Common Belief Types
+// =============================================================================
+
+fn belief_set_preference(store: i64, key: i64, value: i64) -> i64 {
+    belief_store_set(store, BELIEF_PREFERENCE(), key, value, 1000)
+}
+
+fn belief_get_preference(store: i64, key: i64) -> i64 {
+    belief_store_get(store, BELIEF_PREFERENCE(), key)
+}
+
+fn belief_set_task(store: i64, task_id: i64, priority: i64) -> i64 {
+    belief_store_set(store, BELIEF_TASK(), task_id, priority, 1000)
+}
+
+fn belief_get_task_priority(store: i64, task_id: i64) -> i64 {
+    belief_store_get(store, BELIEF_TASK(), task_id)
+}
+
+fn belief_complete_task(store: i64, task_id: i64) -> i64 {
+    belief_store_remove(store, BELIEF_TASK(), task_id)
+}
+
+fn belief_set_context(store: i64, key: i64, value: i64) -> i64 {
+    belief_store_set(store, BELIEF_CONTEXT(), key, value, 1000)
+}
+
+fn belief_get_context(store: i64, key: i64) -> i64 {
+    belief_store_get(store, BELIEF_CONTEXT(), key)
+}

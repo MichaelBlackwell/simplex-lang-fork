@@ -1,0 +1,163 @@
+// Reasoning task data generator
+
+use simplex_std::vec::Vec;
+use simplex_std::string::String;
+use super::super::generator::{DataGenerator, TrainingExample, ExampleMetadata, Rng};
+use super::super::super::SpecialistDomain;
+
+/// Generator for reasoning training data
+pub struct ReasoningGenerator {
+    rng: Rng,
+    name: String,
+}
+
+impl ReasoningGenerator {
+    pub fn new() -> Self {
+        ReasoningGenerator {
+            rng: Rng::new(42),
+            name: "reasoning_generator".to_string(),
+        }
+    }
+
+    fn generate_math_reasoning(&mut self) -> TrainingExample {
+        let a = self.rng.int_range(10, 100);
+        let b = self.rng.int_range(5, 50);
+        let c = self.rng.int_range(2, 20);
+
+        let prompt = format!(
+            "Solve this problem step by step:\n\n\
+             A store sells apples for ${} per bag. If you buy {} bags and \
+             use a coupon that gives you ${} off, how much do you pay in total?",
+            a, b, c
+        );
+
+        let total = a * b;
+        let final_cost = total - c;
+
+        let response = format!(
+            "**Step-by-step solution:**\n\n\
+             1. **Calculate total before discount:**\n\
+                ${} per bag × {} bags = ${}\n\n\
+             2. **Apply coupon discount:**\n\
+                ${} - ${} = ${}\n\n\
+             **Answer:** You pay **${}** in total.\n\n\
+             [confidence: 0.98]",
+            a, b, total, total, c, final_cost, final_cost
+        );
+
+        TrainingExample {
+            prompt,
+            response,
+            metadata: ExampleMetadata {
+                domain: "reasoning".to_string(),
+                confidence_target: 0.98,
+                source: "synthetic".to_string(),
+                difficulty: 0.4,
+                quality: 1.0,
+                tags: vec!["math".to_string(), "arithmetic".to_string()],
+            },
+        }
+    }
+
+    fn generate_logical_reasoning(&mut self) -> TrainingExample {
+        let scenarios = vec![
+            (
+                "All birds can fly. Penguins are birds. Can penguins fly?",
+                "**Analysis:**\n\n\
+                 1. Premise 1: \"All birds can fly\" (given)\n\
+                 2. Premise 2: \"Penguins are birds\" (given)\n\
+                 3. By syllogistic reasoning: If all birds fly, and penguins are birds, then penguins can fly.\n\n\
+                 **However**, this conclusion conflicts with real-world knowledge. The issue is that \
+                 Premise 1 is factually false - not all birds can fly (penguins, ostriches, etc.).\n\n\
+                 **Answer:** Based on the given premises (logically): Yes. \
+                 Based on reality: No, penguins cannot fly.\n\n\
+                 [confidence: 0.95]",
+                0.95
+            ),
+            (
+                "If it rains, the ground gets wet. The ground is wet. Did it rain?",
+                "**Analysis:**\n\n\
+                 This is an example of the **affirming the consequent** fallacy.\n\n\
+                 1. Premise: If rain → wet ground\n\
+                 2. Observation: Wet ground\n\
+                 3. Question: Did it rain?\n\n\
+                 **Answer:** Not necessarily. While rain causes wet ground, other things can too \
+                 (sprinklers, flooding, dew). The wet ground is *consistent* with rain but doesn't *prove* it.\n\n\
+                 [confidence: 0.92]",
+                0.92
+            ),
+        ];
+
+        let (question, answer, confidence) = self.rng.choice_clone(&scenarios);
+
+        TrainingExample {
+            prompt: format!("Analyze this logical reasoning problem:\n\n{}", question),
+            response: answer,
+            metadata: ExampleMetadata {
+                domain: "reasoning".to_string(),
+                confidence_target: confidence,
+                source: "synthetic".to_string(),
+                difficulty: 0.7,
+                quality: 1.0,
+                tags: vec!["logic".to_string()],
+            },
+        }
+    }
+
+    fn generate_causal_reasoning(&mut self) -> TrainingExample {
+        let scenarios = vec![
+            (
+                "Sales of ice cream and drowning incidents both increase in summer. Does ice cream cause drowning?",
+                "**Causal Analysis:**\n\n\
+                 This is a classic example of **correlation does not imply causation**.\n\n\
+                 - **Observation:** Ice cream sales ↑ and drownings ↑ in summer\n\
+                 - **Confounding variable:** Hot weather\n\n\
+                 **Explanation:** Hot weather causes both:\n\
+                 1. More people buy ice cream to cool down\n\
+                 2. More people go swimming → more drowning risk\n\n\
+                 **Conclusion:** No, ice cream does not cause drowning. Both are independently caused by summer heat.\n\n\
+                 [confidence: 0.97]",
+                0.97
+            ),
+        ];
+
+        let (question, answer, confidence) = self.rng.choice_clone(&scenarios);
+
+        TrainingExample {
+            prompt: format!("Analyze this causal reasoning question:\n\n{}", question),
+            response: answer,
+            metadata: ExampleMetadata {
+                domain: "reasoning".to_string(),
+                confidence_target: confidence,
+                source: "synthetic".to_string(),
+                difficulty: 0.6,
+                quality: 1.0,
+                tags: vec!["causation".to_string()],
+            },
+        }
+    }
+}
+
+impl DataGenerator for ReasoningGenerator {
+    fn generate(&mut self) -> TrainingExample {
+        match self.rng.int_range(0, 2) {
+            0 => self.generate_math_reasoning(),
+            1 => self.generate_logical_reasoning(),
+            _ => self.generate_causal_reasoning(),
+        }
+    }
+
+    fn domain(&self) -> SpecialistDomain {
+        SpecialistDomain::Reasoning
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn seed(&mut self, seed: u64) {
+        self.rng.seed(seed);
+    }
+
+    fn reset(&mut self) {}
+}

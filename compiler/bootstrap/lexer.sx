@@ -2,7 +2,7 @@
 // Self-hosted lexer with full token support for all language features
 //
 // Copyright (c) 2025-2026 Rod Higgins
-// Licensed under MIT License - see LICENSE file
+// Licensed under AGPL-3.0 - see LICENSE file
 // https://github.com/senuamedia/simplex-lang
 
 // Token types as enum
@@ -65,6 +65,7 @@ enum TokenKind {
     LtLt,
     GtGt,
     KwBreak,
+    KwLoop,
     KwContinue,
     Question,
     KwTrait,
@@ -88,7 +89,13 @@ enum TokenKind {
     // Mutable binding
     KwVar,
     // Spawn expression
-    KwSpawn
+    KwSpawn,
+    // Where clause
+    KwWhere,
+    // Belief guard tokens (TASK-013-A)
+    At,              // @ symbol for belief guards
+    KwConfidence,    // confidence(belief_id)
+    KwDerivative     // .derivative accessor
 }
 
 // Lexer state - we pass this to all functions instead of using self
@@ -271,6 +278,7 @@ fn check_keyword(text: i64) -> i64 {
     if string_eq(text, "self") { return TokenKind::KwSelf; }
     if string_eq(text, "match") { return TokenKind::KwMatch; }
     if string_eq(text, "break") { return TokenKind::KwBreak; }
+    if string_eq(text, "loop") { return TokenKind::KwLoop; }
     if string_eq(text, "continue") { return TokenKind::KwContinue; }
     if string_eq(text, "trait") { return TokenKind::KwTrait; }
     if string_eq(text, "type") { return TokenKind::KwType; }
@@ -294,6 +302,11 @@ fn check_keyword(text: i64) -> i64 {
     if string_eq(text, "var") { return TokenKind::KwVar; }
     // Spawn expression
     if string_eq(text, "spawn") { return TokenKind::KwSpawn; }
+    // Where clause
+    if string_eq(text, "where") { return TokenKind::KwWhere; }
+    // Belief guard keywords (TASK-013-A)
+    if string_eq(text, "confidence") { return TokenKind::KwConfidence; }
+    if string_eq(text, "derivative") { return TokenKind::KwDerivative; }
     if string_eq(text, "_") { return TokenKind::Underscore; }
     return TokenKind::Ident;
 }
@@ -560,6 +573,11 @@ fn lexer_next_token(lexer: i64) -> i64 {
         }
         lexer_advance(lexer);
         return token_new_loc(TokenKind::String, text, start, start_line, start_col);
+    }
+
+    // @ symbol for belief guards (TASK-013-A)
+    if c == 64 {
+        return token_new_loc(TokenKind::At, string_from("@"), start, start_line, start_col);
     }
 
     // Unknown character - return EOF for now

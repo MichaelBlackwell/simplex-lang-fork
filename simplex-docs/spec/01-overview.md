@@ -39,10 +39,10 @@ See [Meta-Gradient Temperature Control](09-cognitive-hive.md#meta-gradient-tempe
 Native forward-mode automatic differentiation:
 
 ```simplex
-let x: dual = dual::variable(3.0);
-let y = x * x + x.sin();
-println(y.val);  // f(3) = 9.1411...
-println(y.der);  // f'(3) = 6.9899... (exact, not numerical)
+let x: dual = dual::variable(3.0)
+let y = x * x + x.sin()
+print(y.val)  // f(3) = 9.1411...
+print(y.der)  // f'(3) = 6.9899... (exact, not numerical)
 ```
 
 ### llama.cpp Integration

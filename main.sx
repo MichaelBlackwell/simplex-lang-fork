@@ -2,17 +2,22 @@
 // Self-hosted compiler CLI with build, run, check, repl, and fmt commands
 //
 // Copyright (c) 2025-2026 Rod Higgins
-// Licensed under MIT License - see LICENSE file
+// Licensed under AGPL-3.0 - see LICENSE file
 // https://github.com/senuamedia/simplex
 
-// Version
-fn VERSION() -> i64 { string_from("0.9.2") }
+// Import shared modules (TASK-011 Phase 1 completion)
+use lib::version;
+use lib::safety;
+use lib::platform;
+
+// Version - now uses centralized constant
+fn VERSION() -> i64 { SIMPLEX_VERSION() }
 
 // CLI argument parsing result
 // Layout: command(0), input_files(1), output_file(2), emit_type(3), verbose(4), force(5), show_deps(6), auto_deps(7)
 // Commands: 0=build, 1=run, 2=check, 3=help, 4=version, 5=repl, 6=fmt
 fn cli_new() -> i64 {
-    let cli: i64 = malloc(64);
+    let cli: i64 = safe_malloc(64);  // TASK-011: Use safe_malloc
     store_i64(cli, 0, 0);        // command: 0=build, 1=run, 2=check, 3=help, 4=version, 5=repl, 6=fmt
     store_ptr(cli, 1, vec_new()); // input files
     store_ptr(cli, 2, 0);        // output file (optional)
@@ -257,7 +262,12 @@ fn extract_dependencies(source_path: i64) -> i64 {
                 let name_tok: i64 = vec_get(tokens, i + 1);
                 let mod_name: i64 = token_text(name_tok);
                 // Convert to file path: mod foo; -> foo.sx
-                let dep_path: i64 = string_concat(dir, string_concat(mod_name, string_from(".sx")));
+                // TASK-011: Use StringBuilder for efficiency
+                let sb: i64 = safe_sb_new();
+                sb_append(sb, dir);
+                sb_append(sb, mod_name);
+                sb_append(sb, string_from(".sx"));
+                let dep_path: i64 = sb_to_string(sb);
                 if file_exists(dep_path) == 1 {
                     // Deduplicate
                     if vec_contains_string(deps, dep_path) == 0 {
@@ -276,7 +286,12 @@ fn extract_dependencies(source_path: i64) -> i64 {
                 let path_tok: i64 = vec_get(tokens, i + 1);
                 let path_name: i64 = token_text(path_tok);
                 // Convert to file path: use foo::bar; -> foo.sx
-                let dep_path: i64 = string_concat(dir, string_concat(path_name, string_from(".sx")));
+                // TASK-011: Use StringBuilder for efficiency
+                let sb: i64 = safe_sb_new();
+                sb_append(sb, dir);
+                sb_append(sb, path_name);
+                sb_append(sb, string_from(".sx"));
+                let dep_path: i64 = sb_to_string(sb);
                 if file_exists(dep_path) == 1 {
                     // Deduplicate
                     if vec_contains_string(deps, dep_path) == 0 {
@@ -296,20 +311,10 @@ fn extract_dependencies(source_path: i64) -> i64 {
     deps
 }
 
-// Get directory part of a path (e.g., "foo/bar/baz.sx" -> "foo/bar/")
+// Get directory part of a path - now uses shared platform module
+// TASK-011: Eliminated duplication from multiple files
 fn get_directory(path: i64) -> i64 {
-    let len: i64 = string_len(path);
-    let i: i64 = len - 1;
-    while i >= 0 {
-        let c: i64 = string_char_at(path, i);
-        if c == 47 {
-            // ASCII for '/'
-            return string_slice(path, 0, i + 1);
-        }
-        i = i - 1;
-    }
-    // No directory, return empty string
-    string_from("")
+    platform::get_directory(path)
 }
 
 // Collect all transitive dependencies for a source file
@@ -356,7 +361,12 @@ fn compile_with_dependencies(path: i64, output_path: i64, verbose: i64, emit_typ
 
     if verbose == 1 {
         if n > 1 {
-            println(string_concat("Compiling ", string_concat(int_to_string(n), " files with dependencies")));
+            // TASK-011: Use StringBuilder for efficiency
+            let sb: i64 = safe_sb_new();
+            sb_append(sb, string_from("Compiling "));
+            sb_append(sb, int_to_string(n));
+            sb_append(sb, string_from(" files with dependencies"));
+            println(sb_to_string(sb));
         }
     }
 
@@ -899,7 +909,12 @@ fn run_repl() -> i64 {
                     let pair: i64 = vec_get(vars, i);
                     let name: i64 = load_ptr(pair, 0);
                     let value: i64 = load_i64(pair, 1);
-                    println(string_concat(name, string_concat(string_from(" = "), int_to_string(value))));
+                    // TASK-011: Use StringBuilder for efficiency
+                    let sb: i64 = safe_sb_new();
+                    sb_append(sb, name);
+                    sb_append(sb, string_from(" = "));
+                    sb_append(sb, int_to_string(value));
+                    println(sb_to_string(sb));
                     i = i + 1;
                 }
             }
@@ -1154,7 +1169,7 @@ fn format_file(path: i64, write_back: i64) -> i64 {
 
 // Format a list of items
 fn format_items(items: i64) -> i64 {
-    let sb: i64 = sb_new();
+    let sb: i64 = safe_sb_new();  // TASK-011: Use safe string builder
     let n: i64 = vec_len(items);
     let i: i64 = 0;
 
@@ -1290,7 +1305,7 @@ fn format_block(block: i64, indent: i64) -> i64 {
 
 // Create indentation string (4 spaces per level)
 fn make_indent(level: i64) -> i64 {
-    let sb: i64 = sb_new();
+    let sb: i64 = safe_sb_new();  // TASK-011: Use safe string builder
     let i: i64 = 0;
     while i < level {
         sb_append(sb, string_from("    "));
@@ -1302,13 +1317,13 @@ fn make_indent(level: i64) -> i64 {
 // Format a statement
 fn format_stmt(stmt: i64, indent: i64) -> i64 {
     let tag: i64 = load_i64(stmt, 0);
-
+    
     // Let statement
     if tag == 0 {
         let name: i64 = load_ptr(stmt, 1);
         let ty: i64 = load_ptr(stmt, 2);
         let init_expr: i64 = load_ptr(stmt, 3);
-        let sb: i64 = sb_new();
+        let sb: i64 = safe_sb_new();  // TASK-011: Use safe string builder
         sb_append(sb, string_from("let "));
         sb_append(sb, name);
         if ty != 0 {

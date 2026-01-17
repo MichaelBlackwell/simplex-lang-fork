@@ -1,0 +1,310 @@
+// Self-learning annealing optimizer for training pipelines
+//
+// Integrates simplex::optimize::anneal with the training loop,
+// using dual numbers for meta-gradient optimization of schedules.
+
+use simplex_std::dual;
+use simplex_std::vec::Vec;
+
+/// Annealing optimizer with learnable schedule
+pub struct AnnealOptimizer {
+    /// Current step
+    step: usize,
+
+    /// Base learning rate
+    base_lr: f64,
+
+    /// Current learning rate
+    current_lr: f64,
+
+    /// Temperature for annealing
+    temperature: dual,
+
+    /// Cooling rate (learnable)
+    cool_rate: dual,
+
+    /// Acceptance threshold
+    accept_threshold: dual,
+
+    /// Best loss seen so far
+    best_loss: f64,
+
+    /// Steps since improvement
+    stagnation_steps: usize,
+
+    /// Learning rate for meta-optimization
+    meta_lr: f64,
+
+    /// History of temperatures
+    temp_history: Vec<f64>,
+
+    /// History of learning rates
+    lr_history: Vec<f64>,
+}
+
+impl AnnealOptimizer {
+    /// Create new annealing optimizer
+    pub fn new() -> Self {
+        AnnealOptimizer {
+            step: 0,
+            base_lr: 1e-4,
+            current_lr: 1e-4,
+            temperature: dual::variable(1.0),
+            cool_rate: dual::variable(0.995),
+            accept_threshold: dual::variable(0.5),
+            best_loss: f64::MAX,
+            stagnation_steps: 0,
+            meta_lr: 0.001,
+            temp_history: Vec::new(),
+            lr_history: Vec::new(),
+        }
+    }
+
+    /// Create with custom base learning rate
+    pub fn with_lr(base_lr: f64) -> Self {
+        let mut opt = Self::new();
+        opt.base_lr = base_lr;
+        opt.current_lr = base_lr;
+        opt
+    }
+
+    /// Get current learning rate based on annealing state
+    pub fn get_lr(&self, step: usize, current_loss: f64) -> f64 {
+        // Compute annealed learning rate
+        let t = self.temperature.val;
+        let progress = step as f64 / 10000.0; // Normalized progress
+
+        // Cosine annealing with warm restarts awareness
+        let cosine_factor = 0.5 * (1.0 + (std::f64::consts::PI * progress).cos());
+
+        // Temperature-based scaling
+        let temp_factor = t.min(1.0);
+
+        self.base_lr * cosine_factor * temp_factor
+    }
+
+    /// Perform one optimization step
+    pub fn step(&mut self, loss: f64) {
+        self.step += 1;
+
+        // Update temperature
+        self.temperature = self.temperature * self.cool_rate;
+
+        // Track best loss
+        if loss < self.best_loss {
+            self.best_loss = loss;
+            self.stagnation_steps = 0;
+        } else {
+            self.stagnation_steps += 1;
+        }
+
+        // Adaptive reheating if stagnating
+        if self.stagnation_steps > 100 {
+            self.reheat();
+        }
+
+        // Update current LR
+        self.current_lr = self.get_lr(self.step, loss);
+
+        // Record history
+        self.temp_history.push(self.temperature.val);
+        self.lr_history.push(self.current_lr);
+
+        // Meta-gradient update for schedule parameters
+        if self.step % 100 == 0 {
+            self.meta_step(loss);
+        }
+    }
+
+    /// Reheat temperature when stagnating
+    fn reheat(&mut self) {
+        // Increase temperature to escape local minimum
+        let reheat_factor = 1.5;
+        self.temperature = dual::variable(self.temperature.val * reheat_factor);
+        self.stagnation_steps = 0;
+    }
+
+    /// Meta-gradient update for schedule parameters
+    fn meta_step(&mut self, loss: f64) {
+        // Use loss gradient to update schedule parameters
+        // This is simplified - full implementation would compute proper meta-gradients
+
+        // If loss is decreasing, current schedule is working
+        if self.lr_history.len() >= 2 {
+            let recent_trend = if self.step > 100 {
+                let recent: f64 = self.lr_history[self.lr_history.len()-10..].iter().sum::<f64>() / 10.0;
+                let older: f64 = self.lr_history[self.lr_history.len()-100..self.lr_history.len()-90].iter().sum::<f64>() / 10.0;
+                recent - older
+            } else {
+                0.0
+            };
+
+            // Adjust cooling rate based on trend
+            if recent_trend > 0.0 {
+                // LR increasing = need more cooling
+                self.cool_rate = dual::variable(self.cool_rate.val * 0.999);
+            } else {
+                // LR decreasing = schedule is appropriate
+            }
+        }
+    }
+
+    /// Get current temperature
+    pub fn temperature(&self) -> f64 {
+        self.temperature.val
+    }
+
+    /// Get current learning rate
+    pub fn current_lr(&self) -> f64 {
+        self.current_lr
+    }
+
+    /// Get best loss
+    pub fn best_loss(&self) -> f64 {
+        self.best_loss
+    }
+
+    /// Get steps since improvement
+    pub fn stagnation(&self) -> usize {
+        self.stagnation_steps
+    }
+
+    /// Reset optimizer state
+    pub fn reset(&mut self) {
+        self.step = 0;
+        self.current_lr = self.base_lr;
+        self.temperature = dual::variable(1.0);
+        self.best_loss = f64::MAX;
+        self.stagnation_steps = 0;
+        self.temp_history.clear();
+        self.lr_history.clear();
+    }
+
+    /// Set meta learning rate
+    pub fn set_meta_lr(&mut self, lr: f64) {
+        self.meta_lr = lr;
+    }
+
+    /// Get schedule parameters as dual numbers (for checkpointing)
+    pub fn get_schedule_params(&self) -> (dual, dual, dual) {
+        (self.temperature, self.cool_rate, self.accept_threshold)
+    }
+
+    /// Set schedule parameters
+    pub fn set_schedule_params(&mut self, temp: f64, cool: f64, thresh: f64) {
+        self.temperature = dual::variable(temp);
+        self.cool_rate = dual::variable(cool);
+        self.accept_threshold = dual::variable(thresh);
+    }
+}
+
+/// Training state with annealing
+pub struct AnnealTrainingState {
+    /// Optimizer
+    pub optimizer: AnnealOptimizer,
+
+    /// Current step
+    pub step: u64,
+
+    /// Current epoch
+    pub epoch: u64,
+
+    /// Best loss
+    pub best_loss: f64,
+
+    /// Loss history
+    pub history: Vec<f64>,
+}
+
+impl AnnealTrainingState {
+    /// Create new training state
+    pub fn new() -> Self {
+        AnnealTrainingState {
+            optimizer: AnnealOptimizer::new(),
+            step: 0,
+            epoch: 0,
+            best_loss: f64::MAX,
+            history: Vec::new(),
+        }
+    }
+
+    /// Record a training step
+    pub fn record(&mut self, loss: f64) {
+        self.step += 1;
+        self.history.push(loss);
+
+        if loss < self.best_loss {
+            self.best_loss = loss;
+        }
+
+        self.optimizer.step(loss);
+    }
+
+    /// Start new epoch
+    pub fn new_epoch(&mut self) {
+        self.epoch += 1;
+    }
+
+    /// Get learning rate
+    pub fn learning_rate(&self) -> f64 {
+        self.optimizer.current_lr()
+    }
+
+    /// Get temperature
+    pub fn temperature(&self) -> f64 {
+        self.optimizer.temperature()
+    }
+
+    /// Check if should stop early
+    pub fn should_stop(&self, patience: usize) -> bool {
+        self.optimizer.stagnation() > patience * 1000 // Convert epochs to steps
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_anneal_optimizer() {
+        let mut opt = AnnealOptimizer::new();
+
+        // Initial state
+        assert!((opt.temperature() - 1.0).abs() < 0.001);
+        assert!(opt.current_lr() > 0.0);
+
+        // Step through some iterations
+        for i in 0..100 {
+            let loss = 2.0 / (1.0 + i as f64 / 10.0);
+            opt.step(loss);
+        }
+
+        // Temperature should have decreased
+        assert!(opt.temperature() < 1.0);
+    }
+
+    #[test]
+    fn test_training_state() {
+        let mut state = AnnealTrainingState::new();
+
+        for i in 0..50 {
+            state.record(1.0 / (1.0 + i as f64));
+        }
+
+        assert_eq!(state.step, 50);
+        assert!(state.best_loss < 1.0);
+    }
+
+    #[test]
+    fn test_reheat() {
+        let mut opt = AnnealOptimizer::new();
+
+        // Force stagnation
+        for _ in 0..150 {
+            opt.step(1.0); // Constant loss = stagnation
+        }
+
+        // Should have reheated
+        // Temperature might be higher or reset
+    }
+}

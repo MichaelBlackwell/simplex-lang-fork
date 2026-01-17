@@ -1,0 +1,795 @@
+// Nexus Protocol - Control and Dynamic Belief Module
+//
+// Phase 3: Implements control protocol, dynamic belief management, and error recovery
+//
+// Features:
+// - DEFINE/TOMBSTONE: Dynamic belief addition/removal
+// - PING/PONG: Connection keepalive
+// - CHECKSUM: State verification during sync
+// - FULL_SYNC: Recovery from checksum mismatch
+// - DISCONNECT: Graceful connection close
+// - Flow Control: Backpressure management
+
+// =============================================================================
+// DEFINE Frame - Add New Belief
+// =============================================================================
+
+// DEFINE Frame Payload:
+// - Belief index (2 bytes): Position in the sync array
+// - Initial value (4 bytes): Starting value for the belief
+// - Belief metadata (variable): Optional type info, name, etc.
+
+fn define_payload_new(belief_index: i64, initial_value: i64) -> i64 {
+    let payload = vec_new();
+
+    // Belief index (2 bytes, big-endian)
+    vec_push(payload, (belief_index >> 8) & 255);
+    vec_push(payload, belief_index & 255);
+
+    // Initial value (4 bytes, big-endian)
+    vec_push(payload, (initial_value >> 24) & 255);
+    vec_push(payload, (initial_value >> 16) & 255);
+    vec_push(payload, (initial_value >> 8) & 255);
+    vec_push(payload, initial_value & 255);
+
+    payload
+}
+
+fn define_payload_parse(payload: i64) -> i64 {
+    if vec_len(payload) < 6 {
+        return 0;  // Error: too small
+    }
+
+    let result = vec_new();
+
+    // Belief index
+    let index = (vec_get(payload, 0) << 8) | vec_get(payload, 1);
+    vec_push(result, index);
+
+    // Initial value
+    let value = (vec_get(payload, 2) << 24) |
+                (vec_get(payload, 3) << 16) |
+                (vec_get(payload, 4) << 8) |
+                vec_get(payload, 5);
+    vec_push(result, value);
+
+    result
+}
+
+fn frame_new_define(belief_index: i64, initial_value: i64) -> i64 {
+    let frame = frame_new(FRAME_DEFINE(), FLAG_NONE());
+    let payload = define_payload_new(belief_index, initial_value);
+    frame_set_payload(frame, payload);
+    frame
+}
+
+fn control_create_define(belief_index: i64, initial_value: i64) -> i64 {
+    let frame = frame_new_define(belief_index, initial_value);
+    frame_encode(frame)
+}
+
+// =============================================================================
+// TOMBSTONE Frame - Remove Belief
+// =============================================================================
+
+// TOMBSTONE Frame Payload:
+// - Belief index (2 bytes): Position to mark as removed
+// - Tombstone tick (2 bytes): Tick when removal occurred
+
+fn tombstone_payload_new(belief_index: i64, tick: i64) -> i64 {
+    let payload = vec_new();
+
+    // Belief index (2 bytes)
+    vec_push(payload, (belief_index >> 8) & 255);
+    vec_push(payload, belief_index & 255);
+
+    // Tick (2 bytes)
+    vec_push(payload, (tick >> 8) & 255);
+    vec_push(payload, tick & 255);
+
+    payload
+}
+
+fn tombstone_payload_parse(payload: i64) -> i64 {
+    if vec_len(payload) < 4 {
+        return 0;
+    }
+
+    let result = vec_new();
+
+    let index = (vec_get(payload, 0) << 8) | vec_get(payload, 1);
+    vec_push(result, index);
+
+    let tick = (vec_get(payload, 2) << 8) | vec_get(payload, 3);
+    vec_push(result, tick);
+
+    result
+}
+
+fn frame_new_tombstone(belief_index: i64, tick: i64) -> i64 {
+    let frame = frame_new(FRAME_TOMBSTONE(), FLAG_NONE());
+    let payload = tombstone_payload_new(belief_index, tick);
+    frame_set_payload(frame, payload);
+    frame
+}
+
+fn control_create_tombstone(belief_index: i64, tick: i64) -> i64 {
+    let frame = frame_new_tombstone(belief_index, tick);
+    frame_encode(frame)
+}
+
+// =============================================================================
+// PING/PONG - Connection Keepalive
+// =============================================================================
+
+// PING/PONG Payload:
+// - Sequence number (4 bytes): For RTT measurement
+// - Timestamp (8 bytes): Sender's timestamp (for latency calculation)
+// Note: FRAME_PING and FRAME_PONG are defined in types.sx (values 12 and 13)
+
+fn ping_payload_new(sequence: i64, timestamp: i64) -> i64 {
+    let payload = vec_new();
+
+    // Sequence (4 bytes)
+    vec_push(payload, (sequence >> 24) & 255);
+    vec_push(payload, (sequence >> 16) & 255);
+    vec_push(payload, (sequence >> 8) & 255);
+    vec_push(payload, sequence & 255);
+
+    // Timestamp (8 bytes)
+    vec_push(payload, (timestamp >> 56) & 255);
+    vec_push(payload, (timestamp >> 48) & 255);
+    vec_push(payload, (timestamp >> 40) & 255);
+    vec_push(payload, (timestamp >> 32) & 255);
+    vec_push(payload, (timestamp >> 24) & 255);
+    vec_push(payload, (timestamp >> 16) & 255);
+    vec_push(payload, (timestamp >> 8) & 255);
+    vec_push(payload, timestamp & 255);
+
+    payload
+}
+
+fn ping_payload_parse(payload: i64) -> i64 {
+    if vec_len(payload) < 12 {
+        return 0;
+    }
+
+    let result = vec_new();
+
+    // Sequence
+    let seq = (vec_get(payload, 0) << 24) |
+              (vec_get(payload, 1) << 16) |
+              (vec_get(payload, 2) << 8) |
+              vec_get(payload, 3);
+    vec_push(result, seq);
+
+    // Timestamp
+    let ts = (vec_get(payload, 4) << 56) |
+             (vec_get(payload, 5) << 48) |
+             (vec_get(payload, 6) << 40) |
+             (vec_get(payload, 7) << 32) |
+             (vec_get(payload, 8) << 24) |
+             (vec_get(payload, 9) << 16) |
+             (vec_get(payload, 10) << 8) |
+             vec_get(payload, 11);
+    vec_push(result, ts);
+
+    result
+}
+
+fn control_create_ping(sequence: i64, timestamp: i64) -> i64 {
+    let frame = frame_new(FRAME_PING(), FLAG_NONE());
+    let payload = ping_payload_new(sequence, timestamp);
+    frame_set_payload(frame, payload);
+    frame_encode(frame)
+}
+
+fn control_create_pong(sequence: i64, timestamp: i64) -> i64 {
+    let frame = frame_new(FRAME_PONG(), FLAG_NONE());
+    let payload = ping_payload_new(sequence, timestamp);  // Same format
+    frame_set_payload(frame, payload);
+    frame_encode(frame)
+}
+
+// =============================================================================
+// CHECKSUM Frame - State Verification
+// =============================================================================
+
+// CHECKSUM is sent periodically to verify state consistency
+// Already defined in types.sx as FRAME_CHECKSUM (7)
+
+// CHECKSUM Frame Payload:
+// - Tick (2 bytes): Tick this checksum applies to
+// - State checksum (8 bytes): XOR-based checksum of all belief values
+// - Belief count (2 bytes): Number of beliefs in state
+
+fn checksum_payload_new(tick: i64, checksum: i64, belief_count: i64) -> i64 {
+    let payload = vec_new();
+
+    // Tick (2 bytes)
+    vec_push(payload, (tick >> 8) & 255);
+    vec_push(payload, tick & 255);
+
+    // Checksum (8 bytes)
+    vec_push(payload, (checksum >> 56) & 255);
+    vec_push(payload, (checksum >> 48) & 255);
+    vec_push(payload, (checksum >> 40) & 255);
+    vec_push(payload, (checksum >> 32) & 255);
+    vec_push(payload, (checksum >> 24) & 255);
+    vec_push(payload, (checksum >> 16) & 255);
+    vec_push(payload, (checksum >> 8) & 255);
+    vec_push(payload, checksum & 255);
+
+    // Belief count (2 bytes)
+    vec_push(payload, (belief_count >> 8) & 255);
+    vec_push(payload, belief_count & 255);
+
+    payload
+}
+
+fn checksum_payload_parse(payload: i64) -> i64 {
+    if vec_len(payload) < 12 {
+        return 0;
+    }
+
+    let result = vec_new();
+
+    // Tick
+    let tick = (vec_get(payload, 0) << 8) | vec_get(payload, 1);
+    vec_push(result, tick);
+
+    // Checksum
+    let checksum = (vec_get(payload, 2) << 56) |
+                   (vec_get(payload, 3) << 48) |
+                   (vec_get(payload, 4) << 40) |
+                   (vec_get(payload, 5) << 32) |
+                   (vec_get(payload, 6) << 24) |
+                   (vec_get(payload, 7) << 16) |
+                   (vec_get(payload, 8) << 8) |
+                   vec_get(payload, 9);
+    vec_push(result, checksum);
+
+    // Belief count
+    let count = (vec_get(payload, 10) << 8) | vec_get(payload, 11);
+    vec_push(result, count);
+
+    result
+}
+
+fn control_create_checksum(tick: i64, checksum: i64, belief_count: i64) -> i64 {
+    let frame = frame_new_checksum(tick);
+    let payload = checksum_payload_new(tick, checksum, belief_count);
+    frame_set_payload(frame, payload);
+    frame_encode(frame)
+}
+
+// =============================================================================
+// FULL_SYNC Frame - Request Full Resync
+// =============================================================================
+
+// FULL_SYNC is sent when checksums don't match
+// Already defined in types.sx as FRAME_FULL_SYNC (10)
+
+// FULL_SYNC Frame Payload:
+// - Expected tick (2 bytes): Tick we expected
+// - Reason code (1 byte): Why full sync is needed
+// - Local checksum (8 bytes): Our computed checksum
+
+fn RESYNC_CHECKSUM_MISMATCH() -> i64 { 1 }
+fn RESYNC_MISSING_FRAMES() -> i64 { 2 }
+fn RESYNC_PROTOCOL_ERROR() -> i64 { 3 }
+fn RESYNC_RECONNECT() -> i64 { 4 }
+
+fn full_sync_payload_new(expected_tick: i64, reason: i64, local_checksum: i64) -> i64 {
+    let payload = vec_new();
+
+    // Expected tick (2 bytes)
+    vec_push(payload, (expected_tick >> 8) & 255);
+    vec_push(payload, expected_tick & 255);
+
+    // Reason code (1 byte)
+    vec_push(payload, reason & 255);
+
+    // Local checksum (8 bytes)
+    vec_push(payload, (local_checksum >> 56) & 255);
+    vec_push(payload, (local_checksum >> 48) & 255);
+    vec_push(payload, (local_checksum >> 40) & 255);
+    vec_push(payload, (local_checksum >> 32) & 255);
+    vec_push(payload, (local_checksum >> 24) & 255);
+    vec_push(payload, (local_checksum >> 16) & 255);
+    vec_push(payload, (local_checksum >> 8) & 255);
+    vec_push(payload, local_checksum & 255);
+
+    payload
+}
+
+fn full_sync_payload_parse(payload: i64) -> i64 {
+    if vec_len(payload) < 11 {
+        return 0;
+    }
+
+    let result = vec_new();
+
+    // Expected tick
+    let tick = (vec_get(payload, 0) << 8) | vec_get(payload, 1);
+    vec_push(result, tick);
+
+    // Reason
+    vec_push(result, vec_get(payload, 2));
+
+    // Local checksum
+    let checksum = (vec_get(payload, 3) << 56) |
+                   (vec_get(payload, 4) << 48) |
+                   (vec_get(payload, 5) << 40) |
+                   (vec_get(payload, 6) << 32) |
+                   (vec_get(payload, 7) << 24) |
+                   (vec_get(payload, 8) << 16) |
+                   (vec_get(payload, 9) << 8) |
+                   vec_get(payload, 10);
+    vec_push(result, checksum);
+
+    result
+}
+
+fn frame_new_full_sync(expected_tick: i64, reason: i64, local_checksum: i64) -> i64 {
+    let frame = frame_new(FRAME_FULL_SYNC(), FLAG_URGENT());
+    let payload = full_sync_payload_new(expected_tick, reason, local_checksum);
+    frame_set_payload(frame, payload);
+    frame
+}
+
+fn control_create_full_sync(expected_tick: i64, reason: i64, local_checksum: i64) -> i64 {
+    let frame = frame_new_full_sync(expected_tick, reason, local_checksum);
+    frame_encode(frame)
+}
+
+// =============================================================================
+// DISCONNECT Frame - Graceful Close
+// =============================================================================
+
+// DISCONNECT Frame Payload:
+// - Reason code (1 byte): Why we're disconnecting
+// - Final tick (2 bytes): Last tick we processed
+// - Message (variable): Optional human-readable message
+
+fn DISCONNECT_NORMAL() -> i64 { 0 }
+fn DISCONNECT_GOING_AWAY() -> i64 { 1 }
+fn DISCONNECT_PROTOCOL_ERROR() -> i64 { 2 }
+fn DISCONNECT_INVALID_DATA() -> i64 { 3 }
+fn DISCONNECT_POLICY() -> i64 { 4 }
+fn DISCONNECT_OVERLOAD() -> i64 { 5 }
+fn DISCONNECT_MAINTENANCE() -> i64 { 6 }
+fn DISCONNECT_RESTART() -> i64 { 7 }
+
+fn disconnect_payload_new(reason: i64, final_tick: i64) -> i64 {
+    let payload = vec_new();
+
+    // Reason code (1 byte)
+    vec_push(payload, reason & 255);
+
+    // Final tick (2 bytes)
+    vec_push(payload, (final_tick >> 8) & 255);
+    vec_push(payload, final_tick & 255);
+
+    payload
+}
+
+fn disconnect_payload_parse(payload: i64) -> i64 {
+    if vec_len(payload) < 3 {
+        return 0;
+    }
+
+    let result = vec_new();
+    vec_push(result, vec_get(payload, 0));  // reason
+    let tick = (vec_get(payload, 1) << 8) | vec_get(payload, 2);
+    vec_push(result, tick);
+
+    result
+}
+
+fn frame_new_disconnect(reason: i64, final_tick: i64) -> i64 {
+    let frame = frame_new(FRAME_DISCONNECT(), FLAG_NONE());
+    let payload = disconnect_payload_new(reason, final_tick);
+    frame_set_payload(frame, payload);
+    frame
+}
+
+fn control_create_disconnect(reason: i64, final_tick: i64) -> i64 {
+    let frame = frame_new_disconnect(reason, final_tick);
+    frame_encode(frame)
+}
+
+// =============================================================================
+// Flow Control - Backpressure Management
+// =============================================================================
+
+// Flow Control Structure:
+// Slot 0: window_size - How many frames we can receive
+// Slot 1: frames_in_flight - Frames sent but not acknowledged
+// Slot 2: last_ack_tick - Last tick that was acknowledged
+// Slot 3: max_window - Maximum window size
+// Slot 4: min_window - Minimum window size
+// Slot 5: congestion_count - How many times we hit congestion
+
+fn FLOW_DEFAULT_WINDOW() -> i64 { 32 }
+fn FLOW_MAX_WINDOW() -> i64 { 256 }
+fn FLOW_MIN_WINDOW() -> i64 { 4 }
+
+fn flow_control_new() -> i64 {
+    let fc = vec_new();
+    vec_push(fc, FLOW_DEFAULT_WINDOW());  // Slot 0: window_size
+    vec_push(fc, 0);                       // Slot 1: frames_in_flight
+    vec_push(fc, 0);                       // Slot 2: last_ack_tick
+    vec_push(fc, FLOW_MAX_WINDOW());       // Slot 3: max_window
+    vec_push(fc, FLOW_MIN_WINDOW());       // Slot 4: min_window
+    vec_push(fc, 0);                       // Slot 5: congestion_count
+    fc
+}
+
+fn flow_control_window(fc: i64) -> i64 { vec_get(fc, 0) }
+fn flow_control_in_flight(fc: i64) -> i64 { vec_get(fc, 1) }
+fn flow_control_last_ack(fc: i64) -> i64 { vec_get(fc, 2) }
+fn flow_control_congestion_count(fc: i64) -> i64 { vec_get(fc, 5) }
+
+fn flow_control_can_send(fc: i64) -> i64 {
+    let in_flight = flow_control_in_flight(fc);
+    let window = flow_control_window(fc);
+    if in_flight < window { 1 } else { 0 }
+}
+
+fn flow_control_on_send(fc: i64) -> i64 {
+    let in_flight = vec_get(fc, 1);
+    vec_set(fc, 1, in_flight + 1);
+    0
+}
+
+fn flow_control_on_ack(fc: i64, tick: i64) -> i64 {
+    let in_flight = vec_get(fc, 1);
+    if in_flight > 0 {
+        vec_set(fc, 1, in_flight - 1);
+    }
+    vec_set(fc, 2, tick);
+
+    // Additive increase: grow window on successful ack
+    let window = vec_get(fc, 0);
+    let max_window = vec_get(fc, 3);
+    if window < max_window {
+        vec_set(fc, 0, window + 1);
+    }
+    0
+}
+
+fn flow_control_on_congestion(fc: i64) -> i64 {
+    // Multiplicative decrease: halve window on congestion
+    let window = vec_get(fc, 0);
+    let min_window = vec_get(fc, 4);
+    let new_window = window / 2;
+    if new_window < min_window {
+        new_window = min_window;
+    }
+    vec_set(fc, 0, new_window);
+
+    // Track congestion events
+    let count = vec_get(fc, 5);
+    vec_set(fc, 5, count + 1);
+    0
+}
+
+fn flow_control_reset(fc: i64) -> i64 {
+    vec_set(fc, 0, FLOW_DEFAULT_WINDOW());
+    vec_set(fc, 1, 0);
+    vec_set(fc, 5, 0);
+    0
+}
+
+// =============================================================================
+// Control Session - Manages Control Protocol State
+// =============================================================================
+
+// Control Session Structure:
+// Slot 0: flow_control
+// Slot 1: ping_sequence
+// Slot 2: last_ping_time
+// Slot 3: last_pong_time
+// Slot 4: rtt_estimate (round-trip time in ms)
+// Slot 5: checksum_interval
+// Slot 6: frames_since_checksum
+// Slot 7: pending_defines (vec of define frames)
+// Slot 8: pending_tombstones (vec of tombstone frames)
+// Slot 9: state (control session state)
+
+fn CTRL_STATE_ACTIVE() -> i64 { 0 }
+fn CTRL_STATE_CHECKSUM_PENDING() -> i64 { 1 }
+fn CTRL_STATE_RESYNC_REQUESTED() -> i64 { 2 }
+fn CTRL_STATE_DISCONNECTING() -> i64 { 3 }
+
+fn control_session_new(checksum_interval: i64) -> i64 {
+    let session = vec_new();
+    vec_push(session, flow_control_new());  // Slot 0: flow_control
+    vec_push(session, 0);                    // Slot 1: ping_sequence
+    vec_push(session, 0);                    // Slot 2: last_ping_time
+    vec_push(session, 0);                    // Slot 3: last_pong_time
+    vec_push(session, 0);                    // Slot 4: rtt_estimate
+    vec_push(session, checksum_interval);    // Slot 5: checksum_interval
+    vec_push(session, 0);                    // Slot 6: frames_since_checksum
+    vec_push(session, vec_new());            // Slot 7: pending_defines
+    vec_push(session, vec_new());            // Slot 8: pending_tombstones
+    vec_push(session, CTRL_STATE_ACTIVE());  // Slot 9: state
+    session
+}
+
+fn control_session_flow(session: i64) -> i64 { vec_get(session, 0) }
+fn control_session_rtt(session: i64) -> i64 { vec_get(session, 4) }
+fn control_session_state(session: i64) -> i64 { vec_get(session, 9) }
+
+fn control_session_can_send(session: i64) -> i64 {
+    let fc = control_session_flow(session);
+    flow_control_can_send(fc)
+}
+
+fn control_session_on_frame_sent(session: i64) -> i64 {
+    let fc = control_session_flow(session);
+    flow_control_on_send(fc);
+
+    // Track frames for checksum
+    let count = vec_get(session, 6) + 1;
+    vec_set(session, 6, count);
+    0
+}
+
+fn control_session_needs_checksum(session: i64) -> i64 {
+    let count = vec_get(session, 6);
+    let interval = vec_get(session, 5);
+    if count >= interval { 1 } else { 0 }
+}
+
+fn control_session_reset_checksum_counter(session: i64) -> i64 {
+    vec_set(session, 6, 0);
+    0
+}
+
+// Send a PING and track it
+fn control_session_send_ping(session: i64, current_time: i64) -> i64 {
+    let seq = vec_get(session, 1);
+    vec_set(session, 1, seq + 1);
+    vec_set(session, 2, current_time);
+    control_create_ping(seq, current_time)
+}
+
+// Handle received PONG and update RTT
+fn control_session_handle_pong(session: i64, frame_bytes: i64, current_time: i64) -> i64 {
+    let frame = frame_decode(frame_bytes);
+    if frame == 0 { return ERR_DECODE_ERROR(); }
+
+    if frame_type(frame) != FRAME_PONG() {
+        return ERR_INVALID_FRAME_TYPE();
+    }
+
+    let payload = frame_payload(frame);
+    let parsed = ping_payload_parse(payload);
+    if parsed == 0 { return ERR_DECODE_ERROR(); }
+
+    let ping_time = vec_get(parsed, 1);
+    let rtt = current_time - ping_time;
+
+    // Update RTT estimate (exponential moving average)
+    let old_rtt = vec_get(session, 4);
+    let new_rtt = 0;
+    if old_rtt == 0 {
+        new_rtt = rtt;
+    } else {
+        new_rtt = (old_rtt * 7 + rtt) / 8;  // 7/8 old + 1/8 new
+    }
+    vec_set(session, 4, new_rtt);
+    vec_set(session, 3, current_time);
+
+    ERR_NONE()
+}
+
+// Handle received PING - respond with PONG
+fn control_session_handle_ping(session: i64, frame_bytes: i64) -> i64 {
+    let frame = frame_decode(frame_bytes);
+    if frame == 0 { return 0; }  // Error: return null
+
+    if frame_type(frame) != FRAME_PING() {
+        return 0;
+    }
+
+    let payload = frame_payload(frame);
+    let parsed = ping_payload_parse(payload);
+    if parsed == 0 { return 0; }
+
+    let seq = vec_get(parsed, 0);
+    let timestamp = vec_get(parsed, 1);
+
+    // Return PONG with same sequence and timestamp
+    control_create_pong(seq, timestamp)
+}
+
+// Queue a DEFINE for a new belief
+fn control_session_queue_define(session: i64, belief_index: i64, initial_value: i64) -> i64 {
+    let pending = vec_get(session, 7);
+    let define_frame = control_create_define(belief_index, initial_value);
+    vec_push(pending, define_frame);
+    0
+}
+
+// Queue a TOMBSTONE for a removed belief
+fn control_session_queue_tombstone(session: i64, belief_index: i64, tick: i64) -> i64 {
+    let pending = vec_get(session, 8);
+    let tombstone_frame = control_create_tombstone(belief_index, tick);
+    vec_push(pending, tombstone_frame);
+    0
+}
+
+// Get pending define frames
+fn control_session_pending_defines(session: i64) -> i64 {
+    vec_get(session, 7)
+}
+
+// Get pending tombstone frames
+fn control_session_pending_tombstones(session: i64) -> i64 {
+    vec_get(session, 8)
+}
+
+// Clear pending frames after they've been sent
+fn control_session_clear_pending(session: i64) -> i64 {
+    let defines = vec_get(session, 7);
+    let tombstones = vec_get(session, 8);
+    while vec_len(defines) > 0 { vec_pop(defines); }
+    while vec_len(tombstones) > 0 { vec_pop(tombstones); }
+    0
+}
+
+// Request full resync
+fn control_session_request_resync(session: i64, tick: i64, reason: i64, checksum: i64) -> i64 {
+    vec_set(session, 9, CTRL_STATE_RESYNC_REQUESTED());
+    control_create_full_sync(tick, reason, checksum)
+}
+
+// Initiate graceful disconnect
+fn control_session_disconnect(session: i64, reason: i64, final_tick: i64) -> i64 {
+    vec_set(session, 9, CTRL_STATE_DISCONNECTING());
+    control_create_disconnect(reason, final_tick)
+}
+
+// Check if session is active
+fn control_session_is_active(session: i64) -> i64 {
+    let state = control_session_state(session);
+    if state == CTRL_STATE_ACTIVE() { 1 } else { 0 }
+}
+
+// =============================================================================
+// Checksum Verification
+// =============================================================================
+
+// Verify received checksum against local state
+// Returns: ERR_NONE on match, ERR_CHECKSUM_MISMATCH on mismatch
+fn control_verify_checksum(session: i64, decoder: i64, frame_bytes: i64) -> i64 {
+    let frame = frame_decode(frame_bytes);
+    if frame == 0 { return ERR_DECODE_ERROR(); }
+
+    if frame_type(frame) != FRAME_CHECKSUM() {
+        return ERR_INVALID_FRAME_TYPE();
+    }
+
+    let payload = frame_payload(frame);
+    let parsed = checksum_payload_parse(payload);
+    if parsed == 0 { return ERR_DECODE_ERROR(); }
+
+    let remote_tick = vec_get(parsed, 0);
+    let remote_checksum = vec_get(parsed, 1);
+    let remote_count = vec_get(parsed, 2);
+
+    // Compute local checksum
+    let local_checksum = sync_compute_checksum(decoder);
+
+    // Verify
+    if remote_checksum != local_checksum {
+        return ERR_CHECKSUM_MISMATCH();
+    }
+
+    // Reset checksum counter on successful verification
+    control_session_reset_checksum_counter(session);
+
+    ERR_NONE()
+}
+
+// =============================================================================
+// Frame Dispatch - Handle Incoming Control Frames
+// =============================================================================
+
+// Handle any incoming frame and dispatch to appropriate handler
+// Returns: response frame bytes (or 0 if no response needed), error via out param
+fn control_handle_frame(session: i64, decoder: i64, frame_bytes: i64, current_time: i64) -> i64 {
+    let frame = frame_decode(frame_bytes);
+    if frame == 0 { return 0; }
+
+    let ftype = frame_type(frame);
+
+    if ftype == FRAME_PING() {
+        return control_session_handle_ping(session, frame_bytes);
+    }
+
+    if ftype == FRAME_PONG() {
+        control_session_handle_pong(session, frame_bytes, current_time);
+        return 0;  // No response needed
+    }
+
+    if ftype == FRAME_CHECKSUM() {
+        let result = control_verify_checksum(session, decoder, frame_bytes);
+        if result == ERR_CHECKSUM_MISMATCH() {
+            // Request full resync
+            let local_checksum = sync_compute_checksum(decoder);
+            return control_session_request_resync(
+                session,
+                sync_decoder_tick(decoder),
+                RESYNC_CHECKSUM_MISMATCH(),
+                local_checksum
+            );
+        }
+        return 0;
+    }
+
+    if ftype == FRAME_DISCONNECT() {
+        // Acknowledge disconnect - connection will be closed
+        vec_set(session, 9, CTRL_STATE_DISCONNECTING());
+        return 0;
+    }
+
+    if ftype == FRAME_FULL_SYNC() {
+        // Mark that we need to send a full baseline
+        vec_set(session, 9, CTRL_STATE_RESYNC_REQUESTED());
+        return 0;
+    }
+
+    // Unknown or non-control frame - return 0
+    0
+}
+
+// =============================================================================
+// Debug/Stats
+// =============================================================================
+
+fn control_session_print_stats(session: i64) -> i64 {
+    print("Control Session Stats:\n");
+
+    let fc = control_session_flow(session);
+    print("  Flow Control:\n");
+    print("    Window: ");
+    print_i64(flow_control_window(fc));
+    print("\n    In Flight: ");
+    print_i64(flow_control_in_flight(fc));
+    print("\n    Congestion Events: ");
+    print_i64(flow_control_congestion_count(fc));
+    print("\n");
+
+    print("  RTT Estimate: ");
+    print_i64(control_session_rtt(session));
+    print(" ms\n");
+
+    print("  Pending Defines: ");
+    print_i64(vec_len(control_session_pending_defines(session)));
+    print("\n  Pending Tombstones: ");
+    print_i64(vec_len(control_session_pending_tombstones(session)));
+    print("\n");
+
+    let state = control_session_state(session);
+    print("  State: ");
+    if state == CTRL_STATE_ACTIVE() {
+        print("ACTIVE");
+    } else if state == CTRL_STATE_CHECKSUM_PENDING() {
+        print("CHECKSUM_PENDING");
+    } else if state == CTRL_STATE_RESYNC_REQUESTED() {
+        print("RESYNC_REQUESTED");
+    } else if state == CTRL_STATE_DISCONNECTING() {
+        print("DISCONNECTING");
+    }
+    print("\n");
+
+    0
+}
+
+// Note: Functions from types.sx, bits.sx, frame.sx, sync.sx, and conn.sx are defined
+// in those files which must be included before this file when compiling
+// Built-in functions: vec_new, vec_push, vec_get, vec_set, vec_len, vec_pop, print, print_i64

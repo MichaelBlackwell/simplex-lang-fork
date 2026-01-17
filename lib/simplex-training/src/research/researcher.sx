@@ -1,0 +1,718 @@
+// TASK-015: Research Specialist
+//
+// A specialist that searches for authoritative knowledge to validate
+// and improve training data quality.
+//
+// Primary Sources (in order of authority):
+// 1. Language specifications (ECMA, ISO, W3C, RFCs)
+// 2. Official API documentation
+// 3. Peer-reviewed academic papers
+// 4. Trusted technical references (MDN, MSDN, man pages)
+// 5. High-quality community knowledge (StackOverflow with high votes)
+//
+// The researcher outputs GroundedBelief<ResearchFact> with full provenance.
+
+use simplex_std::vec::Vec;
+use simplex_std::string::String;
+use simplex_std::option::Option;
+use simplex_std::result::Result;
+use super::sources::{SourceRegistry, SourceType, SourceCredibility};
+
+/// Configuration for research operations
+#[derive(Clone)]
+pub struct ResearchConfig {
+    /// Minimum source credibility to accept
+    pub min_credibility: f64,
+
+    /// Require multiple sources for confirmation
+    pub require_corroboration: bool,
+
+    /// Minimum number of corroborating sources
+    pub min_corroborating_sources: usize,
+
+    /// Maximum age of source (days) before considered stale
+    pub max_source_age_days: u64,
+
+    /// Domains to search
+    pub search_domains: Vec<String>,
+
+    /// Domains to exclude
+    pub excluded_domains: Vec<String>,
+
+    /// Rate limit (requests per minute)
+    pub rate_limit_rpm: u32,
+
+    /// Timeout for individual searches (seconds)
+    pub search_timeout_secs: u64,
+}
+
+impl Default for ResearchConfig {
+    fn default() -> Self {
+        ResearchConfig {
+            min_credibility: 0.7,
+            require_corroboration: true,
+            min_corroborating_sources: 2,
+            max_source_age_days: 365,
+            search_domains: vec![
+                // Language specifications
+                "ecma-international.org".to_string(),
+                "w3.org".to_string(),
+                "ietf.org".to_string(),
+                "iso.org".to_string(),
+                // Official documentation
+                "docs.python.org".to_string(),
+                "docs.oracle.com".to_string(),
+                "docs.microsoft.com".to_string(),
+                "developer.mozilla.org".to_string(),
+                "rust-lang.org".to_string(),
+                "golang.org".to_string(),
+                // Academic
+                "arxiv.org".to_string(),
+                "acm.org".to_string(),
+                "ieee.org".to_string(),
+                // High-quality references
+                "cppreference.com".to_string(),
+                "postgresql.org".to_string(),
+            ],
+            excluded_domains: vec![
+                // Low-quality or unreliable
+                "w3schools.com".to_string(),
+                "geeksforgeeks.org".to_string(),
+            ],
+            rate_limit_rpm: 30,
+            search_timeout_secs: 30,
+        }
+    }
+}
+
+/// A fact discovered through research
+#[derive(Clone)]
+pub struct ResearchFact {
+    /// The claim being made
+    pub claim: String,
+
+    /// Domain this fact belongs to
+    pub domain: String,
+
+    /// Sources that support this fact
+    pub supporting_sources: Vec<SourceReference>,
+
+    /// Sources that contradict this fact (if any)
+    pub contradicting_sources: Vec<SourceReference>,
+
+    /// Confidence based on source quality and agreement
+    pub confidence: f64,
+
+    /// Timestamp of research
+    pub researched_at: u64,
+
+    /// What would falsify this fact
+    pub falsifiers: Vec<String>,
+}
+
+impl ResearchFact {
+    /// Create a new research fact
+    pub fn new(claim: &str, domain: &str) -> Self {
+        ResearchFact {
+            claim: claim.to_string(),
+            domain: domain.to_string(),
+            supporting_sources: Vec::new(),
+            contradicting_sources: Vec::new(),
+            confidence: 0.0,
+            researched_at: current_timestamp(),
+            falsifiers: Vec::new(),
+        }
+    }
+
+    /// Add a supporting source
+    pub fn add_support(&mut self, source: SourceReference) {
+        self.supporting_sources.push(source);
+        self.recalculate_confidence();
+    }
+
+    /// Add a contradicting source
+    pub fn add_contradiction(&mut self, source: SourceReference) {
+        self.contradicting_sources.push(source);
+        self.recalculate_confidence();
+    }
+
+    /// Recalculate confidence based on sources
+    fn recalculate_confidence(&mut self) {
+        if self.supporting_sources.is_empty() {
+            self.confidence = 0.0;
+            return;
+        }
+
+        // Weight by source credibility
+        let support_weight: f64 = self.supporting_sources
+            .iter()
+            .map(|s| s.credibility)
+            .sum();
+
+        let contradict_weight: f64 = self.contradicting_sources
+            .iter()
+            .map(|s| s.credibility)
+            .sum();
+
+        // Agreement ratio weighted by credibility
+        let total = support_weight + contradict_weight;
+        if total > 0.0 {
+            self.confidence = support_weight / total;
+        }
+
+        // Boost for multiple high-quality sources
+        let high_quality_sources = self.supporting_sources
+            .iter()
+            .filter(|s| s.credibility > 0.8)
+            .count();
+
+        if high_quality_sources >= 2 {
+            self.confidence = self.confidence.min(0.95) + 0.05;
+        }
+
+        // Cap at 0.99 - never certain
+        self.confidence = self.confidence.min(0.99);
+    }
+
+    /// Check if this fact has sufficient backing
+    pub fn is_well_supported(&self) -> bool {
+        self.supporting_sources.len() >= 2 &&
+        self.confidence >= 0.7 &&
+        self.contradicting_sources.is_empty()
+    }
+
+    /// Check if there's active disagreement
+    pub fn has_conflict(&self) -> bool {
+        !self.contradicting_sources.is_empty()
+    }
+
+    /// Get source agreement score
+    pub fn source_agreement(&self) -> f64 {
+        if self.supporting_sources.is_empty() && self.contradicting_sources.is_empty() {
+            return 0.5; // Unknown
+        }
+
+        let total = self.supporting_sources.len() + self.contradicting_sources.len();
+        self.supporting_sources.len() as f64 / total as f64
+    }
+}
+
+/// Reference to a source
+#[derive(Clone)]
+pub struct SourceReference {
+    /// URL of the source
+    pub url: String,
+
+    /// Title or description
+    pub title: String,
+
+    /// Type of source
+    pub source_type: SourceType,
+
+    /// Credibility score (0-1)
+    pub credibility: f64,
+
+    /// Date of publication/last update
+    pub date: Option<String>,
+
+    /// Relevant excerpt
+    pub excerpt: Option<String>,
+
+    /// How this source was found
+    pub discovery_method: String,
+}
+
+impl SourceReference {
+    /// Create from URL with automatic type detection
+    pub fn from_url(url: &str, title: &str) -> Self {
+        let source_type = detect_source_type(url);
+        let credibility = source_type.base_credibility();
+
+        SourceReference {
+            url: url.to_string(),
+            title: title.to_string(),
+            source_type,
+            credibility,
+            date: None,
+            excerpt: None,
+            discovery_method: "search".to_string(),
+        }
+    }
+
+    /// Set excerpt
+    pub fn with_excerpt(mut self, excerpt: &str) -> Self {
+        self.excerpt = Some(excerpt.to_string());
+        self
+    }
+
+    /// Set date
+    pub fn with_date(mut self, date: &str) -> Self {
+        self.date = Some(date.to_string());
+        self
+    }
+}
+
+/// Detect source type from URL
+fn detect_source_type(url: &str) -> SourceType {
+    let url_lower = url.to_lowercase();
+
+    // Specifications
+    if url_lower.contains("ecma-international.org") ||
+       url_lower.contains("w3.org/TR") ||
+       url_lower.contains("ietf.org/rfc") ||
+       url_lower.contains("iso.org") {
+        return SourceType::Specification;
+    }
+
+    // Official documentation
+    if url_lower.contains("docs.python.org") ||
+       url_lower.contains("docs.oracle.com") ||
+       url_lower.contains("docs.microsoft.com") ||
+       url_lower.contains("developer.mozilla.org") ||
+       url_lower.contains("doc.rust-lang.org") ||
+       url_lower.contains("pkg.go.dev") {
+        return SourceType::OfficialDocumentation;
+    }
+
+    // Academic
+    if url_lower.contains("arxiv.org") ||
+       url_lower.contains("doi.org") ||
+       url_lower.contains("acm.org") ||
+       url_lower.contains("ieee.org") ||
+       url_lower.contains("scholar.google") {
+        return SourceType::AcademicPaper;
+    }
+
+    // Reference documentation
+    if url_lower.contains("cppreference.com") ||
+       url_lower.contains("postgresql.org/docs") {
+        return SourceType::TechnicalReference;
+    }
+
+    // Community (with high scrutiny)
+    if url_lower.contains("stackoverflow.com") {
+        return SourceType::CommunityValidated;
+    }
+
+    // Default
+    SourceType::Unknown
+}
+
+/// Result of a research operation
+#[derive(Clone)]
+pub struct ResearchResult {
+    /// Query that was researched
+    pub query: String,
+
+    /// Facts discovered
+    pub facts: Vec<ResearchFact>,
+
+    /// Overall confidence in findings
+    pub confidence: f64,
+
+    /// Sources consulted
+    pub sources_consulted: usize,
+
+    /// Any conflicts found
+    pub conflicts: Vec<ResearchConflict>,
+
+    /// Duration of research (ms)
+    pub duration_ms: u64,
+
+    /// Was research successful?
+    pub success: bool,
+
+    /// Error message if any
+    pub error: Option<String>,
+}
+
+impl ResearchResult {
+    /// Create empty result
+    pub fn empty(query: &str) -> Self {
+        ResearchResult {
+            query: query.to_string(),
+            facts: Vec::new(),
+            confidence: 0.0,
+            sources_consulted: 0,
+            conflicts: Vec::new(),
+            duration_ms: 0,
+            success: true,
+            error: None,
+        }
+    }
+
+    /// Create error result
+    pub fn error(query: &str, error: &str) -> Self {
+        ResearchResult {
+            query: query.to_string(),
+            facts: Vec::new(),
+            confidence: 0.0,
+            sources_consulted: 0,
+            conflicts: Vec::new(),
+            duration_ms: 0,
+            success: false,
+            error: Some(error.to_string()),
+        }
+    }
+
+    /// Get primary fact (highest confidence)
+    pub fn primary_fact(&self) -> Option<&ResearchFact> {
+        self.facts.iter().max_by(|a, b| {
+            a.confidence.partial_cmp(&b.confidence).unwrap()
+        })
+    }
+
+    /// Has any conflicts?
+    pub fn has_conflicts(&self) -> bool {
+        !self.conflicts.is_empty() ||
+        self.facts.iter().any(|f| f.has_conflict())
+    }
+}
+
+/// A conflict between sources
+#[derive(Clone)]
+pub struct ResearchConflict {
+    /// The claim in question
+    pub claim: String,
+
+    /// Sources supporting one view
+    pub side_a: Vec<SourceReference>,
+
+    /// Sources supporting opposing view
+    pub side_b: Vec<SourceReference>,
+
+    /// Is this conflict resolvable?
+    pub resolvable: bool,
+
+    /// Resolution if found
+    pub resolution: Option<String>,
+}
+
+/// The Research Specialist
+///
+/// Searches authoritative sources to validate and improve training data.
+pub struct ResearchSpecialist {
+    /// Configuration
+    config: ResearchConfig,
+
+    /// Source registry for credibility lookup
+    source_registry: SourceRegistry,
+
+    /// Cache of recent research results
+    cache: ResearchCache,
+
+    /// Rate limiter state
+    requests_this_minute: u32,
+    minute_started: u64,
+
+    /// Statistics
+    stats: ResearchStats,
+}
+
+impl ResearchSpecialist {
+    /// Create new research specialist
+    pub fn new(config: ResearchConfig) -> Self {
+        ResearchSpecialist {
+            config,
+            source_registry: SourceRegistry::default(),
+            cache: ResearchCache::new(1000),
+            requests_this_minute: 0,
+            minute_started: current_timestamp(),
+            stats: ResearchStats::default(),
+        }
+    }
+
+    /// Create with default config
+    pub fn default_specialist() -> Self {
+        ResearchSpecialist::new(ResearchConfig::default())
+    }
+
+    /// Research a claim/query
+    pub fn research(&mut self, query: &str) -> ResearchResult {
+        // Check cache first
+        if let Some(cached) = self.cache.get(query) {
+            self.stats.cache_hits += 1;
+            return cached.clone();
+        }
+
+        // Check rate limit
+        if !self.check_rate_limit() {
+            return ResearchResult::error(query, "Rate limit exceeded");
+        }
+
+        let start = current_timestamp();
+
+        // Build search results (this would be async in real implementation)
+        let mut result = ResearchResult::empty(query);
+
+        // Search each configured domain
+        for domain in &self.config.search_domains.clone() {
+            if let Some(fact) = self.search_domain(query, domain) {
+                result.facts.push(fact);
+                result.sources_consulted += 1;
+            }
+        }
+
+        // Calculate overall confidence
+        if !result.facts.is_empty() {
+            let avg_confidence: f64 = result.facts.iter()
+                .map(|f| f.confidence)
+                .sum::<f64>() / result.facts.len() as f64;
+            result.confidence = avg_confidence;
+        }
+
+        // Detect conflicts
+        result.conflicts = self.detect_conflicts(&result.facts);
+
+        result.duration_ms = current_timestamp() - start;
+
+        // Cache result
+        self.cache.put(query, result.clone());
+        self.stats.queries += 1;
+
+        result
+    }
+
+    /// Research to validate a training example
+    pub fn validate_example(&mut self, claim: &str, domain: &str) -> ValidationOutcome {
+        let result = self.research(claim);
+
+        if !result.success {
+            return ValidationOutcome::Unknown(result.error.unwrap_or_default());
+        }
+
+        if result.facts.is_empty() {
+            return ValidationOutcome::Unverified;
+        }
+
+        if result.has_conflicts() {
+            return ValidationOutcome::Conflicted(result.conflicts);
+        }
+
+        if let Some(primary) = result.primary_fact() {
+            if primary.is_well_supported() {
+                return ValidationOutcome::Validated(primary.confidence);
+            }
+        }
+
+        ValidationOutcome::PartiallySupported(result.confidence)
+    }
+
+    /// Search a specific domain
+    fn search_domain(&mut self, query: &str, domain: &str) -> Option<ResearchFact> {
+        // In real implementation, this would:
+        // 1. Construct search URL
+        // 2. Fetch results
+        // 3. Parse and extract facts
+        // 4. Build SourceReference
+
+        // For now, return None - actual implementation requires HTTP client
+        // This is the interface that will be filled in
+        None
+    }
+
+    /// Detect conflicts between facts
+    fn detect_conflicts(&self, facts: &[ResearchFact]) -> Vec<ResearchConflict> {
+        let mut conflicts = Vec::new();
+
+        for fact in facts {
+            if fact.has_conflict() {
+                conflicts.push(ResearchConflict {
+                    claim: fact.claim.clone(),
+                    side_a: fact.supporting_sources.clone(),
+                    side_b: fact.contradicting_sources.clone(),
+                    resolvable: false,
+                    resolution: None,
+                });
+            }
+        }
+
+        conflicts
+    }
+
+    /// Check and update rate limit
+    fn check_rate_limit(&mut self) -> bool {
+        let now = current_timestamp();
+        let minute_elapsed = now - self.minute_started > 60000;
+
+        if minute_elapsed {
+            self.requests_this_minute = 0;
+            self.minute_started = now;
+        }
+
+        if self.requests_this_minute >= self.config.rate_limit_rpm {
+            return false;
+        }
+
+        self.requests_this_minute += 1;
+        true
+    }
+
+    /// Get statistics
+    pub fn stats(&self) -> &ResearchStats {
+        &self.stats
+    }
+}
+
+/// Outcome of validation
+#[derive(Clone)]
+pub enum ValidationOutcome {
+    /// Claim is validated by authoritative sources
+    Validated(f64),
+
+    /// Claim has partial support
+    PartiallySupported(f64),
+
+    /// No supporting evidence found
+    Unverified,
+
+    /// Sources conflict on this claim
+    Conflicted(Vec<ResearchConflict>),
+
+    /// Could not determine (error)
+    Unknown(String),
+}
+
+impl ValidationOutcome {
+    /// Get confidence level
+    pub fn confidence(&self) -> f64 {
+        match self {
+            ValidationOutcome::Validated(c) => *c,
+            ValidationOutcome::PartiallySupported(c) => *c,
+            ValidationOutcome::Unverified => 0.0,
+            ValidationOutcome::Conflicted(_) => 0.5,
+            ValidationOutcome::Unknown(_) => 0.0,
+        }
+    }
+
+    /// Should this example be kept?
+    pub fn should_keep(&self) -> bool {
+        match self {
+            ValidationOutcome::Validated(_) => true,
+            ValidationOutcome::PartiallySupported(c) => *c >= 0.5,
+            ValidationOutcome::Unverified => false,
+            ValidationOutcome::Conflicted(_) => false,
+            ValidationOutcome::Unknown(_) => false,
+        }
+    }
+}
+
+/// Simple cache for research results
+struct ResearchCache {
+    entries: Vec<(String, ResearchResult, u64)>,
+    max_size: usize,
+    ttl_ms: u64,
+}
+
+impl ResearchCache {
+    fn new(max_size: usize) -> Self {
+        ResearchCache {
+            entries: Vec::new(),
+            max_size,
+            ttl_ms: 3600000, // 1 hour
+        }
+    }
+
+    fn get(&self, query: &str) -> Option<&ResearchResult> {
+        let now = current_timestamp();
+        self.entries.iter()
+            .find(|(q, _, ts)| q == query && now - ts < self.ttl_ms)
+            .map(|(_, r, _)| r)
+    }
+
+    fn put(&mut self, query: &str, result: ResearchResult) {
+        // Evict old entries
+        let now = current_timestamp();
+        self.entries.retain(|(_, _, ts)| now - ts < self.ttl_ms);
+
+        // Evict if at capacity
+        if self.entries.len() >= self.max_size {
+            self.entries.remove(0);
+        }
+
+        self.entries.push((query.to_string(), result, now));
+    }
+}
+
+/// Research statistics
+#[derive(Clone, Default)]
+pub struct ResearchStats {
+    /// Total queries
+    pub queries: u64,
+
+    /// Cache hits
+    pub cache_hits: u64,
+
+    /// Sources consulted
+    pub sources_consulted: u64,
+
+    /// Facts discovered
+    pub facts_discovered: u64,
+
+    /// Conflicts found
+    pub conflicts_found: u64,
+
+    /// Average confidence
+    pub avg_confidence: f64,
+}
+
+/// Get current timestamp (milliseconds)
+fn current_timestamp() -> u64 {
+    // In real implementation, use system time
+    0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_research_fact_confidence() {
+        let mut fact = ResearchFact::new("Python lists are mutable", "python");
+
+        // Add high-credibility source
+        fact.add_support(SourceReference {
+            url: "https://docs.python.org/3/tutorial/introduction.html".to_string(),
+            title: "Python Tutorial".to_string(),
+            source_type: SourceType::OfficialDocumentation,
+            credibility: 0.95,
+            date: None,
+            excerpt: None,
+            discovery_method: "search".to_string(),
+        });
+
+        assert!(fact.confidence > 0.8);
+        assert!(fact.is_well_supported() == false); // Need 2 sources
+
+        // Add another source
+        fact.add_support(SourceReference {
+            url: "https://realpython.com/python-lists/".to_string(),
+            title: "Real Python".to_string(),
+            source_type: SourceType::TechnicalReference,
+            credibility: 0.75,
+            date: None,
+            excerpt: None,
+            discovery_method: "search".to_string(),
+        });
+
+        assert!(fact.is_well_supported());
+    }
+
+    #[test]
+    fn test_source_type_detection() {
+        assert_eq!(
+            detect_source_type("https://docs.python.org/3/"),
+            SourceType::OfficialDocumentation
+        );
+
+        assert_eq!(
+            detect_source_type("https://arxiv.org/abs/1234.5678"),
+            SourceType::AcademicPaper
+        );
+
+        assert_eq!(
+            detect_source_type("https://www.ecma-international.org/publications/"),
+            SourceType::Specification
+        );
+    }
+}

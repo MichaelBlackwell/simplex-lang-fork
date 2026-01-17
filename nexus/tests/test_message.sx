@@ -1,0 +1,777 @@
+// Nexus Protocol - Message Module Tests
+//
+// Tests for Phase 4: Message routing, streaming, and compression
+
+fn main() -> i64 {
+    print("=== Nexus Message Tests ===\n\n");
+
+    let passed = 0;
+    let failed = 0;
+
+    // Message encoding tests
+    if test_message_encode_decode() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_message_with_correlation() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_message_with_stream_id() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Streaming tests
+    if test_stream_start_payload() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_stream_data_payload() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_stream_end_payload() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_stream_messages() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_stream_full_flow() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Compression tests
+    if test_rle_compression_simple() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_rle_compression_repeat() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_rle_compression_mixed() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_message_compression() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Cognitive message tests
+    if test_belief_message() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_goal_message() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_query_message() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Router tests
+    if test_router_creation() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_router_stream_handling() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    print("\nPassed: ");
+    print_i64(passed);
+    print(" / ");
+    print_i64(passed + failed);
+    print("\n");
+
+    if failed > 0 { 1 } else { 0 }
+}
+
+// =============================================================================
+// Message Encoding Tests
+// =============================================================================
+
+fn test_message_encode_decode() -> i64 {
+    print("Testing message encode/decode... ");
+
+    let msg = message_new(MSG_SEND());
+
+    let payload = vec_new();
+    vec_push(payload, 1);
+    vec_push(payload, 2);
+    vec_push(payload, 3);
+    message_set_payload(msg, payload);
+
+    let encoded = message_encode(msg);
+    let decoded = message_decode(encoded);
+
+    if decoded == 0 {
+        print("FAIL: decode returned null\n");
+        return 1;
+    }
+
+    if message_type(decoded) != MSG_SEND() {
+        print("FAIL: wrong message type\n");
+        return 1;
+    }
+
+    let decoded_payload = message_payload(decoded);
+    if vec_len(decoded_payload) != 3 {
+        print("FAIL: wrong payload length\n");
+        return 1;
+    }
+
+    if vec_get(decoded_payload, 0) != 1 ||
+       vec_get(decoded_payload, 1) != 2 ||
+       vec_get(decoded_payload, 2) != 3 {
+        print("FAIL: wrong payload content\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_message_with_correlation() -> i64 {
+    print("Testing message with correlation ID... ");
+
+    let msg = message_new(MSG_REPLY());
+    message_set_correlation_id(msg, 12345678);
+    message_set_flags(msg, MSG_FLAG_HAS_CORRELATION());
+
+    let payload = vec_new();
+    vec_push(payload, 42);
+    message_set_payload(msg, payload);
+
+    let encoded = message_encode(msg);
+    let decoded = message_decode(encoded);
+
+    if decoded == 0 {
+        print("FAIL: decode failed\n");
+        return 1;
+    }
+
+    if message_correlation_id(decoded) != 12345678 {
+        print("FAIL: wrong correlation ID\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_message_with_stream_id() -> i64 {
+    print("Testing message with stream ID... ");
+
+    let msg = message_new(MSG_STREAM_DATA());
+    message_set_stream_id(msg, 1234);
+    message_set_flags(msg, MSG_FLAG_HAS_STREAM());
+
+    let payload = vec_new();
+    vec_push(payload, 0);
+    vec_push(payload, 1);  // chunk index 1
+    vec_push(payload, 100);
+    message_set_payload(msg, payload);
+
+    let encoded = message_encode(msg);
+    let decoded = message_decode(encoded);
+
+    if decoded == 0 {
+        print("FAIL: decode failed\n");
+        return 1;
+    }
+
+    if message_stream_id(decoded) != 1234 {
+        print("FAIL: wrong stream ID\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// Streaming Tests
+// =============================================================================
+
+fn test_stream_start_payload() -> i64 {
+    print("Testing stream START payload... ");
+
+    let payload = stream_start_payload_new(10, 1000, STREAM_CONTENT_BELIEFS());
+    let parsed = stream_start_payload_parse(payload);
+
+    if parsed == 0 {
+        print("FAIL: parse failed\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 0) != 10 {
+        print("FAIL: wrong total chunks\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 1) != 1000 {
+        print("FAIL: wrong total size\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 2) != STREAM_CONTENT_BELIEFS() {
+        print("FAIL: wrong content type\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_stream_data_payload() -> i64 {
+    print("Testing stream DATA payload... ");
+
+    let data = vec_new();
+    vec_push(data, 10);
+    vec_push(data, 20);
+    vec_push(data, 30);
+
+    let payload = stream_data_payload_new(5, data);
+    let parsed = stream_data_payload_parse(payload);
+
+    if parsed == 0 {
+        print("FAIL: parse failed\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 0) != 5 {
+        print("FAIL: wrong chunk index\n");
+        return 1;
+    }
+
+    let parsed_data = vec_get(parsed, 1);
+    if vec_len(parsed_data) != 3 {
+        print("FAIL: wrong data length\n");
+        return 1;
+    }
+
+    if vec_get(parsed_data, 0) != 10 ||
+       vec_get(parsed_data, 1) != 20 ||
+       vec_get(parsed_data, 2) != 30 {
+        print("FAIL: wrong data content\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_stream_end_payload() -> i64 {
+    print("Testing stream END payload... ");
+
+    let payload = stream_end_payload_new(3735928559, 10);
+    let parsed = stream_end_payload_parse(payload);
+
+    if parsed == 0 {
+        print("FAIL: parse failed\n");
+        return 1;
+    }
+
+    // Note: 0xDEADBEEF = 3735928559
+    if vec_get(parsed, 0) != 3735928559 {
+        print("FAIL: wrong checksum\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 1) != 10 {
+        print("FAIL: wrong final count\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_stream_messages() -> i64 {
+    print("Testing stream message creation... ");
+
+    let start_msg = message_stream_start(100, 5, 500, STREAM_CONTENT_RAW());
+    if message_type(start_msg) != MSG_STREAM_START() {
+        print("FAIL: wrong start message type\n");
+        return 1;
+    }
+    if message_stream_id(start_msg) != 100 {
+        print("FAIL: wrong start stream ID\n");
+        return 1;
+    }
+
+    let data = vec_new();
+    vec_push(data, 1);
+    vec_push(data, 2);
+    let data_msg = message_stream_data(100, 0, data);
+    if message_type(data_msg) != MSG_STREAM_DATA() {
+        print("FAIL: wrong data message type\n");
+        return 1;
+    }
+
+    let end_msg = message_stream_end(100, 12345, 5);
+    if message_type(end_msg) != MSG_STREAM_END() {
+        print("FAIL: wrong end message type\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_stream_full_flow() -> i64 {
+    print("Testing stream full flow... ");
+
+    // Create stream state
+    let state = stream_state_new(1);
+    stream_state_set_total(state, 3);
+
+    // Send 3 chunks of data
+    let chunk0_data = vec_new();
+    vec_push(chunk0_data, 10);
+    vec_push(chunk0_data, 20);
+    let chunk0 = stream_data_payload_new(0, chunk0_data);
+    stream_handle_data(state, chunk0);
+
+    let chunk1_data = vec_new();
+    vec_push(chunk1_data, 30);
+    vec_push(chunk1_data, 40);
+    let chunk1 = stream_data_payload_new(1, chunk1_data);
+    stream_handle_data(state, chunk1);
+
+    let chunk2_data = vec_new();
+    vec_push(chunk2_data, 50);
+    let chunk2 = stream_data_payload_new(2, chunk2_data);
+    stream_handle_data(state, chunk2);
+
+    if stream_state_received(state) != 3 {
+        print("FAIL: wrong received count\n");
+        return 1;
+    }
+
+    // Check buffer contents
+    let buffer = stream_state_buffer(state);
+    if vec_len(buffer) != 5 {
+        print("FAIL: wrong buffer length\n");
+        return 1;
+    }
+
+    if vec_get(buffer, 0) != 10 ||
+       vec_get(buffer, 1) != 20 ||
+       vec_get(buffer, 2) != 30 ||
+       vec_get(buffer, 3) != 40 ||
+       vec_get(buffer, 4) != 50 {
+        print("FAIL: wrong buffer content\n");
+        return 1;
+    }
+
+    // Compute checksum and end stream
+    let checksum = compute_simple_checksum(buffer);
+    let end = stream_end_payload_new(checksum, 3);
+    let result = stream_handle_end(state, end);
+
+    if result != ERR_NONE() {
+        print("FAIL: stream end failed\n");
+        return 1;
+    }
+
+    if stream_state_is_complete(state) != 1 {
+        print("FAIL: stream not marked complete\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// Compression Tests
+// =============================================================================
+
+fn test_rle_compression_simple() -> i64 {
+    print("Testing RLE compression (literal)... ");
+
+    let data = vec_new();
+    vec_push(data, 1);
+    vec_push(data, 2);
+    vec_push(data, 3);
+    vec_push(data, 4);
+    vec_push(data, 5);
+
+    let compressed = compress_rle(data);
+    let decompressed = decompress_rle(compressed);
+
+    if vec_len(decompressed) != 5 {
+        print("FAIL: wrong decompressed length\n");
+        return 1;
+    }
+
+    let i = 0;
+    while i < 5 {
+        if vec_get(decompressed, i) != i + 1 {
+            print("FAIL: wrong decompressed value\n");
+            return 1;
+        }
+        i = i + 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_rle_compression_repeat() -> i64 {
+    print("Testing RLE compression (repeat runs)... ");
+
+    // Create data with runs of same byte
+    let data = vec_new();
+    let i = 0;
+    while i < 10 {
+        vec_push(data, 42);
+        i = i + 1;
+    }
+    i = 0;
+    while i < 10 {
+        vec_push(data, 99);
+        i = i + 1;
+    }
+
+    let compressed = compress_rle(data);
+    let decompressed = decompress_rle(compressed);
+
+    if vec_len(decompressed) != 20 {
+        print("FAIL: wrong decompressed length\n");
+        return 1;
+    }
+
+    // Check first run
+    i = 0;
+    while i < 10 {
+        if vec_get(decompressed, i) != 42 {
+            print("FAIL: wrong value in first run\n");
+            return 1;
+        }
+        i = i + 1;
+    }
+
+    // Check second run
+    while i < 20 {
+        if vec_get(decompressed, i) != 99 {
+            print("FAIL: wrong value in second run\n");
+            return 1;
+        }
+        i = i + 1;
+    }
+
+    // Verify compression was effective
+    if vec_len(compressed) >= vec_len(data) {
+        print("FAIL: compression not effective\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_rle_compression_mixed() -> i64 {
+    print("Testing RLE compression (mixed)... ");
+
+    // Mixed data: literal + runs + literal
+    let data = vec_new();
+    vec_push(data, 1);
+    vec_push(data, 2);
+    vec_push(data, 3);
+
+    let i = 0;
+    while i < 8 {
+        vec_push(data, 50);
+        i = i + 1;
+    }
+
+    vec_push(data, 4);
+    vec_push(data, 5);
+
+    let compressed = compress_rle(data);
+    let decompressed = decompress_rle(compressed);
+
+    if vec_len(decompressed) != 13 {
+        print("FAIL: wrong length, got ");
+        print_i64(vec_len(decompressed));
+        print("\n");
+        return 1;
+    }
+
+    // Verify content
+    if vec_get(decompressed, 0) != 1 ||
+       vec_get(decompressed, 1) != 2 ||
+       vec_get(decompressed, 2) != 3 {
+        print("FAIL: wrong first literal run\n");
+        return 1;
+    }
+
+    i = 3;
+    while i < 11 {
+        if vec_get(decompressed, i) != 50 {
+            print("FAIL: wrong repeat value\n");
+            return 1;
+        }
+        i = i + 1;
+    }
+
+    if vec_get(decompressed, 11) != 4 ||
+       vec_get(decompressed, 12) != 5 {
+        print("FAIL: wrong last literal run\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_message_compression() -> i64 {
+    print("Testing message compression... ");
+
+    let msg = message_new(MSG_SYNC());
+
+    // Create compressible payload (lots of repeated zeros)
+    let payload = vec_new();
+    let i = 0;
+    while i < 100 {
+        vec_push(payload, 0);
+        i = i + 1;
+    }
+    message_set_payload(msg, payload);
+
+    let original_len = vec_len(message_payload(msg));
+    let saved = message_compress_payload(msg);
+
+    if saved == 0 {
+        print("FAIL: compression should have saved bytes\n");
+        return 1;
+    }
+
+    let compressed_len = vec_len(message_payload(msg));
+    if compressed_len >= original_len {
+        print("FAIL: compressed size not smaller\n");
+        return 1;
+    }
+
+    // Check flag is set
+    if (message_flags(msg) & MSG_FLAG_COMPRESSED()) == 0 {
+        print("FAIL: compression flag not set\n");
+        return 1;
+    }
+
+    // Decompress
+    message_decompress_payload(msg);
+
+    if vec_len(message_payload(msg)) != 100 {
+        print("FAIL: decompressed size wrong\n");
+        return 1;
+    }
+
+    // Check flag is cleared
+    if (message_flags(msg) & MSG_FLAG_COMPRESSED()) != 0 {
+        print("FAIL: compression flag not cleared\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// Cognitive Message Tests
+// =============================================================================
+
+fn test_belief_message() -> i64 {
+    print("Testing BELIEF message... ");
+
+    let content = vec_new();
+    vec_push(content, 65);  // 'A'
+    vec_push(content, 66);  // 'B'
+    vec_push(content, 67);  // 'C'
+
+    let msg = belief_message_new(1000, 8500, content);
+
+    if message_type(msg) != MSG_BELIEF() {
+        print("FAIL: wrong message type\n");
+        return 1;
+    }
+
+    let parsed = belief_message_parse(msg);
+    if parsed == 0 {
+        print("FAIL: parse failed\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 0) != 1000 {
+        print("FAIL: wrong belief ID\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 1) != 8500 {
+        print("FAIL: wrong confidence\n");
+        return 1;
+    }
+
+    let parsed_content = vec_get(parsed, 2);
+    if vec_len(parsed_content) != 3 {
+        print("FAIL: wrong content length\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_goal_message() -> i64 {
+    print("Testing GOAL message... ");
+
+    let description = vec_new();
+    vec_push(description, 84);  // 'T'
+    vec_push(description, 69);  // 'E'
+    vec_push(description, 83);  // 'S'
+    vec_push(description, 84);  // 'T'
+
+    let msg = goal_message_new(500, 100, 1735689600, description);
+
+    if message_type(msg) != MSG_GOAL() {
+        print("FAIL: wrong message type\n");
+        return 1;
+    }
+
+    let parsed = goal_message_parse(msg);
+    if parsed == 0 {
+        print("FAIL: parse failed\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 0) != 500 {
+        print("FAIL: wrong goal ID\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 1) != 100 {
+        print("FAIL: wrong priority\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 2) != 1735689600 {
+        print("FAIL: wrong deadline\n");
+        return 1;
+    }
+
+    let parsed_desc = vec_get(parsed, 3);
+    if vec_len(parsed_desc) != 4 {
+        print("FAIL: wrong description length\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_query_message() -> i64 {
+    print("Testing QUERY message... ");
+
+    let query_data = vec_new();
+    vec_push(query_data, 1);
+    vec_push(query_data, 2);
+    vec_push(query_data, 3);
+
+    let msg = query_message_new(99999, QUERY_TYPE_BELIEF(), query_data);
+
+    if message_type(msg) != MSG_QUERY() {
+        print("FAIL: wrong message type\n");
+        return 1;
+    }
+
+    if message_correlation_id(msg) != 99999 {
+        print("FAIL: wrong correlation ID\n");
+        return 1;
+    }
+
+    // Check flags
+    if (message_flags(msg) & MSG_FLAG_HAS_CORRELATION()) == 0 {
+        print("FAIL: correlation flag not set\n");
+        return 1;
+    }
+
+    if (message_flags(msg) & MSG_FLAG_REQUIRES_ACK()) == 0 {
+        print("FAIL: requires ack flag not set\n");
+        return 1;
+    }
+
+    let parsed = query_message_parse(msg);
+    if parsed == 0 {
+        print("FAIL: parse failed\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 0) != QUERY_TYPE_BELIEF() {
+        print("FAIL: wrong query type\n");
+        return 1;
+    }
+
+    let parsed_data = vec_get(parsed, 1);
+    if vec_len(parsed_data) != 3 {
+        print("FAIL: wrong query data length\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// Router Tests
+// =============================================================================
+
+fn test_router_creation() -> i64 {
+    print("Testing router creation... ");
+
+    let router = msg_router_new();
+
+    let stats = vec_get(router, 3);
+    if msg_router_stats_messages_routed(stats) != 0 {
+        print("FAIL: initial routed count not 0\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_router_stream_handling() -> i64 {
+    print("Testing router stream handling... ");
+
+    let router = msg_router_new();
+
+    // Create and dispatch stream START
+    let start_msg = message_stream_start(42, 2, 100, STREAM_CONTENT_RAW());
+    msg_router_dispatch(router, start_msg);
+
+    // Check that stream is in pending
+    let pending = msg_router_pending_streams(router);
+    if vec_len(pending) != 2 {  // (id, state) pair
+        print("FAIL: stream not added to pending\n");
+        return 1;
+    }
+
+    // Create and dispatch stream DATA chunks
+    let data1 = vec_new();
+    vec_push(data1, 1);
+    vec_push(data1, 2);
+    let data1_msg = message_stream_data(42, 0, data1);
+    msg_router_dispatch(router, data1_msg);
+
+    let data2 = vec_new();
+    vec_push(data2, 3);
+    vec_push(data2, 4);
+    let data2_msg = message_stream_data(42, 1, data2);
+    msg_router_dispatch(router, data2_msg);
+
+    // Create and dispatch stream END
+    let state = msg_router_find_stream(pending, 42);
+    let buffer = stream_state_buffer(state);
+    let checksum = compute_simple_checksum(buffer);
+    let end_msg = message_stream_end(42, checksum, 2);
+    msg_router_dispatch(router, end_msg);
+
+    // Verify stream completed
+    let stats = vec_get(router, 3);
+    if msg_router_stats_streams_completed(stats) != 1 {
+        print("FAIL: stream not marked complete\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}

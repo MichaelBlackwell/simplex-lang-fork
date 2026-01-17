@@ -1,0 +1,504 @@
+// Nexus Protocol - Bit Reader/Writer Tests
+//
+// Tests for the bit-level encoding that enables 400x compression
+
+fn main() -> i64 {
+    print("=== Nexus BitWriter/BitReader Tests ===\n\n");
+
+    var passed = 0;
+    var failed = 0;
+
+    // BitWriter tests
+    if test_bitwriter_single_bits() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_bitwriter_multi_bits() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_bitwriter_bytes() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_bitwriter_u16_u32() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // BitReader tests
+    if test_bitreader_single_bits() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_bitreader_multi_bits() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Delta encoding tests
+    if test_delta_same() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_delta_small() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_delta_large() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_delta_full() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_delta_auto() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Round-trip tests
+    if test_roundtrip_deltas() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Summary
+    print("\nPassed: ");
+    print_i64(passed);
+    print(" / ");
+    print_i64(passed + failed);
+    print("\n");
+
+    failed
+}
+
+// =============================================================================
+// BitWriter Tests
+// =============================================================================
+
+fn test_bitwriter_single_bits() -> i64 {
+    print("Testing single bit writes... ");
+
+    let writer = bitwriter_new();
+
+    // Write bits: 10110010
+    bitwriter_write_bit(writer, 1);
+    bitwriter_write_bit(writer, 0);
+    bitwriter_write_bit(writer, 1);
+    bitwriter_write_bit(writer, 1);
+    bitwriter_write_bit(writer, 0);
+    bitwriter_write_bit(writer, 0);
+    bitwriter_write_bit(writer, 1);
+    bitwriter_write_bit(writer, 0);
+
+    let buffer = bitwriter_finish(writer);
+
+    if vec_len(buffer) != 1 {
+        print("FAIL: expected 1 byte\n");
+        return 1;
+    }
+
+    // 10110010 = 0xB2 = 178
+    if vec_get(buffer, 0) != 178 {
+        print("FAIL: expected 178, got ");
+        print_i64(vec_get(buffer, 0));
+        print("\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_bitwriter_multi_bits() -> i64 {
+    print("Testing multi-bit writes... ");
+
+    let writer = bitwriter_new();
+
+    // Write 5 bits: 10110
+    bitwriter_write_bits(writer, 22, 5);  // 22 = 10110
+
+    // Write 3 more bits: 011
+    bitwriter_write_bits(writer, 3, 3);   // 3 = 011
+
+    let buffer = bitwriter_finish(writer);
+
+    if vec_len(buffer) != 1 {
+        print("FAIL: expected 1 byte\n");
+        return 1;
+    }
+
+    // 10110 011 = 0xB3 = 179
+    if vec_get(buffer, 0) != 179 {
+        print("FAIL: expected 179, got ");
+        print_i64(vec_get(buffer, 0));
+        print("\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_bitwriter_bytes() -> i64 {
+    print("Testing byte writes... ");
+
+    let writer = bitwriter_new();
+
+    // Write full bytes: 0xAB = 171, 0xCD = 205
+    bitwriter_write_byte(writer, 171);
+    bitwriter_write_byte(writer, 205);
+
+    let buffer = bitwriter_finish(writer);
+
+    if vec_len(buffer) != 2 {
+        print("FAIL: expected 2 bytes\n");
+        return 1;
+    }
+
+    if vec_get(buffer, 0) != 171 {
+        print("FAIL: first byte wrong\n");
+        return 1;
+    }
+
+    if vec_get(buffer, 1) != 205 {
+        print("FAIL: second byte wrong\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_bitwriter_u16_u32() -> i64 {
+    print("Testing u16/u32 writes... ");
+
+    let writer = bitwriter_new();
+
+    // Write u16: 0x1234 = 4660
+    bitwriter_write_u16(writer, 4660);
+
+    let buffer = bitwriter_finish(writer);
+
+    if vec_len(buffer) != 2 {
+        print("FAIL: expected 2 bytes for u16\n");
+        return 1;
+    }
+
+    // Big-endian: 0x12 = 18 first, then 0x34 = 52
+    if vec_get(buffer, 0) != 18 {
+        print("FAIL: u16 high byte wrong\n");
+        return 1;
+    }
+    if vec_get(buffer, 1) != 52 {
+        print("FAIL: u16 low byte wrong\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// BitReader Tests
+// =============================================================================
+
+fn test_bitreader_single_bits() -> i64 {
+    print("Testing single bit reads... ");
+
+    // Create buffer with 0xB2 (10110010) = 178
+    let buffer = vec_new();
+    vec_push(buffer, 178);
+
+    let reader = bitreader_new(buffer);
+
+    // Expected bits: 1,0,1,1,0,0,1,0
+    let expected = vec_new();
+    vec_push(expected, 1);
+    vec_push(expected, 0);
+    vec_push(expected, 1);
+    vec_push(expected, 1);
+    vec_push(expected, 0);
+    vec_push(expected, 0);
+    vec_push(expected, 1);
+    vec_push(expected, 0);
+
+    var i = 0;
+    while i < 8 {
+        let bit = bitreader_read_bit(reader);
+        if bit != vec_get(expected, i) {
+            print("FAIL at bit ");
+            print_i64(i);
+            print("\n");
+            return 1;
+        }
+        i = i + 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_bitreader_multi_bits() -> i64 {
+    print("Testing multi-bit reads... ");
+
+    // Create buffer with 0xB3 (10110011) = 179
+    let buffer = vec_new();
+    vec_push(buffer, 179);
+
+    let reader = bitreader_new(buffer);
+
+    // Read 5 bits (should be 10110 = 22)
+    let val1 = bitreader_read_bits(reader, 5);
+    if val1 != 22 {
+        print("FAIL: expected 22, got ");
+        print_i64(val1);
+        print("\n");
+        return 1;
+    }
+
+    // Read 3 bits (should be 011 = 3)
+    let val2 = bitreader_read_bits(reader, 3);
+    if val2 != 3 {
+        print("FAIL: expected 3, got ");
+        print_i64(val2);
+        print("\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// Delta Encoding Tests
+// =============================================================================
+
+fn test_delta_same() -> i64 {
+    print("Testing SAME encoding... ");
+
+    let writer = bitwriter_new();
+
+    // Write SAME op (should be just 2 bits)
+    bitwriter_write_same(writer);
+
+    if bitwriter_bits_written(writer) != 2 {
+        print("FAIL: SAME should be 2 bits\n");
+        return 1;
+    }
+
+    let buffer = bitwriter_finish(writer);
+    let reader = bitreader_new(buffer);
+
+    let delta = bitreader_read_delta(reader);
+    let op = vec_get(delta, 0);
+
+    if op != DELTA_OP_SAME() {
+        print("FAIL: expected SAME op\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_delta_small() -> i64 {
+    print("Testing DELTA_S... ");
+
+    let writer = bitwriter_new();
+
+    // Write small delta: +42 (should be 9 bits total)
+    bitwriter_write_delta_small(writer, 42);
+
+    if bitwriter_bits_written(writer) != 9 {
+        print("FAIL: DELTA_S should be 9 bits\n");
+        return 1;
+    }
+
+    let buffer = bitwriter_finish(writer);
+    let reader = bitreader_new(buffer);
+
+    let delta = bitreader_read_delta(reader);
+    let op = vec_get(delta, 0);
+    let value = vec_get(delta, 1);
+
+    if op != DELTA_OP_SMALL() {
+        print("FAIL: expected DELTA_S op\n");
+        return 1;
+    }
+
+    if value != 42 {
+        print("FAIL: expected 42, got ");
+        print_i64(value);
+        print("\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_delta_large() -> i64 {
+    print("Testing DELTA_L... ");
+
+    let writer = bitwriter_new();
+
+    // Write large delta: +1000 (should be 18 bits total)
+    bitwriter_write_delta_large(writer, 1000);
+
+    if bitwriter_bits_written(writer) != 18 {
+        print("FAIL: DELTA_L should be 18 bits\n");
+        return 1;
+    }
+
+    let buffer = bitwriter_finish(writer);
+    let reader = bitreader_new(buffer);
+
+    let delta = bitreader_read_delta(reader);
+    let op = vec_get(delta, 0);
+    let value = vec_get(delta, 1);
+
+    if op != DELTA_OP_LARGE() {
+        print("FAIL: expected DELTA_L op\n");
+        return 1;
+    }
+
+    if value != 1000 {
+        print("FAIL: expected 1000, got ");
+        print_i64(value);
+        print("\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_delta_full() -> i64 {
+    print("Testing FULL... ");
+
+    let writer = bitwriter_new();
+
+    // Write full value
+    bitwriter_write_full(writer, 123456789);
+
+    if bitwriter_bits_written(writer) != 34 {
+        print("FAIL: FULL should be 34 bits\n");
+        return 1;
+    }
+
+    let buffer = bitwriter_finish(writer);
+    let reader = bitreader_new(buffer);
+
+    let delta = bitreader_read_delta(reader);
+    let op = vec_get(delta, 0);
+    let value = vec_get(delta, 1);
+
+    if op != DELTA_OP_FULL() {
+        print("FAIL: expected FULL op\n");
+        return 1;
+    }
+
+    if value != 123456789 {
+        print("FAIL: expected 123456789, got ");
+        print_i64(value);
+        print("\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_delta_auto() -> i64 {
+    print("Testing auto delta selection... ");
+
+    // Test SAME
+    let writer1 = bitwriter_new();
+    bitwriter_write_delta_auto(writer1, 100, 100);
+    if bitwriter_bits_written(writer1) != 2 {
+        print("FAIL: same values should use SAME (2 bits)\n");
+        return 1;
+    }
+
+    // Test DELTA_S (small change)
+    let writer2 = bitwriter_new();
+    bitwriter_write_delta_auto(writer2, 100, 142);  // +42
+    if bitwriter_bits_written(writer2) != 9 {
+        print("FAIL: small delta should use DELTA_S (9 bits)\n");
+        return 1;
+    }
+
+    // Test DELTA_L (large change within range)
+    let writer3 = bitwriter_new();
+    bitwriter_write_delta_auto(writer3, 100, 1100);  // +1000
+    if bitwriter_bits_written(writer3) != 18 {
+        print("FAIL: large delta should use DELTA_L (18 bits)\n");
+        return 1;
+    }
+
+    // Test FULL (change outside delta range)
+    let writer4 = bitwriter_new();
+    bitwriter_write_delta_auto(writer4, 100, 100000);  // +99900
+    if bitwriter_bits_written(writer4) != 34 {
+        print("FAIL: huge delta should use FULL (34 bits)\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// Round-Trip Tests
+// =============================================================================
+
+fn test_roundtrip_deltas() -> i64 {
+    print("Testing delta round-trip... ");
+
+    let writer = bitwriter_new();
+
+    // Write a sequence of deltas
+    let old_values = vec_new();
+    let new_values = vec_new();
+
+    // Test case 1: no change
+    vec_push(old_values, 100);
+    vec_push(new_values, 100);
+
+    // Test case 2: small positive delta
+    vec_push(old_values, 200);
+    vec_push(new_values, 250);
+
+    // Test case 3: small negative delta
+    vec_push(old_values, 300);
+    vec_push(new_values, 270);
+
+    // Test case 4: large delta
+    vec_push(old_values, 1000);
+    vec_push(new_values, 2000);
+
+    // Test case 5: full value needed
+    vec_push(old_values, 0);
+    vec_push(new_values, 500000);
+
+    // Encode all
+    var i = 0;
+    while i < 5 {
+        bitwriter_write_delta_auto(writer,
+                                   vec_get(old_values, i),
+                                   vec_get(new_values, i));
+        i = i + 1;
+    }
+
+    let buffer = bitwriter_finish(writer);
+    let reader = bitreader_new(buffer);
+
+    // Decode and verify
+    i = 0;
+    while i < 5 {
+        let delta = bitreader_read_delta(reader);
+        let decoded = apply_delta(vec_get(old_values, i), delta);
+
+        if decoded != vec_get(new_values, i) {
+            print("FAIL at index ");
+            print_i64(i);
+            print(": expected ");
+            print_i64(vec_get(new_values, i));
+            print(", got ");
+            print_i64(decoded);
+            print("\n");
+            return 1;
+        }
+        i = i + 1;
+    }
+
+    print("PASS\n");
+    0
+}

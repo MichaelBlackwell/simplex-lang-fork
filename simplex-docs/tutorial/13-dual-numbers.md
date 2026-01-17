@@ -34,8 +34,8 @@ fn main() {
 
     // y.val is the value: 3² = 9
     // y.der is the derivative: d(x²)/dx = 2x = 6
-    println(f"f(3) = {y.val}");    // Output: 9
-    println(f"f'(3) = {y.der}");   // Output: 6
+    print("f(3) = {y.val}");    // Output: 9
+    print("f'(3) = {y.der}");   // Output: 6
 }
 ```
 
@@ -67,8 +67,8 @@ let x = dual::variable(2.0);
 // f(x) = x³ + 2x + 1
 let f = x * x * x + dual::constant(2.0) * x + dual::constant(1.0);
 
-println(f"f(2) = {f.val}");    // 8 + 4 + 1 = 13
-println(f"f'(2) = {f.der}");   // 3x² + 2 = 12 + 2 = 14
+print("f(2) = {f.val}");    // 8 + 4 + 1 = 13
+print("f'(2) = {f.der}");   // 3x² + 2 = 12 + 2 = 14
 ```
 
 ---
@@ -95,8 +95,8 @@ let five = dual::constant(5.0);
 
 let y = five * x * x;
 
-println(f"f(2) = {y.val}");    // 5 × 4 = 20
-println(f"f'(2) = {y.der}");   // 10x = 20
+print("f(2) = {y.val}");    // 5 × 4 = 20
+print("f'(2) = {y.der}");   // 10x = 20
 ```
 
 ---
@@ -109,12 +109,12 @@ All common math functions work with dual numbers:
 let x = dual::variable(0.0);
 
 let sin_x = x.sin();
-println(f"sin(0) = {sin_x.val}");         // 0
-println(f"d/dx sin(0) = {sin_x.der}");    // cos(0) = 1
+print("sin(0) = {sin_x.val}");         // 0
+print("d/dx sin(0) = {sin_x.der}");    // cos(0) = 1
 
 let exp_x = x.exp();
-println(f"exp(0) = {exp_x.val}");         // 1
-println(f"d/dx exp(0) = {exp_x.der}");    // exp(0) = 1
+print("exp(0) = {exp_x.val}");         // 1
+print("d/dx exp(0) = {exp_x.der}");    // exp(0) = 1
 ```
 
 ### Available Functions
@@ -145,13 +145,13 @@ fn sigmoid_with_derivative(x: f64) -> (f64, f64) {
 
 // At x = 0
 let (value, deriv) = sigmoid_with_derivative(0.0);
-println(f"σ(0) = {value}");      // 0.5
-println(f"σ'(0) = {deriv}");     // 0.25 (maximum slope)
+print("σ(0) = {value}");      // 0.5
+print("σ'(0) = {deriv}");     // 0.25 (maximum slope)
 
 // At x = 2
 let (value, deriv) = sigmoid_with_derivative(2.0);
-println(f"σ(2) = {value}");      // ~0.88
-println(f"σ'(2) = {deriv}");     // ~0.10 (flattening out)
+print("σ(2) = {value}");      // ~0.88
+print("σ'(2) = {deriv}");     // ~0.10 (flattening out)
 ```
 
 ---
@@ -169,7 +169,7 @@ fn f(x: dual) -> dual {
 }
 
 let df_at_3 = derivative(f, 3.0);
-println(f"f'(3) = {df_at_3}");   // 2×3 + cos(3) ≈ 5.01
+print("f'(3) = {df_at_3}");   // 2×3 + cos(3) ≈ 5.01
 ```
 
 ---
@@ -196,8 +196,8 @@ fn compute_gradient(x_val: f64, y_val: f64) -> [f64; 2] {
 }
 
 let grad = compute_gradient(2.0, 3.0);
-println(f"∂f/∂x = {grad[0]}");  // 2xy = 12
-println(f"∂f/∂y = {grad[1]}");  // x² + cos(y) ≈ 3.01
+print("∂f/∂x = {grad[0]}");  // 2xy = 12
+print("∂f/∂y = {grad[1]}");  // x² + cos(y) ≈ 3.01
 ```
 
 ---
@@ -212,9 +212,9 @@ use simplex::dual::dual2;
 let x = dual2::variable(2.0);
 let y = x * x * x;  // f(x) = x³
 
-println(f"f(2) = {y.val}");     // 8
-println(f"f'(2) = {y.d1}");     // 3x² = 12
-println(f"f''(2) = {y.d2}");    // 6x = 12
+print("f(2) = {y.val}");     // 8
+print("f'(2) = {y.d1}");     // 3x² = 12
+print("f''(2) = {y.d2}");    // 6x = 12
 ```
 
 ---
@@ -265,7 +265,7 @@ fn optimize() -> f64 {
 }
 
 let result = optimize();
-println(f"Minimum at x = {result}");  // ~3.0
+print("Minimum at x = {result}");  // ~3.0
 ```
 
 ---
@@ -293,7 +293,7 @@ fn newtons_method() -> f64 {
 }
 
 let sqrt2 = newtons_method();
-println(f"√2 ≈ {sqrt2}");  // 1.41421356...
+print("√2 ≈ {sqrt2}");  // 1.41421356...
 ```
 
 ---

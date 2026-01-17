@@ -218,16 +218,16 @@ Dual numbers compile to the same assembly as hand-written derivative code:
 
 ```simplex
 // Source code
-let x = dual::variable(3.0);
-let y = x * x;
-println(y.der);
+let x = dual::variable(3.0)
+let y = x * x
+print(y.der)
 
 // Conceptual compilation (struct eliminated)
-let x_val = 3.0;
-let x_der = 1.0;
-let y_val = x_val * x_val;
-let y_der = 2.0 * x_val * x_der;  // = 6.0
-println(y_der);
+let x_val = 3.0
+let x_der = 1.0
+let y_val = x_val * x_val
+let y_der = 2.0 * x_val * x_der  // = 6.0
+print(y_der)
 ```
 
 ### Forward vs Reverse Mode
@@ -535,15 +535,15 @@ let learner = OnlineLearner::new(params)
 ## Metrics and Monitoring
 
 ```simplex
-use simplex_learning::runtime::Metrics;
+use simplex_learning::runtime::Metrics
 
-let metrics = learner.metrics();
+let metrics = learner.metrics()
 
-println(f"Loss: {metrics.loss}");
-println(f"Learning rate: {metrics.lr}");
-println(f"Gradient norm: {metrics.grad_norm}");
-println(f"Steps: {metrics.step_count}");
-println(f"Throughput: {metrics.samples_per_sec} samples/sec");
+print("Loss: {metrics.loss}")
+print("Learning rate: {metrics.lr}")
+print("Gradient norm: {metrics.grad_norm}")
+print("Steps: {metrics.step_count}")
+print("Throughput: {metrics.samples_per_sec} samples/sec")
 ```
 
 ---

@@ -1,4 +1,4 @@
-// Phase 34 Validation: Core Language Features
+// Validation: Core Language Features
 // Tests: 34.1.1 Match Guards, 34.1.2 Closures, 34.1.3 Monomorphization
 
 // ============================================
@@ -6,23 +6,23 @@
 // ============================================
 
 fn test_match_guard_basic() -> i64 {
-    let x: i64 = 5;
-    let result: i64 = match x {
-        n if n > 10 => 1,
-        n if n > 0 => 2,
-        _ => 3
-    };
-    result  // Expected: 2
+ let x: i64 = 5;
+ let result: i64 = match x {
+ n if n > 10 => 1,
+ n if n > 0 => 2,
+ _ => 3
+ };
+ result // Expected: 2
 }
 
 fn test_match_guard_negative() -> i64 {
-    let x: i64 = -5;
-    let result: i64 = match x {
-        n if n > 0 => 1,
-        n if n < 0 => 2,
-        _ => 3
-    };
-    result  // Expected: 2
+ let x: i64 = -5;
+ let result: i64 = match x {
+ n if n > 0 => 1,
+ n if n < 0 => 2,
+ _ => 3
+ };
+ result // Expected: 2
 }
 
 // ============================================
@@ -30,21 +30,21 @@ fn test_match_guard_negative() -> i64 {
 // ============================================
 
 fn test_lambda_basic() -> i64 {
-    let double: i64 = (x) => x * 2;
-    double(5)  // Expected: 10
+ let double: i64 = (x) => x * 2;
+ double(5) // Expected: 10
 }
 
 fn test_lambda_capture() -> i64 {
-    let multiplier: i64 = 3;
-    let mult: i64 = (x) => x * multiplier;
-    mult(4)  // Expected: 12
+ let multiplier: i64 = 3;
+ let mult: i64 = (x) => x * multiplier;
+ mult(4) // Expected: 12
 }
 
 fn test_closure_nested_capture() -> i64 {
-    let a: i64 = 10;
-    let b: i64 = 20;
-    let add_both: i64 = (x) => x + a + b;
-    add_both(5)  // Expected: 35
+ let a: i64 = 10;
+ let b: i64 = 20;
+ let add_both: i64 = (x) => x + a + b;
+ add_both(5) // Expected: 35
 }
 
 // ============================================
@@ -52,28 +52,28 @@ fn test_closure_nested_capture() -> i64 {
 // ============================================
 
 struct Point<T> {
-    x: T,
-    y: T
+ x: T,
+ y: T
 }
 
 fn generic_add<T>(a: T, b: T) -> T {
-    a + b
+ a + b
 }
 
 fn test_monomorph_i64() -> i64 {
-    generic_add::<i64>(10, 20)  // Expected: 30
+ generic_add::<i64>(10, 20) // Expected: 30
 }
 
 fn test_monomorph_struct() -> i64 {
-    let p: Point<i64> = Point { x: 5, y: 10 };
-    p.x + p.y  // Expected: 15
+ let p: Point<i64> = Point { x: 5, y: 10 };
+ p.x + p.y // Expected: 15
 }
 
 // Test that different type instantiations are separate
 fn test_monomorph_distinct() -> i64 {
-    let a: i64 = generic_add::<i64>(1, 2);
-    // If we had f64: let b: f64 = generic_add::<f64>(1.0, 2.0);
-    a  // Expected: 3
+ let a: i64 = generic_add::<i64>(1, 2);
+ // If we had f64: let b: f64 = generic_add::<f64>(1.0, 2.0);
+ a // Expected: 3
 }
 
 // ============================================
@@ -81,45 +81,45 @@ fn test_monomorph_distinct() -> i64 {
 // ============================================
 
 fn main() -> i64 {
-    print_string("=== Core Language Tests ===\n");
+ print_string("=== Core Language Tests ===\n");
 
-    // Match guards
-    print_string("Test match_guard_basic: ");
-    let r1: i64 = test_match_guard_basic();
-    print_i64(r1);
-    print_string(" (expected 2)\n");
+ // Match guards
+ print_string("Test match_guard_basic: ");
+ let r1: i64 = test_match_guard_basic();
+ print_i64(r1);
+ print_string(" (expected 2)\n");
 
-    print_string("Test match_guard_negative: ");
-    let r2: i64 = test_match_guard_negative();
-    print_i64(r2);
-    print_string(" (expected 2)\n");
+ print_string("Test match_guard_negative: ");
+ let r2: i64 = test_match_guard_negative();
+ print_i64(r2);
+ print_string(" (expected 2)\n");
 
-    // Closures
-    print_string("Test lambda_basic: ");
-    let r3: i64 = test_lambda_basic();
-    print_i64(r3);
-    print_string(" (expected 10)\n");
+ // Closures
+ print_string("Test lambda_basic: ");
+ let r3: i64 = test_lambda_basic();
+ print_i64(r3);
+ print_string(" (expected 10)\n");
 
-    print_string("Test lambda_capture: ");
-    let r4: i64 = test_lambda_capture();
-    print_i64(r4);
-    print_string(" (expected 12)\n");
+ print_string("Test lambda_capture: ");
+ let r4: i64 = test_lambda_capture();
+ print_i64(r4);
+ print_string(" (expected 12)\n");
 
-    print_string("Test closure_nested_capture: ");
-    let r5: i64 = test_closure_nested_capture();
-    print_i64(r5);
-    print_string(" (expected 35)\n");
+ print_string("Test closure_nested_capture: ");
+ let r5: i64 = test_closure_nested_capture();
+ print_i64(r5);
+ print_string(" (expected 35)\n");
 
-    // Monomorphization
-    print_string("Test monomorph_i64: ");
-    let r6: i64 = test_monomorph_i64();
-    print_i64(r6);
-    print_string(" (expected 30)\n");
+ // Monomorphization
+ print_string("Test monomorph_i64: ");
+ let r6: i64 = test_monomorph_i64();
+ print_i64(r6);
+ print_string(" (expected 30)\n");
 
-    print_string("Test monomorph_struct: ");
-    let r7: i64 = test_monomorph_struct();
-    print_i64(r7);
-    print_string(" (expected 15)\n");
+ print_string("Test monomorph_struct: ");
+ let r7: i64 = test_monomorph_struct();
+ print_i64(r7);
+ print_string(" (expected 15)\n");
 
-    0
+ 0
 }

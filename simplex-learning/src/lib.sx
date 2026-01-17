@@ -5,6 +5,7 @@
 //
 // Core modules:
 //   - tensor:      Tensor operations with autograd (reverse-mode AD)
+//                  DualTensor for forward-mode AD (meta-gradients)
 //   - dual:        Dual numbers for forward-mode automatic differentiation
 //   - optim:       Streaming optimizers
 //   - memory:      Experience replay, forgetting prevention
@@ -13,6 +14,8 @@
 //   - safety:      Safe learning constraints
 //   - distributed: Hive-wide coordinated learning
 //   - runtime:     Learning loop and checkpointing
+//   - belief:      TASK-014: Grounded beliefs with epistemic metadata
+//   - epistemic:   TASK-014: Epistemic annealing and self-correction
 
 pub mod tensor;
 pub mod dual;
@@ -23,20 +26,51 @@ pub mod calibration;
 pub mod safety;
 pub mod distributed;
 pub mod runtime;
+pub mod belief;
+pub mod epistemic;
 
 // Re-export core types for convenience
-pub use tensor::Tensor;
+pub use tensor::{Tensor, DualTensor};
 pub use dual::{Dual, derivative, derivative_at, nth_derivative};
 pub use optim::{StreamingAdam, StreamingSGD, LearningRateScheduler};
 pub use memory::{ReplayBuffer, ReplayConfig, SamplingStrategy, TensorReplayBuffer, EWC, MAS};
 pub use feedback::{FeedbackChannel, FeedbackAggregator, AttributionMethod};
 pub use calibration::{OnlineCalibration, CalibrationState, TemperatureScaling, ECE, BrierScore};
-pub use safety::{Constraint, SoftConstraint, HardConstraint, SafetyBounds, SafeFallback};
+pub use safety::{
+    Constraint, SoftConstraint, HardConstraint, SafetyBounds, SafeFallback,
+    // TASK-014: No-learn zones
+    NoLearnZone, NoGradientZone, Invariant, ZoneEnforcement, InvariantAction,
+    ZoneRegistry, SafeLearningGuard,
+};
 pub use distributed::{FederatedLearner, GradientSync, KnowledgeDistiller};
 pub use runtime::{ContinuousLearner, LearnerConfig, MetricsCollector, CheckpointManager};
 
+// TASK-014: Grounded belief types
+pub use belief::{
+    GroundedBelief, BeliefId,
+    BeliefProvenance, ProvenanceOrigin, InferenceRule,
+    EvidenceLink, EvidenceStatus, FalsificationCondition, FalsificationCheck, FalsificationAction,
+    CalibratedConfidence, CalibrationRecord,
+    BeliefScope, Domain, Context, ScopeViolation,
+    BeliefTimestamps,
+};
+
+// TASK-014: Epistemic annealing types
+pub use epistemic::{
+    EpistemicMonitors, HealthMetric, EpistemicHealth,
+    EpistemicSchedule, LearnableSchedule, AnnealingParams,
+    DissentConfig, DissentWindow, DissentPhase,
+    CounterfactualProber, CounterfactualScenario, BeliefRevision,
+    Skeptic, SkepticConfig, SkepticRunner, SkepticStats, ChallengeRecord,
+    EpistemicIntegration, EpistemicIntegrationConfig, EpistemicStepResult,
+    MonitorUpdate, IntegrationStats, EpistemicAware,
+    // Phase 5: Meta-optimizer
+    EpistemicMetaOptimizer, MetaOptimizerConfig, MetaOptimizerStats,
+    UpdateContext, UpdateResult, UpdateError,
+};
+
 /// Library version
-pub const VERSION: &str = "0.9.0";
+pub const VERSION: &str = "0.9.5";
 
 /// Configuration for the @learning annotation
 pub struct LearningAnnotation {

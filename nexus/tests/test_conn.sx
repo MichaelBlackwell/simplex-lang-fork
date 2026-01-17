@@ -1,0 +1,626 @@
+// Nexus Protocol - Connection Module Tests
+//
+// Tests for the handshake protocol and connection state machine
+
+fn main() -> i64 {
+    print("=== Nexus Connection Tests ===\n\n");
+
+    var passed = 0;
+    var failed = 0;
+
+    // HELLO/WELCOME payload tests
+    if test_hello_payload() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_hello_frame() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_welcome_frame() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // CATALOG tests
+    if test_catalog_payload() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_catalog_frame() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // BASELINE tests
+    if test_baseline_payload() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_baseline_frame() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Connection state tests
+    if test_conn_new() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_conn_states() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Handshake tests
+    if test_handshake_client() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_handshake_server() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_full_handshake() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Capability negotiation tests
+    if test_capability_negotiation() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Summary
+    print("\nPassed: ");
+    print_i64(passed);
+    print(" / ");
+    print_i64(passed + failed);
+    print("\n");
+
+    failed
+}
+
+// =============================================================================
+// HELLO/WELCOME Payload Tests
+// =============================================================================
+
+fn test_hello_payload() -> i64 {
+    print("Testing HELLO payload encode/decode... ");
+
+    let hive_id = 12345678901234;
+    let capabilities = HELLO_CAP_COMPRESSION() | HELLO_CAP_DUAL_NUMBERS();
+    let max_beliefs = 10000;
+
+    // Create payload
+    let payload = hello_payload_new(hive_id, capabilities, max_beliefs);
+
+    if vec_len(payload) != 14 {
+        print("FAIL: wrong payload length\n");
+        return 1;
+    }
+
+    // Parse payload
+    let parsed = hello_payload_parse(payload);
+    if parsed == 0 {
+        print("FAIL: parse returned null\n");
+        return 1;
+    }
+
+    // Verify values
+    if vec_get(parsed, 0) != NEXUS_VERSION_MAJOR() {
+        print("FAIL: wrong version major\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 1) != NEXUS_VERSION_MINOR() {
+        print("FAIL: wrong version minor\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 2) != hive_id {
+        print("FAIL: wrong hive_id\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 3) != capabilities {
+        print("FAIL: wrong capabilities\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 4) != max_beliefs {
+        print("FAIL: wrong max_beliefs\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_hello_frame() -> i64 {
+    print("Testing HELLO frame creation... ");
+
+    let hive_id = 999;
+    let capabilities = HELLO_CAP_COMPRESSION();
+    let max_beliefs = 1000;
+
+    // Create HELLO frame
+    let frame_bytes = conn_create_hello(hive_id, capabilities, max_beliefs);
+
+    // Decode and verify
+    let frame = frame_decode(frame_bytes);
+    if frame == 0 {
+        print("FAIL: decode failed\n");
+        return 1;
+    }
+
+    if frame_type(frame) != FRAME_HELLO() {
+        print("FAIL: wrong frame type\n");
+        return 1;
+    }
+
+    // Verify payload
+    let payload = frame_payload(frame);
+    let parsed = hello_payload_parse(payload);
+    if vec_get(parsed, 2) != hive_id {
+        print("FAIL: hive_id mismatch\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_welcome_frame() -> i64 {
+    print("Testing WELCOME frame creation... ");
+
+    let hive_id = 888;
+    let capabilities = HELLO_CAP_ENCRYPTION();
+    let max_beliefs = 500;
+
+    // Create WELCOME frame
+    let frame_bytes = conn_create_welcome(hive_id, capabilities, max_beliefs);
+
+    // Decode and verify
+    let frame = frame_decode(frame_bytes);
+    if frame == 0 {
+        print("FAIL: decode failed\n");
+        return 1;
+    }
+
+    if frame_type(frame) != FRAME_WELCOME() {
+        print("FAIL: wrong frame type\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// CATALOG Tests
+// =============================================================================
+
+fn test_catalog_payload() -> i64 {
+    print("Testing CATALOG payload encode/decode... ");
+
+    let belief_count = 1000;
+    let structure_checksum = 9876543210;
+
+    // Create payload
+    let payload = catalog_payload_new(belief_count, structure_checksum);
+
+    if vec_len(payload) != 10 {
+        print("FAIL: wrong payload length\n");
+        return 1;
+    }
+
+    // Parse payload
+    let parsed = catalog_payload_parse(payload);
+    if parsed == 0 {
+        print("FAIL: parse returned null\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 0) != belief_count {
+        print("FAIL: wrong belief_count\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 1) != structure_checksum {
+        print("FAIL: wrong structure_checksum\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_catalog_frame() -> i64 {
+    print("Testing CATALOG frame creation... ");
+
+    let belief_count = 500;
+    let checksum = 123456789;
+
+    // Create CATALOG frame
+    let frame_bytes = conn_create_catalog(belief_count, checksum);
+
+    // Decode and verify
+    let frame = frame_decode(frame_bytes);
+    if frame == 0 {
+        print("FAIL: decode failed\n");
+        return 1;
+    }
+
+    if frame_type(frame) != FRAME_CATALOG() {
+        print("FAIL: wrong frame type\n");
+        return 1;
+    }
+
+    let payload = frame_payload(frame);
+    let parsed = catalog_payload_parse(payload);
+    if vec_get(parsed, 0) != belief_count {
+        print("FAIL: belief_count mismatch\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// BASELINE Tests
+// =============================================================================
+
+fn test_baseline_payload() -> i64 {
+    print("Testing BASELINE payload encode/decode... ");
+
+    let tick = 42;
+    let checksum = 555666777888;
+
+    // Create test values
+    let values = vec_new();
+    vec_push(values, 100);
+    vec_push(values, 200);
+    vec_push(values, 300);
+    vec_push(values, 400);
+    vec_push(values, 500);
+
+    // Create payload
+    let payload = baseline_payload_new(tick, checksum, values);
+
+    // Expected size: 2 (tick) + 8 (checksum) + 5*4 (values) = 30
+    if vec_len(payload) != 30 {
+        print("FAIL: wrong payload length, expected 30, got ");
+        print_i64(vec_len(payload));
+        print("\n");
+        return 1;
+    }
+
+    // Parse payload
+    let parsed = baseline_payload_parse(payload, 5);
+    if parsed == 0 {
+        print("FAIL: parse returned null\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 0) != tick {
+        print("FAIL: wrong tick\n");
+        return 1;
+    }
+
+    if vec_get(parsed, 1) != checksum {
+        print("FAIL: wrong checksum\n");
+        return 1;
+    }
+
+    // Verify values
+    var i = 0;
+    while i < 5 {
+        if vec_get(parsed, 2 + i) != vec_get(values, i) {
+            print("FAIL: value mismatch at index ");
+            print_i64(i);
+            print("\n");
+            return 1;
+        }
+        i = i + 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_baseline_frame() -> i64 {
+    print("Testing BASELINE frame creation... ");
+
+    let tick = 100;
+    let values = vec_new();
+    vec_push(values, 10);
+    vec_push(values, 20);
+    vec_push(values, 30);
+
+    let checksum = compute_values_checksum(values);
+
+    // Create BASELINE frame
+    let frame_bytes = conn_create_baseline(tick, checksum, values);
+
+    // Decode and verify
+    let frame = frame_decode(frame_bytes);
+    if frame == 0 {
+        print("FAIL: decode failed\n");
+        return 1;
+    }
+
+    if frame_type(frame) != FRAME_BASELINE() {
+        print("FAIL: wrong frame type\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// Connection State Tests
+// =============================================================================
+
+fn test_conn_new() -> i64 {
+    print("Testing connection creation... ");
+
+    let hive_id = 12345;
+    let caps = HELLO_CAP_COMPRESSION();
+    let max_beliefs = 1000;
+
+    let conn = conn_new(hive_id, caps, max_beliefs);
+
+    if conn == 0 {
+        print("FAIL: conn is null\n");
+        return 1;
+    }
+
+    if conn_state(conn) != CONN_DISCONNECTED() {
+        print("FAIL: initial state should be DISCONNECTED\n");
+        return 1;
+    }
+
+    if conn_local_hive_id(conn) != hive_id {
+        print("FAIL: wrong hive_id\n");
+        return 1;
+    }
+
+    if conn_local_capabilities(conn) != caps {
+        print("FAIL: wrong capabilities\n");
+        return 1;
+    }
+
+    if conn_local_max_beliefs(conn) != max_beliefs {
+        print("FAIL: wrong max_beliefs\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_conn_states() -> i64 {
+    print("Testing connection state transitions... ");
+
+    let conn = conn_new(1, 0, 100);
+
+    // Test is_connected when disconnected
+    if conn_is_connected(conn) != 0 {
+        print("FAIL: should not be connected when disconnected\n");
+        return 1;
+    }
+
+    // Test state transitions
+    conn_set_state(conn, CONN_CONNECTING());
+    if conn_state(conn) != CONN_CONNECTING() {
+        print("FAIL: state not set\n");
+        return 1;
+    }
+
+    if conn_is_handshaking(conn) != 1 {
+        print("FAIL: should be handshaking when connecting\n");
+        return 1;
+    }
+
+    // Test SYNCING state
+    conn_set_state(conn, CONN_SYNCING());
+    if conn_is_connected(conn) != 1 {
+        print("FAIL: should be connected when syncing\n");
+        return 1;
+    }
+
+    // Test error state
+    conn_set_error(conn, ERR_TIMEOUT());
+    if conn_state(conn) != CONN_ERROR() {
+        print("FAIL: should be in ERROR state\n");
+        return 1;
+    }
+    if conn_error_code(conn) != ERR_TIMEOUT() {
+        print("FAIL: wrong error code\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// Handshake Tests
+// =============================================================================
+
+fn test_handshake_client() -> i64 {
+    print("Testing client handshake initiation... ");
+
+    let conn = conn_new(1001, HELLO_CAP_COMPRESSION(), 500);
+
+    // Initiate connection
+    let hello_bytes = conn_connect(conn);
+
+    if hello_bytes == 0 {
+        print("FAIL: connect returned null\n");
+        return 1;
+    }
+
+    // Verify state changed to CONNECTING
+    if conn_state(conn) != CONN_CONNECTING() {
+        print("FAIL: state should be CONNECTING\n");
+        return 1;
+    }
+
+    // Verify HELLO frame
+    let frame = frame_decode(hello_bytes);
+    if frame_type(frame) != FRAME_HELLO() {
+        print("FAIL: should have created HELLO frame\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_handshake_server() -> i64 {
+    print("Testing server handshake response... ");
+
+    let server = conn_new(2001, HELLO_CAP_COMPRESSION() | HELLO_CAP_ENCRYPTION(), 1000);
+
+    // Simulate receiving HELLO from client
+    let client_hello = conn_create_hello(1001, HELLO_CAP_COMPRESSION(), 500);
+
+    let result = conn_handle_hello(server, client_hello);
+    if result != ERR_NONE() {
+        print("FAIL: handle_hello failed with ");
+        print_i64(result);
+        print("\n");
+        return 1;
+    }
+
+    // Verify state changed to HANDSHAKE
+    if conn_state(server) != CONN_HANDSHAKE() {
+        print("FAIL: state should be HANDSHAKE\n");
+        return 1;
+    }
+
+    // Verify remote hive ID stored
+    if conn_remote_hive_id(server) != 1001 {
+        print("FAIL: remote hive ID not stored\n");
+        return 1;
+    }
+
+    // Verify capability negotiation (intersection)
+    if conn_negotiated_capabilities(server) != HELLO_CAP_COMPRESSION() {
+        print("FAIL: capabilities should be intersection\n");
+        return 1;
+    }
+
+    // Verify max beliefs negotiation (minimum)
+    if conn_negotiated_max_beliefs(server) != 500 {
+        print("FAIL: max_beliefs should be minimum\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_full_handshake() -> i64 {
+    print("Testing full handshake sequence... ");
+
+    // Create client and server
+    let client = conn_new(1001, HELLO_CAP_COMPRESSION(), 500);
+    let server = conn_new(2001, HELLO_CAP_COMPRESSION(), 1000);
+
+    // Set catalog info on both sides
+    conn_set_catalog(client, 100, 999888777);
+    conn_set_catalog(server, 100, 999888777);
+
+    // Step 1: Client sends HELLO
+    let hello = conn_connect(client);
+    conn_set_state(client, CONN_HANDSHAKE());  // Simulate sending
+
+    // Step 2: Server receives HELLO and sends WELCOME
+    let result = conn_handle_hello(server, hello);
+    if result != ERR_NONE() {
+        print("FAIL: server handle_hello\n");
+        return 1;
+    }
+
+    let welcome = conn_create_welcome_response(server);
+    conn_set_state(server, CONN_CATALOG_EXCHANGE());
+
+    // Step 3: Client receives WELCOME
+    result = conn_handle_welcome(client, welcome);
+    if result != ERR_NONE() {
+        print("FAIL: client handle_welcome\n");
+        return 1;
+    }
+
+    // Step 4: Exchange catalogs
+    let client_catalog = conn_create_catalog_frame(client);
+    result = conn_handle_catalog(server, client_catalog);
+    if result != ERR_NONE() {
+        print("FAIL: server handle_catalog\n");
+        return 1;
+    }
+
+    let server_catalog = conn_create_catalog_frame(server);
+    result = conn_handle_catalog(client, server_catalog);
+    if result != ERR_NONE() {
+        print("FAIL: client handle_catalog\n");
+        return 1;
+    }
+
+    // Verify both in BASELINE state
+    if conn_state(client) != CONN_BASELINE() {
+        print("FAIL: client should be in BASELINE state\n");
+        return 1;
+    }
+    if conn_state(server) != CONN_BASELINE() {
+        print("FAIL: server should be in BASELINE state\n");
+        return 1;
+    }
+
+    // Step 5: Server sends baseline
+    let initial_values = vec_new();
+    var i = 0;
+    while i < 100 {
+        vec_push(initial_values, i * 10);
+        i = i + 1;
+    }
+
+    let checksum = compute_values_checksum(initial_values);
+    let baseline = conn_create_baseline(0, checksum, initial_values);
+
+    result = conn_handle_baseline(client, baseline);
+    if result != ERR_NONE() {
+        print("FAIL: client handle_baseline\n");
+        return 1;
+    }
+
+    // Verify client is now SYNCING
+    if conn_state(client) != CONN_SYNCING() {
+        print("FAIL: client should be SYNCING\n");
+        return 1;
+    }
+
+    // Verify sync session was created
+    let session = conn_get_session(client);
+    if session == 0 {
+        print("FAIL: sync session not created\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_capability_negotiation() -> i64 {
+    print("Testing capability negotiation... ");
+
+    // Test intersection
+    let caps1 = HELLO_CAP_COMPRESSION() | HELLO_CAP_ENCRYPTION() | HELLO_CAP_DUAL_NUMBERS();
+    let caps2 = HELLO_CAP_COMPRESSION() | HELLO_CAP_ADAPTIVE_SYNC();
+
+    let negotiated = negotiate_capabilities(caps1, caps2);
+    if negotiated != HELLO_CAP_COMPRESSION() {
+        print("FAIL: negotiation should return intersection\n");
+        return 1;
+    }
+
+    // Test max beliefs negotiation
+    let max1 = 1000;
+    let max2 = 500;
+
+    let negotiated_max = negotiate_max_beliefs(max1, max2);
+    if negotiated_max != 500 {
+        print("FAIL: should return minimum\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}

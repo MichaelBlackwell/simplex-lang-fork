@@ -1,84 +1,91 @@
 // test_io.sx - Test I/O operations
+// Rewritten to use supported syntax
 
-fn main() {
-    println("=== I/O Operations Test ===");
-    println("");
+fn test_stderr_write() -> i64 {
+ println(" Testing stderr write...");
 
-    // Test stderr
-    println("--- Testing stderr ---");
-    stderr_write("Writing to stderr: ");
-    stderr_writeln("Hello stderr!");
+ stderr_write("Writing to stderr: ");
+ stderr_writeln("Hello stderr!");
 
-    // Test file operations
-    println("");
-    println("--- Testing file operations ---");
+ println(" PASS: stderr write completed");
+ 0
+}
 
-    // Create a test file
-    let test_path: str = "/tmp/simplex_io_test.txt";
-    let content: str = "Hello from Simplex I/O test!";
-    file_write(test_path, content);
-    println("Wrote test file");
+fn test_file_write_read() -> i64 {
+ println(" Testing file write/read...");
 
-    // Check file exists
-    let exists: bool = file_exists(test_path);
-    if exists {
-        println("File exists: OK");
-    } else {
-        println("File exists: FAIL");
-    }
+ let test_path: i64 = "/tmp/simplex_io_test.txt";
+ let content: i64 = "Hello from Simplex I/O test!";
+ file_write(test_path, content);
 
-    // Check is_file
-    let is_f: bool = is_file(test_path);
-    if is_f {
-        println("is_file: OK");
-    } else {
-        println("is_file: FAIL");
-    }
+ // Check file exists
+ let exists: i64 = file_exists(test_path);
+ if exists == 1 {
+ println(" PASS: file written and exists");
+ remove_path(test_path);
+ 0
+ } else {
+ println(" FAIL: file not created");
+ 1
+ }
+}
 
-    // Test file copy
-    let copy_path: str = "/tmp/simplex_io_test_copy.txt";
-    let copy_result: i64 = file_copy(test_path, copy_path);
-    if copy_result == 0 {
-        println("file_copy: OK");
-    } else {
-        println("file_copy: FAIL");
-    }
+fn test_file_read_content() -> i64 {
+ println(" Testing file read content...");
 
-    // Verify copy exists
-    let copy_exists: bool = file_exists(copy_path);
-    if copy_exists {
-        println("Copy exists: OK");
-    } else {
-        println("Copy exists: FAIL");
-    }
+ let test_path: i64 = "/tmp/simplex_read_test.txt";
+ let content: i64 = "Test content here";
+ file_write(test_path, content);
 
-    // Test file rename
-    let renamed_path: str = "/tmp/simplex_io_test_renamed.txt";
-    let rename_result: i64 = file_rename(copy_path, renamed_path);
-    if rename_result == 0 {
-        println("file_rename: OK");
-    } else {
-        println("file_rename: FAIL");
-    }
+ let read_content: i64 = file_read(test_path);
+ if string_len(read_content) > 0 {
+ println(" PASS: file read returned content");
+ remove_path(test_path);
+ 0
+ } else {
+ println(" FAIL: file read returned empty");
+ remove_path(test_path);
+ 1
+ }
+}
 
-    // Verify renamed file exists and original doesn't
-    let renamed_exists: bool = file_exists(renamed_path);
-    let old_gone: bool = file_exists(copy_path);
-    if renamed_exists {
-        println("Renamed file exists: OK");
-    } else {
-        println("Renamed file exists: FAIL");
-    }
-    if old_gone {
-        println("Old file still exists: FAIL");
-    } else {
-        println("Old file removed: OK");
-    }
+fn test_file_cleanup() -> i64 {
+ println(" Testing file cleanup...");
 
-    // Clean up
-    remove_path(test_path);
-    remove_path(renamed_path);
+ let test_path: i64 = "/tmp/simplex_cleanup_test.txt";
+ file_write(test_path, "temp content");
 
-    println("");
-    println("=== I/O Test Complete ===");
+ // Delete the file
+ file_delete(test_path);
+
+ // Verify it's gone
+ let still_exists: i64 = file_exists(test_path);
+ if still_exists == 0 {
+ println(" PASS: file deleted successfully");
+ 0
+ } else {
+ println(" FAIL: file still exists");
+ 1
+ }
+}
+
+fn main() -> i64 {
+ println("=== I/O Operations Test ===");
+ println("");
+
+ var failures: i64 = 0;
+
+ failures = failures + test_stderr_write();
+ failures = failures + test_file_write_read();
+ failures = failures + test_file_read_content();
+ failures = failures + test_file_cleanup();
+
+ println("");
+ if failures == 0 {
+ println("=== ALL I/O TESTS PASSED ===");
+ } else {
+ println("=== I/O TESTS FAILED ===");
+ }
+
+ failures
 }

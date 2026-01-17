@@ -3,11 +3,16 @@
 // This module provides the foundation for all numerical computation in
 // simplex-learning. Tensors track gradients automatically when requires_grad
 // is enabled, integrating with Neural IR's differentiable execution.
+//
+// Two AD modes are supported:
+// - Tensor + autograd: Backward-mode AD (reverse mode), best for many params → 1 loss
+// - DualTensor: Forward-mode AD, best for 1 param → many outputs (meta-gradients)
 
 pub mod tensor;
 pub mod ops;
 pub mod autograd;
 pub mod backends;
+pub mod dual_tensor;
 
 pub use tensor::{Tensor, Shape, DType, TensorError};
 pub use ops::{matmul, add, mul, div, softmax, relu, tanh, sigmoid, layer_norm, gelu};
@@ -18,6 +23,7 @@ pub use autograd::{
     ComputationGraph, ComputationNode,
 };
 pub use backends::{Backend, CpuBackend};
+pub use dual_tensor::DualTensor;
 
 #[cfg(feature = "gpu")]
 pub use backends::GpuBackend;

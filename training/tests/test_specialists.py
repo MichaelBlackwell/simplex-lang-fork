@@ -44,11 +44,11 @@ def test_all_specialists():
             print(f"  Generated: {len(examples)} examples")
             print(f"  Sample ({len(examples[0]['text'])} chars):")
             print(f"    {examples[0]['text'][:200]}...")
-            print(f"  ✓ PASS")
+            print(f"  PASS PASS")
             results.append((name, True, None))
 
         except Exception as e:
-            print(f"  ✗ FAIL: {e}")
+            print(f"  FAIL FAIL: {e}")
             results.append((name, False, str(e)))
 
     # Summary
@@ -58,7 +58,7 @@ def test_all_specialists():
 
     passed = sum(1 for _, success, _ in results if success)
     for name, success, error in results:
-        status = "✓" if success else "✗"
+        status = "PASS" if success else "FAIL"
         print(f"  {status} {name}")
         if error:
             print(f"    Error: {error}")

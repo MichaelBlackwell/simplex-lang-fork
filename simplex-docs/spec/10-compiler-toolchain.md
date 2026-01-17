@@ -254,12 +254,12 @@ Simplex functions are mapped to C intrinsics:
 
 ```simplex
 // Simplex code:
-let s = string_from("hello");
-println(s);
+let s = "hello"
+print(s)
 
 // Maps to C:
 // intrinsic_string_new("hello")
-// intrinsic_println(s)
+// intrinsic_print(s)
 ```
 
 ---
@@ -280,12 +280,12 @@ The Simplex toolchain is **fully cross-platform** as of v0.9.0:
 
 | Component | macOS | Linux | Windows |
 |-----------|-------|-------|---------|
-| `stage0.py` (bootstrap) | ✅ | ✅ | ✅ |
-| `sxc` (compiler) | ✅ | ✅ | ✅ |
-| `sxpm` (package manager) | ✅ | ✅ | ✅ |
-| `cursus` (VM) | ✅ | ✅ | ✅ |
-| `sxdoc` (docs) | ✅ | ✅ | ✅ |
-| `sxlsp` (LSP) | ✅ | ✅ | ✅ |
+| `stage0.py` (bootstrap) | Yes | Yes | Yes |
+| `sxc` (compiler) | Yes | Yes | Yes |
+| `sxpm` (package manager) | Yes | Yes | Yes |
+| `cursus` (VM) | Yes | Yes | Yes |
+| `sxdoc` (docs) | Yes | Yes | Yes |
+| `sxlsp` (LSP) | Yes | Yes | Yes |
 
 The bootstrap compiler (`stage0.py`) automatically detects the platform and generates the appropriate LLVM target triple:
 - **macOS**: `x86_64-apple-macosx<version>` or `aarch64-apple-macosx<version>`

@@ -2,10 +2,25 @@
 // Implements the Language Server Protocol for IDE integration
 //
 // Copyright (c) 2025-2026 Rod Higgins
-// Licensed under MIT License - see LICENSE file
+// Licensed under AGPL-3.0 - see LICENSE file
 // https://github.com/senuamedia/simplex-lang
 
-fn VERSION() -> i64 { string_from("0.9.2") }
+// Import shared modules (TASK-011 Phase 1 completion)
+use lib::version;
+use lib::safety;
+use lib::platform;
+
+// Version - now uses centralized constant
+fn VERSION() -> i64 { SXLSP_VERSION() }
+
+// Cleanup function for long-running mode (TASK-011)
+fn cleanup_resources(store: i64) -> i64 {
+    if store != 0 {
+        // Note: doc_store_free should be implemented when available
+        // For now, this is a placeholder for proper cleanup
+    }
+    0
+}
 
 // ========================================
 // Parser stubs (minimal implementation)
@@ -491,38 +506,13 @@ fn run_server() -> i64 {
         }
         }
     }
+    
+    // Cleanup resources for long-running mode (TASK-011)
+    cleanup_resources(store);
 
     0
 }
 
-fn main() -> i64 {
-    let args: i64 = get_args();
-    let argc: i64 = vec_len(args);
-
-    // Parse arguments
-    let i: i64 = 1;
-    while i < argc {
-        let arg: i64 = vec_get(args, i);
-
-        if string_eq(arg, string_from("-h")) {
-            show_help();
-            return 0;
-        }
-        if string_eq(arg, string_from("--help")) {
-            show_help();
-            return 0;
-        }
-        if string_eq(arg, string_from("--version")) {
-            show_version();
-            return 0;
-        }
-        if string_eq(arg, string_from("--stdio")) {
-            // Default mode, continue
-        }
-
-        i = i + 1;
-    }
-
-    // Start server
+// Start server
     run_server()
 }

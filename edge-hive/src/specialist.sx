@@ -1,0 +1,478 @@
+// Edge Hive - Specialist System
+// Local specialists that handle specific domains on-device
+//
+// This module requires:
+// - runtime.sx (extern runtime functions)
+// - types.sx (type constants)
+// - device.sx (device_has_sensor)
+// - beliefs.sx (belief store operations)
+//
+// Each specialist is encoded as a vec with:
+// [type, priority, is_active, handle_count, success_count, device_profile]
+
+// =============================================================================
+// Specialist Constructor
+// =============================================================================
+
+fn specialist_new(spec_type: i64, device_profile: i64) -> i64 {
+    let spec: i64 = vec_new();
+    vec_push(spec, spec_type);        // Slot 0: type
+    vec_push(spec, PRIORITY_NORMAL()); // Slot 1: priority
+    vec_push(spec, 1);                // Slot 2: is_active
+    vec_push(spec, 0);                // Slot 3: handle_count
+    vec_push(spec, 0);                // Slot 4: success_count
+    vec_push(spec, device_profile);   // Slot 5: device profile reference
+    spec
+}
+
+fn specialist_type(spec: i64) -> i64 {
+    vec_get(spec, 0)
+}
+
+fn specialist_priority(spec: i64) -> i64 {
+    vec_get(spec, 1)
+}
+
+fn specialist_is_active(spec: i64) -> i64 {
+    vec_get(spec, 2)
+}
+
+fn specialist_handle_count(spec: i64) -> i64 {
+    vec_get(spec, 3)
+}
+
+fn specialist_success_count(spec: i64) -> i64 {
+    vec_get(spec, 4)
+}
+
+fn specialist_device_profile(spec: i64) -> i64 {
+    vec_get(spec, 5)
+}
+
+fn specialist_set_active(spec: i64, active: i64) -> i64 {
+    vec_set(spec, 2, active);
+    0
+}
+
+fn specialist_set_priority(spec: i64, priority: i64) -> i64 {
+    vec_set(spec, 1, priority);
+    0
+}
+
+fn specialist_record_attempt(spec: i64, success: i64) -> i64 {
+    let count: i64 = specialist_handle_count(spec);
+    vec_set(spec, 3, count + 1);
+    if success == 1 {
+        let successes: i64 = specialist_success_count(spec);
+        vec_set(spec, 4, successes + 1);
+    }
+    0
+}
+
+fn specialist_success_rate(spec: i64) -> i64 {
+    let count: i64 = specialist_handle_count(spec);
+    if count == 0 {
+        return 1000;  // 100% if no attempts
+    }
+    let successes: i64 = specialist_success_count(spec);
+    (successes * 1000) / count
+}
+
+// =============================================================================
+// Specialist Type Names
+// =============================================================================
+
+fn specialist_type_name(spec_type: i64) -> i64 {
+    if spec_type == SPECIALIST_CONTEXT() { string_from("context") }
+    else if spec_type == SPECIALIST_UI() { string_from("ui") }
+    else if spec_type == SPECIALIST_OFFLINE() { string_from("offline") }
+    else if spec_type == SPECIALIST_TASK() { string_from("task") }
+    else if spec_type == SPECIALIST_CALENDAR() { string_from("calendar") }
+    else if spec_type == SPECIALIST_NOTIFICATION() { string_from("notification") }
+    else if spec_type == SPECIALIST_HEALTH() { string_from("health") }
+    else if spec_type == SPECIALIST_CONVERSATION() { string_from("conversation") }
+    else if spec_type == SPECIALIST_QUICK() { string_from("quick") }
+    else { string_from("unknown") }
+}
+
+// =============================================================================
+// Request Routing - Can This Specialist Handle?
+// =============================================================================
+
+fn specialist_can_handle(spec: i64, request_type: i64, context: i64) -> i64 {
+    if specialist_is_active(spec) == 0 {
+        return 0;  // Inactive specialists can't handle anything
+    }
+
+    let spec_type: i64 = specialist_type(spec);
+    let device: i64 = specialist_device_profile(spec);
+
+    // Check device capabilities
+    if spec_type == SPECIALIST_HEALTH() {
+        // Health specialist requires health sensors
+        if device_has_sensor(device, SENSOR_HEART_RATE()) == 0 {
+            if device_has_sensor(device, SENSOR_ACCELEROMETER()) == 0 {
+                return 0;  // No relevant sensors
+            }
+        }
+    }
+
+    // Check request type compatibility
+    if request_type == REQUEST_QUERY() {
+        // Most specialists can handle queries
+        return 1;
+    }
+
+    if request_type == REQUEST_COMMAND() {
+        // Only certain specialists handle commands
+        if spec_type == SPECIALIST_TASK() { return 1; }
+        if spec_type == SPECIALIST_CALENDAR() { return 1; }
+        if spec_type == SPECIALIST_UI() { return 1; }
+        return 0;
+    }
+
+    if request_type == REQUEST_NOTIFICATION() {
+        if spec_type == SPECIALIST_NOTIFICATION() { return 1; }
+        if spec_type == SPECIALIST_QUICK() { return 1; }
+        return 0;
+    }
+
+    1  // Default: can handle
+}
+
+fn specialist_confidence(spec: i64, request_type: i64, context: i64) -> i64 {
+    // Return confidence 0-1000 for handling this request
+    let base: i64 = 500;  // Start at 50%
+
+    let spec_type: i64 = specialist_type(spec);
+
+    // Adjust based on specialist type and request match
+    if request_type == REQUEST_NOTIFICATION() {
+        if spec_type == SPECIALIST_NOTIFICATION() {
+            base = 900;
+        } else if spec_type == SPECIALIST_QUICK() {
+            base = 800;
+        }
+    }
+
+    if request_type == REQUEST_COMMAND() {
+        if spec_type == SPECIALIST_TASK() {
+            base = 850;
+        } else if spec_type == SPECIALIST_CALENDAR() {
+            base = 800;
+        }
+    }
+
+    // Factor in success rate (if we have history)
+    let count: i64 = specialist_handle_count(spec);
+    if count > 10 {
+        let rate: i64 = specialist_success_rate(spec);
+        // Blend base with history
+        base = (base + rate) / 2;
+    }
+
+    base
+}
+
+// =============================================================================
+// Specialist Registry
+// =============================================================================
+
+fn specialist_registry_new() -> i64 {
+    vec_new()
+}
+
+fn specialist_registry_add(registry: i64, spec: i64) -> i64 {
+    vec_push(registry, spec);
+    0
+}
+
+fn specialist_registry_count(registry: i64) -> i64 {
+    vec_len(registry)
+}
+
+fn specialist_registry_get(registry: i64, index: i64) -> i64 {
+    vec_get(registry, index)
+}
+
+fn specialist_registry_find_by_type(registry: i64, spec_type: i64) -> i64 {
+    let len: i64 = vec_len(registry);
+    let i: i64 = 0;
+    while i < len {
+        let spec: i64 = vec_get(registry, i);
+        if specialist_type(spec) == spec_type {
+            return spec;
+        }
+        i = i + 1;
+    }
+    0  // Not found
+}
+
+// =============================================================================
+// Request Router - Find Best Specialist
+// =============================================================================
+
+fn find_best_specialist(registry: i64, request_type: i64, context: i64) -> i64 {
+    let len: i64 = vec_len(registry);
+    let best: i64 = 0;
+    let best_confidence: i64 = 0;
+
+    let i: i64 = 0;
+    while i < len {
+        let spec: i64 = vec_get(registry, i);
+        if specialist_can_handle(spec, request_type, context) == 1 {
+            let conf: i64 = specialist_confidence(spec, request_type, context);
+            if conf > best_confidence {
+                best_confidence = conf;
+                best = spec;
+            }
+        }
+        i = i + 1;
+    }
+
+    best
+}
+
+// =============================================================================
+// Default Specialist Factory
+// =============================================================================
+
+fn create_default_specialists(device_profile: i64) -> i64 {
+    let registry: i64 = specialist_registry_new();
+    let device_class: i64 = device_get_class(device_profile);
+
+    // All devices get context specialist
+    specialist_registry_add(registry, specialist_new(SPECIALIST_CONTEXT(), device_profile));
+
+    // All devices get UI specialist
+    specialist_registry_add(registry, specialist_new(SPECIALIST_UI(), device_profile));
+
+    // Notification specialist for all
+    specialist_registry_add(registry, specialist_new(SPECIALIST_NOTIFICATION(), device_profile));
+
+    // Task specialist for all
+    specialist_registry_add(registry, specialist_new(SPECIALIST_TASK(), device_profile));
+
+    // Calendar for phones and above
+    if device_class >= DEVICE_PHONE() {
+        specialist_registry_add(registry, specialist_new(SPECIALIST_CALENDAR(), device_profile));
+    }
+
+    // Conversation for tablets and above (need more resources)
+    if device_class >= DEVICE_TABLET() {
+        specialist_registry_add(registry, specialist_new(SPECIALIST_CONVERSATION(), device_profile));
+    }
+
+    // Offline specialist for phones and above
+    if device_class >= DEVICE_PHONE() {
+        specialist_registry_add(registry, specialist_new(SPECIALIST_OFFLINE(), device_profile));
+    }
+
+    // Quick response for watches/wearables
+    if device_class <= DEVICE_WEARABLE() {
+        specialist_registry_add(registry, specialist_new(SPECIALIST_QUICK(), device_profile));
+    }
+
+    // Health specialist for devices with health sensors
+    if device_has_sensor(device_profile, SENSOR_HEART_RATE()) == 1 {
+        specialist_registry_add(registry, specialist_new(SPECIALIST_HEALTH(), device_profile));
+    }
+
+    registry
+}
+
+// =============================================================================
+// Specialist Execution Stubs
+// These would be replaced with actual inference in production
+// =============================================================================
+
+fn specialist_handle_request(spec: i64, request: i64, beliefs: i64) -> i64 {
+    let spec_type: i64 = specialist_type(spec);
+
+    // Create response structure
+    let response: i64 = vec_new();
+    vec_push(response, RESPONSE_SUCCESS());  // Status
+    vec_push(response, 0);                    // Result value
+    vec_push(response, 0);                    // Confidence
+
+    // Route to appropriate handler
+    if spec_type == SPECIALIST_CONTEXT() {
+        return context_specialist_handle(spec, request, beliefs, response);
+    }
+    if spec_type == SPECIALIST_TASK() {
+        return task_specialist_handle(spec, request, beliefs, response);
+    }
+    if spec_type == SPECIALIST_NOTIFICATION() {
+        return notification_specialist_handle(spec, request, beliefs, response);
+    }
+    if spec_type == SPECIALIST_QUICK() {
+        return quick_specialist_handle(spec, request, beliefs, response);
+    }
+
+    // Default: mark as handled but with low confidence
+    vec_set(response, 2, 300);
+    specialist_record_attempt(spec, 1);
+    response
+}
+
+// =============================================================================
+// Context Specialist - Learns and applies user patterns
+// =============================================================================
+
+fn context_specialist_handle(spec: i64, request: i64, beliefs: i64, response: i64) -> i64 {
+    // Extract time context
+    let hour: i64 = time_hour(time_now());
+    let is_morning: i64 = 0;
+    let is_evening: i64 = 0;
+    if hour >= 6 {
+        if hour < 12 {
+            is_morning = 1;
+        }
+    }
+    if hour >= 18 {
+        if hour < 22 {
+            is_evening = 1;
+        }
+    }
+
+    // Check for learned patterns
+    let commute_pattern: i64 = belief_store_get(beliefs, BELIEF_PATTERN(), string_from("commute_time"));
+
+    // Store current context
+    belief_set_context(beliefs, string_from("hour"), hour);
+    belief_set_context(beliefs, string_from("is_morning"), is_morning);
+    belief_set_context(beliefs, string_from("is_evening"), is_evening);
+
+    vec_set(response, 2, 800);  // High confidence for context
+    specialist_record_attempt(spec, 1);
+    response
+}
+
+// =============================================================================
+// Task Specialist - Manages user tasks
+// =============================================================================
+
+fn task_specialist_handle(spec: i64, request: i64, beliefs: i64, response: i64) -> i64 {
+    // Get request action (encoded in request)
+    let action: i64 = vec_get(request, 0);
+    let task_id: i64 = vec_get(request, 1);
+
+    if action == 1 {
+        // Add task
+        let priority: i64 = vec_get(request, 2);
+        belief_set_task(beliefs, task_id, priority);
+        vec_set(response, 1, task_id);
+        vec_set(response, 2, 950);
+    } else if action == 2 {
+        // Complete task
+        belief_complete_task(beliefs, task_id);
+        vec_set(response, 1, 1);
+        vec_set(response, 2, 950);
+    } else if action == 3 {
+        // Get task priority
+        let priority: i64 = belief_get_task_priority(beliefs, task_id);
+        vec_set(response, 1, priority);
+        vec_set(response, 2, 900);
+    }
+
+    specialist_record_attempt(spec, 1);
+    response
+}
+
+// =============================================================================
+// Notification Specialist - Filters and prioritizes notifications
+// =============================================================================
+
+fn notification_specialist_handle(spec: i64, request: i64, beliefs: i64, response: i64) -> i64 {
+    let notification_type: i64 = vec_get(request, 0);
+    let sender: i64 = vec_get(request, 1);
+
+    // Check if sender is in important contacts
+    let sender_importance: i64 = belief_store_get_confidence(beliefs, BELIEF_RELATIONSHIP(), sender);
+
+    // Check user preferences for notification types
+    let type_pref: i64 = belief_get_preference(beliefs, notification_type);
+
+    // Calculate priority
+    let priority: i64 = PRIORITY_NORMAL();
+    if sender_importance > 800 {
+        priority = PRIORITY_HIGH();
+    }
+    if type_pref == 0 {
+        priority = PRIORITY_LOW();  // User often dismisses this type
+    }
+
+    vec_set(response, 1, priority);
+    vec_set(response, 2, 850);
+    specialist_record_attempt(spec, 1);
+    response
+}
+
+// =============================================================================
+// Quick Specialist - Fast responses for constrained devices
+// =============================================================================
+
+fn quick_specialist_handle(spec: i64, request: i64, beliefs: i64, response: i64) -> i64 {
+    // Quick responses use pre-computed answers where possible
+    let query_hash: i64 = vec_get(request, 0);
+
+    // Check cache for pre-computed response
+    let cached: i64 = belief_store_get(beliefs, BELIEF_CONTEXT(), query_hash);
+    if cached != 0 {
+        vec_set(response, 1, cached);
+        vec_set(response, 2, 900);
+        specialist_record_attempt(spec, 1);
+        return response;
+    }
+
+    // No cache - return low confidence to delegate
+    vec_set(response, 0, RESPONSE_QUEUED());
+    vec_set(response, 2, 200);
+    specialist_record_attempt(spec, 0);
+    response
+}
+
+// =============================================================================
+// Specialist Debugging
+// =============================================================================
+
+fn specialist_print_info(spec: i64) -> i64 {
+    let spec_type: i64 = specialist_type(spec);
+    let name: i64 = specialist_type_name(spec_type);
+
+    print(string_from("Specialist: "));
+    println(name);
+    print(string_from("  Active: "));
+    if specialist_is_active(spec) == 1 {
+        println(string_from("yes"));
+    } else {
+        println(string_from("no"));
+    }
+    print(string_from("  Handled: "));
+    print_i64(specialist_handle_count(spec));
+    println(string_from(""));
+    print(string_from("  Success rate: "));
+    print_i64(specialist_success_rate(spec) / 10);
+    println(string_from("%"));
+    0
+}
+
+fn specialist_registry_print_all(registry: i64) -> i64 {
+    println(string_from("=== Specialist Registry ==="));
+    let len: i64 = vec_len(registry);
+    let i: i64 = 0;
+    while i < len {
+        let spec: i64 = vec_get(registry, i);
+        specialist_print_info(spec);
+        i = i + 1;
+    }
+    println(string_from("==========================="));
+    0
+}
+
+// Time helper stubs (would be intrinsics)
+fn time_hour(timestamp: i64) -> i64 {
+    // Extract hour from timestamp
+    // In production, this would use proper time functions
+    (timestamp / 3600) % 24
+}

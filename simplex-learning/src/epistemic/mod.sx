@@ -1,0 +1,44 @@
+// TASK-014: Epistemic Annealing and Self-Correction
+//
+// This module implements anti-confirmation annealing - temperature schedules
+// that respond to epistemic health rather than just confidence.
+//
+// Standard annealing cools when confident. But confidence can be unearned.
+// The system may cool around a false belief, becoming stable and wrong.
+//
+// Epistemic annealing heats when:
+// - Belief sources disagree (unresolved conflict)
+// - Confidence grows faster than evidence justifies
+// - Predictions fail
+// - Evidence is stale
+// - During scheduled dissent windows
+//
+// Components:
+//   - monitors:       Epistemic health metrics
+//   - schedule:       Temperature schedule with epistemic corrections
+//   - dissent:        Mandatory dissent windows
+//   - counterfactual: Counterfactual scenario probing
+//   - skeptic:        Skeptic specialist that challenges beliefs
+
+pub mod monitors;
+pub mod schedule;
+pub mod dissent;
+pub mod counterfactual;
+pub mod skeptic;
+pub mod integration;
+pub mod meta_optimizer;
+
+// Re-export core types
+pub use monitors::{EpistemicMonitors, HealthMetric, EpistemicHealth};
+pub use schedule::{EpistemicSchedule, LearnableSchedule, AnnealingParams};
+pub use dissent::{DissentConfig, DissentWindow, DissentPhase};
+pub use counterfactual::{CounterfactualProber, CounterfactualScenario, BeliefRevision};
+pub use skeptic::{Skeptic, SkepticConfig, SkepticRunner, SkepticStats, ChallengeRecord};
+pub use integration::{
+    EpistemicIntegration, EpistemicIntegrationConfig, EpistemicStepResult,
+    MonitorUpdate, IntegrationStats, EpistemicAware, run_epistemic_step,
+};
+pub use meta_optimizer::{
+    EpistemicMetaOptimizer, MetaOptimizerConfig, MetaOptimizerStats,
+    UpdateContext, UpdateResult, UpdateError, OptimizerCheckpoint,
+};

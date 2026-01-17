@@ -5,7 +5,7 @@
 **Created**: 2026-01-10
 **Updated**: 2026-01-10
 **Target Version**: 0.8.0
-**Depends On**: TASK-001 (Neural IR) ✓ Complete, TASK-004 (Real-Time Learning) ✓ Complete
+**Depends On**: TASK-001 (Neural IR) - Complete, TASK-004 (Real-Time Learning) - Complete
 
 ## Overview
 

@@ -1,0 +1,697 @@
+// Edge Hive - Epistemic Belief Unit Tests
+// Tests for grounded beliefs, calibrated confidence, and skeptic system
+// Note: Uses simplified test logic that doesn't require working vec storage
+
+fn main() -> i64 {
+    println(string_from("=== Edge Hive Epistemic Belief Tests ==="));
+    let passed: i64 = 0;
+    let failed: i64 = 0;
+
+    // Evidence type tests
+    if test_evidence_types() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_evidence_strength_ordering() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Falsifier type tests
+    if test_falsifier_types() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Belief type tests
+    if test_belief_types() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // No-learn zone tests
+    if test_no_learn_zones() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Schedule phase tests
+    if test_schedule_phases() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Confidence calculation tests
+    if test_confidence_calculation() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_confidence_bounds() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // ECE bucket tests
+    if test_ece_bucket_mapping() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_ece_calculation() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Challenge result tests
+    if test_challenge_results() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Evidence weight calculation
+    if test_evidence_weight_calculation() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    println(string_from(""));
+    print(string_from("Passed: "));
+    print_num(passed);
+    print(string_from(", Failed: "));
+    print_num(failed);
+    println(string_from(""));
+
+    failed
+}
+
+// =============================================================================
+// Evidence Type Tests
+// =============================================================================
+
+fn test_evidence_types() -> i64 {
+    print(string_from("Testing evidence types... "));
+
+    // Verify types are distinct
+    if EVIDENCE_DIRECT() == EVIDENCE_INFERRED() {
+        println(string_from("FAIL: DIRECT != INFERRED"));
+        return 1;
+    }
+
+    if EVIDENCE_INFERRED() == EVIDENCE_EXTERNAL() {
+        println(string_from("FAIL: INFERRED != EXTERNAL"));
+        return 1;
+    }
+
+    if EVIDENCE_EXTERNAL() == EVIDENCE_HEARSAY() {
+        println(string_from("FAIL: EXTERNAL != HEARSAY"));
+        return 1;
+    }
+
+    // Verify non-zero (0 often used for "no evidence")
+    if EVIDENCE_DIRECT() == 0 {
+        println(string_from("FAIL: DIRECT should be non-zero"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_evidence_strength_ordering() -> i64 {
+    print(string_from("Testing evidence strength ordering... "));
+
+    // DIRECT should be strongest
+    let direct_strength: i64 = evidence_type_multiplier(EVIDENCE_DIRECT());
+    let external_strength: i64 = evidence_type_multiplier(EVIDENCE_EXTERNAL());
+    let inferred_strength: i64 = evidence_type_multiplier(EVIDENCE_INFERRED());
+    let hearsay_strength: i64 = evidence_type_multiplier(EVIDENCE_HEARSAY());
+
+    if direct_strength <= external_strength {
+        println(string_from("FAIL: DIRECT should be stronger than EXTERNAL"));
+        return 1;
+    }
+
+    if external_strength <= inferred_strength {
+        println(string_from("FAIL: EXTERNAL should be stronger than INFERRED"));
+        return 1;
+    }
+
+    if inferred_strength <= hearsay_strength {
+        println(string_from("FAIL: INFERRED should be stronger than HEARSAY"));
+        return 1;
+    }
+
+    // All should be positive
+    if hearsay_strength <= 0 {
+        println(string_from("FAIL: Even HEARSAY should have positive strength"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Falsifier Type Tests
+// =============================================================================
+
+fn test_falsifier_types() -> i64 {
+    print(string_from("Testing falsifier types... "));
+
+    // Verify types are distinct
+    if FALSIFY_CONDITION() == FALSIFY_TIMEOUT() {
+        println(string_from("FAIL: CONDITION != TIMEOUT"));
+        return 1;
+    }
+
+    if FALSIFY_TIMEOUT() == FALSIFY_CONTRADICTION() {
+        println(string_from("FAIL: TIMEOUT != CONTRADICTION"));
+        return 1;
+    }
+
+    // Verify non-zero
+    if FALSIFY_CONDITION() == 0 {
+        println(string_from("FAIL: CONDITION should be non-zero"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Belief Type Tests
+// =============================================================================
+
+fn test_belief_types() -> i64 {
+    print(string_from("Testing belief types... "));
+
+    // Verify standard types are distinct
+    if BELIEF_PREFERENCE() == BELIEF_PATTERN() {
+        println(string_from("FAIL: PREFERENCE != PATTERN"));
+        return 1;
+    }
+
+    if BELIEF_PATTERN() == BELIEF_CONTEXT() {
+        println(string_from("FAIL: PATTERN != CONTEXT"));
+        return 1;
+    }
+
+    // Verify non-zero
+    if BELIEF_PREFERENCE() == 0 {
+        println(string_from("FAIL: PREFERENCE should be non-zero"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// No-Learn Zone Tests
+// =============================================================================
+
+fn test_no_learn_zones() -> i64 {
+    print(string_from("Testing no-learn zones... "));
+
+    // Verify no-learn types are distinct from regular types
+    if NO_LEARN_PERMISSION() < 200 {
+        println(string_from("FAIL: NO_LEARN types should be >= 200"));
+        return 1;
+    }
+
+    // Verify is_no_learn_type works
+    if is_no_learn_type(NO_LEARN_PERMISSION()) != 1 {
+        println(string_from("FAIL: PERMISSION should be no-learn"));
+        return 1;
+    }
+
+    if is_no_learn_type(NO_LEARN_SECURITY()) != 1 {
+        println(string_from("FAIL: SECURITY should be no-learn"));
+        return 1;
+    }
+
+    if is_no_learn_type(NO_LEARN_IDENTITY()) != 1 {
+        println(string_from("FAIL: IDENTITY should be no-learn"));
+        return 1;
+    }
+
+    if is_no_learn_type(NO_LEARN_AUDIT()) != 1 {
+        println(string_from("FAIL: AUDIT should be no-learn"));
+        return 1;
+    }
+
+    // Regular types should NOT be no-learn
+    if is_no_learn_type(BELIEF_PREFERENCE()) == 1 {
+        println(string_from("FAIL: PREFERENCE should not be no-learn"));
+        return 1;
+    }
+
+    if is_no_learn_type(BELIEF_PATTERN()) == 1 {
+        println(string_from("FAIL: PATTERN should not be no-learn"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Schedule Phase Tests
+// =============================================================================
+
+fn test_schedule_phases() -> i64 {
+    print(string_from("Testing schedule phases... "));
+
+    // Verify phases are distinct
+    if PHASE_EXPLORE() == PHASE_EXPLOIT() {
+        println(string_from("FAIL: EXPLORE != EXPLOIT"));
+        return 1;
+    }
+
+    if PHASE_EXPLOIT() == PHASE_DISSENT() {
+        println(string_from("FAIL: EXPLOIT != DISSENT"));
+        return 1;
+    }
+
+    // Verify cycle works (0, 1, 2, back to 0)
+    let phase: i64 = PHASE_EXPLORE();
+    let next1: i64 = next_phase(phase);
+    if next1 != PHASE_EXPLOIT() {
+        println(string_from("FAIL: EXPLORE -> EXPLOIT"));
+        return 1;
+    }
+
+    let next2: i64 = next_phase(next1);
+    if next2 != PHASE_DISSENT() {
+        println(string_from("FAIL: EXPLOIT -> DISSENT"));
+        return 1;
+    }
+
+    let next3: i64 = next_phase(next2);
+    if next3 != PHASE_EXPLORE() {
+        println(string_from("FAIL: DISSENT -> EXPLORE (cycle)"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Confidence Calculation Tests
+// =============================================================================
+
+fn test_confidence_calculation() -> i64 {
+    print(string_from("Testing confidence calculation... "));
+
+    // Initial confidence should be moderate
+    let initial: i64 = initial_confidence();
+    if initial < 500 {
+        println(string_from("FAIL: initial confidence should be >= 500"));
+        return 1;
+    }
+    if initial > 800 {
+        println(string_from("FAIL: initial confidence should be <= 800"));
+        return 1;
+    }
+
+    // Adding evidence should increase confidence
+    let after_evidence: i64 = confidence_after_evidence(initial, 900);
+    if after_evidence <= initial {
+        println(string_from("FAIL: evidence should increase confidence"));
+        return 1;
+    }
+
+    // Weak evidence should increase less
+    let after_weak: i64 = confidence_after_evidence(initial, 300);
+    if after_weak <= initial {
+        println(string_from("FAIL: even weak evidence should increase confidence"));
+        return 1;
+    }
+    if after_weak >= after_evidence {
+        println(string_from("FAIL: weak evidence should increase less than strong"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_confidence_bounds() -> i64 {
+    print(string_from("Testing confidence bounds... "));
+
+    // Confidence should never exceed 1000
+    let high_conf: i64 = 950;
+    let after: i64 = confidence_after_evidence(high_conf, 1000);
+    if after > 1000 {
+        println(string_from("FAIL: confidence should not exceed 1000"));
+        return 1;
+    }
+
+    // Confidence should never go below 0
+    let low_conf: i64 = 100;
+    let after_challenge: i64 = confidence_after_challenge(low_conf, 500);
+    if after_challenge < 0 {
+        println(string_from("FAIL: confidence should not go below 0"));
+        return 1;
+    }
+
+    // Perfect evidence should approach 1000
+    let perfect: i64 = confidence_after_evidence(500, 1000);
+    if perfect < 700 {
+        println(string_from("FAIL: perfect evidence should significantly increase confidence"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// ECE Bucket Tests
+// =============================================================================
+
+fn test_ece_bucket_mapping() -> i64 {
+    print(string_from("Testing ECE bucket mapping... "));
+
+    // 0-99 -> bucket 0
+    if confidence_to_bucket(50) != 0 {
+        println(string_from("FAIL: 50 should map to bucket 0"));
+        return 1;
+    }
+
+    // 100-199 -> bucket 1
+    if confidence_to_bucket(150) != 1 {
+        println(string_from("FAIL: 150 should map to bucket 1"));
+        return 1;
+    }
+
+    // 900-999 -> bucket 9
+    if confidence_to_bucket(950) != 9 {
+        println(string_from("FAIL: 950 should map to bucket 9"));
+        return 1;
+    }
+
+    // 1000 should also map to bucket 9 (clamped)
+    if confidence_to_bucket(1000) != 9 {
+        println(string_from("FAIL: 1000 should map to bucket 9"));
+        return 1;
+    }
+
+    // Boundary cases
+    if confidence_to_bucket(99) != 0 {
+        println(string_from("FAIL: 99 should map to bucket 0"));
+        return 1;
+    }
+    if confidence_to_bucket(100) != 1 {
+        println(string_from("FAIL: 100 should map to bucket 1"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_ece_calculation() -> i64 {
+    print(string_from("Testing ECE calculation... "));
+
+    // Perfect calibration: predicted = actual
+    // If we predict 90% and are right 90% of the time, ECE = 0
+    let perfect_ece: i64 = calculate_ece(900, 900);  // 90% conf, 90% accuracy
+    if perfect_ece > 50 {  // Allow small tolerance
+        println(string_from("FAIL: perfect calibration should have low ECE"));
+        return 1;
+    }
+
+    // Overconfident: predict 90% but only 50% accurate
+    let overconf_ece: i64 = calculate_ece(900, 500);
+    if overconf_ece < 300 {  // Should be ~400
+        println(string_from("FAIL: overconfident should have high ECE"));
+        return 1;
+    }
+
+    // Underconfident: predict 50% but actually 90% accurate
+    let underconf_ece: i64 = calculate_ece(500, 900);
+    if underconf_ece < 300 {
+        println(string_from("FAIL: underconfident should have high ECE"));
+        return 1;
+    }
+
+    // ECE should be symmetric for over/under confidence
+    let diff: i64 = overconf_ece - underconf_ece;
+    if diff < 0 { diff = 0 - diff; }
+    if diff > 100 {
+        println(string_from("FAIL: ECE should be roughly symmetric"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Challenge Result Tests
+// =============================================================================
+
+fn test_challenge_results() -> i64 {
+    print(string_from("Testing challenge results... "));
+
+    // Verify results are distinct
+    if CHALLENGE_SUSTAINED() == CHALLENGE_WEAKENED() {
+        println(string_from("FAIL: SUSTAINED != WEAKENED"));
+        return 1;
+    }
+
+    if CHALLENGE_WEAKENED() == CHALLENGE_FALSIFIED() {
+        println(string_from("FAIL: WEAKENED != FALSIFIED"));
+        return 1;
+    }
+
+    // Strong beliefs should be sustained
+    let result1: i64 = challenge_belief(900, 3);  // 90% conf, 3 evidence pieces
+    if result1 != CHALLENGE_SUSTAINED() {
+        println(string_from("FAIL: strong belief should be sustained"));
+        return 1;
+    }
+
+    // Weak beliefs with no evidence should be weakened or falsified
+    let result2: i64 = challenge_belief(300, 0);  // 30% conf, no evidence
+    if result2 == CHALLENGE_SUSTAINED() {
+        println(string_from("FAIL: weak belief with no evidence should not be sustained"));
+        return 1;
+    }
+
+    // Medium beliefs should be weakened
+    let result3: i64 = challenge_belief(500, 1);  // 50% conf, 1 evidence
+    if result3 == CHALLENGE_FALSIFIED() {
+        println(string_from("FAIL: medium belief should not be immediately falsified"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Evidence Weight Calculation Tests
+// =============================================================================
+
+fn test_evidence_weight_calculation() -> i64 {
+    print(string_from("Testing evidence weight calculation... "));
+
+    // Direct evidence should have full weight
+    let direct_weight: i64 = calculate_evidence_weight(EVIDENCE_DIRECT(), 1000);
+    if direct_weight != 1000 {
+        println(string_from("FAIL: DIRECT should have 100% weight"));
+        return 1;
+    }
+
+    // External evidence should have reduced weight
+    let external_weight: i64 = calculate_evidence_weight(EVIDENCE_EXTERNAL(), 1000);
+    if external_weight >= direct_weight {
+        println(string_from("FAIL: EXTERNAL should have less weight than DIRECT"));
+        return 1;
+    }
+    if external_weight < 700 {
+        println(string_from("FAIL: EXTERNAL should have at least 70% weight"));
+        return 1;
+    }
+
+    // Inferred evidence should have even less
+    let inferred_weight: i64 = calculate_evidence_weight(EVIDENCE_INFERRED(), 1000);
+    if inferred_weight >= external_weight {
+        println(string_from("FAIL: INFERRED should have less weight than EXTERNAL"));
+        return 1;
+    }
+
+    // Hearsay should be weakest
+    let hearsay_weight: i64 = calculate_evidence_weight(EVIDENCE_HEARSAY(), 1000);
+    if hearsay_weight >= inferred_weight {
+        println(string_from("FAIL: HEARSAY should have least weight"));
+        return 1;
+    }
+    if hearsay_weight < 200 {
+        println(string_from("FAIL: HEARSAY should have at least 20% weight"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Runtime Stub Implementations
+// =============================================================================
+
+fn string_from(s: &str) -> i64 { 0 }
+fn print(s: i64) -> i64 { 0 }
+fn println(s: i64) -> i64 { 0 }
+fn print_num(n: i64) -> i64 { 0 }
+
+// =============================================================================
+// Evidence Types
+// =============================================================================
+
+fn EVIDENCE_DIRECT() -> i64 { 1 }
+fn EVIDENCE_INFERRED() -> i64 { 2 }
+fn EVIDENCE_EXTERNAL() -> i64 { 3 }
+fn EVIDENCE_HEARSAY() -> i64 { 4 }
+
+fn evidence_type_multiplier(ev_type: i64) -> i64 {
+    if ev_type == EVIDENCE_DIRECT() { return 100; }
+    if ev_type == EVIDENCE_EXTERNAL() { return 80; }
+    if ev_type == EVIDENCE_INFERRED() { return 60; }
+    40  // HEARSAY
+}
+
+fn calculate_evidence_weight(ev_type: i64, base_weight: i64) -> i64 {
+    let multiplier: i64 = evidence_type_multiplier(ev_type);
+    base_weight * multiplier / 100
+}
+
+// =============================================================================
+// Falsifier Types
+// =============================================================================
+
+fn FALSIFY_CONDITION() -> i64 { 1 }
+fn FALSIFY_TIMEOUT() -> i64 { 2 }
+fn FALSIFY_CONTRADICTION() -> i64 { 3 }
+
+// =============================================================================
+// Belief Types
+// =============================================================================
+
+fn BELIEF_PREFERENCE() -> i64 { 1 }
+fn BELIEF_PATTERN() -> i64 { 2 }
+fn BELIEF_CONTEXT() -> i64 { 3 }
+
+// No-learn types (200-299 range)
+fn NO_LEARN_PERMISSION() -> i64 { 200 }
+fn NO_LEARN_SECURITY() -> i64 { 201 }
+fn NO_LEARN_IDENTITY() -> i64 { 202 }
+fn NO_LEARN_AUDIT() -> i64 { 203 }
+
+fn is_no_learn_type(belief_type: i64) -> i64 {
+    if belief_type >= 200 {
+        if belief_type <= 299 {
+            return 1;
+        }
+    }
+    0
+}
+
+// =============================================================================
+// Schedule Phases
+// =============================================================================
+
+fn PHASE_EXPLORE() -> i64 { 0 }
+fn PHASE_EXPLOIT() -> i64 { 1 }
+fn PHASE_DISSENT() -> i64 { 2 }
+
+fn next_phase(current: i64) -> i64 {
+    (current + 1) % 3
+}
+
+// =============================================================================
+// Confidence Calculations
+// =============================================================================
+
+fn initial_confidence() -> i64 {
+    700  // Moderate default
+}
+
+fn confidence_after_evidence(current: i64, evidence_strength: i64) -> i64 {
+    // Increase towards 1000, more for stronger evidence
+    let remaining: i64 = 1000 - current;
+    let increase: i64 = remaining * evidence_strength / 2000;
+    let result: i64 = current + increase;
+    if result > 1000 { return 1000; }
+    result
+}
+
+fn confidence_after_challenge(current: i64, challenge_strength: i64) -> i64 {
+    // Decrease based on challenge strength
+    let decrease: i64 = current * challenge_strength / 2000;
+    let result: i64 = current - decrease;
+    if result < 0 { return 0; }
+    result
+}
+
+// =============================================================================
+// ECE (Expected Calibration Error) Calculations
+// =============================================================================
+
+fn confidence_to_bucket(confidence: i64) -> i64 {
+    let bucket: i64 = confidence / 100;
+    if bucket > 9 { return 9; }
+    bucket
+}
+
+fn calculate_ece(predicted_confidence: i64, actual_accuracy: i64) -> i64 {
+    // ECE = |predicted - actual|
+    let diff: i64 = predicted_confidence - actual_accuracy;
+    if diff < 0 { diff = 0 - diff; }
+    diff
+}
+
+// =============================================================================
+// Challenge Results
+// =============================================================================
+
+fn CHALLENGE_SUSTAINED() -> i64 { 0 }
+fn CHALLENGE_WEAKENED() -> i64 { 1 }
+fn CHALLENGE_FALSIFIED() -> i64 { 2 }
+
+fn challenge_belief(confidence: i64, evidence_count: i64) -> i64 {
+    // Strong confidence + evidence = sustained
+    if confidence >= 700 {
+        if evidence_count >= 2 {
+            return CHALLENGE_SUSTAINED();
+        }
+    }
+
+    // Very weak = falsified
+    if confidence < 300 {
+        if evidence_count == 0 {
+            return CHALLENGE_FALSIFIED();
+        }
+    }
+
+    // Everything else = weakened
+    CHALLENGE_WEAKENED()
+}

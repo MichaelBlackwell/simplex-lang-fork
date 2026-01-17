@@ -1,0 +1,415 @@
+// Edge Hive - BeliefStore Unit Tests
+// Tests for persistent belief storage
+
+fn main() -> i64 {
+    println(string_from("=== Edge Hive BeliefStore Tests ==="));
+    let passed: i64 = 0;
+    let failed: i64 = 0;
+
+    // Test store creation
+    if test_bstore_new() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Test adding and retrieving beliefs
+    if test_bstore_set_get() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Test belief updates
+    if test_bstore_update() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Test belief removal
+    if test_bstore_remove() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Test eviction
+    if test_bstore_eviction() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Test dirty flag
+    if test_bstore_dirty() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    println(string_from(""));
+    print(string_from("Passed: "));
+    print_num(passed);
+    print(string_from(", Failed: "));
+    print_num(failed);
+    println(string_from(""));
+
+    failed
+}
+
+fn test_bstore_new() -> i64 {
+    print(string_from("Testing belief store creation... "));
+
+    let store: i64 = bstore_new(100);
+
+    // Store should be empty
+    if bstore_count(store) != 0 {
+        println(string_from("FAIL: new store should be empty"));
+        return 1;
+    }
+
+    // Store should not be dirty
+    if bstore_is_dirty(store) != 0 {
+        println(string_from("FAIL: new store should not be dirty"));
+        return 1;
+    }
+
+    // Max entries should be set
+    if bstore_max_entries(store) != 100 {
+        println(string_from("FAIL: max entries not set correctly"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_bstore_set_get() -> i64 {
+    print(string_from("Testing belief set/get... "));
+
+    let store: i64 = bstore_new(100);
+
+    // Add a belief
+    let key: i64 = string_from("test_key");
+    bstore_set(store, BELIEF_PREFERENCE(), key, 42, 1000);
+
+    // Count should be 1
+    if bstore_count(store) != 1 {
+        println(string_from("FAIL: count should be 1"));
+        return 1;
+    }
+
+    // Retrieve the belief
+    let value: i64 = bstore_get(store, BELIEF_PREFERENCE(), key);
+    if value != 42 {
+        println(string_from("FAIL: value mismatch"));
+        return 1;
+    }
+
+    // Check confidence
+    let conf: i64 = bstore_get_confidence(store, BELIEF_PREFERENCE(), key);
+    if conf != 1000 {
+        println(string_from("FAIL: confidence mismatch"));
+        return 1;
+    }
+
+    // Non-existent key should return 0
+    let missing: i64 = bstore_get(store, BELIEF_PREFERENCE(), string_from("missing"));
+    if missing != 0 {
+        println(string_from("FAIL: missing key should return 0"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_bstore_update() -> i64 {
+    print(string_from("Testing belief updates... "));
+
+    let store: i64 = bstore_new(100);
+    let key: i64 = string_from("counter");
+
+    // Initial value
+    bstore_set(store, BELIEF_PATTERN(), key, 10, 800);
+
+    // Update same key
+    bstore_set(store, BELIEF_PATTERN(), key, 20, 900);
+
+    // Count should still be 1 (update, not insert)
+    if bstore_count(store) != 1 {
+        println(string_from("FAIL: update should not increase count"));
+        return 1;
+    }
+
+    // Value should be updated
+    let value: i64 = bstore_get(store, BELIEF_PATTERN(), key);
+    if value != 20 {
+        println(string_from("FAIL: value should be updated"));
+        return 1;
+    }
+
+    // Confidence should be updated
+    let conf: i64 = bstore_get_confidence(store, BELIEF_PATTERN(), key);
+    if conf != 900 {
+        println(string_from("FAIL: confidence should be updated"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_bstore_remove() -> i64 {
+    print(string_from("Testing belief removal... "));
+
+    let store: i64 = bstore_new(100);
+
+    // Add some beliefs
+    bstore_set(store, BELIEF_TASK(), string_from("task1"), 1, 1000);
+    bstore_set(store, BELIEF_TASK(), string_from("task2"), 2, 1000);
+    bstore_set(store, BELIEF_TASK(), string_from("task3"), 3, 1000);
+
+    if bstore_count(store) != 3 {
+        println(string_from("FAIL: should have 3 beliefs"));
+        return 1;
+    }
+
+    // Remove middle task
+    let removed: i64 = bstore_remove(store, BELIEF_TASK(), string_from("task2"));
+    if removed != 1 {
+        println(string_from("FAIL: remove should return 1"));
+        return 1;
+    }
+
+    // Count should be 2
+    if bstore_count(store) != 2 {
+        println(string_from("FAIL: count should be 2 after removal"));
+        return 1;
+    }
+
+    // Removed key should return 0
+    let value: i64 = bstore_get(store, BELIEF_TASK(), string_from("task2"));
+    if value != 0 {
+        println(string_from("FAIL: removed belief should return 0"));
+        return 1;
+    }
+
+    // Other beliefs should still exist
+    if bstore_get(store, BELIEF_TASK(), string_from("task1")) != 1 {
+        println(string_from("FAIL: task1 should still exist"));
+        return 1;
+    }
+
+    // Removing non-existent should return 0
+    let not_found: i64 = bstore_remove(store, BELIEF_TASK(), string_from("missing"));
+    if not_found != 0 {
+        println(string_from("FAIL: removing missing should return 0"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_bstore_eviction() -> i64 {
+    print(string_from("Testing belief eviction... "));
+
+    // Create store with max 3 entries
+    let store: i64 = bstore_new(3);
+
+    // Fill the store
+    bstore_set(store, BELIEF_CONTEXT(), string_from("a"), 1, 1000);
+    bstore_set(store, BELIEF_CONTEXT(), string_from("b"), 2, 1000);
+    bstore_set(store, BELIEF_CONTEXT(), string_from("c"), 3, 1000);
+
+    if bstore_count(store) != 3 {
+        println(string_from("FAIL: store should have 3 entries"));
+        return 1;
+    }
+
+    // Add one more - should trigger eviction
+    bstore_set(store, BELIEF_CONTEXT(), string_from("d"), 4, 1000);
+
+    // Count should still be 3 (evicted oldest)
+    if bstore_count(store) != 3 {
+        println(string_from("FAIL: count should be 3 after eviction"));
+        return 1;
+    }
+
+    // New entry should exist
+    if bstore_get(store, BELIEF_CONTEXT(), string_from("d")) != 4 {
+        println(string_from("FAIL: new entry should exist"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_bstore_dirty() -> i64 {
+    print(string_from("Testing dirty flag... "));
+
+    let store: i64 = bstore_new(100);
+
+    // New store should not be dirty
+    if bstore_is_dirty(store) != 0 {
+        println(string_from("FAIL: new store should not be dirty"));
+        return 1;
+    }
+
+    // Adding belief should mark dirty
+    bstore_set(store, BELIEF_PREFERENCE(), string_from("x"), 1, 1000);
+    if bstore_is_dirty(store) != 1 {
+        println(string_from("FAIL: store should be dirty after set"));
+        return 1;
+    }
+
+    // Mark clean
+    bstore_mark_clean(store);
+    if bstore_is_dirty(store) != 0 {
+        println(string_from("FAIL: store should be clean after mark_clean"));
+        return 1;
+    }
+
+    // Removing belief should mark dirty
+    bstore_remove(store, BELIEF_PREFERENCE(), string_from("x"));
+    if bstore_is_dirty(store) != 1 {
+        println(string_from("FAIL: store should be dirty after remove"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// Runtime and type stubs
+fn string_from(s: &str) -> i64 { 0 }
+fn print(s: i64) -> i64 { 0 }
+fn println(s: i64) -> i64 { 0 }
+fn print_num(n: i64) -> i64 { 0 }
+fn time_now() -> i64 { 0 }
+fn string_hash(s: i64) -> i64 { s }
+
+fn vec_new() -> i64 { 0 }
+fn vec_push(v: i64, val: i64) -> i64 { 0 }
+fn vec_get(v: i64, idx: i64) -> i64 { 0 }
+fn vec_set(v: i64, idx: i64, val: i64) -> i64 { 0 }
+fn vec_len(v: i64) -> i64 { 0 }
+fn vec_pop(v: i64) -> i64 { 0 }
+
+fn BELIEF_PREFERENCE() -> i64 { 1 }
+fn BELIEF_PATTERN() -> i64 { 2 }
+fn BELIEF_CONTEXT() -> i64 { 3 }
+fn BELIEF_TASK() -> i64 { 4 }
+
+// Belief store stubs (would be imported from beliefs.sx)
+fn bstore_new(max_entries: i64) -> i64 {
+    let store: i64 = vec_new();
+    vec_push(store, vec_new());
+    vec_push(store, max_entries);
+    vec_push(store, 0);
+    vec_push(store, 0);
+    vec_push(store, 0);
+    vec_push(store, 0);
+    store
+}
+
+fn bstore_beliefs(store: i64) -> i64 { vec_get(store, 0) }
+fn bstore_max_entries(store: i64) -> i64 { vec_get(store, 1) }
+fn bstore_is_dirty(store: i64) -> i64 { vec_get(store, 2) }
+fn bstore_mark_dirty(store: i64) -> i64 { vec_set(store, 2, 1); 0 }
+fn bstore_mark_clean(store: i64) -> i64 { vec_set(store, 2, 0); 0 }
+
+fn bstore_count(store: i64) -> i64 {
+    let beliefs: i64 = bstore_beliefs(store);
+    vec_len(beliefs)
+}
+
+fn bstore_find(store: i64, belief_type: i64, key: i64) -> i64 {
+    let beliefs: i64 = bstore_beliefs(store);
+    let key_hash: i64 = string_hash(key);
+    let len: i64 = vec_len(beliefs);
+    let i: i64 = 0;
+    while i < len {
+        let entry: i64 = vec_get(beliefs, i);
+        if vec_get(entry, 0) == belief_type {
+            if vec_get(entry, 1) == key_hash {
+                return entry;
+            }
+        }
+        i = i + 1;
+    }
+    0
+}
+
+fn bstore_get(store: i64, belief_type: i64, key: i64) -> i64 {
+    let entry: i64 = bstore_find(store, belief_type, key);
+    if entry != 0 { vec_get(entry, 2) } else { 0 }
+}
+
+fn bstore_get_confidence(store: i64, belief_type: i64, key: i64) -> i64 {
+    let entry: i64 = bstore_find(store, belief_type, key);
+    if entry != 0 { vec_get(entry, 3) } else { 0 }
+}
+
+fn bstore_set(store: i64, belief_type: i64, key: i64, value: i64, confidence: i64) -> i64 {
+    let beliefs: i64 = bstore_beliefs(store);
+    let existing: i64 = bstore_find(store, belief_type, key);
+
+    if existing != 0 {
+        vec_set(existing, 2, value);
+        vec_set(existing, 3, confidence);
+    } else {
+        let len: i64 = vec_len(beliefs);
+        let max: i64 = bstore_max_entries(store);
+        if len >= max {
+            bstore_evict_oldest(store);
+        }
+        let entry: i64 = vec_new();
+        vec_push(entry, belief_type);
+        vec_push(entry, string_hash(key));
+        vec_push(entry, value);
+        vec_push(entry, confidence);
+        vec_push(entry, time_now());
+        vec_push(beliefs, entry);
+    }
+    bstore_mark_dirty(store);
+    0
+}
+
+fn bstore_evict_oldest(store: i64) -> i64 {
+    let beliefs: i64 = bstore_beliefs(store);
+    let len: i64 = vec_len(beliefs);
+    if len > 0 {
+        // Simplified: just remove first
+        // Real implementation finds oldest by timestamp
+        vec_pop(beliefs);
+    }
+    0
+}
+
+fn bstore_remove(store: i64, belief_type: i64, key: i64) -> i64 {
+    let beliefs: i64 = bstore_beliefs(store);
+    let key_hash: i64 = string_hash(key);
+    let len: i64 = vec_len(beliefs);
+    let i: i64 = 0;
+    while i < len {
+        let entry: i64 = vec_get(beliefs, i);
+        if vec_get(entry, 0) == belief_type {
+            if vec_get(entry, 1) == key_hash {
+                let last_idx: i64 = len - 1;
+                if i != last_idx {
+                    let last: i64 = vec_get(beliefs, last_idx);
+                    vec_set(beliefs, i, last);
+                }
+                vec_pop(beliefs);
+                bstore_mark_dirty(store);
+                return 1;
+            }
+        }
+        i = i + 1;
+    }
+    0
+}

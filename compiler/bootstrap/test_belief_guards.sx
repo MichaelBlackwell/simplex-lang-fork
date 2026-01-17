@@ -1,0 +1,628 @@
+// Test file for TASK-013-A: Belief-Gated Receive with Derivative Patterns
+// Tests belief guards, dual numbers, confidence/derivative expressions, and WAKE mechanism
+
+fn main() -> i64 {
+    var passed = 0;
+    var failed = 0;
+    print("=== Belief Guard Tests (TASK-013-A) ===\n\n");
+
+    // Section 1: Belief Registration with Dual Numbers
+    print("--- Section 1: Dual Number Belief Registration ---\n");
+
+    if test_belief_register() == 1 {
+        print("  belief_register: PASS\n");
+        passed = passed + 1;
+    } else {
+        print("  belief_register: FAIL\n");
+        failed = failed + 1;
+    }
+
+    if test_belief_update() == 1 {
+        print("  belief_update: PASS\n");
+        passed = passed + 1;
+    } else {
+        print("  belief_update: FAIL\n");
+        failed = failed + 1;
+    }
+
+    if test_belief_update_dual() == 1 {
+        print("  belief_update_dual: PASS\n");
+        passed = passed + 1;
+    } else {
+        print("  belief_update_dual: FAIL\n");
+        failed = failed + 1;
+    }
+
+    // Section 2: Confidence Guard Expressions
+    print("\n--- Section 2: Confidence Guard Expressions ---\n");
+
+    if test_confidence_less_than() == 1 {
+        print("  confidence < threshold: PASS\n");
+        passed = passed + 1;
+    } else {
+        print("  confidence < threshold: FAIL\n");
+        failed = failed + 1;
+    }
+
+    if test_confidence_greater_than() == 1 {
+        print("  confidence > threshold: PASS\n");
+        passed = passed + 1;
+    } else {
+        print("  confidence > threshold: FAIL\n");
+        failed = failed + 1;
+    }
+
+    if test_confidence_less_equal() == 1 {
+        print("  confidence <= threshold: PASS\n");
+        passed = passed + 1;
+    } else {
+        print("  confidence <= threshold: FAIL\n");
+        failed = failed + 1;
+    }
+
+    if test_confidence_greater_equal() == 1 {
+        print("  confidence >= threshold: PASS\n");
+        passed = passed + 1;
+    } else {
+        print("  confidence >= threshold: FAIL\n");
+        failed = failed + 1;
+    }
+
+    if test_confidence_equal() == 1 {
+        print("  confidence == threshold: PASS\n");
+        passed = passed + 1;
+    } else {
+        print("  confidence == threshold: FAIL\n");
+        failed = failed + 1;
+    }
+
+    if test_confidence_not_equal() == 1 {
+        print("  confidence != threshold: PASS\n");
+        passed = passed + 1;
+    } else {
+        print("  confidence != threshold: FAIL\n");
+        failed = failed + 1;
+    }
+
+    // Section 3: Derivative Guard Expressions
+    print("\n--- Section 3: Derivative Guard Expressions ---\n");
+
+    if test_derivative_negative() == 1 {
+        print("  derivative < 0 (decreasing): PASS\n");
+        passed = passed + 1;
+    } else {
+        print("  derivative < 0 (decreasing): FAIL\n");
+        failed = failed + 1;
+    }
+
+    if test_derivative_positive() == 1 {
+        print("  derivative > 0 (increasing): PASS\n");
+        passed = passed + 1;
+    } else {
+        print("  derivative > 0 (increasing): FAIL\n");
+        failed = failed + 1;
+    }
+
+    if test_derivative_threshold() == 1 {
+        print("  derivative < -0.1 (rapid decrease): PASS\n");
+        passed = passed + 1;
+    } else {
+        print("  derivative < -0.1 (rapid decrease): FAIL\n");
+        failed = failed + 1;
+    }
+
+    // Section 4: Combined Belief Guards
+    print("\n--- Section 4: Combined Belief Guards (AND/OR) ---\n");
+
+    if test_guard_and() == 1 {
+        print("  guard1 && guard2: PASS\n");
+        passed = passed + 1;
+    } else {
+        print("  guard1 && guard2: FAIL\n");
+        failed = failed + 1;
+    }
+
+    if test_guard_or() == 1 {
+        print("  guard1 || guard2: PASS\n");
+        passed = passed + 1;
+    } else {
+        print("  guard1 || guard2: FAIL\n");
+        failed = failed + 1;
+    }
+
+    if test_guard_complex() == 1 {
+        print("  complex guard expression: PASS\n");
+        passed = passed + 1;
+    } else {
+        print("  complex guard expression: FAIL\n");
+        failed = failed + 1;
+    }
+
+    // Section 5: WAKE Mechanism
+    print("\n--- Section 5: WAKE Mechanism ---\n");
+
+    if test_suspend_receive() == 1 {
+        print("  belief_suspend_receive: PASS\n");
+        passed = passed + 1;
+    } else {
+        print("  belief_suspend_receive: FAIL\n");
+        failed = failed + 1;
+    }
+
+    if test_cancel_suspend() == 1 {
+        print("  belief_cancel_suspend: PASS\n");
+        passed = passed + 1;
+    } else {
+        print("  belief_cancel_suspend: FAIL\n");
+        failed = failed + 1;
+    }
+
+    if test_wake_on_update() == 1 {
+        print("  wake on belief update: PASS\n");
+        passed = passed + 1;
+    } else {
+        print("  wake on belief update: FAIL\n");
+        failed = failed + 1;
+    }
+
+    // Section 6: Actor Integration
+    print("\n--- Section 6: Actor Integration ---\n");
+
+    if test_actor_belief_guard() == 1 {
+        print("  actor with belief guard: PASS\n");
+        passed = passed + 1;
+    } else {
+        print("  actor with belief guard: FAIL\n");
+        failed = failed + 1;
+    }
+
+    if test_actor_derivative_guard() == 1 {
+        print("  actor with derivative guard: PASS\n");
+        passed = passed + 1;
+    } else {
+        print("  actor with derivative guard: FAIL\n");
+        failed = failed + 1;
+    }
+
+    // Summary
+    print("\n=== Summary ===\n");
+    print("Passed: ");
+    print_i64(passed);
+    print(" / ");
+    print_i64(passed + failed);
+    print("\n");
+
+    if failed == 0 {
+        print("All tests passed!\n");
+    } else {
+        print("Some tests failed.\n");
+    }
+
+    failed
+}
+
+// ============================================================================
+// Section 1: Dual Number Belief Registration Tests
+// ============================================================================
+
+fn test_belief_register() -> i64 {
+    // Register a belief with confidence 0.8 and derivative 0.0
+    let result = belief_register("obstacle", 0.8, 0.0);
+    if result == 0 {
+        return 0;  // Registration failed
+    }
+
+    // Retrieve confidence and verify
+    let conf = belief_guard_get_confidence("obstacle");
+    // conf is returned as f64 bits in i64, need to compare as f64
+    let conf_f64 = bitcast_i64_to_f64(conf);
+    if f64_abs(conf_f64 - 0.8) > 0.001 {
+        return 0;
+    }
+
+    1
+}
+
+fn test_belief_update() -> i64 {
+    // Register initial belief
+    belief_register("temperature", 0.5, 0.0);
+
+    // Update confidence only (derivative computed automatically)
+    belief_update("temperature", 0.7);
+
+    let conf = belief_guard_get_confidence("temperature");
+    let conf_f64 = bitcast_i64_to_f64(conf);
+    if f64_abs(conf_f64 - 0.7) > 0.001 {
+        return 0;
+    }
+
+    1
+}
+
+fn test_belief_update_dual() -> i64 {
+    // Register initial belief
+    belief_register("velocity", 0.6, 0.0);
+
+    // Update with explicit derivative
+    belief_update_dual("velocity", 0.8, -0.15);
+
+    let conf = belief_guard_get_confidence("velocity");
+    let conf_f64 = bitcast_i64_to_f64(conf);
+    if f64_abs(conf_f64 - 0.8) > 0.001 {
+        return 0;
+    }
+
+    let der = belief_guard_get_derivative("velocity");
+    let der_f64 = bitcast_i64_to_f64(der);
+    if f64_abs(der_f64 - (-0.15)) > 0.001 {
+        return 0;
+    }
+
+    1
+}
+
+// ============================================================================
+// Section 2: Confidence Guard Expression Tests
+// ============================================================================
+
+fn test_confidence_less_than() -> i64 {
+    belief_register("low_conf", 0.3, 0.0);
+    belief_register("high_conf", 0.8, 0.0);
+
+    // confidence("low_conf") < 0.5 should be true
+    if confidence("low_conf") < 0.5 {
+        // confidence("high_conf") < 0.5 should be false
+        if confidence("high_conf") < 0.5 {
+            return 0;  // Should not reach here
+        }
+        return 1;
+    }
+    0
+}
+
+fn test_confidence_greater_than() -> i64 {
+    belief_register("test_gt_low", 0.3, 0.0);
+    belief_register("test_gt_high", 0.8, 0.0);
+
+    // confidence("test_gt_high") > 0.5 should be true
+    if confidence("test_gt_high") > 0.5 {
+        // confidence("test_gt_low") > 0.5 should be false
+        if confidence("test_gt_low") > 0.5 {
+            return 0;
+        }
+        return 1;
+    }
+    0
+}
+
+fn test_confidence_less_equal() -> i64 {
+    belief_register("test_le", 0.5, 0.0);
+
+    // confidence("test_le") <= 0.5 should be true (equal case)
+    if confidence("test_le") <= 0.5 {
+        // confidence("test_le") <= 0.4 should be false
+        if confidence("test_le") <= 0.4 {
+            return 0;
+        }
+        return 1;
+    }
+    0
+}
+
+fn test_confidence_greater_equal() -> i64 {
+    belief_register("test_ge", 0.5, 0.0);
+
+    // confidence("test_ge") >= 0.5 should be true (equal case)
+    if confidence("test_ge") >= 0.5 {
+        // confidence("test_ge") >= 0.6 should be false
+        if confidence("test_ge") >= 0.6 {
+            return 0;
+        }
+        return 1;
+    }
+    0
+}
+
+fn test_confidence_equal() -> i64 {
+    belief_register("test_eq", 0.75, 0.0);
+
+    // confidence("test_eq") == 0.75 should be true
+    if confidence("test_eq") == 0.75 {
+        // confidence("test_eq") == 0.5 should be false
+        if confidence("test_eq") == 0.5 {
+            return 0;
+        }
+        return 1;
+    }
+    0
+}
+
+fn test_confidence_not_equal() -> i64 {
+    belief_register("test_ne", 0.6, 0.0);
+
+    // confidence("test_ne") != 0.5 should be true
+    if confidence("test_ne") != 0.5 {
+        // confidence("test_ne") != 0.6 should be false
+        if confidence("test_ne") != 0.6 {
+            return 0;
+        }
+        return 1;
+    }
+    0
+}
+
+// ============================================================================
+// Section 3: Derivative Guard Expression Tests
+// ============================================================================
+
+fn test_derivative_negative() -> i64 {
+    // Register belief with negative derivative (decreasing confidence)
+    belief_register("decreasing", 0.7, -0.05);
+
+    // derivative("decreasing") < 0 should be true
+    if derivative("decreasing") < 0.0 {
+        return 1;
+    }
+    0
+}
+
+fn test_derivative_positive() -> i64 {
+    // Register belief with positive derivative (increasing confidence)
+    belief_register("increasing", 0.3, 0.08);
+
+    // derivative("increasing") > 0 should be true
+    if derivative("increasing") > 0.0 {
+        return 1;
+    }
+    0
+}
+
+fn test_derivative_threshold() -> i64 {
+    // Register belief with rapidly decreasing confidence
+    belief_register("rapid_decrease", 0.5, -0.2);
+
+    // derivative("rapid_decrease") < -0.1 should be true (emergency condition)
+    if derivative("rapid_decrease") < -0.1 {
+        return 1;
+    }
+    0
+}
+
+// ============================================================================
+// Section 4: Combined Belief Guard Tests
+// ============================================================================
+
+fn test_guard_and() -> i64 {
+    belief_register("guard_a", 0.8, 0.0);
+    belief_register("guard_b", 0.3, 0.0);
+
+    // Both conditions must be true
+    // confidence("guard_a") > 0.5 && confidence("guard_b") < 0.5
+    if confidence("guard_a") > 0.5 && confidence("guard_b") < 0.5 {
+        // Test short-circuit: first false should skip second
+        if confidence("guard_b") > 0.5 && confidence("guard_a") > 0.5 {
+            return 0;  // Should not reach here
+        }
+        return 1;
+    }
+    0
+}
+
+fn test_guard_or() -> i64 {
+    belief_register("guard_c", 0.2, 0.0);
+    belief_register("guard_d", 0.9, 0.0);
+
+    // At least one condition must be true
+    // confidence("guard_c") > 0.5 || confidence("guard_d") > 0.5
+    if confidence("guard_c") > 0.5 || confidence("guard_d") > 0.5 {
+        // Test short-circuit: first true should skip second
+        if confidence("guard_d") > 0.5 || confidence("guard_c") > 0.5 {
+            return 1;
+        }
+    }
+    0
+}
+
+fn test_guard_complex() -> i64 {
+    belief_register("sensor1", 0.9, -0.05);
+    belief_register("sensor2", 0.4, 0.1);
+
+    // Complex condition: high confidence with decreasing trend OR low confidence with increasing trend
+    // (confidence("sensor1") > 0.7 && derivative("sensor1") < 0.0) ||
+    // (confidence("sensor2") < 0.5 && derivative("sensor2") > 0.0)
+    if (confidence("sensor1") > 0.7 && derivative("sensor1") < 0.0) ||
+       (confidence("sensor2") < 0.5 && derivative("sensor2") > 0.0) {
+        return 1;
+    }
+    0
+}
+
+// ============================================================================
+// Section 5: WAKE Mechanism Tests
+// ============================================================================
+
+// Track wake callback invocations
+var g_wake_callback_count: i64 = 0;
+var g_last_wake_suspend_id: i64 = 0;
+
+fn wake_test_callback(suspend_id: i64, context: i64) -> i64 {
+    g_wake_callback_count = g_wake_callback_count + 1;
+    g_last_wake_suspend_id = suspend_id;
+    0
+}
+
+fn test_suspend_receive() -> i64 {
+    // Register a belief
+    belief_register("wake_test1", 0.3, 0.0);
+
+    // Suspend receive waiting for confidence > 0.5
+    // GUARD_CONFIDENCE = 0, GUARD_OP_GT = 2
+    let suspend_id = belief_suspend_receive(
+        1,                  // actor_id
+        100,                // handler_id
+        "wake_test1",       // belief_name
+        0,                  // guard_type (GUARD_CONFIDENCE)
+        2,                  // op (GUARD_OP_GT)
+        0.5,                // threshold
+        wake_test_callback, // callback
+        0                   // context
+    );
+
+    if suspend_id > 0 {
+        return 1;
+    }
+    0
+}
+
+fn test_cancel_suspend() -> i64 {
+    belief_register("wake_test2", 0.4, 0.0);
+
+    // Suspend receive
+    let suspend_id = belief_suspend_receive(
+        2, 101, "wake_test2", 0, 2, 0.5, wake_test_callback, 0
+    );
+
+    if suspend_id <= 0 {
+        return 0;
+    }
+
+    // Cancel the suspension
+    let result = belief_cancel_suspend(suspend_id);
+    if result == 1 {
+        return 1;
+    }
+    0
+}
+
+fn test_wake_on_update() -> i64 {
+    // Reset callback counter
+    g_wake_callback_count = 0;
+
+    // Register belief below threshold
+    belief_register("wake_test3", 0.3, 0.0);
+
+    // Suspend receive waiting for confidence > 0.6
+    let suspend_id = belief_suspend_receive(
+        3, 102, "wake_test3", 0, 2, 0.6, wake_test_callback, 0
+    );
+
+    if suspend_id <= 0 {
+        return 0;
+    }
+
+    // Update belief to satisfy condition - should trigger wake
+    belief_update("wake_test3", 0.8);
+
+    // Check if callback was invoked
+    if g_wake_callback_count > 0 && g_last_wake_suspend_id == suspend_id {
+        return 1;
+    }
+    0
+}
+
+// ============================================================================
+// Section 6: Actor Integration Tests
+// ============================================================================
+
+// Test actor with belief-gated receive
+actor SensorProcessor {
+    var processed_count: i64 = 0;
+    var emergency_count: i64 = 0;
+
+    // Normal processing when confidence is high
+    receive ProcessData(data: i64) @ confidence("sensor_reliable") > 0.7 {
+        self.processed_count = self.processed_count + 1;
+    }
+
+    // Emergency handling when confidence is dropping rapidly
+    receive EmergencyData(data: i64) @ derivative("sensor_reliable") < -0.1 {
+        self.emergency_count = self.emergency_count + 1;
+    }
+
+    receive GetStats() -> (i64, i64) {
+        (self.processed_count, self.emergency_count)
+    }
+}
+
+fn test_actor_belief_guard() -> i64 {
+    // Register belief with high confidence
+    belief_register("sensor_reliable", 0.9, 0.0);
+
+    let processor = spawn SensorProcessor {};
+
+    // Send data - should be processed (confidence > 0.7)
+    send(processor, ProcessData(42));
+    send(processor, ProcessData(43));
+
+    // Allow processing
+    sleep_ms(10);
+
+    let (processed, emergency) = ask(processor, GetStats());
+
+    if processed == 2 {
+        return 1;
+    }
+    0
+}
+
+fn test_actor_derivative_guard() -> i64 {
+    // Register belief with rapidly decreasing confidence
+    belief_register("sensor_reliable", 0.5, -0.2);
+
+    let processor = spawn SensorProcessor {};
+
+    // Send emergency data - should be processed (derivative < -0.1)
+    send(processor, EmergencyData(99));
+
+    // Allow processing
+    sleep_ms(10);
+
+    let (processed, emergency) = ask(processor, GetStats());
+
+    if emergency >= 1 {
+        return 1;
+    }
+    0
+}
+
+// ============================================================================
+// Helper Functions (Runtime Stubs)
+// ============================================================================
+
+// Bitcast i64 to f64 for comparing floating point values
+fn bitcast_i64_to_f64(bits: i64) -> f64 {
+    // This is a compiler intrinsic that reinterprets the bits
+    __bitcast_i64_to_f64(bits)
+}
+
+fn f64_abs(x: f64) -> f64 {
+    if x < 0.0 { -x } else { x }
+}
+
+// Runtime function declarations (implemented in C runtime)
+extern fn belief_register(name: &str, confidence: f64, derivative: f64) -> i64;
+extern fn belief_update(name: &str, confidence: f64) -> i64;
+extern fn belief_update_dual(name: &str, confidence: f64, derivative: f64) -> i64;
+extern fn belief_guard_get_confidence(name: &str) -> i64;
+extern fn belief_guard_get_derivative(name: &str) -> i64;
+extern fn belief_suspend_receive(
+    actor_id: i64,
+    handler_id: i64,
+    belief_name: &str,
+    guard_type: i64,
+    op: i64,
+    threshold: f64,
+    callback: fn(i64, i64) -> i64,
+    context: i64
+) -> i64;
+extern fn belief_cancel_suspend(suspend_id: i64) -> i64;
+
+// Belief guard expression intrinsics (codegen generates calls to these)
+extern fn confidence(name: &str) -> f64;
+extern fn derivative(name: &str) -> f64;
+
+// General runtime
+extern fn print(s: &str) -> i64;
+extern fn print_i64(n: i64) -> i64;
+extern fn sleep_ms(ms: i64) -> i64;
+extern fn __bitcast_i64_to_f64(bits: i64) -> f64;

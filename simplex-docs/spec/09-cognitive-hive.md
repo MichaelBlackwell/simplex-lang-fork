@@ -17,7 +17,7 @@ Simplex embraces the Cognitive Hive AI (CHAI) philosophy as a core architectural
 Native llama.cpp bindings provide optimized inference for hive specialists:
 
 ```simplex
-use simplex_inference::{InferencePipeline, BatchConfig, ModelLoadConfig};
+use simplex_inference::{InferencePipeline, BatchConfig, ModelLoadConfig}
 
 // Configure inference backend
 let config = ModelLoadConfig {
@@ -25,7 +25,7 @@ let config = ModelLoadConfig {
     context_size: 4096,
     flash_attention: true,    // Enable flash attention
     ..Default::default()
-};
+}
 
 // Create batched inference pipeline
 let pipeline = InferencePipeline::builder()
@@ -33,7 +33,7 @@ let pipeline = InferencePipeline::builder()
     .with_batching(BatchConfig { max_size: 8, timeout_ms: 50 })
     .with_prompt_cache(1000)
     .with_response_cache(CacheConfig { capacity: 10000, ttl_ms: 3600000 })
-    .build();
+    .build()
 ```
 
 ### Self-Learning Specialist Schedules
@@ -41,14 +41,14 @@ let pipeline = InferencePipeline::builder()
 Specialists can now learn optimal training and inference schedules:
 
 ```simplex
-use simplex::optimize::anneal::{LearnableSchedule, MetaOptimizer};
+use simplex::optimize::anneal::{LearnableSchedule, MetaOptimizer}
 
 specialist AdaptiveAnalyzer {
     schedule: LearnableSchedule,  // Temperature, cooling rate learned automatically
 
     fn optimize_hyperparams(&mut self, objective: fn(&Config) -> dual) {
-        let optimizer = MetaOptimizer::new(self.schedule);
-        self.schedule = optimizer.optimize(initial_config, neighbor_fn, 100);
+        let optimizer = MetaOptimizer::new(self.schedule)
+        self.schedule = optimizer.optimize(initial_config, neighbor_fn, 100)
     }
 }
 ```
@@ -131,33 +131,33 @@ Temperature (τ) controls the "hardness" of neural gate decisions via Gumbel-Sof
 #### The Meta-Optimizer
 
 ```simplex
-use simplex::optimize::anneal::{MetaOptimizer, LearnableSchedule};
+use simplex::optimize::anneal::{MetaOptimizer, LearnableSchedule}
 
 // Create learnable schedule with dual number parameters
 let schedule = LearnableSchedule::new(
     initial_temp: dual(1.0),      // τ₀ as dual number
     cooling_rate: dual(0.95),     // α as dual number
     min_temp: dual(0.01),         // τ_min as dual number
-);
+)
 
 // Meta-optimizer computes ∂Loss/∂τ automatically
 let meta_opt = MetaOptimizer::new(schedule)
     .learning_rate(0.01)
-    .momentum(0.9);
+    .momentum(0.9)
 
 // Training loop with meta-gradient updates
 for epoch in 0..1000 {
-    let loss = train_step(model, data, schedule.current_temp());
+    let loss = train_step(model, data, schedule.current_temp())
 
     // Meta-gradient tells us: should we heat up or cool down?
-    let meta_grad = loss.derivative();  // ∂Loss/∂τ from dual numbers
+    let meta_grad = loss.derivative()  // ∂Loss/∂τ from dual numbers
 
     if meta_grad > 0.0 {
         // Positive gradient: re-heat to escape local minimum
-        schedule.increase_temp();
+        schedule.increase_temp()
     } else {
         // Negative gradient: continue cooling
-        schedule.step();
+        schedule.step()
     }
 }
 ```
@@ -864,7 +864,7 @@ Hives can now learn and adapt during runtime using the `simplex-learning` librar
 ### Learning-Enabled Specialists
 
 ```simplex
-use simplex_learning::{OnlineLearner, StreamingAdam, SafeFallback};
+use simplex_learning::{OnlineLearner, StreamingAdam, SafeFallback}
 
 specialist AdaptiveAnalyzer {
     model: "simplex-cognitive-7b",
@@ -873,18 +873,18 @@ specialist AdaptiveAnalyzer {
     fn init() {
         self.learner = OnlineLearner::new(self.params())
             .optimizer(StreamingAdam::new(0.001))
-            .fallback(SafeFallback::with_default(Analysis::unknown()));
+            .fallback(SafeFallback::with_default(Analysis::unknown()))
     }
 
     receive Analyze(code: String) -> Analysis {
-        let result = infer("Analyze: " + code);
+        let result = infer("Analyze: " + code)
         result
     }
 
     receive Feedback(analysis: Analysis, correct: bool) {
         // Learn from user feedback in real-time
-        let signal = FeedbackSignal::from_binary(correct);
-        self.learner.learn(&signal);
+        let signal = FeedbackSignal::from_binary(correct)
+        self.learner.learn(&signal)
     }
 }
 ```
@@ -916,18 +916,18 @@ hive LearningHive {
 When specialists develop conflicting beliefs through learning:
 
 ```simplex
-use simplex_learning::distributed::{HiveBeliefManager, ConflictResolution};
+use simplex_learning::distributed::{HiveBeliefManager, ConflictResolution}
 
 // In the hive coordinator
-let belief_manager = HiveBeliefManager::new(ConflictResolution::BayesianCombination);
+let belief_manager = HiveBeliefManager::new(ConflictResolution::BayesianCombination)
 
 // Specialists submit learned beliefs
-belief_manager.submit_belief(Belief::new("code_style_preference", 0.8, "security"));
-belief_manager.submit_belief(Belief::new("code_style_preference", 0.6, "quality"));
+belief_manager.submit_belief(Belief::new("code_style_preference", 0.8, "security"))
+belief_manager.submit_belief(Belief::new("code_style_preference", 0.6, "quality"))
 
 // Get consensus for the hive
-let consensus = belief_manager.consensus("code_style_preference");
-hive.mnemonic.update_belief("code_style_preference", consensus);
+let consensus = belief_manager.consensus("code_style_preference")
+hive.mnemonic.update_belief("code_style_preference", consensus)
 ```
 
 ### Knowledge Distillation Between Specialists
