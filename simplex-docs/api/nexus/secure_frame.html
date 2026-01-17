@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>secure_frame - Simplex API Reference</title>
+  <meta name="description" content="API documentation for the Simplex programming language">
+  <link rel="stylesheet" href="../assets/docs.css">
+  <script src="../assets/nav.js" defer></script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "secure_frame - Simplex API Reference",
+  "description": "API documentation for the Simplex programming language",
+  "programmingLanguage": {
+    "@type": "ComputerLanguage",
+    "name": "Simplex",
+    "url": "https://github.com/senuamedia/simplex"
+  },
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "Simplex Documentation",
+    "url": "https://simplex.senuamedia.com/api/"
+  },
+  "articleSection": "nexus"
+}
+</script>
+</head>
+<body>
+<div class="doc-wrapper">
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-header"><a href="../index.html">Simplex API</a></div>
+    <div class="search-box">
+      <input type="text" id="search" placeholder="Search...">
+    </div>
+    <div id="nav-content">Loading...</div>
+  </nav>
+  <main class="content">
+    <nav class="breadcrumb">
+      <a href="../index.html">API Reference</a> &raquo;       <span class="current-category">nexus</span> &raquo; secure_frame
+    </nav>
+    <h1>Module: secure_frame</h1>
+<div class="toc">
+<strong>Contents</strong>
+<ul>
+<li><a href="#SECURE_FRAME_HEADER_SIZE">fn SECURE_FRAME_HEADER_SIZE</a></li>
+<li><a href="#SECURE_FRAME_MIN_SIZE">fn SECURE_FRAME_MIN_SIZE</a></li>
+<li><a href="#SEC_FLAG_ENCRYPTED">fn SEC_FLAG_ENCRYPTED</a></li>
+<li><a href="#SEC_FLAG_SIGNED">fn SEC_FLAG_SIGNED</a></li>
+<li><a href="#SEC_FLAG_COMPRESSED">fn SEC_FLAG_COMPRESSED</a></li>
+<li><a href="#SEC_FLAG_REKEY">fn SEC_FLAG_REKEY</a></li>
+<li><a href="#SEC_FLAG_FINAL">fn SEC_FLAG_FINAL</a></li>
+<li><a href="#frame_sec_ctx_new">fn frame_sec_ctx_new</a></li>
+<li><a href="#frame_sec_ctx_session">fn frame_sec_ctx_session</a></li>
+<li><a href="#frame_sec_ctx_send_seq">fn frame_sec_ctx_send_seq</a></li>
+<li><a href="#frame_sec_ctx_recv_seq">fn frame_sec_ctx_recv_seq</a></li>
+<li><a href="#frame_sec_ctx_frames_enc">fn frame_sec_ctx_frames_enc</a></li>
+<li><a href="#frame_sec_ctx_frames_dec">fn frame_sec_ctx_frames_dec</a></li>
+<li><a href="#frame_sec_ctx_bytes_enc">fn frame_sec_ctx_bytes_enc</a></li>
+<li><a href="#frame_sec_ctx_bytes_dec">fn frame_sec_ctx_bytes_dec</a></li>
+<li><a href="#frame_sec_ctx_errors">fn frame_sec_ctx_errors</a></li>
+<li><a href="#frame_sec_ctx_rekey_interval">fn frame_sec_ctx_rekey_interval</a></li>
+<li><a href="#frame_sec_ctx_encryption_enabled">fn frame_sec_ctx_encryption_enabled</a></li>
+<li><a href="#frame_sec_ctx_signing_enabled">fn frame_sec_ctx_signing_enabled</a></li>
+<li><a href="#frame_sec_ctx_set_encryption">fn frame_sec_ctx_set_encryption</a></li>
+<li><a href="#frame_sec_ctx_set_signing">fn frame_sec_ctx_set_signing</a></li>
+<li><a href="#frame_sec_ctx_set_rekey_interval">fn frame_sec_ctx_set_rekey_interval</a></li>
+<li><a href="#frame_sec_ctx_next_send_seq">fn frame_sec_ctx_next_send_seq</a></li>
+<li><a href="#frame_sec_ctx_check_recv_seq">fn frame_sec_ctx_check_recv_seq</a></li>
+<li><a href="#frame_sec_ctx_add_enc_stats">fn frame_sec_ctx_add_enc_stats</a></li>
+<li><a href="#frame_sec_ctx_add_dec_stats">fn frame_sec_ctx_add_dec_stats</a></li>
+<li><a href="#frame_sec_ctx_add_error">fn frame_sec_ctx_add_error</a></li>
+<li><a href="#frame_sec_ctx_needs_rekey">fn frame_sec_ctx_needs_rekey</a></li>
+<li><a href="#frame_sec_ctx_seq_send">fn frame_sec_ctx_seq_send</a></li>
+<li><a href="#frame_sec_ctx_seq_recv">fn frame_sec_ctx_seq_recv</a></li>
+<li><a href="#frame_sec_ctx_rekey_count">fn frame_sec_ctx_rekey_count</a></li>
+<li><a href="#frame_sec_ctx_inc_rekey_count">fn frame_sec_ctx_inc_rekey_count</a></li>
+<li><a href="#frame_sec_ctx_next_nonce">fn frame_sec_ctx_next_nonce</a></li>
+<li><a href="#frame_sec_ctx_make_nonce">fn frame_sec_ctx_make_nonce</a></li>
+<li><a href="#secure_frame_encrypt">fn secure_frame_encrypt</a></li>
+<li><a href="#secure_frame_decrypt">fn secure_frame_decrypt</a></li>
+<li><a href="#secure_frame_sign">fn secure_frame_sign</a></li>
+<li><a href="#secure_frame_verify">fn secure_frame_verify</a></li>
+<li><a href="#secure_frame_encrypt_and_sign">fn secure_frame_encrypt_and_sign</a></li>
+<li><a href="#secure_frame_verify_and_decrypt">fn secure_frame_verify_and_decrypt</a></li>
+<li><a href="#secure_frame_wrap">fn secure_frame_wrap</a></li>
+<li><a href="#secure_frame_unwrap">fn secure_frame_unwrap</a></li>
+<li><a href="#secure_frame_initiate_rekey">fn secure_frame_initiate_rekey</a></li>
+<li><a href="#secure_frame_complete_rekey">fn secure_frame_complete_rekey</a></li>
+<li><a href="#secure_frame_generate_rekey">fn secure_frame_generate_rekey</a></li>
+<li><a href="#secure_frame_get_stats">fn secure_frame_get_stats</a></li>
+<li><a href="#secure_frame_overhead_percent">fn secure_frame_overhead_percent</a></li>
+<li><a href="#frame_sec_ctx_print">fn frame_sec_ctx_print</a></li>
+<li><a href="#secure_frame_print_header">fn secure_frame_print_header</a></li>
+</ul>
+</div>
+<h2 id="SECURE_FRAME_HEADER_SIZE">fn SECURE_FRAME_HEADER_SIZE</h2>
+<pre class="signature">fn SECURE_FRAME_HEADER_SIZE() -&gt; i64 { 22 }  // Without payload and tag</pre>
+<h2 id="SECURE_FRAME_MIN_SIZE">fn SECURE_FRAME_MIN_SIZE</h2>
+<pre class="signature">fn SECURE_FRAME_MIN_SIZE() -&gt; i64 { 38 }     // Header + min payload + tag</pre>
+<h2 id="SEC_FLAG_ENCRYPTED">fn SEC_FLAG_ENCRYPTED</h2>
+<pre class="signature">fn SEC_FLAG_ENCRYPTED() -&gt; i64 { 1 }     // Payload is encrypted</pre>
+<h2 id="SEC_FLAG_SIGNED">fn SEC_FLAG_SIGNED</h2>
+<pre class="signature">fn SEC_FLAG_SIGNED() -&gt; i64 { 2 }        // Frame has HMAC signature</pre>
+<h2 id="SEC_FLAG_COMPRESSED">fn SEC_FLAG_COMPRESSED</h2>
+<pre class="signature">fn SEC_FLAG_COMPRESSED() -&gt; i64 { 4 }    // Payload was compressed before encryption</pre>
+<h2 id="SEC_FLAG_REKEY">fn SEC_FLAG_REKEY</h2>
+<pre class="signature">fn SEC_FLAG_REKEY() -&gt; i64 { 8 }         // Key rotation requested</pre>
+<h2 id="SEC_FLAG_FINAL">fn SEC_FLAG_FINAL</h2>
+<pre class="signature">fn SEC_FLAG_FINAL() -&gt; i64 { 16 }        // Final frame in session</pre>
+<h2 id="frame_sec_ctx_new">fn frame_sec_ctx_new</h2>
+<pre class="signature">fn frame_sec_ctx_new(session: i64) -&gt; i64 {</pre>
+<h2 id="frame_sec_ctx_session">fn frame_sec_ctx_session</h2>
+<pre class="signature">fn frame_sec_ctx_session(ctx: i64) -&gt; i64 { vec_get(ctx, 0) }</pre>
+<h2 id="frame_sec_ctx_send_seq">fn frame_sec_ctx_send_seq</h2>
+<pre class="signature">fn frame_sec_ctx_send_seq(ctx: i64) -&gt; i64 { vec_get(ctx, 1) }</pre>
+<h2 id="frame_sec_ctx_recv_seq">fn frame_sec_ctx_recv_seq</h2>
+<pre class="signature">fn frame_sec_ctx_recv_seq(ctx: i64) -&gt; i64 { vec_get(ctx, 2) }</pre>
+<h2 id="frame_sec_ctx_frames_enc">fn frame_sec_ctx_frames_enc</h2>
+<pre class="signature">fn frame_sec_ctx_frames_enc(ctx: i64) -&gt; i64 { vec_get(ctx, 3) }</pre>
+<h2 id="frame_sec_ctx_frames_dec">fn frame_sec_ctx_frames_dec</h2>
+<pre class="signature">fn frame_sec_ctx_frames_dec(ctx: i64) -&gt; i64 { vec_get(ctx, 4) }</pre>
+<h2 id="frame_sec_ctx_bytes_enc">fn frame_sec_ctx_bytes_enc</h2>
+<pre class="signature">fn frame_sec_ctx_bytes_enc(ctx: i64) -&gt; i64 { vec_get(ctx, 5) }</pre>
+<h2 id="frame_sec_ctx_bytes_dec">fn frame_sec_ctx_bytes_dec</h2>
+<pre class="signature">fn frame_sec_ctx_bytes_dec(ctx: i64) -&gt; i64 { vec_get(ctx, 6) }</pre>
+<h2 id="frame_sec_ctx_errors">fn frame_sec_ctx_errors</h2>
+<pre class="signature">fn frame_sec_ctx_errors(ctx: i64) -&gt; i64 { vec_get(ctx, 7) }</pre>
+<h2 id="frame_sec_ctx_rekey_interval">fn frame_sec_ctx_rekey_interval</h2>
+<pre class="signature">fn frame_sec_ctx_rekey_interval(ctx: i64) -&gt; i64 { vec_get(ctx, 9) }</pre>
+<h2 id="frame_sec_ctx_encryption_enabled">fn frame_sec_ctx_encryption_enabled</h2>
+<pre class="signature">fn frame_sec_ctx_encryption_enabled(ctx: i64) -&gt; i64 { vec_get(ctx, 10) }</pre>
+<h2 id="frame_sec_ctx_signing_enabled">fn frame_sec_ctx_signing_enabled</h2>
+<pre class="signature">fn frame_sec_ctx_signing_enabled(ctx: i64) -&gt; i64 { vec_get(ctx, 11) }</pre>
+<h2 id="frame_sec_ctx_set_encryption">fn frame_sec_ctx_set_encryption</h2>
+<pre class="signature">fn frame_sec_ctx_set_encryption(ctx: i64, enabled: i64) -&gt; i64 {</pre>
+<h2 id="frame_sec_ctx_set_signing">fn frame_sec_ctx_set_signing</h2>
+<pre class="signature">fn frame_sec_ctx_set_signing(ctx: i64, enabled: i64) -&gt; i64 {</pre>
+<h2 id="frame_sec_ctx_set_rekey_interval">fn frame_sec_ctx_set_rekey_interval</h2>
+<pre class="signature">fn frame_sec_ctx_set_rekey_interval(ctx: i64, interval: i64) -&gt; i64 {</pre>
+<h2 id="frame_sec_ctx_next_send_seq">fn frame_sec_ctx_next_send_seq</h2>
+<pre class="signature">fn frame_sec_ctx_next_send_seq(ctx: i64) -&gt; i64 {</pre>
+<h2 id="frame_sec_ctx_check_recv_seq">fn frame_sec_ctx_check_recv_seq</h2>
+<pre class="signature">fn frame_sec_ctx_check_recv_seq(ctx: i64, seq: i64) -&gt; i64 {</pre>
+<h2 id="frame_sec_ctx_add_enc_stats">fn frame_sec_ctx_add_enc_stats</h2>
+<pre class="signature">fn frame_sec_ctx_add_enc_stats(ctx: i64, bytes: i64) -&gt; i64 {</pre>
+<h2 id="frame_sec_ctx_add_dec_stats">fn frame_sec_ctx_add_dec_stats</h2>
+<pre class="signature">fn frame_sec_ctx_add_dec_stats(ctx: i64, bytes: i64) -&gt; i64 {</pre>
+<h2 id="frame_sec_ctx_add_error">fn frame_sec_ctx_add_error</h2>
+<pre class="signature">fn frame_sec_ctx_add_error(ctx: i64) -&gt; i64 {</pre>
+<h2 id="frame_sec_ctx_needs_rekey">fn frame_sec_ctx_needs_rekey</h2>
+<pre class="signature">fn frame_sec_ctx_needs_rekey(ctx: i64) -&gt; i64 {</pre>
+<h2 id="frame_sec_ctx_seq_send">fn frame_sec_ctx_seq_send</h2>
+<pre class="signature">fn frame_sec_ctx_seq_send(ctx: i64) -&gt; i64 { frame_sec_ctx_send_seq(ctx) }</pre>
+<h2 id="frame_sec_ctx_seq_recv">fn frame_sec_ctx_seq_recv</h2>
+<pre class="signature">fn frame_sec_ctx_seq_recv(ctx: i64) -&gt; i64 { frame_sec_ctx_recv_seq(ctx) }</pre>
+<h2 id="frame_sec_ctx_rekey_count">fn frame_sec_ctx_rekey_count</h2>
+<pre class="signature">fn frame_sec_ctx_rekey_count(ctx: i64) -&gt; i64 { vec_get(ctx, 8) }</pre>
+<h2 id="frame_sec_ctx_inc_rekey_count">fn frame_sec_ctx_inc_rekey_count</h2>
+<pre class="signature">fn frame_sec_ctx_inc_rekey_count(ctx: i64) -&gt; i64 {</pre>
+<h2 id="frame_sec_ctx_next_nonce">fn frame_sec_ctx_next_nonce</h2>
+<pre class="signature">fn frame_sec_ctx_next_nonce(ctx: i64) -&gt; i64 {</pre>
+<h2 id="frame_sec_ctx_make_nonce">fn frame_sec_ctx_make_nonce</h2>
+<pre class="signature">fn frame_sec_ctx_make_nonce(ctx: i64, seq: i64) -&gt; i64 {</pre>
+<h2 id="secure_frame_encrypt">fn secure_frame_encrypt</h2>
+<pre class="signature">fn secure_frame_encrypt(frame_bytes: i64, ctx: i64) -&gt; i64 {</pre>
+<h2 id="secure_frame_decrypt">fn secure_frame_decrypt</h2>
+<pre class="signature">fn secure_frame_decrypt(secure_frame: i64, ctx: i64) -&gt; i64 {</pre>
+<h2 id="secure_frame_sign">fn secure_frame_sign</h2>
+<pre class="signature">fn secure_frame_sign(frame_bytes: i64, ctx: i64) -&gt; i64 {</pre>
+<h2 id="secure_frame_verify">fn secure_frame_verify</h2>
+<pre class="signature">fn secure_frame_verify(signed_frame: i64, ctx: i64) -&gt; i64 {</pre>
+<h2 id="secure_frame_encrypt_and_sign">fn secure_frame_encrypt_and_sign</h2>
+<pre class="signature">fn secure_frame_encrypt_and_sign(frame_bytes: i64, ctx: i64, signing_key: i64) -&gt; i64 {</pre>
+<h2 id="secure_frame_verify_and_decrypt">fn secure_frame_verify_and_decrypt</h2>
+<pre class="signature">fn secure_frame_verify_and_decrypt(frame_bytes: i64, ctx: i64, sender_public_key: i64) -&gt; i64 {</pre>
+<h2 id="secure_frame_wrap">fn secure_frame_wrap</h2>
+<pre class="signature">fn secure_frame_wrap(frame_bytes: i64, ctx: i64) -&gt; i64 {</pre>
+<h2 id="secure_frame_unwrap">fn secure_frame_unwrap</h2>
+<pre class="signature">fn secure_frame_unwrap(secure_bytes: i64, ctx: i64) -&gt; i64 {</pre>
+<h2 id="secure_frame_initiate_rekey">fn secure_frame_initiate_rekey</h2>
+<pre class="signature">fn secure_frame_initiate_rekey(ctx: i64) -&gt; i64 {</pre>
+<h2 id="secure_frame_complete_rekey">fn secure_frame_complete_rekey</h2>
+<pre class="signature">fn secure_frame_complete_rekey(ctx: i64, new_secret: i64) -&gt; i64 {</pre>
+<h2 id="secure_frame_generate_rekey">fn secure_frame_generate_rekey</h2>
+<pre class="signature">fn secure_frame_generate_rekey(ctx: i64) -&gt; i64 {</pre>
+<h2 id="secure_frame_get_stats">fn secure_frame_get_stats</h2>
+<pre class="signature">fn secure_frame_get_stats(ctx: i64) -&gt; i64 {</pre>
+<h2 id="secure_frame_overhead_percent">fn secure_frame_overhead_percent</h2>
+<pre class="signature">fn secure_frame_overhead_percent(ctx: i64) -&gt; i64 {</pre>
+<h2 id="frame_sec_ctx_print">fn frame_sec_ctx_print</h2>
+<pre class="signature">fn frame_sec_ctx_print(ctx: i64) -&gt; i64 {</pre>
+<h2 id="secure_frame_print_header">fn secure_frame_print_header</h2>
+<pre class="signature">fn secure_frame_print_header(frame: i64) -&gt; i64 {</pre>
+
+    <hr>
+    <p><em>Generated by sxdoc</em></p>
+  </main>
+</div>
+</body>
+</html>

@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>conn_pool - Simplex API Reference</title>
+  <meta name="description" content="API documentation for the Simplex programming language">
+  <link rel="stylesheet" href="../assets/docs.css">
+  <script src="../assets/nav.js" defer></script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "conn_pool - Simplex API Reference",
+  "description": "API documentation for the Simplex programming language",
+  "programmingLanguage": {
+    "@type": "ComputerLanguage",
+    "name": "Simplex",
+    "url": "https://github.com/senuamedia/simplex"
+  },
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "Simplex Documentation",
+    "url": "https://simplex.senuamedia.com/api/"
+  },
+  "articleSection": "nexus"
+}
+</script>
+</head>
+<body>
+<div class="doc-wrapper">
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-header"><a href="../index.html">Simplex API</a></div>
+    <div class="search-box">
+      <input type="text" id="search" placeholder="Search...">
+    </div>
+    <div id="nav-content">Loading...</div>
+  </nav>
+  <main class="content">
+    <nav class="breadcrumb">
+      <a href="../index.html">API Reference</a> &raquo;       <span class="current-category">nexus</span> &raquo; conn_pool
+    </nav>
+    <h1>Module: conn_pool</h1>
+<div class="toc">
+<strong>Contents</strong>
+<ul>
+<li><a href="#POOL_DEFAULT_MAX_CONNS">fn POOL_DEFAULT_MAX_CONNS</a></li>
+<li><a href="#POOL_DEFAULT_MAX_IDLE">fn POOL_DEFAULT_MAX_IDLE</a></li>
+<li><a href="#POOL_DEFAULT_IDLE_TIMEOUT">fn POOL_DEFAULT_IDLE_TIMEOUT</a></li>
+<li><a href="#POOL_DEFAULT_MAX_AGE">fn POOL_DEFAULT_MAX_AGE</a></li>
+<li><a href="#POOL_DEFAULT_WAIT_TIMEOUT">fn POOL_DEFAULT_WAIT_TIMEOUT</a></li>
+<li><a href="#POOL_ENTRY_IDLE">fn POOL_ENTRY_IDLE</a></li>
+<li><a href="#POOL_ENTRY_ACTIVE">fn POOL_ENTRY_ACTIVE</a></li>
+<li><a href="#POOL_ENTRY_DRAINING">fn POOL_ENTRY_DRAINING</a></li>
+<li><a href="#POOL_ENTRY_CLOSED">fn POOL_ENTRY_CLOSED</a></li>
+<li><a href="#POOL_STRATEGY_ROUND_ROBIN">fn POOL_STRATEGY_ROUND_ROBIN</a></li>
+<li><a href="#POOL_STRATEGY_LEAST_LOADED">fn POOL_STRATEGY_LEAST_LOADED</a></li>
+<li><a href="#POOL_STRATEGY_RANDOM">fn POOL_STRATEGY_RANDOM</a></li>
+<li><a href="#POOL_STRATEGY_LIFO">fn POOL_STRATEGY_LIFO</a></li>
+<li><a href="#pool_config_new">fn pool_config_new</a></li>
+<li><a href="#pool_config_max_conns">fn pool_config_max_conns</a></li>
+<li><a href="#pool_config_max_idle">fn pool_config_max_idle</a></li>
+<li><a href="#pool_config_idle_timeout">fn pool_config_idle_timeout</a></li>
+<li><a href="#pool_config_max_age">fn pool_config_max_age</a></li>
+<li><a href="#pool_config_wait_timeout">fn pool_config_wait_timeout</a></li>
+<li><a href="#pool_config_strategy">fn pool_config_strategy</a></li>
+<li><a href="#pool_config_set_max_conns">fn pool_config_set_max_conns</a></li>
+<li><a href="#pool_config_set_max_idle">fn pool_config_set_max_idle</a></li>
+<li><a href="#pool_config_set_idle_timeout">fn pool_config_set_idle_timeout</a></li>
+<li><a href="#pool_config_set_max_age">fn pool_config_set_max_age</a></li>
+<li><a href="#pool_config_set_wait_timeout">fn pool_config_set_wait_timeout</a></li>
+<li><a href="#pool_config_set_strategy">fn pool_config_set_strategy</a></li>
+<li><a href="#pool_entry_new">fn pool_entry_new</a></li>
+<li><a href="#pool_entry_transport">fn pool_entry_transport</a></li>
+<li><a href="#pool_entry_state">fn pool_entry_state</a></li>
+<li><a href="#pool_entry_created">fn pool_entry_created</a></li>
+<li><a href="#pool_entry_last_used">fn pool_entry_last_used</a></li>
+<li><a href="#pool_entry_use_count">fn pool_entry_use_count</a></li>
+<li><a href="#pool_entry_endpoint_key">fn pool_entry_endpoint_key</a></li>
+<li><a href="#pool_entry_set_state">fn pool_entry_set_state</a></li>
+<li><a href="#pool_entry_set_last_used">fn pool_entry_set_last_used</a></li>
+<li><a href="#pool_entry_set_endpoint_key">fn pool_entry_set_endpoint_key</a></li>
+<li><a href="#pool_entry_inc_use">fn pool_entry_inc_use</a></li>
+<li><a href="#pool_entry_is_valid">fn pool_entry_is_valid</a></li>
+<li><a href="#endpoint_key_create">fn endpoint_key_create</a></li>
+<li><a href="#endpoint_equals">fn endpoint_equals</a></li>
+<li><a href="#conn_pool_new">fn conn_pool_new</a></li>
+<li><a href="#conn_pool_config">fn conn_pool_config</a></li>
+<li><a href="#conn_pool_transport_config">fn conn_pool_transport_config</a></li>
+<li><a href="#conn_pool_entries">fn conn_pool_entries</a></li>
+<li><a href="#conn_pool_endpoint_counts">fn conn_pool_endpoint_counts</a></li>
+<li><a href="#conn_pool_active_count">fn conn_pool_active_count</a></li>
+<li><a href="#conn_pool_idle_count">fn conn_pool_idle_count</a></li>
+<li><a href="#conn_pool_stats">fn conn_pool_stats</a></li>
+<li><a href="#conn_pool_set_active_count">fn conn_pool_set_active_count</a></li>
+<li><a href="#conn_pool_set_idle_count">fn conn_pool_set_idle_count</a></li>
+<li><a href="#pool_stats_new">fn pool_stats_new</a></li>
+<li><a href="#pool_stats_created">fn pool_stats_created</a></li>
+<li><a href="#pool_stats_closed">fn pool_stats_closed</a></li>
+<li><a href="#pool_stats_reused">fn pool_stats_reused</a></li>
+<li><a href="#pool_stats_wait_timeouts">fn pool_stats_wait_timeouts</a></li>
+<li><a href="#pool_stats_idle_timeouts">fn pool_stats_idle_timeouts</a></li>
+<li><a href="#pool_stats_max_age">fn pool_stats_max_age</a></li>
+<li><a href="#pool_stats_health_failures">fn pool_stats_health_failures</a></li>
+<li><a href="#pool_stats_checkouts">fn pool_stats_checkouts</a></li>
+<li><a href="#pool_stats_checkins">fn pool_stats_checkins</a></li>
+<li><a href="#pool_stats_inc">fn pool_stats_inc</a></li>
+<li><a href="#conn_pool_endpoint_count">fn conn_pool_endpoint_count</a></li>
+<li><a href="#conn_pool_set_endpoint_count">fn conn_pool_set_endpoint_count</a></li>
+<li><a href="#conn_pool_inc_endpoint_count">fn conn_pool_inc_endpoint_count</a></li>
+<li><a href="#conn_pool_dec_endpoint_count">fn conn_pool_dec_endpoint_count</a></li>
+<li><a href="#conn_pool_checkout">fn conn_pool_checkout</a></li>
+<li><a href="#conn_pool_find_idle">fn conn_pool_find_idle</a></li>
+<li><a href="#conn_pool_checkin">fn conn_pool_checkin</a></li>
+<li><a href="#conn_pool_remove_entry">fn conn_pool_remove_entry</a></li>
+<li><a href="#conn_pool_cleanup">fn conn_pool_cleanup</a></li>
+<li><a href="#conn_pool_close_all">fn conn_pool_close_all</a></li>
+<li><a href="#conn_pool_total_count">fn conn_pool_total_count</a></li>
+<li><a href="#conn_pool_snapshot">fn conn_pool_snapshot</a></li>
+<li><a href="#pool_snapshot_active">fn pool_snapshot_active</a></li>
+<li><a href="#pool_snapshot_idle">fn pool_snapshot_idle</a></li>
+<li><a href="#pool_snapshot_total">fn pool_snapshot_total</a></li>
+<li><a href="#pool_snapshot_created">fn pool_snapshot_created</a></li>
+<li><a href="#pool_snapshot_closed">fn pool_snapshot_closed</a></li>
+<li><a href="#pool_snapshot_reused">fn pool_snapshot_reused</a></li>
+<li><a href="#pool_snapshot_checkouts">fn pool_snapshot_checkouts</a></li>
+<li><a href="#pool_snapshot_checkins">fn pool_snapshot_checkins</a></li>
+</ul>
+</div>
+<h2 id="POOL_DEFAULT_MAX_CONNS">fn POOL_DEFAULT_MAX_CONNS</h2>
+<pre class="signature">fn POOL_DEFAULT_MAX_CONNS() -&gt; i64 { 10 }        // Max connections per endpoint</pre>
+<h2 id="POOL_DEFAULT_MAX_IDLE">fn POOL_DEFAULT_MAX_IDLE</h2>
+<pre class="signature">fn POOL_DEFAULT_MAX_IDLE() -&gt; i64 { 5 }          // Max idle connections</pre>
+<h2 id="POOL_DEFAULT_IDLE_TIMEOUT">fn POOL_DEFAULT_IDLE_TIMEOUT</h2>
+<pre class="signature">fn POOL_DEFAULT_IDLE_TIMEOUT() -&gt; i64 { 60000 }  // 60 seconds idle timeout</pre>
+<h2 id="POOL_DEFAULT_MAX_AGE">fn POOL_DEFAULT_MAX_AGE</h2>
+<pre class="signature">fn POOL_DEFAULT_MAX_AGE() -&gt; i64 { 300000 }      // 5 minutes max connection age</pre>
+<h2 id="POOL_DEFAULT_WAIT_TIMEOUT">fn POOL_DEFAULT_WAIT_TIMEOUT</h2>
+<pre class="signature">fn POOL_DEFAULT_WAIT_TIMEOUT() -&gt; i64 { 30000 }  // 30 seconds wait for connection</pre>
+<h2 id="POOL_ENTRY_IDLE">fn POOL_ENTRY_IDLE</h2>
+<pre class="signature">fn POOL_ENTRY_IDLE() -&gt; i64 { 0 }</pre>
+<h2 id="POOL_ENTRY_ACTIVE">fn POOL_ENTRY_ACTIVE</h2>
+<pre class="signature">fn POOL_ENTRY_ACTIVE() -&gt; i64 { 1 }</pre>
+<h2 id="POOL_ENTRY_DRAINING">fn POOL_ENTRY_DRAINING</h2>
+<pre class="signature">fn POOL_ENTRY_DRAINING() -&gt; i64 { 2 }</pre>
+<h2 id="POOL_ENTRY_CLOSED">fn POOL_ENTRY_CLOSED</h2>
+<pre class="signature">fn POOL_ENTRY_CLOSED() -&gt; i64 { 3 }</pre>
+<h2 id="POOL_STRATEGY_ROUND_ROBIN">fn POOL_STRATEGY_ROUND_ROBIN</h2>
+<pre class="signature">fn POOL_STRATEGY_ROUND_ROBIN() -&gt; i64 { 0 }</pre>
+<h2 id="POOL_STRATEGY_LEAST_LOADED">fn POOL_STRATEGY_LEAST_LOADED</h2>
+<pre class="signature">fn POOL_STRATEGY_LEAST_LOADED() -&gt; i64 { 1 }</pre>
+<h2 id="POOL_STRATEGY_RANDOM">fn POOL_STRATEGY_RANDOM</h2>
+<pre class="signature">fn POOL_STRATEGY_RANDOM() -&gt; i64 { 2 }</pre>
+<h2 id="POOL_STRATEGY_LIFO">fn POOL_STRATEGY_LIFO</h2>
+<pre class="signature">fn POOL_STRATEGY_LIFO() -&gt; i64 { 3 }  // Last-in-first-out (reuse recent)</pre>
+<h2 id="pool_config_new">fn pool_config_new</h2>
+<pre class="signature">fn pool_config_new() -&gt; i64 {</pre>
+<h2 id="pool_config_max_conns">fn pool_config_max_conns</h2>
+<pre class="signature">fn pool_config_max_conns(config: i64) -&gt; i64 { vec_get(config, 0) }</pre>
+<h2 id="pool_config_max_idle">fn pool_config_max_idle</h2>
+<pre class="signature">fn pool_config_max_idle(config: i64) -&gt; i64 { vec_get(config, 1) }</pre>
+<h2 id="pool_config_idle_timeout">fn pool_config_idle_timeout</h2>
+<pre class="signature">fn pool_config_idle_timeout(config: i64) -&gt; i64 { vec_get(config, 2) }</pre>
+<h2 id="pool_config_max_age">fn pool_config_max_age</h2>
+<pre class="signature">fn pool_config_max_age(config: i64) -&gt; i64 { vec_get(config, 3) }</pre>
+<h2 id="pool_config_wait_timeout">fn pool_config_wait_timeout</h2>
+<pre class="signature">fn pool_config_wait_timeout(config: i64) -&gt; i64 { vec_get(config, 4) }</pre>
+<h2 id="pool_config_strategy">fn pool_config_strategy</h2>
+<pre class="signature">fn pool_config_strategy(config: i64) -&gt; i64 { vec_get(config, 5) }</pre>
+<h2 id="pool_config_set_max_conns">fn pool_config_set_max_conns</h2>
+<pre class="signature">fn pool_config_set_max_conns(config: i64, max: i64) -&gt; i64 {</pre>
+<h2 id="pool_config_set_max_idle">fn pool_config_set_max_idle</h2>
+<pre class="signature">fn pool_config_set_max_idle(config: i64, max: i64) -&gt; i64 {</pre>
+<h2 id="pool_config_set_idle_timeout">fn pool_config_set_idle_timeout</h2>
+<pre class="signature">fn pool_config_set_idle_timeout(config: i64, ms: i64) -&gt; i64 {</pre>
+<h2 id="pool_config_set_max_age">fn pool_config_set_max_age</h2>
+<pre class="signature">fn pool_config_set_max_age(config: i64, ms: i64) -&gt; i64 {</pre>
+<h2 id="pool_config_set_wait_timeout">fn pool_config_set_wait_timeout</h2>
+<pre class="signature">fn pool_config_set_wait_timeout(config: i64, ms: i64) -&gt; i64 {</pre>
+<h2 id="pool_config_set_strategy">fn pool_config_set_strategy</h2>
+<pre class="signature">fn pool_config_set_strategy(config: i64, strategy: i64) -&gt; i64 {</pre>
+<h2 id="pool_entry_new">fn pool_entry_new</h2>
+<pre class="signature">fn pool_entry_new(transport: i64, now: i64) -&gt; i64 {</pre>
+<h2 id="pool_entry_transport">fn pool_entry_transport</h2>
+<pre class="signature">fn pool_entry_transport(entry: i64) -&gt; i64 { vec_get(entry, 0) }</pre>
+<h2 id="pool_entry_state">fn pool_entry_state</h2>
+<pre class="signature">fn pool_entry_state(entry: i64) -&gt; i64 { vec_get(entry, 1) }</pre>
+<h2 id="pool_entry_created">fn pool_entry_created</h2>
+<pre class="signature">fn pool_entry_created(entry: i64) -&gt; i64 { vec_get(entry, 2) }</pre>
+<h2 id="pool_entry_last_used">fn pool_entry_last_used</h2>
+<pre class="signature">fn pool_entry_last_used(entry: i64) -&gt; i64 { vec_get(entry, 3) }</pre>
+<h2 id="pool_entry_use_count">fn pool_entry_use_count</h2>
+<pre class="signature">fn pool_entry_use_count(entry: i64) -&gt; i64 { vec_get(entry, 4) }</pre>
+<h2 id="pool_entry_endpoint_key">fn pool_entry_endpoint_key</h2>
+<pre class="signature">fn pool_entry_endpoint_key(entry: i64) -&gt; i64 { vec_get(entry, 5) }</pre>
+<h2 id="pool_entry_set_state">fn pool_entry_set_state</h2>
+<pre class="signature">fn pool_entry_set_state(entry: i64, state: i64) -&gt; i64 {</pre>
+<h2 id="pool_entry_set_last_used">fn pool_entry_set_last_used</h2>
+<pre class="signature">fn pool_entry_set_last_used(entry: i64, time: i64) -&gt; i64 {</pre>
+<h2 id="pool_entry_set_endpoint_key">fn pool_entry_set_endpoint_key</h2>
+<pre class="signature">fn pool_entry_set_endpoint_key(entry: i64, key: i64) -&gt; i64 {</pre>
+<h2 id="pool_entry_inc_use">fn pool_entry_inc_use</h2>
+<pre class="signature">fn pool_entry_inc_use(entry: i64) -&gt; i64 {</pre>
+<h2 id="pool_entry_is_valid">fn pool_entry_is_valid</h2>
+<pre class="signature">fn pool_entry_is_valid(entry: i64, config: i64, now: i64) -&gt; i64 {</pre>
+<h2 id="endpoint_key_create">fn endpoint_key_create</h2>
+<pre class="signature">fn endpoint_key_create(endpoint: i64) -&gt; i64 {</pre>
+<h2 id="endpoint_equals">fn endpoint_equals</h2>
+<pre class="signature">fn endpoint_equals(a: i64, b: i64) -&gt; i64 {</pre>
+<h2 id="conn_pool_new">fn conn_pool_new</h2>
+<pre class="signature">fn conn_pool_new(config: i64, transport_config: i64) -&gt; i64 {</pre>
+<h2 id="conn_pool_config">fn conn_pool_config</h2>
+<pre class="signature">fn conn_pool_config(pool: i64) -&gt; i64 { vec_get(pool, 0) }</pre>
+<h2 id="conn_pool_transport_config">fn conn_pool_transport_config</h2>
+<pre class="signature">fn conn_pool_transport_config(pool: i64) -&gt; i64 { vec_get(pool, 1) }</pre>
+<h2 id="conn_pool_entries">fn conn_pool_entries</h2>
+<pre class="signature">fn conn_pool_entries(pool: i64) -&gt; i64 { vec_get(pool, 2) }</pre>
+<h2 id="conn_pool_endpoint_counts">fn conn_pool_endpoint_counts</h2>
+<pre class="signature">fn conn_pool_endpoint_counts(pool: i64) -&gt; i64 { vec_get(pool, 3) }</pre>
+<h2 id="conn_pool_active_count">fn conn_pool_active_count</h2>
+<pre class="signature">fn conn_pool_active_count(pool: i64) -&gt; i64 { vec_get(pool, 4) }</pre>
+<h2 id="conn_pool_idle_count">fn conn_pool_idle_count</h2>
+<pre class="signature">fn conn_pool_idle_count(pool: i64) -&gt; i64 { vec_get(pool, 5) }</pre>
+<h2 id="conn_pool_stats">fn conn_pool_stats</h2>
+<pre class="signature">fn conn_pool_stats(pool: i64) -&gt; i64 { vec_get(pool, 6) }</pre>
+<h2 id="conn_pool_set_active_count">fn conn_pool_set_active_count</h2>
+<pre class="signature">fn conn_pool_set_active_count(pool: i64, count: i64) -&gt; i64 {</pre>
+<h2 id="conn_pool_set_idle_count">fn conn_pool_set_idle_count</h2>
+<pre class="signature">fn conn_pool_set_idle_count(pool: i64, count: i64) -&gt; i64 {</pre>
+<h2 id="pool_stats_new">fn pool_stats_new</h2>
+<pre class="signature">fn pool_stats_new() -&gt; i64 {</pre>
+<h2 id="pool_stats_created">fn pool_stats_created</h2>
+<pre class="signature">fn pool_stats_created(stats: i64) -&gt; i64 { vec_get(stats, 0) }</pre>
+<h2 id="pool_stats_closed">fn pool_stats_closed</h2>
+<pre class="signature">fn pool_stats_closed(stats: i64) -&gt; i64 { vec_get(stats, 1) }</pre>
+<h2 id="pool_stats_reused">fn pool_stats_reused</h2>
+<pre class="signature">fn pool_stats_reused(stats: i64) -&gt; i64 { vec_get(stats, 2) }</pre>
+<h2 id="pool_stats_wait_timeouts">fn pool_stats_wait_timeouts</h2>
+<pre class="signature">fn pool_stats_wait_timeouts(stats: i64) -&gt; i64 { vec_get(stats, 3) }</pre>
+<h2 id="pool_stats_idle_timeouts">fn pool_stats_idle_timeouts</h2>
+<pre class="signature">fn pool_stats_idle_timeouts(stats: i64) -&gt; i64 { vec_get(stats, 4) }</pre>
+<h2 id="pool_stats_max_age">fn pool_stats_max_age</h2>
+<pre class="signature">fn pool_stats_max_age(stats: i64) -&gt; i64 { vec_get(stats, 5) }</pre>
+<h2 id="pool_stats_health_failures">fn pool_stats_health_failures</h2>
+<pre class="signature">fn pool_stats_health_failures(stats: i64) -&gt; i64 { vec_get(stats, 6) }</pre>
+<h2 id="pool_stats_checkouts">fn pool_stats_checkouts</h2>
+<pre class="signature">fn pool_stats_checkouts(stats: i64) -&gt; i64 { vec_get(stats, 7) }</pre>
+<h2 id="pool_stats_checkins">fn pool_stats_checkins</h2>
+<pre class="signature">fn pool_stats_checkins(stats: i64) -&gt; i64 { vec_get(stats, 8) }</pre>
+<h2 id="pool_stats_inc">fn pool_stats_inc</h2>
+<pre class="signature">fn pool_stats_inc(stats: i64, idx: i64) -&gt; i64 {</pre>
+<h2 id="conn_pool_endpoint_count">fn conn_pool_endpoint_count</h2>
+<pre class="signature">fn conn_pool_endpoint_count(pool: i64, endpoint_key: i64) -&gt; i64 {</pre>
+<h2 id="conn_pool_set_endpoint_count">fn conn_pool_set_endpoint_count</h2>
+<pre class="signature">fn conn_pool_set_endpoint_count(pool: i64, endpoint_key: i64, count: i64) -&gt; i64 {</pre>
+<h2 id="conn_pool_inc_endpoint_count">fn conn_pool_inc_endpoint_count</h2>
+<pre class="signature">fn conn_pool_inc_endpoint_count(pool: i64, endpoint_key: i64) -&gt; i64 {</pre>
+<h2 id="conn_pool_dec_endpoint_count">fn conn_pool_dec_endpoint_count</h2>
+<pre class="signature">fn conn_pool_dec_endpoint_count(pool: i64, endpoint_key: i64) -&gt; i64 {</pre>
+<h2 id="conn_pool_checkout">fn conn_pool_checkout</h2>
+<pre class="signature">fn conn_pool_checkout(pool: i64, endpoint: i64, now: i64) -&gt; i64 {</pre>
+<h2 id="conn_pool_find_idle">fn conn_pool_find_idle</h2>
+<pre class="signature">fn conn_pool_find_idle(pool: i64, endpoint_key: i64, strategy: i64, now: i64) -&gt; i64 {</pre>
+<h2 id="conn_pool_checkin">fn conn_pool_checkin</h2>
+<pre class="signature">fn conn_pool_checkin(pool: i64, entry: i64, now: i64) -&gt; i64 {</pre>
+<h2 id="conn_pool_remove_entry">fn conn_pool_remove_entry</h2>
+<pre class="signature">fn conn_pool_remove_entry(pool: i64, entry: i64) -&gt; i64 {</pre>
+<h2 id="conn_pool_cleanup">fn conn_pool_cleanup</h2>
+<pre class="signature">fn conn_pool_cleanup(pool: i64, now: i64) -&gt; i64 {</pre>
+<h2 id="conn_pool_close_all">fn conn_pool_close_all</h2>
+<pre class="signature">fn conn_pool_close_all(pool: i64) -&gt; i64 {</pre>
+<h2 id="conn_pool_total_count">fn conn_pool_total_count</h2>
+<pre class="signature">fn conn_pool_total_count(pool: i64) -&gt; i64 {</pre>
+<h2 id="conn_pool_snapshot">fn conn_pool_snapshot</h2>
+<pre class="signature">fn conn_pool_snapshot(pool: i64) -&gt; i64 {</pre>
+<h2 id="pool_snapshot_active">fn pool_snapshot_active</h2>
+<pre class="signature">fn pool_snapshot_active(snap: i64) -&gt; i64 { vec_get(snap, 0) }</pre>
+<h2 id="pool_snapshot_idle">fn pool_snapshot_idle</h2>
+<pre class="signature">fn pool_snapshot_idle(snap: i64) -&gt; i64 { vec_get(snap, 1) }</pre>
+<h2 id="pool_snapshot_total">fn pool_snapshot_total</h2>
+<pre class="signature">fn pool_snapshot_total(snap: i64) -&gt; i64 { vec_get(snap, 2) }</pre>
+<h2 id="pool_snapshot_created">fn pool_snapshot_created</h2>
+<pre class="signature">fn pool_snapshot_created(snap: i64) -&gt; i64 { vec_get(snap, 3) }</pre>
+<h2 id="pool_snapshot_closed">fn pool_snapshot_closed</h2>
+<pre class="signature">fn pool_snapshot_closed(snap: i64) -&gt; i64 { vec_get(snap, 4) }</pre>
+<h2 id="pool_snapshot_reused">fn pool_snapshot_reused</h2>
+<pre class="signature">fn pool_snapshot_reused(snap: i64) -&gt; i64 { vec_get(snap, 5) }</pre>
+<h2 id="pool_snapshot_checkouts">fn pool_snapshot_checkouts</h2>
+<pre class="signature">fn pool_snapshot_checkouts(snap: i64) -&gt; i64 { vec_get(snap, 6) }</pre>
+<h2 id="pool_snapshot_checkins">fn pool_snapshot_checkins</h2>
+<pre class="signature">fn pool_snapshot_checkins(snap: i64) -&gt; i64 { vec_get(snap, 7) }</pre>
+
+    <hr>
+    <p><em>Generated by sxdoc</em></p>
+  </main>
+</div>
+</body>
+</html>

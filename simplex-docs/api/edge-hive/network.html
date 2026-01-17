@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>network - Simplex API Reference</title>
+  <meta name="description" content="API documentation for the Simplex programming language">
+  <link rel="stylesheet" href="../assets/docs.css">
+  <script src="../assets/nav.js" defer></script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "network - Simplex API Reference",
+  "description": "API documentation for the Simplex programming language",
+  "programmingLanguage": {
+    "@type": "ComputerLanguage",
+    "name": "Simplex",
+    "url": "https://github.com/senuamedia/simplex"
+  },
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "Simplex Documentation",
+    "url": "https://simplex.senuamedia.com/api/"
+  },
+  "articleSection": "edge-hive"
+}
+</script>
+</head>
+<body>
+<div class="doc-wrapper">
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-header"><a href="../index.html">Simplex API</a></div>
+    <div class="search-box">
+      <input type="text" id="search" placeholder="Search...">
+    </div>
+    <div id="nav-content">Loading...</div>
+  </nav>
+  <main class="content">
+    <nav class="breadcrumb">
+      <a href="../index.html">API Reference</a> &raquo;       <span class="current-category">edge-hive</span> &raquo; network
+    </nav>
+    <h1>Module: network</h1>
+<div class="toc">
+<strong>Contents</strong>
+<ul>
+<li><a href="#CONN_CLOSED">fn CONN_CLOSED</a></li>
+<li><a href="#CONN_CONNECTING">fn CONN_CONNECTING</a></li>
+<li><a href="#CONN_OPEN">fn CONN_OPEN</a></li>
+<li><a href="#CONN_CLOSING">fn CONN_CLOSING</a></li>
+<li><a href="#CONN_ERROR">fn CONN_ERROR</a></li>
+<li><a href="#MSG_DELEGATE">fn MSG_DELEGATE</a></li>
+<li><a href="#MSG_SYNC">fn MSG_SYNC</a></li>
+<li><a href="#MSG_PING">fn MSG_PING</a></li>
+<li><a href="#MSG_PONG">fn MSG_PONG</a></li>
+<li><a href="#MSG_ACK">fn MSG_ACK</a></li>
+<li><a href="#MSG_ERROR">fn MSG_ERROR</a></li>
+<li><a href="#MSG_PEER_ANNOUNCE">fn MSG_PEER_ANNOUNCE</a></li>
+<li><a href="#MSG_PEER_SYNC">fn MSG_PEER_SYNC</a></li>
+<li><a href="#ws_connection_new">fn ws_connection_new</a></li>
+<li><a href="#is_secure_endpoint">fn is_secure_endpoint</a></li>
+<li><a href="#ws_connection_new_legacy">fn ws_connection_new_legacy</a></li>
+<li><a href="#ws_conn_state">fn ws_conn_state</a></li>
+<li><a href="#ws_conn_endpoint">fn ws_conn_endpoint</a></li>
+<li><a href="#ws_conn_socket">fn ws_conn_socket</a></li>
+<li><a href="#ws_conn_last_activity">fn ws_conn_last_activity</a></li>
+<li><a href="#ws_conn_reconnect_attempts">fn ws_conn_reconnect_attempts</a></li>
+<li><a href="#ws_conn_reconnect_delay">fn ws_conn_reconnect_delay</a></li>
+<li><a href="#ws_conn_send_queue">fn ws_conn_send_queue</a></li>
+<li><a href="#ws_conn_recv_buffer">fn ws_conn_recv_buffer</a></li>
+<li><a href="#ws_conn_device_id">fn ws_conn_device_id</a></li>
+<li><a href="#ws_conn_identity">fn ws_conn_identity</a></li>
+<li><a href="#ws_conn_session_token">fn ws_conn_session_token</a></li>
+<li><a href="#ws_conn_last_seen_timestamp">fn ws_conn_last_seen_timestamp</a></li>
+<li><a href="#ws_conn_is_authenticated">fn ws_conn_is_authenticated</a></li>
+<li><a href="#ws_conn_set_state">fn ws_conn_set_state</a></li>
+<li><a href="#ws_conn_set_socket">fn ws_conn_set_socket</a></li>
+<li><a href="#ws_conn_update_activity">fn ws_conn_update_activity</a></li>
+<li><a href="#ws_conn_set_session_token">fn ws_conn_set_session_token</a></li>
+<li><a href="#ws_conn_set_authenticated">fn ws_conn_set_authenticated</a></li>
+<li><a href="#ws_conn_update_last_seen">fn ws_conn_update_last_seen</a></li>
+<li><a href="#ws_connect">fn ws_connect</a></li>
+<li><a href="#ws_authenticate">fn ws_authenticate</a></li>
+<li><a href="#ws_disconnect">fn ws_disconnect</a></li>
+<li><a href="#ws_is_connected">fn ws_is_connected</a></li>
+<li><a href="#ws_increment_reconnect">fn ws_increment_reconnect</a></li>
+<li><a href="#ws_should_reconnect">fn ws_should_reconnect</a></li>
+<li><a href="#ws_try_reconnect">fn ws_try_reconnect</a></li>
+<li><a href="#ws_send">fn ws_send</a></li>
+<li><a href="#ws_queue_message">fn ws_queue_message</a></li>
+<li><a href="#ws_send_authenticated">fn ws_send_authenticated</a></li>
+<li><a href="#ws_send_simple">fn ws_send_simple</a></li>
+<li><a href="#ws_flush_send_queue">fn ws_flush_send_queue</a></li>
+<li><a href="#SIGNATURE_LENGTH">fn SIGNATURE_LENGTH</a></li>
+<li><a href="#ws_frame_authenticated_message">fn ws_frame_authenticated_message</a></li>
+<li><a href="#ws_unframe_authenticated_message">fn ws_unframe_authenticated_message</a></li>
+<li><a href="#ws_frame_message">fn ws_frame_message</a></li>
+<li><a href="#ws_unframe_message">fn ws_unframe_message</a></li>
+<li><a href="#ws_recv">fn ws_recv</a></li>
+<li><a href="#ws_try_parse_message">fn ws_try_parse_message</a></li>
+<li><a href="#ws_send_handshake">fn ws_send_handshake</a></li>
+<li><a href="#ws_send_ping">fn ws_send_ping</a></li>
+<li><a href="#ws_send_pong">fn ws_send_pong</a></li>
+<li><a href="#ws_send_delegate">fn ws_send_delegate</a></li>
+<li><a href="#ws_send_sync">fn ws_send_sync</a></li>
+<li><a href="#ws_send_ack">fn ws_send_ack</a></li>
+<li><a href="#ws_send_error">fn ws_send_error</a></li>
+<li><a href="#PING_INTERVAL">fn PING_INTERVAL</a></li>
+<li><a href="#PING_TIMEOUT">fn PING_TIMEOUT</a></li>
+<li><a href="#ws_needs_ping">fn ws_needs_ping</a></li>
+<li><a href="#ws_check_timeout">fn ws_check_timeout</a></li>
+<li><a href="#ws_maintenance">fn ws_maintenance</a></li>
+<li><a href="#PROTOCOL_VERSION">fn PROTOCOL_VERSION</a></li>
+<li><a href="#ws_get_queue_size">fn ws_get_queue_size</a></li>
+<li><a href="#ws_get_reconnect_info">fn ws_get_reconnect_info</a></li>
+<li><a href="#AUTH_SUCCESS">fn AUTH_SUCCESS</a></li>
+<li><a href="#AUTH_FAILED">fn AUTH_FAILED</a></li>
+<li><a href="#AUTH_INVALID_CREDENTIALS">fn AUTH_INVALID_CREDENTIALS</a></li>
+<li><a href="#AUTH_EXPIRED">fn AUTH_EXPIRED</a></li>
+<li><a href="#AUTH_RATE_LIMITED">fn AUTH_RATE_LIMITED</a></li>
+<li><a href="#MSG_AUTH_HANDSHAKE">fn MSG_AUTH_HANDSHAKE</a></li>
+<li><a href="#MSG_AUTH_RESPONSE">fn MSG_AUTH_RESPONSE</a></li>
+</ul>
+</div>
+<h2 id="CONN_CLOSED">fn CONN_CLOSED</h2>
+<pre class="signature">fn CONN_CLOSED() -&gt; i64 { 0 }</pre>
+<h2 id="CONN_CONNECTING">fn CONN_CONNECTING</h2>
+<pre class="signature">fn CONN_CONNECTING() -&gt; i64 { 1 }</pre>
+<h2 id="CONN_OPEN">fn CONN_OPEN</h2>
+<pre class="signature">fn CONN_OPEN() -&gt; i64 { 2 }</pre>
+<h2 id="CONN_CLOSING">fn CONN_CLOSING</h2>
+<pre class="signature">fn CONN_CLOSING() -&gt; i64 { 3 }</pre>
+<h2 id="CONN_ERROR">fn CONN_ERROR</h2>
+<pre class="signature">fn CONN_ERROR() -&gt; i64 { 4 }</pre>
+<h2 id="MSG_DELEGATE">fn MSG_DELEGATE</h2>
+<pre class="signature">fn MSG_DELEGATE() -&gt; i64 { 1 }      // Request delegation to cloud</pre>
+<h2 id="MSG_SYNC">fn MSG_SYNC</h2>
+<pre class="signature">fn MSG_SYNC() -&gt; i64 { 2 }          // Belief synchronization</pre>
+<h2 id="MSG_PING">fn MSG_PING</h2>
+<pre class="signature">fn MSG_PING() -&gt; i64 { 3 }          // Keep-alive ping</pre>
+<h2 id="MSG_PONG">fn MSG_PONG</h2>
+<pre class="signature">fn MSG_PONG() -&gt; i64 { 4 }          // Ping response</pre>
+<h2 id="MSG_ACK">fn MSG_ACK</h2>
+<pre class="signature">fn MSG_ACK() -&gt; i64 { 5 }           // Acknowledgment</pre>
+<h2 id="MSG_ERROR">fn MSG_ERROR</h2>
+<pre class="signature">fn MSG_ERROR() -&gt; i64 { 6 }         // Error response</pre>
+<h2 id="MSG_PEER_ANNOUNCE">fn MSG_PEER_ANNOUNCE</h2>
+<pre class="signature">fn MSG_PEER_ANNOUNCE() -&gt; i64 { 7 } // Peer discovery announcement</pre>
+<h2 id="MSG_PEER_SYNC">fn MSG_PEER_SYNC</h2>
+<pre class="signature">fn MSG_PEER_SYNC() -&gt; i64 { 8 }     // Peer-to-peer sync</pre>
+<h2 id="ws_connection_new">fn ws_connection_new</h2>
+<pre class="signature">fn ws_connection_new(endpoint: i64, device_id: i64, identity: i64) -&gt; i64 {</pre>
+<h2 id="is_secure_endpoint">fn is_secure_endpoint</h2>
+<pre class="signature">fn is_secure_endpoint(endpoint: i64) -&gt; i64 {</pre>
+<h2 id="ws_connection_new_legacy">fn ws_connection_new_legacy</h2>
+<pre class="signature">fn ws_connection_new_legacy(endpoint: i64, device_id: i64) -&gt; i64 {</pre>
+<h2 id="ws_conn_state">fn ws_conn_state</h2>
+<pre class="signature">fn ws_conn_state(conn: i64) -&gt; i64 { vec_get(conn, 0) }</pre>
+<h2 id="ws_conn_endpoint">fn ws_conn_endpoint</h2>
+<pre class="signature">fn ws_conn_endpoint(conn: i64) -&gt; i64 { vec_get(conn, 1) }</pre>
+<h2 id="ws_conn_socket">fn ws_conn_socket</h2>
+<pre class="signature">fn ws_conn_socket(conn: i64) -&gt; i64 { vec_get(conn, 2) }</pre>
+<h2 id="ws_conn_last_activity">fn ws_conn_last_activity</h2>
+<pre class="signature">fn ws_conn_last_activity(conn: i64) -&gt; i64 { vec_get(conn, 3) }</pre>
+<h2 id="ws_conn_reconnect_attempts">fn ws_conn_reconnect_attempts</h2>
+<pre class="signature">fn ws_conn_reconnect_attempts(conn: i64) -&gt; i64 { vec_get(conn, 4) }</pre>
+<h2 id="ws_conn_reconnect_delay">fn ws_conn_reconnect_delay</h2>
+<pre class="signature">fn ws_conn_reconnect_delay(conn: i64) -&gt; i64 { vec_get(conn, 5) }</pre>
+<h2 id="ws_conn_send_queue">fn ws_conn_send_queue</h2>
+<pre class="signature">fn ws_conn_send_queue(conn: i64) -&gt; i64 { vec_get(conn, 6) }</pre>
+<h2 id="ws_conn_recv_buffer">fn ws_conn_recv_buffer</h2>
+<pre class="signature">fn ws_conn_recv_buffer(conn: i64) -&gt; i64 { vec_get(conn, 7) }</pre>
+<h2 id="ws_conn_device_id">fn ws_conn_device_id</h2>
+<pre class="signature">fn ws_conn_device_id(conn: i64) -&gt; i64 { vec_get(conn, 8) }</pre>
+<h2 id="ws_conn_identity">fn ws_conn_identity</h2>
+<pre class="signature">fn ws_conn_identity(conn: i64) -&gt; i64 { vec_get(conn, 9) }</pre>
+<h2 id="ws_conn_session_token">fn ws_conn_session_token</h2>
+<pre class="signature">fn ws_conn_session_token(conn: i64) -&gt; i64 { vec_get(conn, 10) }</pre>
+<h2 id="ws_conn_last_seen_timestamp">fn ws_conn_last_seen_timestamp</h2>
+<pre class="signature">fn ws_conn_last_seen_timestamp(conn: i64) -&gt; i64 { vec_get(conn, 11) }</pre>
+<h2 id="ws_conn_is_authenticated">fn ws_conn_is_authenticated</h2>
+<pre class="signature">fn ws_conn_is_authenticated(conn: i64) -&gt; i64 { vec_get(conn, 12) }</pre>
+<h2 id="ws_conn_set_state">fn ws_conn_set_state</h2>
+<pre class="signature">fn ws_conn_set_state(conn: i64, state: i64) -&gt; i64 {</pre>
+<h2 id="ws_conn_set_socket">fn ws_conn_set_socket</h2>
+<pre class="signature">fn ws_conn_set_socket(conn: i64, socket: i64) -&gt; i64 {</pre>
+<h2 id="ws_conn_update_activity">fn ws_conn_update_activity</h2>
+<pre class="signature">fn ws_conn_update_activity(conn: i64) -&gt; i64 {</pre>
+<h2 id="ws_conn_set_session_token">fn ws_conn_set_session_token</h2>
+<pre class="signature">fn ws_conn_set_session_token(conn: i64, token: i64) -&gt; i64 {</pre>
+<h2 id="ws_conn_set_authenticated">fn ws_conn_set_authenticated</h2>
+<pre class="signature">fn ws_conn_set_authenticated(conn: i64, authenticated: i64) -&gt; i64 {</pre>
+<h2 id="ws_conn_update_last_seen">fn ws_conn_update_last_seen</h2>
+<pre class="signature">fn ws_conn_update_last_seen(conn: i64, timestamp: i64) -&gt; i64 {</pre>
+<h2 id="ws_connect">fn ws_connect</h2>
+<pre class="signature">fn ws_connect(conn: i64) -&gt; i64 {</pre>
+<h2 id="ws_authenticate">fn ws_authenticate</h2>
+<pre class="signature">fn ws_authenticate(conn: i64) -&gt; i64 {</pre>
+<h2 id="ws_disconnect">fn ws_disconnect</h2>
+<pre class="signature">fn ws_disconnect(conn: i64) -&gt; i64 {</pre>
+<h2 id="ws_is_connected">fn ws_is_connected</h2>
+<pre class="signature">fn ws_is_connected(conn: i64) -&gt; i64 {</pre>
+<h2 id="ws_increment_reconnect">fn ws_increment_reconnect</h2>
+<pre class="signature">fn ws_increment_reconnect(conn: i64) -&gt; i64 {</pre>
+<h2 id="ws_should_reconnect">fn ws_should_reconnect</h2>
+<pre class="signature">fn ws_should_reconnect(conn: i64) -&gt; i64 {</pre>
+<h2 id="ws_try_reconnect">fn ws_try_reconnect</h2>
+<pre class="signature">fn ws_try_reconnect(conn: i64) -&gt; i64 {</pre>
+<h2 id="ws_send">fn ws_send</h2>
+<pre class="signature">fn ws_send(conn: i64, msg_type: i64, payload: i64) -&gt; i64 {</pre>
+<h2 id="ws_queue_message">fn ws_queue_message</h2>
+<pre class="signature">fn ws_queue_message(conn: i64, msg_type: i64, payload: i64) -&gt; i64 {</pre>
+<h2 id="ws_send_authenticated">fn ws_send_authenticated</h2>
+<pre class="signature">fn ws_send_authenticated(conn: i64, msg: i64) -&gt; i64 {</pre>
+<h2 id="ws_send_simple">fn ws_send_simple</h2>
+<pre class="signature">fn ws_send_simple(conn: i64, msg: i64) -&gt; i64 {</pre>
+<h2 id="ws_flush_send_queue">fn ws_flush_send_queue</h2>
+<pre class="signature">fn ws_flush_send_queue(conn: i64) -&gt; i64 {</pre>
+<h2 id="SIGNATURE_LENGTH">fn SIGNATURE_LENGTH</h2>
+<pre class="signature">fn SIGNATURE_LENGTH() -&gt; i64 { 32 }  // HMAC-SHA256</pre>
+<h2 id="ws_frame_authenticated_message">fn ws_frame_authenticated_message</h2>
+<pre class="signature">fn ws_frame_authenticated_message(conn: i64, msg_type: i64, payload: i64) -&gt; i64 {</pre>
+<h2 id="ws_unframe_authenticated_message">fn ws_unframe_authenticated_message</h2>
+<pre class="signature">fn ws_unframe_authenticated_message(conn: i64, frame: i64) -&gt; i64 {</pre>
+<h2 id="ws_frame_message">fn ws_frame_message</h2>
+<pre class="signature">fn ws_frame_message(msg_type: i64, payload: i64) -&gt; i64 {</pre>
+<h2 id="ws_unframe_message">fn ws_unframe_message</h2>
+<pre class="signature">fn ws_unframe_message(frame: i64) -&gt; i64 {</pre>
+<h2 id="ws_recv">fn ws_recv</h2>
+<pre class="signature">fn ws_recv(conn: i64) -&gt; i64 {</pre>
+<h2 id="ws_try_parse_message">fn ws_try_parse_message</h2>
+<pre class="signature">fn ws_try_parse_message(conn: i64) -&gt; i64 {</pre>
+<h2 id="ws_send_handshake">fn ws_send_handshake</h2>
+<pre class="signature">fn ws_send_handshake(conn: i64) -&gt; i64 {</pre>
+<h2 id="ws_send_ping">fn ws_send_ping</h2>
+<pre class="signature">fn ws_send_ping(conn: i64) -&gt; i64 {</pre>
+<h2 id="ws_send_pong">fn ws_send_pong</h2>
+<pre class="signature">fn ws_send_pong(conn: i64, ping_time: i64) -&gt; i64 {</pre>
+<h2 id="ws_send_delegate">fn ws_send_delegate</h2>
+<pre class="signature">fn ws_send_delegate(conn: i64, request: i64) -&gt; i64 {</pre>
+<h2 id="ws_send_sync">fn ws_send_sync</h2>
+<pre class="signature">fn ws_send_sync(conn: i64, beliefs: i64) -&gt; i64 {</pre>
+<h2 id="ws_send_ack">fn ws_send_ack</h2>
+<pre class="signature">fn ws_send_ack(conn: i64, msg_id: i64) -&gt; i64 {</pre>
+<h2 id="ws_send_error">fn ws_send_error</h2>
+<pre class="signature">fn ws_send_error(conn: i64, error_code: i64, error_msg: i64) -&gt; i64 {</pre>
+<h2 id="PING_INTERVAL">fn PING_INTERVAL</h2>
+<pre class="signature">fn PING_INTERVAL() -&gt; i64 { 30 }      // 30 seconds</pre>
+<h2 id="PING_TIMEOUT">fn PING_TIMEOUT</h2>
+<pre class="signature">fn PING_TIMEOUT() -&gt; i64 { 10 }       // 10 seconds</pre>
+<h2 id="ws_needs_ping">fn ws_needs_ping</h2>
+<pre class="signature">fn ws_needs_ping(conn: i64) -&gt; i64 {</pre>
+<h2 id="ws_check_timeout">fn ws_check_timeout</h2>
+<pre class="signature">fn ws_check_timeout(conn: i64) -&gt; i64 {</pre>
+<h2 id="ws_maintenance">fn ws_maintenance</h2>
+<pre class="signature">fn ws_maintenance(conn: i64) -&gt; i64 {</pre>
+<h2 id="PROTOCOL_VERSION">fn PROTOCOL_VERSION</h2>
+<pre class="signature">fn PROTOCOL_VERSION() -&gt; i64 { 1 }</pre>
+<h2 id="ws_get_queue_size">fn ws_get_queue_size</h2>
+<pre class="signature">fn ws_get_queue_size(conn: i64) -&gt; i64 {</pre>
+<h2 id="ws_get_reconnect_info">fn ws_get_reconnect_info</h2>
+<pre class="signature">fn ws_get_reconnect_info(conn: i64) -&gt; i64 {</pre>
+<h2 id="AUTH_SUCCESS">fn AUTH_SUCCESS</h2>
+<pre class="signature">fn AUTH_SUCCESS() -&gt; i64 { 1 }</pre>
+<h2 id="AUTH_FAILED">fn AUTH_FAILED</h2>
+<pre class="signature">fn AUTH_FAILED() -&gt; i64 { 0 }</pre>
+<h2 id="AUTH_INVALID_CREDENTIALS">fn AUTH_INVALID_CREDENTIALS</h2>
+<pre class="signature">fn AUTH_INVALID_CREDENTIALS() -&gt; i64 { 2 }</pre>
+<h2 id="AUTH_EXPIRED">fn AUTH_EXPIRED</h2>
+<pre class="signature">fn AUTH_EXPIRED() -&gt; i64 { 3 }</pre>
+<h2 id="AUTH_RATE_LIMITED">fn AUTH_RATE_LIMITED</h2>
+<pre class="signature">fn AUTH_RATE_LIMITED() -&gt; i64 { 4 }</pre>
+<h2 id="MSG_AUTH_HANDSHAKE">fn MSG_AUTH_HANDSHAKE</h2>
+<pre class="signature">fn MSG_AUTH_HANDSHAKE() -&gt; i64 { 100 }</pre>
+<h2 id="MSG_AUTH_RESPONSE">fn MSG_AUTH_RESPONSE</h2>
+<pre class="signature">fn MSG_AUTH_RESPONSE() -&gt; i64 { 101 }</pre>
+
+    <hr>
+    <p><em>Generated by sxdoc</em></p>
+  </main>
+</div>
+</body>
+</html>

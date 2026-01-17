@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>sxdoc - Simplex Documentation</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; }
+    h1 { color: #333; border-bottom: 2px solid #5c6bc0; padding-bottom: 10px; }
+    h2 { color: #5c6bc0; margin-top: 30px; }
+    h3 { color: #666; }
+    .signature { background: #f5f5f5; padding: 10px; border-radius: 4px; font-family: 'Consolas', monospace; overflow-x: auto; }
+    .doc { color: #444; margin: 10px 0; }
+    .field { margin-left: 20px; color: #666; }
+    .toc { background: #f9f9f9; padding: 15px; border-radius: 4px; margin-bottom: 30px; }
+    .toc a { color: #5c6bc0; text-decoration: none; }
+    .toc a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+<h1>Module: sxdoc</h1>
+<div class="toc">
+<strong>Contents</strong>
+<ul>
+<li><a href="#VERSION">fn VERSION</a></li>
+<li><a href="#show_help">fn show_help</a></li>
+<li><a href="#show_version">fn show_version</a></li>
+<li><a href="#DOC_FN">fn DOC_FN</a></li>
+<li><a href="#DOC_STRUCT">fn DOC_STRUCT</a></li>
+<li><a href="#DOC_ENUM">fn DOC_ENUM</a></li>
+<li><a href="#DOC_TRAIT">fn DOC_TRAIT</a></li>
+<li><a href="#DOC_IMPL">fn DOC_IMPL</a></li>
+<li><a href="#doc_item_new">fn doc_item_new</a></li>
+<li><a href="#doc_item_kind">fn doc_item_kind</a></li>
+<li><a href="#doc_item_name">fn doc_item_name</a></li>
+<li><a href="#doc_item_doc">fn doc_item_doc</a></li>
+<li><a href="#doc_item_set_doc">fn doc_item_set_doc</a></li>
+<li><a href="#doc_item_sig">fn doc_item_sig</a></li>
+<li><a href="#doc_item_set_sig">fn doc_item_set_sig</a></li>
+<li><a href="#doc_item_params">fn doc_item_params</a></li>
+<li><a href="#doc_item_ret_ty">fn doc_item_ret_ty</a></li>
+<li><a href="#doc_item_set_ret_ty">fn doc_item_set_ret_ty</a></li>
+<li><a href="#doc_item_fields">fn doc_item_fields</a></li>
+<li><a href="#extract_docs">fn extract_docs</a></li>
+<li><a href="#extract_fn_doc">fn extract_fn_doc</a></li>
+<li><a href="#extract_struct_doc">fn extract_struct_doc</a></li>
+<li><a href="#extract_enum_doc">fn extract_enum_doc</a></li>
+<li><a href="#extract_trait_doc">fn extract_trait_doc</a></li>
+<li><a href="#generate_html">fn generate_html</a></li>
+<li><a href="#get_kind_str">fn get_kind_str</a></li>
+<li><a href="#generate_html_item">fn generate_html_item</a></li>
+<li><a href="#html_escape">fn html_escape</a></li>
+<li><a href="#generate_markdown">fn generate_markdown</a></li>
+<li><a href="#generate_md_item">fn generate_md_item</a></li>
+<li><a href="#main">fn main</a></li>
+<li><a href="#get_module_name_from_path">fn get_module_name_from_path</a></li>
+</ul>
+</div>
+<h2 id="VERSION">fn VERSION</h2>
+<pre class="signature">fn VERSION() -&gt; i64 { string_from("0.9.5") }</pre>
+<h2 id="show_help">fn show_help</h2>
+<pre class="signature">fn show_help() -&gt; i64 {</pre>
+<h2 id="show_version">fn show_version</h2>
+<pre class="signature">fn show_version() -&gt; i64 {</pre>
+<h2 id="DOC_FN">fn DOC_FN</h2>
+<pre class="signature">fn DOC_FN() -&gt; i64 { 0 }</pre>
+<h2 id="DOC_STRUCT">fn DOC_STRUCT</h2>
+<pre class="signature">fn DOC_STRUCT() -&gt; i64 { 1 }</pre>
+<h2 id="DOC_ENUM">fn DOC_ENUM</h2>
+<pre class="signature">fn DOC_ENUM() -&gt; i64 { 2 }</pre>
+<h2 id="DOC_TRAIT">fn DOC_TRAIT</h2>
+<pre class="signature">fn DOC_TRAIT() -&gt; i64 { 3 }</pre>
+<h2 id="DOC_IMPL">fn DOC_IMPL</h2>
+<pre class="signature">fn DOC_IMPL() -&gt; i64 { 4 }</pre>
+<h2 id="doc_item_new">fn doc_item_new</h2>
+<pre class="signature">fn doc_item_new(kind: i64, name: i64) -&gt; i64 {</pre>
+<h2 id="doc_item_kind">fn doc_item_kind</h2>
+<pre class="signature">fn doc_item_kind(item: i64) -&gt; i64 { load_i64(item, 0) }</pre>
+<h2 id="doc_item_name">fn doc_item_name</h2>
+<pre class="signature">fn doc_item_name(item: i64) -&gt; i64 { load_ptr(item, 1) }</pre>
+<h2 id="doc_item_doc">fn doc_item_doc</h2>
+<pre class="signature">fn doc_item_doc(item: i64) -&gt; i64 { load_ptr(item, 2) }</pre>
+<h2 id="doc_item_set_doc">fn doc_item_set_doc</h2>
+<pre class="signature">fn doc_item_set_doc(item: i64, doc: i64) -&gt; i64 { store_ptr(item, 2, doc); 0 }</pre>
+<h2 id="doc_item_sig">fn doc_item_sig</h2>
+<pre class="signature">fn doc_item_sig(item: i64) -&gt; i64 { load_ptr(item, 3) }</pre>
+<h2 id="doc_item_set_sig">fn doc_item_set_sig</h2>
+<pre class="signature">fn doc_item_set_sig(item: i64, sig: i64) -&gt; i64 { store_ptr(item, 3, sig); 0 }</pre>
+<h2 id="doc_item_params">fn doc_item_params</h2>
+<pre class="signature">fn doc_item_params(item: i64) -&gt; i64 { load_ptr(item, 4) }</pre>
+<h2 id="doc_item_ret_ty">fn doc_item_ret_ty</h2>
+<pre class="signature">fn doc_item_ret_ty(item: i64) -&gt; i64 { load_ptr(item, 5) }</pre>
+<h2 id="doc_item_set_ret_ty">fn doc_item_set_ret_ty</h2>
+<pre class="signature">fn doc_item_set_ret_ty(item: i64, ty: i64) -&gt; i64 { store_ptr(item, 5, ty); 0 }</pre>
+<h2 id="doc_item_fields">fn doc_item_fields</h2>
+<pre class="signature">fn doc_item_fields(item: i64) -&gt; i64 { load_ptr(item, 6) }</pre>
+<h2 id="extract_docs">fn extract_docs</h2>
+<pre class="signature">fn extract_docs(source: i64) -&gt; i64 {</pre>
+<h2 id="extract_fn_doc">fn extract_fn_doc</h2>
+<pre class="signature">fn extract_fn_doc(line: i64, doc_comment: i64) -&gt; i64 {</pre>
+<h2 id="extract_struct_doc">fn extract_struct_doc</h2>
+<pre class="signature">fn extract_struct_doc(line: i64, doc_comment: i64, lines: i64, start_line: i64) -&gt; i64 {</pre>
+<h2 id="extract_enum_doc">fn extract_enum_doc</h2>
+<pre class="signature">fn extract_enum_doc(line: i64, doc_comment: i64, lines: i64, start_line: i64) -&gt; i64 {</pre>
+<h2 id="extract_trait_doc">fn extract_trait_doc</h2>
+<pre class="signature">fn extract_trait_doc(line: i64, doc_comment: i64, lines: i64, start_line: i64) -&gt; i64 {</pre>
+<h2 id="generate_html">fn generate_html</h2>
+<pre class="signature">fn generate_html(docs: i64, module_name: i64) -&gt; i64 {</pre>
+<h2 id="get_kind_str">fn get_kind_str</h2>
+<pre class="signature">fn get_kind_str(kind: i64) -&gt; i64 {</pre>
+<h2 id="generate_html_item">fn generate_html_item</h2>
+<pre class="signature">fn generate_html_item(item: i64) -&gt; i64 {</pre>
+<h2 id="html_escape">fn html_escape</h2>
+<pre class="signature">fn html_escape(s: i64) -&gt; i64 {</pre>
+<h2 id="generate_markdown">fn generate_markdown</h2>
+<pre class="signature">fn generate_markdown(docs: i64, module_name: i64) -&gt; i64 {</pre>
+<h2 id="generate_md_item">fn generate_md_item</h2>
+<pre class="signature">fn generate_md_item(item: i64) -&gt; i64 {</pre>
+<h2 id="main">fn main</h2>
+<pre class="signature">fn main() -&gt; i64 {</pre>
+<h2 id="get_module_name_from_path">fn get_module_name_from_path</h2>
+<pre class="signature">fn get_module_name_from_path(path: i64) -&gt; i64 {</pre>
+
+<hr>
+<p><em>Generated by sxdoc</em></p>
+</body>
+</html>

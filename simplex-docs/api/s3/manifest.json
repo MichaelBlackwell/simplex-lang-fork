@@ -1,0 +1,86 @@
+{
+  "category": "s3",
+  "modules": [
+    {
+      "name": "auth",
+      "file": "auth.html",
+      "items": [
+        {"kind": "fn", "name": "sign_request", "signature": "fn sign_request(", "doc": "Sign a request using AWS Signature Version 4"},
+        {"kind": "fn", "name": "sign_url", "signature": "fn sign_url(", "doc": "Generate a presigned URL"},
+        {"kind": "fn", "name": "sign_url_with_headers", "signature": "fn sign_url_with_headers(", "doc": "Generate a presigned URL with additional headers"},
+        {"kind": "fn", "name": "get_signature_key", "signature": "fn get_signature_key("},
+        {"kind": "fn", "name": "parse_url", "signature": "fn parse_url(url: &str) -> Result<(String, String, Option<String>), S3Error> {"},
+        {"kind": "fn", "name": "url_encode", "signature": "fn url_encode(s: &str) -> String {"},
+        {"kind": "fn", "name": "hex_encode", "signature": "fn hex_encode(bytes: &[u8]) -> String {"}
+      ]
+    },
+    {
+      "name": "bucket",
+      "file": "bucket.html",
+      "items": [
+        {"kind": "fn", "name": "new", "signature": "fn new(client: S3Client, name: &str) -> Self {"},
+        {"kind": "fn", "name": "name", "signature": "fn name(&self) -> &str {", "doc": "Get bucket name"},
+        {"kind": "fn", "name": "presign_get", "signature": "fn presign_get(&self, key: &str, expires_in_secs: u64) -> Result<PresignedUrl, S3Error> {", "doc": "Generate presigned GET URL"},
+        {"kind": "fn", "name": "presign_put", "signature": "fn presign_put(&self, key: &str, content_type: Option<&str>, expires_in_secs: u64) -> Result<PresignedUrl, S3Error> {", "doc": "Generate presigned PUT URL"}
+      ]
+    },
+    {
+      "name": "presigned",
+      "file": "presigned.html",
+      "items": [
+        {"kind": "fn", "name": "url", "signature": "fn url(&self) -> &str {", "doc": "Get the URL string"},
+        {"kind": "fn", "name": "is_valid", "signature": "fn is_valid(&self) -> bool {", "doc": "Check if URL is still valid"},
+        {"kind": "fn", "name": "new", "signature": "fn new(expires_in_secs: u64) -> Self {"},
+        {"kind": "fn", "name": "content_type", "signature": "fn content_type(mut self, content_type: &str) -> Self {"},
+        {"kind": "fn", "name": "content_disposition", "signature": "fn content_disposition(mut self, disposition: &str) -> Self {"},
+        {"kind": "fn", "name": "download", "signature": "fn download(mut self, filename: &str) -> Self {"},
+        {"kind": "fn", "name": "inline", "signature": "fn inline(mut self) -> Self {"}
+      ]
+    },
+    {
+      "name": "lib",
+      "file": "lib.html",
+      "items": [
+      ]
+    },
+    {
+      "name": "object",
+      "file": "object.html",
+      "items": [
+        {"kind": "fn", "name": "new", "signature": "fn new(bucket: &str, key: &str, body: Vec<u8>) -> Self {"},
+        {"kind": "fn", "name": "content_type", "signature": "fn content_type(mut self, content_type: &str) -> Self {"},
+        {"kind": "fn", "name": "acl", "signature": "fn acl(mut self, acl: &str) -> Self {"},
+        {"kind": "fn", "name": "public_read", "signature": "fn public_read(mut self) -> Self {"},
+        {"kind": "fn", "name": "private", "signature": "fn private(mut self) -> Self {"},
+        {"kind": "fn", "name": "metadata", "signature": "fn metadata(mut self, key: &str, value: &str) -> Self {"},
+        {"kind": "fn", "name": "cache_control", "signature": "fn cache_control(mut self, cache_control: &str) -> Self {"},
+        {"kind": "fn", "name": "content_disposition", "signature": "fn content_disposition(mut self, disposition: &str) -> Self {"},
+        {"kind": "fn", "name": "storage_class", "signature": "fn storage_class(mut self, storage_class: &str) -> Self {"},
+        {"kind": "fn", "name": "text", "signature": "fn text(&self) -> String {", "doc": "Get body as string"},
+        {"kind": "fn", "name": "json", "signature": "fn json<T: Deserialize>(&self) -> Result<T, JsonError> {", "doc": "Get body as JSON"},
+        {"kind": "fn", "name": "guess_content_type", "signature": "fn guess_content_type(filename: &str) -> &'static str {", "doc": "Content type helper"}
+      ]
+    },
+    {
+      "name": "client",
+      "file": "client.html",
+      "items": [
+        {"kind": "fn", "name": "new", "signature": "fn new(region: &str, access_key_id: &str, secret_access_key: &str) -> Self {"},
+        {"kind": "fn", "name": "ap_southeast_2", "signature": "fn ap_southeast_2(access_key_id: &str, secret_access_key: &str) -> Self {"},
+        {"kind": "fn", "name": "endpoint", "signature": "fn endpoint(mut self, endpoint: &str) -> Self {"},
+        {"kind": "fn", "name": "path_style", "signature": "fn path_style(mut self, path_style: bool) -> Self {"},
+        {"kind": "fn", "name": "new", "signature": "fn new(config: S3Config) -> Self {"},
+        {"kind": "fn", "name": "credentials", "signature": "fn credentials(&self) -> AwsCredentials {", "doc": "Get credentials"},
+        {"kind": "fn", "name": "bucket_endpoint", "signature": "fn bucket_endpoint(&self, bucket: &str) -> String {", "doc": "Get endpoint for bucket"},
+        {"kind": "fn", "name": "object_url", "signature": "fn object_url(&self, bucket: &str, key: &str) -> String {", "doc": "Get object URL"},
+        {"kind": "fn", "name": "presign_get", "signature": "fn presign_get(", "doc": "Generate a presigned URL for GET"},
+        {"kind": "fn", "name": "presign_put", "signature": "fn presign_put(", "doc": "Generate a presigned URL for PUT"},
+        {"kind": "fn", "name": "extract_metadata", "signature": "fn extract_metadata(headers: &HashMap<String, String>) -> HashMap<String, String> {"},
+        {"kind": "fn", "name": "parse_list_objects_response", "signature": "fn parse_list_objects_response(xml: &str) -> Result<ListObjectsResponse, S3Error> {"},
+        {"kind": "fn", "name": "extract_xml_value", "signature": "fn extract_xml_value(xml: &str, tag: &str) -> Option<String> {"},
+        {"kind": "fn", "name": "url_encode", "signature": "fn url_encode(s: &str) -> String {"},
+        {"kind": "fn", "name": "sha256_hex", "signature": "fn sha256_hex(data: &[u8]) -> String {"}
+      ]
+    }
+  ]
+}

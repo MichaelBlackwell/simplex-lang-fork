@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>reconnect - Simplex API Reference</title>
+  <meta name="description" content="API documentation for the Simplex programming language">
+  <link rel="stylesheet" href="../assets/docs.css">
+  <script src="../assets/nav.js" defer></script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "reconnect - Simplex API Reference",
+  "description": "API documentation for the Simplex programming language",
+  "programmingLanguage": {
+    "@type": "ComputerLanguage",
+    "name": "Simplex",
+    "url": "https://github.com/senuamedia/simplex"
+  },
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "Simplex Documentation",
+    "url": "https://simplex.senuamedia.com/api/"
+  },
+  "articleSection": "nexus"
+}
+</script>
+</head>
+<body>
+<div class="doc-wrapper">
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-header"><a href="../index.html">Simplex API</a></div>
+    <div class="search-box">
+      <input type="text" id="search" placeholder="Search...">
+    </div>
+    <div id="nav-content">Loading...</div>
+  </nav>
+  <main class="content">
+    <nav class="breadcrumb">
+      <a href="../index.html">API Reference</a> &raquo;       <span class="current-category">nexus</span> &raquo; reconnect
+    </nav>
+    <h1>Module: reconnect</h1>
+<div class="toc">
+<strong>Contents</strong>
+<ul>
+<li><a href="#BACKOFF_CONSTANT">fn BACKOFF_CONSTANT</a></li>
+<li><a href="#BACKOFF_LINEAR">fn BACKOFF_LINEAR</a></li>
+<li><a href="#BACKOFF_EXPONENTIAL">fn BACKOFF_EXPONENTIAL</a></li>
+<li><a href="#BACKOFF_DECORRELATED">fn BACKOFF_DECORRELATED</a></li>
+<li><a href="#RECON_IDLE">fn RECON_IDLE</a></li>
+<li><a href="#RECON_WAITING">fn RECON_WAITING</a></li>
+<li><a href="#RECON_CONNECTING">fn RECON_CONNECTING</a></li>
+<li><a href="#RECON_CONNECTED">fn RECON_CONNECTED</a></li>
+<li><a href="#RECON_FAILED">fn RECON_FAILED</a></li>
+<li><a href="#CIRCUIT_CLOSED">fn CIRCUIT_CLOSED</a></li>
+<li><a href="#CIRCUIT_OPEN">fn CIRCUIT_OPEN</a></li>
+<li><a href="#CIRCUIT_HALF_OPEN">fn CIRCUIT_HALF_OPEN</a></li>
+<li><a href="#DEFAULT_INITIAL_DELAY">fn DEFAULT_INITIAL_DELAY</a></li>
+<li><a href="#DEFAULT_MAX_DELAY">fn DEFAULT_MAX_DELAY</a></li>
+<li><a href="#DEFAULT_MAX_ATTEMPTS">fn DEFAULT_MAX_ATTEMPTS</a></li>
+<li><a href="#DEFAULT_JITTER_FACTOR">fn DEFAULT_JITTER_FACTOR</a></li>
+<li><a href="#DEFAULT_MULTIPLIER">fn DEFAULT_MULTIPLIER</a></li>
+<li><a href="#DEFAULT_CIRCUIT_THRESHOLD">fn DEFAULT_CIRCUIT_THRESHOLD</a></li>
+<li><a href="#DEFAULT_CIRCUIT_TIMEOUT">fn DEFAULT_CIRCUIT_TIMEOUT</a></li>
+<li><a href="#backoff_config_new">fn backoff_config_new</a></li>
+<li><a href="#backoff_config_strategy">fn backoff_config_strategy</a></li>
+<li><a href="#backoff_config_initial_delay">fn backoff_config_initial_delay</a></li>
+<li><a href="#backoff_config_max_delay">fn backoff_config_max_delay</a></li>
+<li><a href="#backoff_config_max_attempts">fn backoff_config_max_attempts</a></li>
+<li><a href="#backoff_config_jitter">fn backoff_config_jitter</a></li>
+<li><a href="#backoff_config_multiplier">fn backoff_config_multiplier</a></li>
+<li><a href="#backoff_config_set_strategy">fn backoff_config_set_strategy</a></li>
+<li><a href="#backoff_config_set_initial_delay">fn backoff_config_set_initial_delay</a></li>
+<li><a href="#backoff_config_set_max_delay">fn backoff_config_set_max_delay</a></li>
+<li><a href="#backoff_config_set_max_attempts">fn backoff_config_set_max_attempts</a></li>
+<li><a href="#backoff_config_set_jitter">fn backoff_config_set_jitter</a></li>
+<li><a href="#backoff_config_set_multiplier">fn backoff_config_set_multiplier</a></li>
+<li><a href="#backoff_state_new">fn backoff_state_new</a></li>
+<li><a href="#backoff_state_config">fn backoff_state_config</a></li>
+<li><a href="#backoff_state_attempt">fn backoff_state_attempt</a></li>
+<li><a href="#backoff_state_last_delay">fn backoff_state_last_delay</a></li>
+<li><a href="#backoff_state_next_retry">fn backoff_state_next_retry</a></li>
+<li><a href="#backoff_state_last_error">fn backoff_state_last_error</a></li>
+<li><a href="#backoff_state_set_attempt">fn backoff_state_set_attempt</a></li>
+<li><a href="#backoff_state_set_last_delay">fn backoff_state_set_last_delay</a></li>
+<li><a href="#backoff_state_set_next_retry">fn backoff_state_set_next_retry</a></li>
+<li><a href="#backoff_state_set_last_error">fn backoff_state_set_last_error</a></li>
+<li><a href="#backoff_state_reset">fn backoff_state_reset</a></li>
+<li><a href="#backoff_state_exhausted">fn backoff_state_exhausted</a></li>
+<li><a href="#backoff_state_can_retry">fn backoff_state_can_retry</a></li>
+<li><a href="#backoff_random">fn backoff_random</a></li>
+<li><a href="#backoff_next_delay">fn backoff_next_delay</a></li>
+<li><a href="#backoff_record_failure">fn backoff_record_failure</a></li>
+<li><a href="#trans_circuit_new">fn trans_circuit_new</a></li>
+<li><a href="#trans_circuit_state">fn trans_circuit_state</a></li>
+<li><a href="#trans_circuit_failures">fn trans_circuit_failures</a></li>
+<li><a href="#trans_circuit_successes">fn trans_circuit_successes</a></li>
+<li><a href="#trans_circuit_threshold">fn trans_circuit_threshold</a></li>
+<li><a href="#trans_circuit_open_time">fn trans_circuit_open_time</a></li>
+<li><a href="#trans_circuit_timeout">fn trans_circuit_timeout</a></li>
+<li><a href="#trans_circuit_last_failure">fn trans_circuit_last_failure</a></li>
+<li><a href="#trans_circuit_set_state">fn trans_circuit_set_state</a></li>
+<li><a href="#trans_circuit_set_threshold">fn trans_circuit_set_threshold</a></li>
+<li><a href="#trans_circuit_set_timeout">fn trans_circuit_set_timeout</a></li>
+<li><a href="#trans_circuit_allows">fn trans_circuit_allows</a></li>
+<li><a href="#trans_circuit_record_success">fn trans_circuit_record_success</a></li>
+<li><a href="#trans_circuit_record_failure">fn trans_circuit_record_failure</a></li>
+<li><a href="#trans_circuit_reset">fn trans_circuit_reset</a></li>
+<li><a href="#reconnect_manager_new">fn reconnect_manager_new</a></li>
+<li><a href="#reconnect_manager_state">fn reconnect_manager_state</a></li>
+<li><a href="#reconnect_manager_transport">fn reconnect_manager_transport</a></li>
+<li><a href="#reconnect_manager_endpoint">fn reconnect_manager_endpoint</a></li>
+<li><a href="#reconnect_manager_backoff">fn reconnect_manager_backoff</a></li>
+<li><a href="#reconnect_manager_circuit">fn reconnect_manager_circuit</a></li>
+<li><a href="#reconnect_manager_failover_list">fn reconnect_manager_failover_list</a></li>
+<li><a href="#reconnect_manager_current_idx">fn reconnect_manager_current_idx</a></li>
+<li><a href="#reconnect_manager_set_state">fn reconnect_manager_set_state</a></li>
+<li><a href="#reconnect_manager_set_transport">fn reconnect_manager_set_transport</a></li>
+<li><a href="#reconnect_manager_set_current_idx">fn reconnect_manager_set_current_idx</a></li>
+<li><a href="#reconnect_manager_add_failover">fn reconnect_manager_add_failover</a></li>
+<li><a href="#reconnect_manager_get_endpoint">fn reconnect_manager_get_endpoint</a></li>
+<li><a href="#reconnect_manager_next_endpoint">fn reconnect_manager_next_endpoint</a></li>
+<li><a href="#reconnect_manager_connect">fn reconnect_manager_connect</a></li>
+<li><a href="#reconnect_manager_on_disconnect">fn reconnect_manager_on_disconnect</a></li>
+<li><a href="#reconnect_manager_cancel">fn reconnect_manager_cancel</a></li>
+<li><a href="#reconnect_manager_reset">fn reconnect_manager_reset</a></li>
+<li><a href="#reconnect_manager_is_connected">fn reconnect_manager_is_connected</a></li>
+<li><a href="#reconnect_manager_is_reconnecting">fn reconnect_manager_is_reconnecting</a></li>
+<li><a href="#reconnect_manager_is_failed">fn reconnect_manager_is_failed</a></li>
+<li><a href="#reconnect_manager_time_to_retry">fn reconnect_manager_time_to_retry</a></li>
+<li><a href="#reconnect_manager_stats">fn reconnect_manager_stats</a></li>
+<li><a href="#recon_stats_state">fn recon_stats_state</a></li>
+<li><a href="#recon_stats_attempts">fn recon_stats_attempts</a></li>
+<li><a href="#recon_stats_last_delay">fn recon_stats_last_delay</a></li>
+<li><a href="#recon_stats_last_error">fn recon_stats_last_error</a></li>
+<li><a href="#recon_stats_circuit_state">fn recon_stats_circuit_state</a></li>
+<li><a href="#recon_stats_circuit_failures">fn recon_stats_circuit_failures</a></li>
+<li><a href="#recon_stats_endpoint_idx">fn recon_stats_endpoint_idx</a></li>
+<li><a href="#reconnect_manager_default">fn reconnect_manager_default</a></li>
+<li><a href="#reconnect_manager_aggressive">fn reconnect_manager_aggressive</a></li>
+<li><a href="#reconnect_manager_patient">fn reconnect_manager_patient</a></li>
+</ul>
+</div>
+<h2 id="BACKOFF_CONSTANT">fn BACKOFF_CONSTANT</h2>
+<pre class="signature">fn BACKOFF_CONSTANT() -&gt; i64 { 0 }       // Fixed delay</pre>
+<h2 id="BACKOFF_LINEAR">fn BACKOFF_LINEAR</h2>
+<pre class="signature">fn BACKOFF_LINEAR() -&gt; i64 { 1 }         // Linear increase</pre>
+<h2 id="BACKOFF_EXPONENTIAL">fn BACKOFF_EXPONENTIAL</h2>
+<pre class="signature">fn BACKOFF_EXPONENTIAL() -&gt; i64 { 2 }    // Exponential increase</pre>
+<h2 id="BACKOFF_DECORRELATED">fn BACKOFF_DECORRELATED</h2>
+<pre class="signature">fn BACKOFF_DECORRELATED() -&gt; i64 { 3 }   // Decorrelated jitter (AWS style)</pre>
+<h2 id="RECON_IDLE">fn RECON_IDLE</h2>
+<pre class="signature">fn RECON_IDLE() -&gt; i64 { 0 }           // Not attempting reconnection</pre>
+<h2 id="RECON_WAITING">fn RECON_WAITING</h2>
+<pre class="signature">fn RECON_WAITING() -&gt; i64 { 1 }        // Waiting for backoff delay</pre>
+<h2 id="RECON_CONNECTING">fn RECON_CONNECTING</h2>
+<pre class="signature">fn RECON_CONNECTING() -&gt; i64 { 2 }     // Attempting connection</pre>
+<h2 id="RECON_CONNECTED">fn RECON_CONNECTED</h2>
+<pre class="signature">fn RECON_CONNECTED() -&gt; i64 { 3 }      // Successfully connected</pre>
+<h2 id="RECON_FAILED">fn RECON_FAILED</h2>
+<pre class="signature">fn RECON_FAILED() -&gt; i64 { 4 }         // Permanently failed (circuit open)</pre>
+<h2 id="CIRCUIT_CLOSED">fn CIRCUIT_CLOSED</h2>
+<pre class="signature">fn CIRCUIT_CLOSED() -&gt; i64 { 0 }       // Normal operation</pre>
+<h2 id="CIRCUIT_OPEN">fn CIRCUIT_OPEN</h2>
+<pre class="signature">fn CIRCUIT_OPEN() -&gt; i64 { 1 }         // Failing, rejecting attempts</pre>
+<h2 id="CIRCUIT_HALF_OPEN">fn CIRCUIT_HALF_OPEN</h2>
+<pre class="signature">fn CIRCUIT_HALF_OPEN() -&gt; i64 { 2 }    // Testing recovery</pre>
+<h2 id="DEFAULT_INITIAL_DELAY">fn DEFAULT_INITIAL_DELAY</h2>
+<pre class="signature">fn DEFAULT_INITIAL_DELAY() -&gt; i64 { 100 }      // 100ms initial delay</pre>
+<h2 id="DEFAULT_MAX_DELAY">fn DEFAULT_MAX_DELAY</h2>
+<pre class="signature">fn DEFAULT_MAX_DELAY() -&gt; i64 { 30000 }        // 30s max delay</pre>
+<h2 id="DEFAULT_MAX_ATTEMPTS">fn DEFAULT_MAX_ATTEMPTS</h2>
+<pre class="signature">fn DEFAULT_MAX_ATTEMPTS() -&gt; i64 { 10 }        // 10 retry attempts</pre>
+<h2 id="DEFAULT_JITTER_FACTOR">fn DEFAULT_JITTER_FACTOR</h2>
+<pre class="signature">fn DEFAULT_JITTER_FACTOR() -&gt; i64 { 25 }       // 25% jitter</pre>
+<h2 id="DEFAULT_MULTIPLIER">fn DEFAULT_MULTIPLIER</h2>
+<pre class="signature">fn DEFAULT_MULTIPLIER() -&gt; i64 { 2 }           // 2x exponential growth</pre>
+<h2 id="DEFAULT_CIRCUIT_THRESHOLD">fn DEFAULT_CIRCUIT_THRESHOLD</h2>
+<pre class="signature">fn DEFAULT_CIRCUIT_THRESHOLD() -&gt; i64 { 5 }    // Failures before circuit opens</pre>
+<h2 id="DEFAULT_CIRCUIT_TIMEOUT">fn DEFAULT_CIRCUIT_TIMEOUT</h2>
+<pre class="signature">fn DEFAULT_CIRCUIT_TIMEOUT() -&gt; i64 { 60000 }  // 60s circuit open duration</pre>
+<h2 id="backoff_config_new">fn backoff_config_new</h2>
+<pre class="signature">fn backoff_config_new() -&gt; i64 {</pre>
+<h2 id="backoff_config_strategy">fn backoff_config_strategy</h2>
+<pre class="signature">fn backoff_config_strategy(config: i64) -&gt; i64 { vec_get(config, 0) }</pre>
+<h2 id="backoff_config_initial_delay">fn backoff_config_initial_delay</h2>
+<pre class="signature">fn backoff_config_initial_delay(config: i64) -&gt; i64 { vec_get(config, 1) }</pre>
+<h2 id="backoff_config_max_delay">fn backoff_config_max_delay</h2>
+<pre class="signature">fn backoff_config_max_delay(config: i64) -&gt; i64 { vec_get(config, 2) }</pre>
+<h2 id="backoff_config_max_attempts">fn backoff_config_max_attempts</h2>
+<pre class="signature">fn backoff_config_max_attempts(config: i64) -&gt; i64 { vec_get(config, 3) }</pre>
+<h2 id="backoff_config_jitter">fn backoff_config_jitter</h2>
+<pre class="signature">fn backoff_config_jitter(config: i64) -&gt; i64 { vec_get(config, 4) }</pre>
+<h2 id="backoff_config_multiplier">fn backoff_config_multiplier</h2>
+<pre class="signature">fn backoff_config_multiplier(config: i64) -&gt; i64 { vec_get(config, 5) }</pre>
+<h2 id="backoff_config_set_strategy">fn backoff_config_set_strategy</h2>
+<pre class="signature">fn backoff_config_set_strategy(config: i64, strategy: i64) -&gt; i64 {</pre>
+<h2 id="backoff_config_set_initial_delay">fn backoff_config_set_initial_delay</h2>
+<pre class="signature">fn backoff_config_set_initial_delay(config: i64, ms: i64) -&gt; i64 {</pre>
+<h2 id="backoff_config_set_max_delay">fn backoff_config_set_max_delay</h2>
+<pre class="signature">fn backoff_config_set_max_delay(config: i64, ms: i64) -&gt; i64 {</pre>
+<h2 id="backoff_config_set_max_attempts">fn backoff_config_set_max_attempts</h2>
+<pre class="signature">fn backoff_config_set_max_attempts(config: i64, attempts: i64) -&gt; i64 {</pre>
+<h2 id="backoff_config_set_jitter">fn backoff_config_set_jitter</h2>
+<pre class="signature">fn backoff_config_set_jitter(config: i64, percent: i64) -&gt; i64 {</pre>
+<h2 id="backoff_config_set_multiplier">fn backoff_config_set_multiplier</h2>
+<pre class="signature">fn backoff_config_set_multiplier(config: i64, mult: i64) -&gt; i64 {</pre>
+<h2 id="backoff_state_new">fn backoff_state_new</h2>
+<pre class="signature">fn backoff_state_new(config: i64) -&gt; i64 {</pre>
+<h2 id="backoff_state_config">fn backoff_state_config</h2>
+<pre class="signature">fn backoff_state_config(state: i64) -&gt; i64 { vec_get(state, 0) }</pre>
+<h2 id="backoff_state_attempt">fn backoff_state_attempt</h2>
+<pre class="signature">fn backoff_state_attempt(state: i64) -&gt; i64 { vec_get(state, 1) }</pre>
+<h2 id="backoff_state_last_delay">fn backoff_state_last_delay</h2>
+<pre class="signature">fn backoff_state_last_delay(state: i64) -&gt; i64 { vec_get(state, 2) }</pre>
+<h2 id="backoff_state_next_retry">fn backoff_state_next_retry</h2>
+<pre class="signature">fn backoff_state_next_retry(state: i64) -&gt; i64 { vec_get(state, 3) }</pre>
+<h2 id="backoff_state_last_error">fn backoff_state_last_error</h2>
+<pre class="signature">fn backoff_state_last_error(state: i64) -&gt; i64 { vec_get(state, 4) }</pre>
+<h2 id="backoff_state_set_attempt">fn backoff_state_set_attempt</h2>
+<pre class="signature">fn backoff_state_set_attempt(state: i64, attempt: i64) -&gt; i64 {</pre>
+<h2 id="backoff_state_set_last_delay">fn backoff_state_set_last_delay</h2>
+<pre class="signature">fn backoff_state_set_last_delay(state: i64, delay: i64) -&gt; i64 {</pre>
+<h2 id="backoff_state_set_next_retry">fn backoff_state_set_next_retry</h2>
+<pre class="signature">fn backoff_state_set_next_retry(state: i64, time: i64) -&gt; i64 {</pre>
+<h2 id="backoff_state_set_last_error">fn backoff_state_set_last_error</h2>
+<pre class="signature">fn backoff_state_set_last_error(state: i64, error: i64) -&gt; i64 {</pre>
+<h2 id="backoff_state_reset">fn backoff_state_reset</h2>
+<pre class="signature">fn backoff_state_reset(state: i64) -&gt; i64 {</pre>
+<h2 id="backoff_state_exhausted">fn backoff_state_exhausted</h2>
+<pre class="signature">fn backoff_state_exhausted(state: i64) -&gt; i64 {</pre>
+<h2 id="backoff_state_can_retry">fn backoff_state_can_retry</h2>
+<pre class="signature">fn backoff_state_can_retry(state: i64, now: i64) -&gt; i64 {</pre>
+<h2 id="backoff_random">fn backoff_random</h2>
+<pre class="signature">fn backoff_random(seed: i64) -&gt; i64 {</pre>
+<h2 id="backoff_next_delay">fn backoff_next_delay</h2>
+<pre class="signature">fn backoff_next_delay(state: i64, now: i64) -&gt; i64 {</pre>
+<h2 id="backoff_record_failure">fn backoff_record_failure</h2>
+<pre class="signature">fn backoff_record_failure(state: i64, error: i64, now: i64) -&gt; i64 {</pre>
+<h2 id="trans_circuit_new">fn trans_circuit_new</h2>
+<pre class="signature">fn trans_circuit_new() -&gt; i64 {</pre>
+<h2 id="trans_circuit_state">fn trans_circuit_state</h2>
+<pre class="signature">fn trans_circuit_state(cb: i64) -&gt; i64 { vec_get(cb, 0) }</pre>
+<h2 id="trans_circuit_failures">fn trans_circuit_failures</h2>
+<pre class="signature">fn trans_circuit_failures(cb: i64) -&gt; i64 { vec_get(cb, 1) }</pre>
+<h2 id="trans_circuit_successes">fn trans_circuit_successes</h2>
+<pre class="signature">fn trans_circuit_successes(cb: i64) -&gt; i64 { vec_get(cb, 2) }</pre>
+<h2 id="trans_circuit_threshold">fn trans_circuit_threshold</h2>
+<pre class="signature">fn trans_circuit_threshold(cb: i64) -&gt; i64 { vec_get(cb, 3) }</pre>
+<h2 id="trans_circuit_open_time">fn trans_circuit_open_time</h2>
+<pre class="signature">fn trans_circuit_open_time(cb: i64) -&gt; i64 { vec_get(cb, 4) }</pre>
+<h2 id="trans_circuit_timeout">fn trans_circuit_timeout</h2>
+<pre class="signature">fn trans_circuit_timeout(cb: i64) -&gt; i64 { vec_get(cb, 5) }</pre>
+<h2 id="trans_circuit_last_failure">fn trans_circuit_last_failure</h2>
+<pre class="signature">fn trans_circuit_last_failure(cb: i64) -&gt; i64 { vec_get(cb, 6) }</pre>
+<h2 id="trans_circuit_set_state">fn trans_circuit_set_state</h2>
+<pre class="signature">fn trans_circuit_set_state(cb: i64, state: i64) -&gt; i64 {</pre>
+<h2 id="trans_circuit_set_threshold">fn trans_circuit_set_threshold</h2>
+<pre class="signature">fn trans_circuit_set_threshold(cb: i64, threshold: i64) -&gt; i64 {</pre>
+<h2 id="trans_circuit_set_timeout">fn trans_circuit_set_timeout</h2>
+<pre class="signature">fn trans_circuit_set_timeout(cb: i64, timeout: i64) -&gt; i64 {</pre>
+<h2 id="trans_circuit_allows">fn trans_circuit_allows</h2>
+<pre class="signature">fn trans_circuit_allows(cb: i64, now: i64) -&gt; i64 {</pre>
+<h2 id="trans_circuit_record_success">fn trans_circuit_record_success</h2>
+<pre class="signature">fn trans_circuit_record_success(cb: i64) -&gt; i64 {</pre>
+<h2 id="trans_circuit_record_failure">fn trans_circuit_record_failure</h2>
+<pre class="signature">fn trans_circuit_record_failure(cb: i64, now: i64) -&gt; i64 {</pre>
+<h2 id="trans_circuit_reset">fn trans_circuit_reset</h2>
+<pre class="signature">fn trans_circuit_reset(cb: i64) -&gt; i64 {</pre>
+<h2 id="reconnect_manager_new">fn reconnect_manager_new</h2>
+<pre class="signature">fn reconnect_manager_new(endpoint: i64, backoff_config: i64) -&gt; i64 {</pre>
+<h2 id="reconnect_manager_state">fn reconnect_manager_state</h2>
+<pre class="signature">fn reconnect_manager_state(mgr: i64) -&gt; i64 { vec_get(mgr, 0) }</pre>
+<h2 id="reconnect_manager_transport">fn reconnect_manager_transport</h2>
+<pre class="signature">fn reconnect_manager_transport(mgr: i64) -&gt; i64 { vec_get(mgr, 1) }</pre>
+<h2 id="reconnect_manager_endpoint">fn reconnect_manager_endpoint</h2>
+<pre class="signature">fn reconnect_manager_endpoint(mgr: i64) -&gt; i64 { vec_get(mgr, 2) }</pre>
+<h2 id="reconnect_manager_backoff">fn reconnect_manager_backoff</h2>
+<pre class="signature">fn reconnect_manager_backoff(mgr: i64) -&gt; i64 { vec_get(mgr, 3) }</pre>
+<h2 id="reconnect_manager_circuit">fn reconnect_manager_circuit</h2>
+<pre class="signature">fn reconnect_manager_circuit(mgr: i64) -&gt; i64 { vec_get(mgr, 4) }</pre>
+<h2 id="reconnect_manager_failover_list">fn reconnect_manager_failover_list</h2>
+<pre class="signature">fn reconnect_manager_failover_list(mgr: i64) -&gt; i64 { vec_get(mgr, 5) }</pre>
+<h2 id="reconnect_manager_current_idx">fn reconnect_manager_current_idx</h2>
+<pre class="signature">fn reconnect_manager_current_idx(mgr: i64) -&gt; i64 { vec_get(mgr, 6) }</pre>
+<h2 id="reconnect_manager_set_state">fn reconnect_manager_set_state</h2>
+<pre class="signature">fn reconnect_manager_set_state(mgr: i64, state: i64) -&gt; i64 {</pre>
+<h2 id="reconnect_manager_set_transport">fn reconnect_manager_set_transport</h2>
+<pre class="signature">fn reconnect_manager_set_transport(mgr: i64, transport: i64) -&gt; i64 {</pre>
+<h2 id="reconnect_manager_set_current_idx">fn reconnect_manager_set_current_idx</h2>
+<pre class="signature">fn reconnect_manager_set_current_idx(mgr: i64, idx: i64) -&gt; i64 {</pre>
+<h2 id="reconnect_manager_add_failover">fn reconnect_manager_add_failover</h2>
+<pre class="signature">fn reconnect_manager_add_failover(mgr: i64, endpoint: i64) -&gt; i64 {</pre>
+<h2 id="reconnect_manager_get_endpoint">fn reconnect_manager_get_endpoint</h2>
+<pre class="signature">fn reconnect_manager_get_endpoint(mgr: i64) -&gt; i64 {</pre>
+<h2 id="reconnect_manager_next_endpoint">fn reconnect_manager_next_endpoint</h2>
+<pre class="signature">fn reconnect_manager_next_endpoint(mgr: i64) -&gt; i64 {</pre>
+<h2 id="reconnect_manager_connect">fn reconnect_manager_connect</h2>
+<pre class="signature">fn reconnect_manager_connect(mgr: i64, transport_config: i64, now: i64) -&gt; i64 {</pre>
+<h2 id="reconnect_manager_on_disconnect">fn reconnect_manager_on_disconnect</h2>
+<pre class="signature">fn reconnect_manager_on_disconnect(mgr: i64, error: i64, now: i64) -&gt; i64 {</pre>
+<h2 id="reconnect_manager_cancel">fn reconnect_manager_cancel</h2>
+<pre class="signature">fn reconnect_manager_cancel(mgr: i64) -&gt; i64 {</pre>
+<h2 id="reconnect_manager_reset">fn reconnect_manager_reset</h2>
+<pre class="signature">fn reconnect_manager_reset(mgr: i64) -&gt; i64 {</pre>
+<h2 id="reconnect_manager_is_connected">fn reconnect_manager_is_connected</h2>
+<pre class="signature">fn reconnect_manager_is_connected(mgr: i64) -&gt; i64 {</pre>
+<h2 id="reconnect_manager_is_reconnecting">fn reconnect_manager_is_reconnecting</h2>
+<pre class="signature">fn reconnect_manager_is_reconnecting(mgr: i64) -&gt; i64 {</pre>
+<h2 id="reconnect_manager_is_failed">fn reconnect_manager_is_failed</h2>
+<pre class="signature">fn reconnect_manager_is_failed(mgr: i64) -&gt; i64 {</pre>
+<h2 id="reconnect_manager_time_to_retry">fn reconnect_manager_time_to_retry</h2>
+<pre class="signature">fn reconnect_manager_time_to_retry(mgr: i64, now: i64) -&gt; i64 {</pre>
+<h2 id="reconnect_manager_stats">fn reconnect_manager_stats</h2>
+<pre class="signature">fn reconnect_manager_stats(mgr: i64) -&gt; i64 {</pre>
+<h2 id="recon_stats_state">fn recon_stats_state</h2>
+<pre class="signature">fn recon_stats_state(stats: i64) -&gt; i64 { vec_get(stats, 0) }</pre>
+<h2 id="recon_stats_attempts">fn recon_stats_attempts</h2>
+<pre class="signature">fn recon_stats_attempts(stats: i64) -&gt; i64 { vec_get(stats, 1) }</pre>
+<h2 id="recon_stats_last_delay">fn recon_stats_last_delay</h2>
+<pre class="signature">fn recon_stats_last_delay(stats: i64) -&gt; i64 { vec_get(stats, 2) }</pre>
+<h2 id="recon_stats_last_error">fn recon_stats_last_error</h2>
+<pre class="signature">fn recon_stats_last_error(stats: i64) -&gt; i64 { vec_get(stats, 3) }</pre>
+<h2 id="recon_stats_circuit_state">fn recon_stats_circuit_state</h2>
+<pre class="signature">fn recon_stats_circuit_state(stats: i64) -&gt; i64 { vec_get(stats, 4) }</pre>
+<h2 id="recon_stats_circuit_failures">fn recon_stats_circuit_failures</h2>
+<pre class="signature">fn recon_stats_circuit_failures(stats: i64) -&gt; i64 { vec_get(stats, 5) }</pre>
+<h2 id="recon_stats_endpoint_idx">fn recon_stats_endpoint_idx</h2>
+<pre class="signature">fn recon_stats_endpoint_idx(stats: i64) -&gt; i64 { vec_get(stats, 6) }</pre>
+<h2 id="reconnect_manager_default">fn reconnect_manager_default</h2>
+<pre class="signature">fn reconnect_manager_default(endpoint: i64) -&gt; i64 {</pre>
+<h2 id="reconnect_manager_aggressive">fn reconnect_manager_aggressive</h2>
+<pre class="signature">fn reconnect_manager_aggressive(endpoint: i64) -&gt; i64 {</pre>
+<h2 id="reconnect_manager_patient">fn reconnect_manager_patient</h2>
+<pre class="signature">fn reconnect_manager_patient(endpoint: i64) -&gt; i64 {</pre>
+
+    <hr>
+    <p><em>Generated by sxdoc</em></p>
+  </main>
+</div>
+</body>
+</html>

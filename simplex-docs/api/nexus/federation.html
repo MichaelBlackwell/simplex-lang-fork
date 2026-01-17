@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>federation - Simplex API Reference</title>
+  <meta name="description" content="API documentation for the Simplex programming language">
+  <link rel="stylesheet" href="../assets/docs.css">
+  <script src="../assets/nav.js" defer></script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "federation - Simplex API Reference",
+  "description": "API documentation for the Simplex programming language",
+  "programmingLanguage": {
+    "@type": "ComputerLanguage",
+    "name": "Simplex",
+    "url": "https://github.com/senuamedia/simplex"
+  },
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "Simplex Documentation",
+    "url": "https://simplex.senuamedia.com/api/"
+  },
+  "articleSection": "nexus"
+}
+</script>
+</head>
+<body>
+<div class="doc-wrapper">
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-header"><a href="../index.html">Simplex API</a></div>
+    <div class="search-box">
+      <input type="text" id="search" placeholder="Search...">
+    </div>
+    <div id="nav-content">Loading...</div>
+  </nav>
+  <main class="content">
+    <nav class="breadcrumb">
+      <a href="../index.html">API Reference</a> &raquo;       <span class="current-category">nexus</span> &raquo; federation
+    </nav>
+    <h1>Module: federation</h1>
+<div class="toc">
+<strong>Contents</strong>
+<ul>
+<li><a href="#MEMBER_STATUS_JOINING">fn MEMBER_STATUS_JOINING</a></li>
+<li><a href="#MEMBER_STATUS_ACTIVE">fn MEMBER_STATUS_ACTIVE</a></li>
+<li><a href="#MEMBER_STATUS_LEAVING">fn MEMBER_STATUS_LEAVING</a></li>
+<li><a href="#MEMBER_STATUS_FAILED">fn MEMBER_STATUS_FAILED</a></li>
+<li><a href="#fed_member_new">fn fed_member_new</a></li>
+<li><a href="#fed_member_node_id">fn fed_member_node_id</a></li>
+<li><a href="#fed_member_address">fn fed_member_address</a></li>
+<li><a href="#fed_member_capabilities">fn fed_member_capabilities</a></li>
+<li><a href="#fed_member_status">fn fed_member_status</a></li>
+<li><a href="#fed_member_last_seen">fn fed_member_last_seen</a></li>
+<li><a href="#fed_member_services">fn fed_member_services</a></li>
+<li><a href="#fed_member_set_capabilities">fn fed_member_set_capabilities</a></li>
+<li><a href="#fed_member_set_status">fn fed_member_set_status</a></li>
+<li><a href="#fed_member_set_last_seen">fn fed_member_set_last_seen</a></li>
+<li><a href="#fed_member_add_service">fn fed_member_add_service</a></li>
+<li><a href="#CAP_BELIEFS">fn CAP_BELIEFS</a></li>
+<li><a href="#CAP_GOALS">fn CAP_GOALS</a></li>
+<li><a href="#CAP_INTENTIONS">fn CAP_INTENTIONS</a></li>
+<li><a href="#CAP_INFERENCE">fn CAP_INFERENCE</a></li>
+<li><a href="#CAP_LEARNING">fn CAP_LEARNING</a></li>
+<li><a href="#CAP_PLANNING">fn CAP_PLANNING</a></li>
+<li><a href="#CAP_PERSISTENCE">fn CAP_PERSISTENCE</a></li>
+<li><a href="#CAP_FEDERATION">fn CAP_FEDERATION</a></li>
+<li><a href="#fed_cluster_new">fn fed_cluster_new</a></li>
+<li><a href="#fed_cluster_id">fn fed_cluster_id</a></li>
+<li><a href="#fed_cluster_local_node">fn fed_cluster_local_node</a></li>
+<li><a href="#fed_cluster_members">fn fed_cluster_members</a></li>
+<li><a href="#fed_cluster_leader">fn fed_cluster_leader</a></li>
+<li><a href="#fed_cluster_vclock">fn fed_cluster_vclock</a></li>
+<li><a href="#fed_cluster_pending">fn fed_cluster_pending</a></li>
+<li><a href="#fed_cluster_set_leader">fn fed_cluster_set_leader</a></li>
+<li><a href="#fed_cluster_find_member">fn fed_cluster_find_member</a></li>
+<li><a href="#fed_cluster_has_member">fn fed_cluster_has_member</a></li>
+<li><a href="#fed_cluster_active_count">fn fed_cluster_active_count</a></li>
+<li><a href="#join_payload_new">fn join_payload_new</a></li>
+<li><a href="#join_payload_parse">fn join_payload_parse</a></li>
+<li><a href="#federation_join_message">fn federation_join_message</a></li>
+<li><a href="#fed_cluster_handle_join">fn fed_cluster_handle_join</a></li>
+<li><a href="#LEAVE_REASON_SHUTDOWN">fn LEAVE_REASON_SHUTDOWN</a></li>
+<li><a href="#LEAVE_REASON_MAINTENANCE">fn LEAVE_REASON_MAINTENANCE</a></li>
+<li><a href="#LEAVE_REASON_OVERLOAD">fn LEAVE_REASON_OVERLOAD</a></li>
+<li><a href="#LEAVE_REASON_FAILURE">fn LEAVE_REASON_FAILURE</a></li>
+<li><a href="#leave_payload_new">fn leave_payload_new</a></li>
+<li><a href="#leave_payload_parse">fn leave_payload_parse</a></li>
+<li><a href="#federation_leave_message">fn federation_leave_message</a></li>
+<li><a href="#fed_cluster_handle_leave">fn fed_cluster_handle_leave</a></li>
+<li><a href="#announce_payload_new">fn announce_payload_new</a></li>
+<li><a href="#announce_payload_parse">fn announce_payload_parse</a></li>
+<li><a href="#federation_announce_message">fn federation_announce_message</a></li>
+<li><a href="#fed_cluster_handle_announce">fn fed_cluster_handle_announce</a></li>
+<li><a href="#DISCOVER_TYPE_SERVICE">fn DISCOVER_TYPE_SERVICE</a></li>
+<li><a href="#DISCOVER_TYPE_CAPABILITY">fn DISCOVER_TYPE_CAPABILITY</a></li>
+<li><a href="#DISCOVER_TYPE_NODE">fn DISCOVER_TYPE_NODE</a></li>
+<li><a href="#discover_payload_new">fn discover_payload_new</a></li>
+<li><a href="#discover_payload_parse">fn discover_payload_parse</a></li>
+<li><a href="#federation_discover_message">fn federation_discover_message</a></li>
+<li><a href="#fed_cluster_handle_discover">fn fed_cluster_handle_discover</a></li>
+<li><a href="#HANDOFF_TYPE_LEADERSHIP">fn HANDOFF_TYPE_LEADERSHIP</a></li>
+<li><a href="#HANDOFF_TYPE_WORK">fn HANDOFF_TYPE_WORK</a></li>
+<li><a href="#HANDOFF_TYPE_DATA">fn HANDOFF_TYPE_DATA</a></li>
+<li><a href="#handoff_payload_new">fn handoff_payload_new</a></li>
+<li><a href="#handoff_payload_parse">fn handoff_payload_parse</a></li>
+<li><a href="#federation_handoff_message">fn federation_handoff_message</a></li>
+<li><a href="#fed_cluster_handle_handoff">fn fed_cluster_handle_handoff</a></li>
+<li><a href="#fed_cluster_elect_leader">fn fed_cluster_elect_leader</a></li>
+<li><a href="#fed_cluster_is_leader">fn fed_cluster_is_leader</a></li>
+<li><a href="#fed_member_print">fn fed_member_print</a></li>
+<li><a href="#fed_cluster_print">fn fed_cluster_print</a></li>
+</ul>
+</div>
+<h2 id="MEMBER_STATUS_JOINING">fn MEMBER_STATUS_JOINING</h2>
+<pre class="signature">fn MEMBER_STATUS_JOINING() -&gt; i64 { 0 }</pre>
+<h2 id="MEMBER_STATUS_ACTIVE">fn MEMBER_STATUS_ACTIVE</h2>
+<pre class="signature">fn MEMBER_STATUS_ACTIVE() -&gt; i64 { 1 }</pre>
+<h2 id="MEMBER_STATUS_LEAVING">fn MEMBER_STATUS_LEAVING</h2>
+<pre class="signature">fn MEMBER_STATUS_LEAVING() -&gt; i64 { 2 }</pre>
+<h2 id="MEMBER_STATUS_FAILED">fn MEMBER_STATUS_FAILED</h2>
+<pre class="signature">fn MEMBER_STATUS_FAILED() -&gt; i64 { 3 }</pre>
+<h2 id="fed_member_new">fn fed_member_new</h2>
+<pre class="signature">fn fed_member_new(node_id: i64, address: i64) -&gt; i64 {</pre>
+<h2 id="fed_member_node_id">fn fed_member_node_id</h2>
+<pre class="signature">fn fed_member_node_id(member: i64) -&gt; i64 { vec_get(member, 0) }</pre>
+<h2 id="fed_member_address">fn fed_member_address</h2>
+<pre class="signature">fn fed_member_address(member: i64) -&gt; i64 { vec_get(member, 1) }</pre>
+<h2 id="fed_member_capabilities">fn fed_member_capabilities</h2>
+<pre class="signature">fn fed_member_capabilities(member: i64) -&gt; i64 { vec_get(member, 2) }</pre>
+<h2 id="fed_member_status">fn fed_member_status</h2>
+<pre class="signature">fn fed_member_status(member: i64) -&gt; i64 { vec_get(member, 3) }</pre>
+<h2 id="fed_member_last_seen">fn fed_member_last_seen</h2>
+<pre class="signature">fn fed_member_last_seen(member: i64) -&gt; i64 { vec_get(member, 4) }</pre>
+<h2 id="fed_member_services">fn fed_member_services</h2>
+<pre class="signature">fn fed_member_services(member: i64) -&gt; i64 { vec_get(member, 5) }</pre>
+<h2 id="fed_member_set_capabilities">fn fed_member_set_capabilities</h2>
+<pre class="signature">fn fed_member_set_capabilities(member: i64, caps: i64) -&gt; i64 {</pre>
+<h2 id="fed_member_set_status">fn fed_member_set_status</h2>
+<pre class="signature">fn fed_member_set_status(member: i64, status: i64) -&gt; i64 {</pre>
+<h2 id="fed_member_set_last_seen">fn fed_member_set_last_seen</h2>
+<pre class="signature">fn fed_member_set_last_seen(member: i64, timestamp: i64) -&gt; i64 {</pre>
+<h2 id="fed_member_add_service">fn fed_member_add_service</h2>
+<pre class="signature">fn fed_member_add_service(member: i64, service_id: i64) -&gt; i64 {</pre>
+<h2 id="CAP_BELIEFS">fn CAP_BELIEFS</h2>
+<pre class="signature">fn CAP_BELIEFS() -&gt; i64 { 1 }          // Can store/sync beliefs</pre>
+<h2 id="CAP_GOALS">fn CAP_GOALS</h2>
+<pre class="signature">fn CAP_GOALS() -&gt; i64 { 2 }            // Can process goals</pre>
+<h2 id="CAP_INTENTIONS">fn CAP_INTENTIONS</h2>
+<pre class="signature">fn CAP_INTENTIONS() -&gt; i64 { 4 }       // Can execute intentions</pre>
+<h2 id="CAP_INFERENCE">fn CAP_INFERENCE</h2>
+<pre class="signature">fn CAP_INFERENCE() -&gt; i64 { 8 }        // Has inference capabilities</pre>
+<h2 id="CAP_LEARNING">fn CAP_LEARNING</h2>
+<pre class="signature">fn CAP_LEARNING() -&gt; i64 { 16 }        // Can learn from experience</pre>
+<h2 id="CAP_PLANNING">fn CAP_PLANNING</h2>
+<pre class="signature">fn CAP_PLANNING() -&gt; i64 { 32 }        // Can create plans</pre>
+<h2 id="CAP_PERSISTENCE">fn CAP_PERSISTENCE</h2>
+<pre class="signature">fn CAP_PERSISTENCE() -&gt; i64 { 64 }     // Has persistent storage</pre>
+<h2 id="CAP_FEDERATION">fn CAP_FEDERATION</h2>
+<pre class="signature">fn CAP_FEDERATION() -&gt; i64 { 128 }     // Supports federation protocol</pre>
+<h2 id="fed_cluster_new">fn fed_cluster_new</h2>
+<pre class="signature">fn fed_cluster_new(fed_cluster_id: i64, local_node_id: i64) -&gt; i64 {</pre>
+<h2 id="fed_cluster_id">fn fed_cluster_id</h2>
+<pre class="signature">fn fed_cluster_id(cluster: i64) -&gt; i64 { vec_get(cluster, 0) }</pre>
+<h2 id="fed_cluster_local_node">fn fed_cluster_local_node</h2>
+<pre class="signature">fn fed_cluster_local_node(cluster: i64) -&gt; i64 { vec_get(cluster, 1) }</pre>
+<h2 id="fed_cluster_members">fn fed_cluster_members</h2>
+<pre class="signature">fn fed_cluster_members(cluster: i64) -&gt; i64 { vec_get(cluster, 2) }</pre>
+<h2 id="fed_cluster_leader">fn fed_cluster_leader</h2>
+<pre class="signature">fn fed_cluster_leader(cluster: i64) -&gt; i64 { vec_get(cluster, 3) }</pre>
+<h2 id="fed_cluster_vclock">fn fed_cluster_vclock</h2>
+<pre class="signature">fn fed_cluster_vclock(cluster: i64) -&gt; i64 { vec_get(cluster, 4) }</pre>
+<h2 id="fed_cluster_pending">fn fed_cluster_pending</h2>
+<pre class="signature">fn fed_cluster_pending(cluster: i64) -&gt; i64 { vec_get(cluster, 5) }</pre>
+<h2 id="fed_cluster_set_leader">fn fed_cluster_set_leader</h2>
+<pre class="signature">fn fed_cluster_set_leader(cluster: i64, leader_id: i64) -&gt; i64 {</pre>
+<h2 id="fed_cluster_find_member">fn fed_cluster_find_member</h2>
+<pre class="signature">fn fed_cluster_find_member(cluster: i64, node_id: i64) -&gt; i64 {</pre>
+<h2 id="fed_cluster_has_member">fn fed_cluster_has_member</h2>
+<pre class="signature">fn fed_cluster_has_member(cluster: i64, node_id: i64) -&gt; i64 {</pre>
+<h2 id="fed_cluster_active_count">fn fed_cluster_active_count</h2>
+<pre class="signature">fn fed_cluster_active_count(cluster: i64) -&gt; i64 {</pre>
+<h2 id="join_payload_new">fn join_payload_new</h2>
+<pre class="signature">fn join_payload_new(node_id: i64, fed_cluster_id: i64, capabilities: i64, address: i64) -&gt; i64 {</pre>
+<h2 id="join_payload_parse">fn join_payload_parse</h2>
+<pre class="signature">fn join_payload_parse(payload: i64) -&gt; i64 {</pre>
+<h2 id="federation_join_message">fn federation_join_message</h2>
+<pre class="signature">fn federation_join_message(node_id: i64, fed_cluster_id: i64, capabilities: i64, address: i64) -&gt; i64 {</pre>
+<h2 id="fed_cluster_handle_join">fn fed_cluster_handle_join</h2>
+<pre class="signature">fn fed_cluster_handle_join(cluster: i64, payload: i64, timestamp: i64) -&gt; i64 {</pre>
+<h2 id="LEAVE_REASON_SHUTDOWN">fn LEAVE_REASON_SHUTDOWN</h2>
+<pre class="signature">fn LEAVE_REASON_SHUTDOWN() -&gt; i64 { 0 }</pre>
+<h2 id="LEAVE_REASON_MAINTENANCE">fn LEAVE_REASON_MAINTENANCE</h2>
+<pre class="signature">fn LEAVE_REASON_MAINTENANCE() -&gt; i64 { 1 }</pre>
+<h2 id="LEAVE_REASON_OVERLOAD">fn LEAVE_REASON_OVERLOAD</h2>
+<pre class="signature">fn LEAVE_REASON_OVERLOAD() -&gt; i64 { 2 }</pre>
+<h2 id="LEAVE_REASON_FAILURE">fn LEAVE_REASON_FAILURE</h2>
+<pre class="signature">fn LEAVE_REASON_FAILURE() -&gt; i64 { 3 }</pre>
+<h2 id="leave_payload_new">fn leave_payload_new</h2>
+<pre class="signature">fn leave_payload_new(node_id: i64, reason: i64, handoff_target: i64) -&gt; i64 {</pre>
+<h2 id="leave_payload_parse">fn leave_payload_parse</h2>
+<pre class="signature">fn leave_payload_parse(payload: i64) -&gt; i64 {</pre>
+<h2 id="federation_leave_message">fn federation_leave_message</h2>
+<pre class="signature">fn federation_leave_message(node_id: i64, reason: i64, handoff_target: i64) -&gt; i64 {</pre>
+<h2 id="fed_cluster_handle_leave">fn fed_cluster_handle_leave</h2>
+<pre class="signature">fn fed_cluster_handle_leave(cluster: i64, payload: i64) -&gt; i64 {</pre>
+<h2 id="announce_payload_new">fn announce_payload_new</h2>
+<pre class="signature">fn announce_payload_new(node_id: i64, services: i64) -&gt; i64 {</pre>
+<h2 id="announce_payload_parse">fn announce_payload_parse</h2>
+<pre class="signature">fn announce_payload_parse(payload: i64) -&gt; i64 {</pre>
+<h2 id="federation_announce_message">fn federation_announce_message</h2>
+<pre class="signature">fn federation_announce_message(node_id: i64, services: i64) -&gt; i64 {</pre>
+<h2 id="fed_cluster_handle_announce">fn fed_cluster_handle_announce</h2>
+<pre class="signature">fn fed_cluster_handle_announce(cluster: i64, payload: i64) -&gt; i64 {</pre>
+<h2 id="DISCOVER_TYPE_SERVICE">fn DISCOVER_TYPE_SERVICE</h2>
+<pre class="signature">fn DISCOVER_TYPE_SERVICE() -&gt; i64 { 1 }</pre>
+<h2 id="DISCOVER_TYPE_CAPABILITY">fn DISCOVER_TYPE_CAPABILITY</h2>
+<pre class="signature">fn DISCOVER_TYPE_CAPABILITY() -&gt; i64 { 2 }</pre>
+<h2 id="DISCOVER_TYPE_NODE">fn DISCOVER_TYPE_NODE</h2>
+<pre class="signature">fn DISCOVER_TYPE_NODE() -&gt; i64 { 3 }</pre>
+<h2 id="discover_payload_new">fn discover_payload_new</h2>
+<pre class="signature">fn discover_payload_new(query_type: i64, query_value: i64, max_results: i64) -&gt; i64 {</pre>
+<h2 id="discover_payload_parse">fn discover_payload_parse</h2>
+<pre class="signature">fn discover_payload_parse(payload: i64) -&gt; i64 {</pre>
+<h2 id="federation_discover_message">fn federation_discover_message</h2>
+<pre class="signature">fn federation_discover_message(query_type: i64, query_value: i64, max_results: i64) -&gt; i64 {</pre>
+<h2 id="fed_cluster_handle_discover">fn fed_cluster_handle_discover</h2>
+<pre class="signature">fn fed_cluster_handle_discover(cluster: i64, payload: i64) -&gt; i64 {</pre>
+<h2 id="HANDOFF_TYPE_LEADERSHIP">fn HANDOFF_TYPE_LEADERSHIP</h2>
+<pre class="signature">fn HANDOFF_TYPE_LEADERSHIP() -&gt; i64 { 1 }</pre>
+<h2 id="HANDOFF_TYPE_WORK">fn HANDOFF_TYPE_WORK</h2>
+<pre class="signature">fn HANDOFF_TYPE_WORK() -&gt; i64 { 2 }</pre>
+<h2 id="HANDOFF_TYPE_DATA">fn HANDOFF_TYPE_DATA</h2>
+<pre class="signature">fn HANDOFF_TYPE_DATA() -&gt; i64 { 3 }</pre>
+<h2 id="handoff_payload_new">fn handoff_payload_new</h2>
+<pre class="signature">fn handoff_payload_new(source_id: i64, target_id: i64, handoff_type: i64, data: i64) -&gt; i64 {</pre>
+<h2 id="handoff_payload_parse">fn handoff_payload_parse</h2>
+<pre class="signature">fn handoff_payload_parse(payload: i64) -&gt; i64 {</pre>
+<h2 id="federation_handoff_message">fn federation_handoff_message</h2>
+<pre class="signature">fn federation_handoff_message(source_id: i64, target_id: i64, handoff_type: i64, data: i64) -&gt; i64 {</pre>
+<h2 id="fed_cluster_handle_handoff">fn fed_cluster_handle_handoff</h2>
+<pre class="signature">fn fed_cluster_handle_handoff(cluster: i64, payload: i64) -&gt; i64 {</pre>
+<h2 id="fed_cluster_elect_leader">fn fed_cluster_elect_leader</h2>
+<pre class="signature">fn fed_cluster_elect_leader(cluster: i64) -&gt; i64 {</pre>
+<h2 id="fed_cluster_is_leader">fn fed_cluster_is_leader</h2>
+<pre class="signature">fn fed_cluster_is_leader(cluster: i64) -&gt; i64 {</pre>
+<h2 id="fed_member_print">fn fed_member_print</h2>
+<pre class="signature">fn fed_member_print(member: i64) -&gt; i64 {</pre>
+<h2 id="fed_cluster_print">fn fed_cluster_print</h2>
+<pre class="signature">fn fed_cluster_print(cluster: i64) -&gt; i64 {</pre>
+
+    <hr>
+    <p><em>Generated by sxdoc</em></p>
+  </main>
+</div>
+</body>
+</html>

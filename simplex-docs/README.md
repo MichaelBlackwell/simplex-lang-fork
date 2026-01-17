@@ -1,6 +1,6 @@
 # Simplex Language Documentation
 
-**Version 0.9.0**
+**Version 0.9.9**
 
 Simplex (Latin for "simple") is a programming language designed for the AI era. It combines the fault-tolerance of Erlang, the memory safety of Rust, the distributed computing model of Ray, and the content-addressable code of Unison into a cohesive system built for intelligent, distributed workloads.
 

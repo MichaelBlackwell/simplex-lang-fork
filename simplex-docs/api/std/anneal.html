@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>anneal - Simplex API Reference</title>
+  <meta name="description" content="API documentation for the Simplex programming language">
+  <link rel="stylesheet" href="../assets/docs.css">
+  <script src="../assets/nav.js" defer></script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "anneal - Simplex API Reference",
+  "description": "API documentation for the Simplex programming language",
+  "programmingLanguage": {
+    "@type": "ComputerLanguage",
+    "name": "Simplex",
+    "url": "https://github.com/senuamedia/simplex"
+  },
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "Simplex Documentation",
+    "url": "https://simplex.senuamedia.com/api/"
+  },
+  "articleSection": "std"
+}
+</script>
+</head>
+<body>
+<div class="doc-wrapper">
+  <nav class="sidebar" id="sidebar">
+    <div class="sidebar-header"><a href="../index.html">Simplex API</a></div>
+    <div class="search-box">
+      <input type="text" id="search" placeholder="Search...">
+    </div>
+    <div id="nav-content">Loading...</div>
+  </nav>
+  <main class="content">
+    <nav class="breadcrumb">
+      <a href="../index.html">API Reference</a> &raquo;       <span class="current-category">std</span> &raquo; anneal
+    </nav>
+    <h1>Module: anneal</h1>
+<div class="toc">
+<strong>Contents</strong>
+<ul>
+<li><a href="#default">fn default</a></li>
+<li><a href="#norm">fn norm</a></li>
+<li><a href="#scale">fn scale</a></li>
+<li><a href="#add">fn add</a></li>
+<li><a href="#new">fn new</a></li>
+<li><a href="#from_params">fn from_params</a></li>
+<li><a href="#temperature">fn temperature</a></li>
+<li><a href="#accept_probability">fn accept_probability</a></li>
+<li><a href="#gradient">fn gradient</a></li>
+<li><a href="#update">fn update</a></li>
+<li><a href="#clamp_parameters">fn clamp_parameters</a></li>
+<li><a href="#l2_norm">fn l2_norm</a></li>
+<li><a href="#temperature_variance">fn temperature_variance</a></li>
+<li><a href="#snapshot">fn snapshot</a></li>
+<li><a href="#default">fn default</a></li>
+<li><a href="#new">fn new</a></li>
+<li><a href="#accept">fn accept</a></li>
+<li><a href="#reject">fn reject</a></li>
+<li><a href="#is_converged">fn is_converged</a></li>
+<li><a href="#new">fn new</a></li>
+<li><a href="#from_quality">fn from_quality</a></li>
+<li><a href="#new">fn new</a></li>
+<li><a href="#push">fn push</a></li>
+<li><a href="#best_energy">fn best_energy</a></li>
+<li><a href="#is_improving">fn is_improving</a></li>
+<li><a href="#default">fn default</a></li>
+<li><a href="#default">fn default</a></li>
+<li><a href="#quick">fn quick</a></li>
+<li><a href="#thorough">fn thorough</a></li>
+<li><a href="#default">fn default</a></li>
+<li><a href="#exponential">fn exponential</a></li>
+<li><a href="#linear">fn linear</a></li>
+<li><a href="#logarithmic">fn logarithmic</a></li>
+<li><a href="#cosine">fn cosine</a></li>
+<li><a href="#random_f64">fn random_f64</a></li>
+<li><a href="#random_normal">fn random_normal</a></li>
+<li><a href="#new">fn new</a></li>
+<li><a href="#with_schedule">fn with_schedule</a></li>
+<li><a href="#learning_rate">fn learning_rate</a></li>
+<li><a href="#regularization">fn regularization</a></li>
+<li><a href="#anneal_episode">fn anneal_episode</a></li>
+<li><a href="#compute_meta_loss">fn compute_meta_loss</a></li>
+<li><a href="#update_schedule">fn update_schedule</a></li>
+<li><a href="#optimize">fn optimize</a></li>
+<li><a href="#get_schedule">fn get_schedule</a></li>
+<li><a href="#get_history">fn get_history</a></li>
+<li><a href="#default">fn default</a></li>
+<li><a href="#self_learn_anneal">fn self_learn_anneal</a></li>
+<li><a href="#simple_anneal">fn simple_anneal</a></li>
+<li><a href="#test_dual_temperature">fn test_dual_temperature</a></li>
+<li><a href="#test_acceptance_probability">fn test_acceptance_probability</a></li>
+<li><a href="#test_gradient_flow">fn test_gradient_flow</a></li>
+<li><a href="#test_meta_update">fn test_meta_update</a></li>
+</ul>
+</div>
+<h2 id="default">fn default</h2>
+<pre class="signature">fn default() -&gt; ScheduleGradient {</pre>
+<h2 id="norm">fn norm</h2>
+<pre class="signature">fn norm(&amp;self) -&gt; f64 {</pre>
+<p class="doc">L2 norm of gradient (for regularization)</p>
+<h2 id="scale">fn scale</h2>
+<pre class="signature">fn scale(&amp;mut self, factor: f64) {</pre>
+<p class="doc">Scale gradient by factor</p>
+<h2 id="add">fn add</h2>
+<pre class="signature">fn add(&amp;mut self, other: &amp;ScheduleGradient) {</pre>
+<p class="doc">Add another gradient</p>
+<h2 id="new">fn new</h2>
+<pre class="signature">fn new() -&gt; LearnableSchedule {</pre>
+<p class="doc">Create a new learnable schedule with default initial values.
+
+Parameters are initialized to reasonable defaults that work
+for many problems. Meta-optimization will refine them.</p>
+<h2 id="from_params">fn from_params</h2>
+<pre class="signature">fn from_params(</pre>
+<p class="doc">Create schedule from explicit parameter values</p>
+<h2 id="temperature">fn temperature</h2>
+<pre class="signature">fn temperature(&amp;self, step: dual, stagnation: dual) -&gt; dual {</pre>
+<p class="doc">Compute temperature at given step with stagnation info.
+
+Temperature follows exponential cooling with optional
+periodic oscillation and stagnation-triggered reheating.
+
+T(t) = T₀ · exp(-α·t) · (1 + β·sin(ω·t)) + γ·R(t)</p>
+<h2 id="accept_probability">fn accept_probability</h2>
+<pre class="signature">fn accept_probability(&amp;self, delta_e: dual, temp: dual) -&gt; dual {</pre>
+<p class="doc">Compute soft acceptance probability (differentiable).
+
+Unlike hard acceptance (binary), this returns a smooth probability
+that allows gradients to flow through rejected moves.
+
+A(ΔE, T) = σ((τ - ΔE) / (T · sharpness))</p>
+<h2 id="gradient">fn gradient</h2>
+<pre class="signature">fn gradient(&amp;self) -&gt; ScheduleGradient {</pre>
+<p class="doc">Extract gradient vector from all parameters.</p>
+<h2 id="update">fn update</h2>
+<pre class="signature">fn update(&amp;mut self, grad: &amp;ScheduleGradient, learning_rate: f64) {</pre>
+<p class="doc">Apply meta-gradient update to all parameters.</p>
+<h2 id="clamp_parameters">fn clamp_parameters</h2>
+<pre class="signature">fn clamp_parameters(&amp;mut self) {</pre>
+<p class="doc">Ensure parameters stay in valid ranges</p>
+<h2 id="l2_norm">fn l2_norm</h2>
+<pre class="signature">fn l2_norm(&amp;self) -&gt; dual {</pre>
+<p class="doc">L2 norm of parameters (for regularization)</p>
+<h2 id="temperature_variance">fn temperature_variance</h2>
+<pre class="signature">fn temperature_variance(&amp;self, steps: i64) -&gt; dual {</pre>
+<p class="doc">Compute temperature variance over a window (for exploration bonus)</p>
+<h2 id="snapshot">fn snapshot</h2>
+<pre class="signature">fn snapshot(&amp;self) -&gt; ScheduleSnapshot {</pre>
+<p class="doc">Get a snapshot of current parameter values (for logging)</p>
+<h2 id="default">fn default</h2>
+<pre class="signature">fn default() -&gt; LearnableSchedule {</pre>
+<h2 id="new">fn new</h2>
+<pre class="signature">fn new(initial: S, initial_energy: dual) -&gt; AnnealState&lt;S&gt; {</pre>
+<p class="doc">Create initial annealing state</p>
+<h2 id="accept">fn accept</h2>
+<pre class="signature">fn accept(&amp;mut self, new_solution: S, new_energy: dual) {</pre>
+<p class="doc">Update state when accepting a new solution</p>
+<h2 id="reject">fn reject</h2>
+<pre class="signature">fn reject(&amp;mut self) {</pre>
+<p class="doc">Update state when rejecting a solution</p>
+<h2 id="is_converged">fn is_converged</h2>
+<pre class="signature">fn is_converged(&amp;self, threshold: i64) -&gt; bool {</pre>
+<p class="doc">Check if converged (stagnation exceeds threshold)</p>
+<h2 id="new">fn new</h2>
+<pre class="signature">fn new(quality: dual, efficiency: dual, simplicity: dual) -&gt; MetaLoss {</pre>
+<p class="doc">Create meta-loss from components</p>
+<h2 id="from_quality">fn from_quality</h2>
+<pre class="signature">fn from_quality(quality: dual) -&gt; MetaLoss {</pre>
+<p class="doc">Create from just quality (simple version)</p>
+<h2 id="new">fn new</h2>
+<pre class="signature">fn new() -&gt; MetaHistory {</pre>
+<p class="doc">Create empty history</p>
+<h2 id="push">fn push</h2>
+<pre class="signature">fn push(&amp;mut self, epoch: MetaEpoch) {</pre>
+<p class="doc">Add an epoch record</p>
+<h2 id="best_energy">fn best_energy</h2>
+<pre class="signature">fn best_energy(&amp;self) -&gt; f64 {</pre>
+<p class="doc">Get best energy achieved</p>
+<h2 id="is_improving">fn is_improving</h2>
+<pre class="signature">fn is_improving(&amp;self, window: usize) -&gt; bool {</pre>
+<p class="doc">Check if improving (last N epochs)</p>
+<h2 id="default">fn default</h2>
+<pre class="signature">fn default() -&gt; MetaHistory {</pre>
+<h2 id="default">fn default</h2>
+<pre class="signature">fn default() -&gt; AnnealConfig {</pre>
+<p class="doc">Default configuration suitable for many problems</p>
+<h2 id="quick">fn quick</h2>
+<pre class="signature">fn quick() -&gt; AnnealConfig {</pre>
+<p class="doc">Quick configuration for fast exploration</p>
+<h2 id="thorough">fn thorough</h2>
+<pre class="signature">fn thorough() -&gt; AnnealConfig {</pre>
+<p class="doc">Thorough configuration for difficult problems</p>
+<h2 id="default">fn default</h2>
+<pre class="signature">fn default() -&gt; AnnealConfig {</pre>
+<h2 id="exponential">fn exponential</h2>
+<pre class="signature">fn exponential(t0: f64, alpha: f64, step: i64) -&gt; f64 {</pre>
+<p class="doc">Exponential cooling: T(t) = T₀ · exp(-α·t)</p>
+<h2 id="linear">fn linear</h2>
+<pre class="signature">fn linear(t0: f64, t_final: f64, step: i64, total_steps: i64) -&gt; f64 {</pre>
+<p class="doc">Linear cooling: T(t) = T₀ - (T₀ - T_final) · t / steps</p>
+<h2 id="logarithmic">fn logarithmic</h2>
+<pre class="signature">fn logarithmic(c: f64, step: i64) -&gt; f64 {</pre>
+<p class="doc">Logarithmic cooling: T(t) = c / ln(t + 2)</p>
+<h2 id="cosine">fn cosine</h2>
+<pre class="signature">fn cosine(t0: f64, t_min: f64, step: i64, total_steps: i64) -&gt; f64 {</pre>
+<p class="doc">Cosine annealing: T(t) = T_min + (T₀ - T_min) · (1 + cos(π·t/steps)) / 2</p>
+<h2 id="random_f64">fn random_f64</h2>
+<pre class="signature">fn random_f64() -&gt; f64 {</pre>
+<h2 id="random_normal">fn random_normal</h2>
+<pre class="signature">fn random_normal() -&gt; f64 {</pre>
+<p class="doc">Generate random normal (standard normal distribution)</p>
+<h2 id="new">fn new</h2>
+<pre class="signature">fn new() -&gt; MetaOptimizer {</pre>
+<p class="doc">Create a new meta-optimizer with default schedule</p>
+<h2 id="with_schedule">fn with_schedule</h2>
+<pre class="signature">fn with_schedule(schedule: LearnableSchedule) -&gt; MetaOptimizer {</pre>
+<p class="doc">Create with custom schedule</p>
+<h2 id="learning_rate">fn learning_rate</h2>
+<pre class="signature">fn learning_rate(mut self, lr: f64) -&gt; MetaOptimizer {</pre>
+<p class="doc">Set meta-learning rate</p>
+<h2 id="regularization">fn regularization</h2>
+<pre class="signature">fn regularization(mut self, reg: f64) -&gt; MetaOptimizer {</pre>
+<p class="doc">Set regularization strength</p>
+<h2 id="anneal_episode">fn anneal_episode</h2>
+<pre class="signature">fn anneal_episode&lt;S: Clone, F, N&gt;(</pre>
+<p class="doc">Run a single annealing episode with gradient tracking.
+
+Returns the best solution found and the final energy (as dual
+for gradient tracking back to schedule parameters).</p>
+<h2 id="compute_meta_loss">fn compute_meta_loss</h2>
+<pre class="signature">fn compute_meta_loss(</pre>
+<p class="doc">Compute meta-loss that measures schedule quality.
+
+Components:
+- Quality: final objective value (lower is better)
+- Efficiency: steps to convergence (lower is better)
+- Regularization: schedule parameter magnitudes</p>
+<h2 id="update_schedule">fn update_schedule</h2>
+<pre class="signature">fn update_schedule(&amp;mut self, meta_loss: &amp;MetaLoss) {</pre>
+<p class="doc">Update schedule parameters based on meta-loss.</p>
+<h2 id="optimize">fn optimize</h2>
+<pre class="signature">fn optimize&lt;S: Clone, F, N&gt;(</pre>
+<p class="doc">Run complete meta-optimization loop.
+
+Trains the schedule over multiple epochs, improving it based
+on how well it performs across annealing runs.</p>
+<h2 id="get_schedule">fn get_schedule</h2>
+<pre class="signature">fn get_schedule(&amp;self) -&gt; &amp;LearnableSchedule {</pre>
+<p class="doc">Get current schedule (for inspection)</p>
+<h2 id="get_history">fn get_history</h2>
+<pre class="signature">fn get_history(&amp;self) -&gt; &amp;MetaHistory {</pre>
+<p class="doc">Get training history</p>
+<h2 id="default">fn default</h2>
+<pre class="signature">fn default() -&gt; MetaOptimizer {</pre>
+<h2 id="self_learn_anneal">fn self_learn_anneal</h2>
+<pre class="signature">fn self_learn_anneal&lt;S: Clone, F, N&gt;(</pre>
+<p class="doc">Run self-learning annealing with default configuration.
+
+This is the main entry point for using self-learning annealing.
+The schedule learns itself through meta-gradients.
+
+# Arguments
+
+* `objective` - Function mapping solution to objective value (as dual for gradients)
+* `initial` - Initial solution
+* `neighbor` - Function generating neighbor solutions
+* `config` - Annealing configuration
+
+# Returns
+
+Best solution found
+
+# Example
+
+```simplex
+use simplex_std::anneal::{self_learn_anneal, AnnealConfig};
+use simplex_std::dual::dual;
+
+// Minimize x² + 10*cos(x)
+let objective = |x: &amp;f64| {
+    let xd = dual::constant(*x);
+    xd * xd + dual::constant(10.0) * xd.cos()
+};
+
+let neighbor = |x: &amp;f64| x + random_normal() * 0.1;
+
+let result = self_learn_anneal(objective, 5.0, neighbor, AnnealConfig::default());
+```</p>
+<h2 id="simple_anneal">fn simple_anneal</h2>
+<pre class="signature">fn simple_anneal&lt;S: Clone, F, N&gt;(</pre>
+<p class="doc">Run simple (non-learning) simulated annealing with fixed schedule.
+
+Useful for comparison with self-learning annealing.</p>
+<h2 id="test_dual_temperature">fn test_dual_temperature</h2>
+<pre class="signature">fn test_dual_temperature() {</pre>
+<h2 id="test_acceptance_probability">fn test_acceptance_probability</h2>
+<pre class="signature">fn test_acceptance_probability() {</pre>
+<h2 id="test_gradient_flow">fn test_gradient_flow</h2>
+<pre class="signature">fn test_gradient_flow() {</pre>
+<h2 id="test_meta_update">fn test_meta_update</h2>
+<pre class="signature">fn test_meta_update() {</pre>
+
+    <hr>
+    <p><em>Generated by sxdoc</em></p>
+  </main>
+</div>
+</body>
+</html>
