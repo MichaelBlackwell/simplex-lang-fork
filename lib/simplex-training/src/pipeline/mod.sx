@@ -1,0 +1,27 @@
+// Pipeline module: End-to-end training pipelines
+//
+// Provides complete training pipelines for specialists that integrate:
+// - Data generation
+// - LoRA training with self-learning annealing
+// - Compression (pruning, quantization)
+// - Export to GGUF
+//
+// # Example
+//
+// ```simplex
+// use simplex_training::pipeline::{SpecialistPipeline, PipelineConfig};
+//
+// let config = PipelineConfig::for_domain(SpecialistDomain::Code);
+// let mut pipeline = SpecialistPipeline::new(config);
+//
+// let result = pipeline.train();
+// pipeline.export_gguf("output/code_specialist.gguf");
+// ```
+
+pub mod specialist;
+pub mod batch;
+pub mod anneal;
+
+pub use specialist::{SpecialistPipeline, PipelineConfig, TrainedSpecialist, PipelineResult};
+pub use batch::{BatchTrainer, BatchConfig, BatchResult};
+pub use anneal::{AnnealTrainingState, AnnealOptimizer};

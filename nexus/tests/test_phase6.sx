@@ -1,0 +1,1124 @@
+// Nexus Protocol - Phase 6 Tests
+//
+// Tests for neural type encoding and hive sync coordinator:
+// - Codebook references
+// - Neural embeddings
+// - Pattern instantiation
+// - Sync streams
+// - Hive coordinator
+// - Adaptive sync rate
+// - Neural cache
+
+fn test_passed() -> i64 { 0 }
+fn test_failed() -> i64 { 1 }
+
+// =============================================================================
+// Codebook Reference Tests
+// =============================================================================
+
+fn test_codebook_ref_create() -> i64 {
+    print("test_codebook_ref_create: ");
+
+    let ref = codebook_ref_new(1, 42, 5);
+
+    if codebook_ref_codebook_id(ref) != 1 {
+        print("FAIL - codebook_id\n");
+        return test_failed();
+    }
+
+    if codebook_ref_entry_index(ref) != 42 {
+        print("FAIL - entry_index\n");
+        return test_failed();
+    }
+
+    if codebook_ref_version(ref) != 5 {
+        print("FAIL - version\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_codebook_ref_encode_decode() -> i64 {
+    print("test_codebook_ref_encode_decode: ");
+
+    let ref = codebook_ref_new(123, 456789, 10);
+    let bytes = codebook_ref_encode(ref);
+
+    if vec_len(bytes) != 9 {
+        print("FAIL - encoded size\n");
+        return test_failed();
+    }
+
+    if vec_get(bytes, 0) != STF_CODEBOOK_REF() {
+        print("FAIL - tag\n");
+        return test_failed();
+    }
+
+    let decoded = codebook_ref_decode(bytes, 0);
+
+    if codebook_ref_codebook_id(decoded) != 123 {
+        print("FAIL - decoded codebook_id\n");
+        return test_failed();
+    }
+
+    if codebook_ref_entry_index(decoded) != 456789 {
+        print("FAIL - decoded entry_index\n");
+        return test_failed();
+    }
+
+    if codebook_ref_version(decoded) != 10 {
+        print("FAIL - decoded version\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_nex_codebook() -> i64 {
+    print("test_nex_codebook: ");
+
+    let cb = nex_codebook_new(1);
+
+    if nex_codebook_id(cb) != 1 {
+        print("FAIL - id\n");
+        return test_failed();
+    }
+
+    if nex_codebook_version(cb) != 1 {
+        print("FAIL - initial version\n");
+        return test_failed();
+    }
+
+    // Add entries
+    let entry1 = vec_new();
+    vec_push(entry1, 100);
+    vec_push(entry1, 200);
+    let idx1 = nex_codebook_add_entry(cb, entry1);
+
+    let entry2 = vec_new();
+    vec_push(entry2, 300);
+    vec_push(entry2, 400);
+    let idx2 = nex_codebook_add_entry(cb, entry2);
+
+    if idx1 != 0 {
+        print("FAIL - first index\n");
+        return test_failed();
+    }
+
+    if idx2 != 1 {
+        print("FAIL - second index\n");
+        return test_failed();
+    }
+
+    if nex_codebook_size(cb) != 2 {
+        print("FAIL - size\n");
+        return test_failed();
+    }
+
+    // Retrieve entry
+    let retrieved = nex_codebook_get_entry(cb, 0);
+    if vec_get(retrieved, 0) != 100 {
+        print("FAIL - retrieved entry\n");
+        return test_failed();
+    }
+
+    // Test version increment
+    let ver = nex_codebook_increment_version(cb);
+    if ver != 2 {
+        print("FAIL - version increment\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Neural Embedding Tests
+// =============================================================================
+
+fn test_neural_emb_create() -> i64 {
+    print("test_neural_emb_create: ");
+
+    let emb = neural_emb_new(128, EMB_FLAG_INT8());
+
+    if neural_emb_dimensions(emb) != 128 {
+        print("FAIL - dimensions\n");
+        return test_failed();
+    }
+
+    if neural_emb_flags(emb) != EMB_FLAG_INT8() {
+        print("FAIL - flags\n");
+        return test_failed();
+    }
+
+    // Set data
+    neural_emb_set_dim(emb, 0, 50);
+    neural_emb_set_dim(emb, 1, 100);
+    neural_emb_set_dim(emb, 127, 255);
+
+    if neural_emb_get_dim(emb, 0) != 50 {
+        print("FAIL - dim 0\n");
+        return test_failed();
+    }
+
+    if neural_emb_get_dim(emb, 1) != 100 {
+        print("FAIL - dim 1\n");
+        return test_failed();
+    }
+
+    if neural_emb_get_dim(emb, 127) != 255 {
+        print("FAIL - dim 127\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_neural_emb_encode_decode_int8() -> i64 {
+    print("test_neural_emb_encode_decode_int8: ");
+
+    let emb = neural_emb_new(4, EMB_FLAG_INT8());
+    neural_emb_set_dim(emb, 0, 10);
+    neural_emb_set_dim(emb, 1, 20);
+    neural_emb_set_dim(emb, 2, 30);
+    neural_emb_set_dim(emb, 3, 40);
+
+    let bytes = neural_emb_encode(emb);
+
+    // Size: 1 (tag) + 1 (flags) + 2 (dims) + 4 (scale) + 4 (offset) + 4 (data) = 16
+    if vec_len(bytes) != 16 {
+        print("FAIL - encoded size (");
+        print_i64(vec_len(bytes));
+        print(")\n");
+        return test_failed();
+    }
+
+    let decoded = neural_emb_decode(bytes, 0);
+
+    if neural_emb_dimensions(decoded) != 4 {
+        print("FAIL - decoded dims\n");
+        return test_failed();
+    }
+
+    if neural_emb_get_dim(decoded, 0) != 10 {
+        print("FAIL - decoded dim 0\n");
+        return test_failed();
+    }
+
+    if neural_emb_get_dim(decoded, 3) != 40 {
+        print("FAIL - decoded dim 3\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_neural_emb_encode_decode_int16() -> i64 {
+    print("test_neural_emb_encode_decode_int16: ");
+
+    let emb = neural_emb_new(4, EMB_FLAG_INT16());
+    neural_emb_set_dim(emb, 0, 1000);
+    neural_emb_set_dim(emb, 1, 2000);
+    neural_emb_set_dim(emb, 2, 30000);
+    neural_emb_set_dim(emb, 3, 40000);
+
+    let bytes = neural_emb_encode(emb);
+
+    // Size: 1 + 1 + 2 + 4 + 4 + 8 (4 * 2 bytes) = 20
+    if vec_len(bytes) != 20 {
+        print("FAIL - encoded size\n");
+        return test_failed();
+    }
+
+    let decoded = neural_emb_decode(bytes, 0);
+
+    if neural_emb_get_dim(decoded, 0) != 1000 {
+        print("FAIL - decoded dim 0\n");
+        return test_failed();
+    }
+
+    if neural_emb_get_dim(decoded, 2) != 30000 {
+        print("FAIL - decoded dim 2\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_neural_emb_dot_product() -> i64 {
+    print("test_neural_emb_dot_product: ");
+
+    let a = neural_emb_new(3, EMB_FLAG_INT8());
+    neural_emb_set_dim(a, 0, 1);
+    neural_emb_set_dim(a, 1, 2);
+    neural_emb_set_dim(a, 2, 3);
+
+    let b = neural_emb_new(3, EMB_FLAG_INT8());
+    neural_emb_set_dim(b, 0, 4);
+    neural_emb_set_dim(b, 1, 5);
+    neural_emb_set_dim(b, 2, 6);
+
+    // Dot product: 1*4 + 2*5 + 3*6 = 4 + 10 + 18 = 32
+    let dot = neural_emb_dot(a, b);
+
+    if dot != 32 {
+        print("FAIL - dot product (");
+        print_i64(dot);
+        print(")\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_neural_emb_binary() -> i64 {
+    print("test_neural_emb_binary: ");
+
+    let emb = neural_emb_new(8, EMB_FLAG_BINARY());
+    neural_emb_set_dim(emb, 0, 1);
+    neural_emb_set_dim(emb, 1, 0);
+    neural_emb_set_dim(emb, 2, 1);
+    neural_emb_set_dim(emb, 3, 0);
+    neural_emb_set_dim(emb, 4, 1);
+    neural_emb_set_dim(emb, 5, 0);
+    neural_emb_set_dim(emb, 6, 1);
+    neural_emb_set_dim(emb, 7, 0);
+
+    let bytes = neural_emb_encode(emb);
+
+    // Size: 1 + 1 + 2 + 4 + 4 + 1 (8 bits packed) = 13
+    if vec_len(bytes) != 13 {
+        print("FAIL - encoded size (");
+        print_i64(vec_len(bytes));
+        print(")\n");
+        return test_failed();
+    }
+
+    let decoded = neural_emb_decode(bytes, 0);
+
+    if neural_emb_get_dim(decoded, 0) != 1 {
+        print("FAIL - decoded dim 0\n");
+        return test_failed();
+    }
+
+    if neural_emb_get_dim(decoded, 1) != 0 {
+        print("FAIL - decoded dim 1\n");
+        return test_failed();
+    }
+
+    if neural_emb_get_dim(decoded, 4) != 1 {
+        print("FAIL - decoded dim 4\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Pattern Instantiation Tests
+// =============================================================================
+
+fn test_pattern_inst_create() -> i64 {
+    print("test_pattern_inst_create: ");
+
+    let inst = pattern_inst_new(42);
+
+    if pattern_inst_pattern_id(inst) != 42 {
+        print("FAIL - pattern_id\n");
+        return test_failed();
+    }
+
+    if pattern_inst_binding_count(inst) != 0 {
+        print("FAIL - initial binding count\n");
+        return test_failed();
+    }
+
+    // Add bindings
+    let value1 = vec_new();
+    vec_push(value1, 1);
+    vec_push(value1, 2);
+    vec_push(value1, 3);
+    pattern_inst_add_binding(inst, 0, value1);
+
+    let value2 = vec_new();
+    vec_push(value2, 4);
+    vec_push(value2, 5);
+    pattern_inst_add_binding(inst, 1, value2);
+
+    if pattern_inst_binding_count(inst) != 2 {
+        print("FAIL - binding count\n");
+        return test_failed();
+    }
+
+    // Check bindings
+    if pattern_inst_get_binding_slot(inst, 0) != 0 {
+        print("FAIL - slot 0\n");
+        return test_failed();
+    }
+
+    let retrieved = pattern_inst_get_binding_value(inst, 0);
+    if vec_len(retrieved) != 3 {
+        print("FAIL - value length\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_pattern_inst_encode_decode() -> i64 {
+    print("test_pattern_inst_encode_decode: ");
+
+    let inst = pattern_inst_new(123);
+
+    let value1 = vec_new();
+    vec_push(value1, 10);
+    vec_push(value1, 20);
+    pattern_inst_add_binding(inst, 5, value1);
+
+    let value2 = vec_new();
+    vec_push(value2, 30);
+    pattern_inst_add_binding(inst, 10, value2);
+
+    let bytes = pattern_inst_encode(inst);
+
+    if vec_get(bytes, 0) != STF_PATTERN_INST() {
+        print("FAIL - tag\n");
+        return test_failed();
+    }
+
+    let decoded = pattern_inst_decode(bytes, 0);
+
+    if pattern_inst_pattern_id(decoded) != 123 {
+        print("FAIL - decoded pattern_id\n");
+        return test_failed();
+    }
+
+    if pattern_inst_binding_count(decoded) != 2 {
+        print("FAIL - decoded binding count\n");
+        return test_failed();
+    }
+
+    if pattern_inst_get_binding_slot(decoded, 0) != 5 {
+        print("FAIL - decoded slot\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_pattern_inst_get_by_slot() -> i64 {
+    print("test_pattern_inst_get_by_slot: ");
+
+    let inst = pattern_inst_new(1);
+
+    let v1 = vec_new();
+    vec_push(v1, 100);
+    pattern_inst_add_binding(inst, 3, v1);
+
+    let v2 = vec_new();
+    vec_push(v2, 200);
+    pattern_inst_add_binding(inst, 7, v2);
+
+    let result = pattern_inst_get_value_by_slot(inst, 7);
+    if vec_get(result, 0) != 200 {
+        print("FAIL - get by slot\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Pattern Template Tests
+// =============================================================================
+
+fn test_pattern_template() -> i64 {
+    print("test_pattern_template: ");
+
+    let tmpl = pattern_template_new(1, 12345);
+
+    if pattern_template_id(tmpl) != 1 {
+        print("FAIL - id\n");
+        return test_failed();
+    }
+
+    if pattern_template_name_hash(tmpl) != 12345 {
+        print("FAIL - name_hash\n");
+        return test_failed();
+    }
+
+    // Add slots
+    pattern_template_add_slot(tmpl, 0, STF_INT64());
+    pattern_template_add_slot(tmpl, 1, STF_STRING());
+
+    if pattern_template_slot_count(tmpl) != 2 {
+        print("FAIL - slot count\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_pattern_registry() -> i64 {
+    print("test_pattern_registry: ");
+
+    let reg = pattern_registry_new();
+
+    let tmpl1 = pattern_template_new(0, 111);
+    let tmpl2 = pattern_template_new(1, 222);
+    let tmpl3 = pattern_template_new(2, 333);
+
+    pattern_registry_add(reg, tmpl1);
+    pattern_registry_add(reg, tmpl2);
+    pattern_registry_add(reg, tmpl3);
+
+    // Get by ID
+    let found = pattern_registry_get(reg, 1);
+    if pattern_template_name_hash(found) != 222 {
+        print("FAIL - get by id\n");
+        return test_failed();
+    }
+
+    // Find by hash
+    let id = pattern_registry_find_by_hash(reg, 333);
+    if id != 2 {
+        print("FAIL - find by hash\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Neural Cache Tests
+// =============================================================================
+
+fn test_neural_cache() -> i64 {
+    print("test_neural_cache: ");
+
+    let cache = neural_cache_new(3);
+
+    if neural_cache_size(cache) != 0 {
+        print("FAIL - initial size\n");
+        return test_failed();
+    }
+
+    // Add entries
+    let e1 = neural_emb_new(4, EMB_FLAG_INT8());
+    let e2 = neural_emb_new(4, EMB_FLAG_INT8());
+    let e3 = neural_emb_new(4, EMB_FLAG_INT8());
+
+    neural_cache_put(cache, 100, e1);
+    neural_cache_put(cache, 200, e2);
+    neural_cache_put(cache, 300, e3);
+
+    if neural_cache_size(cache) != 3 {
+        print("FAIL - size after adds\n");
+        return test_failed();
+    }
+
+    // Check contains
+    if neural_cache_contains(cache, 200) != 1 {
+        print("FAIL - contains\n");
+        return test_failed();
+    }
+
+    // Get entry
+    let retrieved = neural_cache_get(cache, 200);
+    if neural_emb_dimensions(retrieved) != 4 {
+        print("FAIL - retrieved embedding\n");
+        return test_failed();
+    }
+
+    // Access 200 multiple times to increase its count
+    neural_cache_get(cache, 200);
+    neural_cache_get(cache, 200);
+
+    // Add a 4th entry - should evict LFU (100 or 300)
+    let e4 = neural_emb_new(8, EMB_FLAG_INT16());
+    neural_cache_put(cache, 400, e4);
+
+    // 200 should still be there (high access count)
+    if neural_cache_contains(cache, 200) != 1 {
+        print("FAIL - LFU eviction\n");
+        return test_failed();
+    }
+
+    if neural_cache_size(cache) != 3 {
+        print("FAIL - size after eviction\n");
+        return test_failed();
+    }
+
+    // Clear cache
+    neural_cache_clear(cache);
+    if neural_cache_size(cache) != 0 {
+        print("FAIL - size after clear\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Sync Stream Tests
+// =============================================================================
+
+fn test_sync_stream_create() -> i64 {
+    print("test_sync_stream_create: ");
+
+    let peer = actor_addr_new(1, 2, 3, 4);
+    let stream = sync_stream_new(1, peer);
+
+    if sync_stream_id(stream) != 1 {
+        print("FAIL - id\n");
+        return test_failed();
+    }
+
+    if sync_stream_state(stream) != STREAM_STATE_INIT() {
+        print("FAIL - initial state\n");
+        return test_failed();
+    }
+
+    if sync_stream_sync_rate(stream) != 60 {
+        print("FAIL - default rate\n");
+        return test_failed();
+    }
+
+    // Set state
+    sync_stream_set_state(stream, STREAM_STATE_SYNCING());
+    if sync_stream_state(stream) != STREAM_STATE_SYNCING() {
+        print("FAIL - set state\n");
+        return test_failed();
+    }
+
+    // Update stats
+    sync_stream_add_sent(stream, 10, 1000);
+    if sync_stream_beliefs_sent(stream) != 10 {
+        print("FAIL - beliefs sent\n");
+        return test_failed();
+    }
+
+    if sync_stream_bytes_sent(stream) != 1000 {
+        print("FAIL - bytes sent\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_sync_stream_codebooks() -> i64 {
+    print("test_sync_stream_codebooks: ");
+
+    let peer = actor_addr_new(1, 1, 1, 1);
+    let stream = sync_stream_new(1, peer);
+
+    if sync_stream_has_codebook(stream, 5) != 0 {
+        print("FAIL - initial has_codebook\n");
+        return test_failed();
+    }
+
+    sync_stream_add_codebook(stream, 5);
+    sync_stream_add_codebook(stream, 10);
+
+    if sync_stream_has_codebook(stream, 5) != 1 {
+        print("FAIL - has_codebook after add\n");
+        return test_failed();
+    }
+
+    if sync_stream_has_codebook(stream, 10) != 1 {
+        print("FAIL - has_codebook 10\n");
+        return test_failed();
+    }
+
+    if sync_stream_has_codebook(stream, 7) != 0 {
+        print("FAIL - has_codebook 7\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Hive Coordinator Tests
+// =============================================================================
+
+fn test_hive_coord_create() -> i64 {
+    print("test_hive_coord_create: ");
+
+    let local = actor_addr_new(1, 1, 1, 1);
+    let coord = hive_coordinator_new(local);
+
+    if hive_coord_stream_count(coord) != 0 {
+        print("FAIL - initial stream count\n");
+        return test_failed();
+    }
+
+    if hive_coord_default_rate(coord) != 60 {
+        print("FAIL - default rate\n");
+        return test_failed();
+    }
+
+    if hive_coord_sync_strategy(coord) != SYNC_ADAPTIVE() {
+        print("FAIL - default strategy\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_hive_coord_streams() -> i64 {
+    print("test_hive_coord_streams: ");
+
+    let local = actor_addr_new(1, 1, 1, 1);
+    let coord = hive_coordinator_new(local);
+
+    // Add streams
+    let peer1 = actor_addr_new(2, 1, 1, 1);
+    let peer2 = actor_addr_new(3, 1, 1, 1);
+
+    let s1 = hive_coord_add_stream(coord, peer1);
+    let s2 = hive_coord_add_stream(coord, peer2);
+
+    if hive_coord_stream_count(coord) != 2 {
+        print("FAIL - stream count\n");
+        return test_failed();
+    }
+
+    // Get by ID
+    let found = hive_coord_get_stream(coord, sync_stream_id(s1));
+    if found != s1 {
+        print("FAIL - get by id\n");
+        return test_failed();
+    }
+
+    // Get by peer
+    let found2 = hive_coord_get_stream_by_peer(coord, peer2);
+    if found2 != s2 {
+        print("FAIL - get by peer\n");
+        return test_failed();
+    }
+
+    // Set states
+    sync_stream_set_state(s1, STREAM_STATE_SYNCING());
+    sync_stream_set_state(s2, STREAM_STATE_IDLE());
+
+    if hive_coord_active_stream_count(coord) != 2 {
+        print("FAIL - active count\n");
+        return test_failed();
+    }
+
+    // Remove stream
+    hive_coord_remove_stream(coord, sync_stream_id(s1));
+    if hive_coord_stream_count(coord) != 1 {
+        print("FAIL - stream count after remove\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_hive_coord_codebooks() -> i64 {
+    print("test_hive_coord_codebooks: ");
+
+    let local = actor_addr_new(1, 1, 1, 1);
+    let coord = hive_coordinator_new(local);
+
+    let cb1 = nex_codebook_new(10);
+    let cb2 = nex_codebook_new(20);
+
+    hive_coord_add_codebook(coord, cb1);
+    hive_coord_add_codebook(coord, cb2);
+
+    if hive_coord_codebook_count(coord) != 2 {
+        print("FAIL - codebook count\n");
+        return test_failed();
+    }
+
+    let found = hive_coord_get_codebook(coord, 20);
+    if nex_codebook_id(found) != 20 {
+        print("FAIL - get codebook\n");
+        return test_failed();
+    }
+
+    // Test negotiation
+    let peer = actor_addr_new(2, 1, 1, 1);
+    let stream = hive_coord_add_stream(coord, peer);
+
+    let result = hive_coord_negotiate_codebook(coord, stream, 10);
+    if result != 1 {
+        print("FAIL - negotiate\n");
+        return test_failed();
+    }
+
+    if sync_stream_has_codebook(stream, 10) != 1 {
+        print("FAIL - stream has codebook after negotiate\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_hive_coord_adaptive_rate() -> i64 {
+    print("test_hive_coord_adaptive_rate: ");
+
+    let local = actor_addr_new(1, 1, 1, 1);
+    let coord = hive_coordinator_new(local);
+    hive_coord_set_sync_strategy(coord, SYNC_ADAPTIVE());
+
+    let peer = actor_addr_new(2, 1, 1, 1);
+    let stream = hive_coord_add_stream(coord, peer);
+    sync_stream_set_sync_rate(stream, 60);
+
+    // High velocity - rate should increase
+    let new_rate = hive_coord_adjust_sync_rate(coord, stream, 200, 1000);
+    if new_rate <= 60 {
+        print("FAIL - high velocity rate (");
+        print_i64(new_rate);
+        print(")\n");
+        return test_failed();
+    }
+
+    // Reset rate
+    sync_stream_set_sync_rate(stream, 60);
+
+    // Low velocity - rate should decrease
+    let new_rate2 = hive_coord_adjust_sync_rate(coord, stream, 1, 10000);
+    if new_rate2 >= 60 {
+        print("FAIL - low velocity rate (");
+        print_i64(new_rate2);
+        print(")\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_hive_coord_priority_scheduling() -> i64 {
+    print("test_hive_coord_priority_scheduling: ");
+
+    let local = actor_addr_new(1, 1, 1, 1);
+    let coord = hive_coordinator_new(local);
+
+    let peer1 = actor_addr_new(2, 1, 1, 1);
+    let peer2 = actor_addr_new(3, 1, 1, 1);
+
+    let s1 = hive_coord_add_stream(coord, peer1);
+    let s2 = hive_coord_add_stream(coord, peer2);
+
+    sync_stream_set_state(s1, STREAM_STATE_IDLE());
+    sync_stream_set_state(s2, STREAM_STATE_IDLE());
+
+    // Set priorities
+    sync_stream_set_priority(s1, 10);
+    sync_stream_set_priority(s2, 50);  // Higher priority
+
+    // s2 should be selected first (higher priority)
+    let next = hive_coord_next_stream(coord, 1000);
+    if sync_stream_priority(next) != 50 {
+        print("FAIL - priority scheduling (");
+        print_i64(sync_stream_priority(next));
+        print(")\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_hive_coord_due_streams() -> i64 {
+    print("test_hive_coord_due_streams: ");
+
+    let local = actor_addr_new(1, 1, 1, 1);
+    let coord = hive_coordinator_new(local);
+
+    let peer1 = actor_addr_new(2, 1, 1, 1);
+    let peer2 = actor_addr_new(3, 1, 1, 1);
+
+    let s1 = hive_coord_add_stream(coord, peer1);
+    let s2 = hive_coord_add_stream(coord, peer2);
+
+    sync_stream_set_state(s1, STREAM_STATE_SYNCING());
+    sync_stream_set_state(s2, STREAM_STATE_SYNCING());
+
+    sync_stream_set_sync_rate(s1, 60);  // ~16ms interval
+    sync_stream_set_sync_rate(s2, 60);
+
+    sync_stream_set_last_sync(s1, 0);
+    sync_stream_set_last_sync(s2, 1000);  // More recent
+
+    // At time 100, only s1 should be due (last sync at 0)
+    let due = hive_coord_due_streams(coord, 100);
+    if vec_len(due) != 1 {
+        print("FAIL - due count at 100 (");
+        print_i64(vec_len(due));
+        print(")\n");
+        return test_failed();
+    }
+
+    // At time 2000, both should be due
+    let due2 = hive_coord_due_streams(coord, 2000);
+    if vec_len(due2) != 2 {
+        print("FAIL - due count at 2000\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_hive_coord_sync_cycle() -> i64 {
+    print("test_hive_coord_sync_cycle: ");
+
+    let local = actor_addr_new(1, 1, 1, 1);
+    let coord = hive_coordinator_new(local);
+
+    let peer = actor_addr_new(2, 1, 1, 1);
+    let stream = hive_coord_add_stream(coord, peer);
+    sync_stream_set_state(stream, STREAM_STATE_SYNCING());
+
+    // Add pending beliefs
+    sync_stream_add_pending(stream, 100);
+    sync_stream_add_pending(stream, 101);
+    sync_stream_add_pending(stream, 102);
+
+    // Prepare batch
+    let batch = hive_coord_prepare_sync(coord, stream, 2);
+    if vec_len(batch) != 2 {
+        print("FAIL - batch size\n");
+        return test_failed();
+    }
+
+    // Complete sync
+    hive_coord_complete_sync(coord, stream, 2, 200, 400, 1000);
+
+    if sync_stream_beliefs_sent(stream) != 2 {
+        print("FAIL - beliefs sent\n");
+        return test_failed();
+    }
+
+    if sync_stream_bytes_sent(stream) != 200 {
+        print("FAIL - bytes sent\n");
+        return test_failed();
+    }
+
+    if sync_stream_last_sync(stream) != 1000 {
+        print("FAIL - last sync time\n");
+        return test_failed();
+    }
+
+    if hive_coord_total_beliefs(coord) != 2 {
+        print("FAIL - total beliefs\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_hive_coord_cache_integration() -> i64 {
+    print("test_hive_coord_cache_integration: ");
+
+    let local = actor_addr_new(1, 1, 1, 1);
+    let coord = hive_coordinator_new(local);
+
+    let emb = neural_emb_new(64, EMB_FLAG_INT8());
+    neural_emb_set_dim(emb, 0, 42);
+
+    hive_coord_cache_embedding(coord, 12345, emb);
+
+    if hive_coord_has_cached_embedding(coord, 12345) != 1 {
+        print("FAIL - has cached\n");
+        return test_failed();
+    }
+
+    let retrieved = hive_coord_get_cached_embedding(coord, 12345);
+    if neural_emb_get_dim(retrieved, 0) != 42 {
+        print("FAIL - retrieved embedding\n");
+        return test_failed();
+    }
+
+    if hive_coord_cache_size(coord) != 1 {
+        print("FAIL - cache size\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_hive_coord_lifecycle() -> i64 {
+    print("test_hive_coord_lifecycle: ");
+
+    let local = actor_addr_new(1, 1, 1, 1);
+    let coord = hive_coordinator_new(local);
+
+    let peer = actor_addr_new(2, 1, 1, 1);
+    let stream = hive_coord_add_stream(coord, peer);
+
+    // Start
+    hive_coord_start(coord);
+    if sync_stream_state(stream) != STREAM_STATE_NEGOTIATING() {
+        print("FAIL - state after start\n");
+        return test_failed();
+    }
+
+    // Set to syncing
+    sync_stream_set_state(stream, STREAM_STATE_SYNCING());
+
+    // Pause all
+    hive_coord_pause_all(coord);
+    if sync_stream_state(stream) != STREAM_STATE_PAUSED() {
+        print("FAIL - state after pause\n");
+        return test_failed();
+    }
+
+    // Resume all
+    hive_coord_resume_all(coord);
+    if sync_stream_state(stream) != STREAM_STATE_IDLE() {
+        print("FAIL - state after resume\n");
+        return test_failed();
+    }
+
+    // Shutdown
+    hive_coord_shutdown(coord);
+    if sync_stream_state(stream) != STREAM_STATE_CLOSED() {
+        print("FAIL - state after shutdown\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_hive_coord_stats() -> i64 {
+    print("test_hive_coord_stats: ");
+
+    let local = actor_addr_new(1, 1, 1, 1);
+    let coord = hive_coordinator_new(local);
+
+    let peer = actor_addr_new(2, 1, 1, 1);
+    let stream = hive_coord_add_stream(coord, peer);
+    sync_stream_set_state(stream, STREAM_STATE_SYNCING());
+
+    // Add some codebooks and cache entries
+    let cb = nex_codebook_new(1);
+    hive_coord_add_codebook(coord, cb);
+
+    let emb = neural_emb_new(4, EMB_FLAG_INT8());
+    hive_coord_cache_embedding(coord, 100, emb);
+
+    // Update sync stats
+    hive_coord_update_stats(coord, 100, 10000, 500);
+
+    let stats = hive_coord_get_stats(coord);
+
+    // Check stats array
+    if vec_get(stats, 0) != 1 {  // total streams
+        print("FAIL - total streams\n");
+        return test_failed();
+    }
+
+    if vec_get(stats, 1) != 1 {  // active streams
+        print("FAIL - active streams\n");
+        return test_failed();
+    }
+
+    if vec_get(stats, 2) != 100 {  // total beliefs
+        print("FAIL - total beliefs\n");
+        return test_failed();
+    }
+
+    if vec_get(stats, 5) != 1 {  // codebooks
+        print("FAIL - codebooks\n");
+        return test_failed();
+    }
+
+    if vec_get(stats, 6) != 1 {  // cache size
+        print("FAIL - cache size\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Main Test Runner
+// =============================================================================
+
+fn main() -> i64 {
+    print("=== Phase 6 Tests: Neural Types & Coordinator ===\n\n");
+
+    let failed = 0;
+
+    // Codebook Reference Tests
+    failed = failed + test_codebook_ref_create();
+    failed = failed + test_codebook_ref_encode_decode();
+    failed = failed + test_nex_codebook();
+
+    // Neural Embedding Tests
+    failed = failed + test_neural_emb_create();
+    failed = failed + test_neural_emb_encode_decode_int8();
+    failed = failed + test_neural_emb_encode_decode_int16();
+    failed = failed + test_neural_emb_dot_product();
+    failed = failed + test_neural_emb_binary();
+
+    // Pattern Instantiation Tests
+    failed = failed + test_pattern_inst_create();
+    failed = failed + test_pattern_inst_encode_decode();
+    failed = failed + test_pattern_inst_get_by_slot();
+    failed = failed + test_pattern_template();
+    failed = failed + test_pattern_registry();
+
+    // Neural Cache Tests
+    failed = failed + test_neural_cache();
+
+    // Sync Stream Tests
+    failed = failed + test_sync_stream_create();
+    failed = failed + test_sync_stream_codebooks();
+
+    // Hive Coordinator Tests
+    failed = failed + test_hive_coord_create();
+    failed = failed + test_hive_coord_streams();
+    failed = failed + test_hive_coord_codebooks();
+    failed = failed + test_hive_coord_adaptive_rate();
+    failed = failed + test_hive_coord_priority_scheduling();
+    failed = failed + test_hive_coord_due_streams();
+    failed = failed + test_hive_coord_sync_cycle();
+    failed = failed + test_hive_coord_cache_integration();
+    failed = failed + test_hive_coord_lifecycle();
+    failed = failed + test_hive_coord_stats();
+
+    print("\n=== Phase 6 Tests Complete ===\n");
+
+    if failed > 0 {
+        print("FAILED: ");
+        print_i64(failed);
+        print(" tests\n");
+        return 1;
+    }
+
+    print("All 26 tests passed!\n");
+    0
+}

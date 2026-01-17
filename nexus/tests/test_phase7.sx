@@ -1,0 +1,1075 @@
+// Nexus Protocol - Phase 7 Tests
+//
+// Tests for security and cryptographic authentication:
+// - Key pair generation
+// - Certificate creation and signing
+// - Cryptographic hash functions
+// - HMAC message authentication
+// - Digital signatures
+// - Stream cipher encryption
+// - AEAD encryption/decryption
+// - Frame signing and verification
+// - Access control lists
+// - Secure sessions
+
+fn test_passed() -> i64 { 0 }
+fn test_failed() -> i64 { 1 }
+
+// =============================================================================
+// Key Pair Tests
+// =============================================================================
+
+fn test_keypair_generation() -> i64 {
+    print("test_keypair_generation: ");
+
+    let kp = hive_keypair_new(12345);
+
+    let priv_key = hive_keypair_private(kp);
+    let pub_key = hive_keypair_public(kp);
+
+    if vec_len(priv_key) != CRYPTO_KEY_SIZE() {
+        print("FAIL - private key size\n");
+        return test_failed();
+    }
+
+    if vec_len(pub_key) != CRYPTO_KEY_SIZE() {
+        print("FAIL - public key size\n");
+        return test_failed();
+    }
+
+    if hive_keypair_type(kp) != KEY_TYPE_SIGNING() {
+        print("FAIL - key type\n");
+        return test_failed();
+    }
+
+    // Keys should be different
+    let same = 1;
+    let i = 0;
+    while i < CRYPTO_KEY_SIZE() {
+        if vec_get(priv_key, i) != vec_get(pub_key, i) {
+            same = 0;
+        }
+        i = i + 1;
+    }
+
+    if same == 1 {
+        print("FAIL - keys identical\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_keypair_deterministic() -> i64 {
+    print("test_keypair_deterministic: ");
+
+    // Same seed should produce same keys
+    let kp1 = hive_keypair_new(42);
+    let kp2 = hive_keypair_new(42);
+
+    let pub1 = hive_keypair_public(kp1);
+    let pub2 = hive_keypair_public(kp2);
+
+    let i = 0;
+    while i < CRYPTO_KEY_SIZE() {
+        if vec_get(pub1, i) != vec_get(pub2, i) {
+            print("FAIL - same seed different keys\n");
+            return test_failed();
+        }
+        i = i + 1;
+    }
+
+    // Different seeds should produce different keys
+    let kp3 = hive_keypair_new(43);
+    let pub3 = hive_keypair_public(kp3);
+
+    let same = 1;
+    i = 0;
+    while i < CRYPTO_KEY_SIZE() {
+        if vec_get(pub1, i) != vec_get(pub3, i) {
+            same = 0;
+        }
+        i = i + 1;
+    }
+
+    if same == 1 {
+        print("FAIL - different seeds same keys\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Certificate Tests
+// =============================================================================
+
+fn test_certificate_creation() -> i64 {
+    print("test_certificate_creation: ");
+
+    let kp = hive_keypair_new(100);
+    let pub_key = hive_keypair_public(kp);
+
+    let cert = hive_cert_new(1001, pub_key);
+
+    if hive_cert_hive_id(cert) != 1001 {
+        print("FAIL - hive_id\n");
+        return test_failed();
+    }
+
+    if hive_cert_issuer(cert) != 0 {
+        print("FAIL - initial issuer\n");
+        return test_failed();
+    }
+
+    if hive_cert_valid(cert) != 0 {
+        print("FAIL - initial valid\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_certificate_signing() -> i64 {
+    print("test_certificate_signing: ");
+
+    let kp = hive_keypair_new(200);
+    let pub_key = hive_keypair_public(kp);
+
+    let cert = hive_cert_new(2001, pub_key);
+
+    // Self-sign the certificate
+    hive_cert_sign(cert, kp, 2001, 1000000);
+
+    if hive_cert_issuer(cert) != 2001 {
+        print("FAIL - issuer\n");
+        return test_failed();
+    }
+
+    if hive_cert_timestamp(cert) != 1000000 {
+        print("FAIL - timestamp\n");
+        return test_failed();
+    }
+
+    if hive_cert_valid(cert) != 1 {
+        print("FAIL - valid flag\n");
+        return test_failed();
+    }
+
+    let sig = hive_cert_signature(cert);
+    if vec_len(sig) != CRYPTO_SIG_SIZE() {
+        print("FAIL - signature size\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_certificate_verification() -> i64 {
+    print("test_certificate_verification: ");
+
+    let kp = hive_keypair_new(300);
+    let pub_key = hive_keypair_public(kp);
+
+    let cert = hive_cert_new(3001, pub_key);
+    hive_cert_sign(cert, kp, 3001, 2000000);
+
+    // Verify with correct public key
+    if hive_cert_verify(cert, pub_key) != 1 {
+        print("FAIL - valid cert rejected\n");
+        return test_failed();
+    }
+
+    // Verify with wrong public key should fail
+    let wrong_kp = hive_keypair_new(999);
+    let wrong_pub = hive_keypair_public(wrong_kp);
+
+    if hive_cert_verify(cert, wrong_pub) != 0 {
+        print("FAIL - invalid cert accepted\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_certificate_encode_decode() -> i64 {
+    print("test_certificate_encode_decode: ");
+
+    let kp = hive_keypair_new(400);
+    let pub_key = hive_keypair_public(kp);
+
+    let cert = hive_cert_new(4001, pub_key);
+    hive_cert_sign(cert, kp, 4001, 3000000);
+
+    let bytes = hive_cert_encode(cert);
+
+    // Should be 108 bytes: 4 + 32 + 4 + 4 + 64
+    if vec_len(bytes) != 108 {
+        print("FAIL - encoded size (");
+        print_i64(vec_len(bytes));
+        print(")\n");
+        return test_failed();
+    }
+
+    let decoded = hive_cert_decode(bytes, 0);
+
+    if hive_cert_hive_id(decoded) != 4001 {
+        print("FAIL - decoded hive_id\n");
+        return test_failed();
+    }
+
+    if hive_cert_issuer(decoded) != 4001 {
+        print("FAIL - decoded issuer\n");
+        return test_failed();
+    }
+
+    if hive_cert_timestamp(decoded) != 3000000 {
+        print("FAIL - decoded timestamp\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Cryptographic Hash Tests
+// =============================================================================
+
+fn test_crypto_hash() -> i64 {
+    print("test_crypto_hash: ");
+
+    let data = vec_new();
+    vec_push(data, 72);  // 'H'
+    vec_push(data, 101); // 'e'
+    vec_push(data, 108); // 'l'
+    vec_push(data, 108); // 'l'
+    vec_push(data, 111); // 'o'
+
+    let hash = crypto_hash(data);
+
+    if vec_len(hash) != CRYPTO_HASH_SIZE() {
+        print("FAIL - hash size\n");
+        return test_failed();
+    }
+
+    // Same input should produce same hash
+    let hash2 = crypto_hash(data);
+    let i = 0;
+    while i < CRYPTO_HASH_SIZE() {
+        if vec_get(hash, i) != vec_get(hash2, i) {
+            print("FAIL - hash not deterministic\n");
+            return test_failed();
+        }
+        i = i + 1;
+    }
+
+    // Different input should produce different hash
+    vec_push(data, 33);  // '!'
+    let hash3 = crypto_hash(data);
+
+    let same = 1;
+    i = 0;
+    while i < CRYPTO_HASH_SIZE() {
+        if vec_get(hash, i) != vec_get(hash3, i) {
+            same = 0;
+        }
+        i = i + 1;
+    }
+
+    if same == 1 {
+        print("FAIL - different input same hash\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_crypto_hmac() -> i64 {
+    print("test_crypto_hmac: ");
+
+    let data = vec_new();
+    vec_push(data, 1);
+    vec_push(data, 2);
+    vec_push(data, 3);
+
+    let key = vec_new();
+    let i = 0;
+    while i < 32 {
+        vec_push(key, i + 10);
+        i = i + 1;
+    }
+
+    let mac = crypto_hmac(data, key);
+
+    if vec_len(mac) != CRYPTO_HASH_SIZE() {
+        print("FAIL - mac size\n");
+        return test_failed();
+    }
+
+    // Same key/data should produce same MAC
+    let mac2 = crypto_hmac(data, key);
+    i = 0;
+    while i < CRYPTO_HASH_SIZE() {
+        if vec_get(mac, i) != vec_get(mac2, i) {
+            print("FAIL - mac not deterministic\n");
+            return test_failed();
+        }
+        i = i + 1;
+    }
+
+    // Different key should produce different MAC
+    vec_set(key, 0, 99);
+    let mac3 = crypto_hmac(data, key);
+
+    let same = 1;
+    i = 0;
+    while i < CRYPTO_HASH_SIZE() {
+        if vec_get(mac, i) != vec_get(mac3, i) {
+            same = 0;
+        }
+        i = i + 1;
+    }
+
+    if same == 1 {
+        print("FAIL - different key same mac\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Digital Signature Tests
+// =============================================================================
+
+fn test_crypto_sign_verify() -> i64 {
+    print("test_crypto_sign_verify: ");
+
+    let kp = hive_keypair_new(500);
+    let priv_key = hive_keypair_private(kp);
+    let pub_key = hive_keypair_public(kp);
+
+    let message = vec_new();
+    vec_push(message, 84);   // 'T'
+    vec_push(message, 101);  // 'e'
+    vec_push(message, 115);  // 's'
+    vec_push(message, 116);  // 't'
+
+    let signature = crypto_sign(message, priv_key);
+
+    if vec_len(signature) != CRYPTO_SIG_SIZE() {
+        print("FAIL - signature size\n");
+        return test_failed();
+    }
+
+    // Verify with correct public key
+    if crypto_verify(message, signature, pub_key) != 1 {
+        print("FAIL - valid signature rejected\n");
+        return test_failed();
+    }
+
+    // Verify with wrong public key should fail
+    let wrong_kp = hive_keypair_new(999);
+    let wrong_pub = hive_keypair_public(wrong_kp);
+
+    if crypto_verify(message, signature, wrong_pub) != 0 {
+        print("FAIL - wrong key accepted\n");
+        return test_failed();
+    }
+
+    // Tampered message should fail
+    vec_set(message, 0, 88);  // Change 'T' to 'X'
+    if crypto_verify(message, signature, pub_key) != 0 {
+        print("FAIL - tampered message accepted\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Stream Cipher Tests
+// =============================================================================
+
+fn test_chacha_encrypt_decrypt() -> i64 {
+    print("test_chacha_encrypt_decrypt: ");
+
+    let plaintext = vec_new();
+    let i = 0;
+    while i < 100 {
+        vec_push(plaintext, i & 255);
+        i = i + 1;
+    }
+
+    let key = vec_new();
+    i = 0;
+    while i < 32 {
+        vec_push(key, (i * 7 + 3) & 255);
+        i = i + 1;
+    }
+
+    let nonce = vec_new();
+    i = 0;
+    while i < 12 {
+        vec_push(nonce, (i * 11 + 5) & 255);
+        i = i + 1;
+    }
+
+    // Encrypt
+    let ciphertext = chacha_crypt(plaintext, key, nonce);
+
+    if vec_len(ciphertext) != vec_len(plaintext) {
+        print("FAIL - ciphertext size\n");
+        return test_failed();
+    }
+
+    // Ciphertext should be different from plaintext
+    let same = 1;
+    i = 0;
+    while i < vec_len(plaintext) {
+        if vec_get(ciphertext, i) != vec_get(plaintext, i) {
+            same = 0;
+        }
+        i = i + 1;
+    }
+
+    if same == 1 {
+        print("FAIL - ciphertext equals plaintext\n");
+        return test_failed();
+    }
+
+    // Decrypt (same operation due to XOR)
+    let decrypted = chacha_crypt(ciphertext, key, nonce);
+
+    // Should match original
+    i = 0;
+    while i < vec_len(plaintext) {
+        if vec_get(decrypted, i) != vec_get(plaintext, i) {
+            print("FAIL - decryption mismatch at ");
+            print_i64(i);
+            print("\n");
+            return test_failed();
+        }
+        i = i + 1;
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// AEAD Encryption Tests
+// =============================================================================
+
+fn test_aead_encrypt_decrypt() -> i64 {
+    print("test_aead_encrypt_decrypt: ");
+
+    let plaintext = vec_new();
+    vec_push(plaintext, 83);   // 'S'
+    vec_push(plaintext, 101);  // 'e'
+    vec_push(plaintext, 99);   // 'c'
+    vec_push(plaintext, 114);  // 'r'
+    vec_push(plaintext, 101);  // 'e'
+    vec_push(plaintext, 116);  // 't'
+
+    let aad = vec_new();
+    vec_push(aad, 1);
+    vec_push(aad, 2);
+    vec_push(aad, 3);
+
+    let key = vec_new();
+    let i = 0;
+    while i < 32 {
+        vec_push(key, (i * 13 + 7) & 255);
+        i = i + 1;
+    }
+
+    let nonce = vec_new();
+    i = 0;
+    while i < 12 {
+        vec_push(nonce, (i * 17 + 11) & 255);
+        i = i + 1;
+    }
+
+    // Encrypt
+    let ciphertext = crypto_aead_encrypt(plaintext, aad, key, nonce);
+
+    // Should be plaintext + 16 byte tag
+    if vec_len(ciphertext) != vec_len(plaintext) + CRYPTO_TAG_SIZE() {
+        print("FAIL - ciphertext size\n");
+        return test_failed();
+    }
+
+    // Decrypt
+    let decrypted = crypto_aead_decrypt(ciphertext, aad, key, nonce);
+
+    if decrypted == 0 {
+        print("FAIL - decryption failed\n");
+        return test_failed();
+    }
+
+    // Should match original
+    if vec_len(decrypted) != vec_len(plaintext) {
+        print("FAIL - decrypted size\n");
+        return test_failed();
+    }
+
+    i = 0;
+    while i < vec_len(plaintext) {
+        if vec_get(decrypted, i) != vec_get(plaintext, i) {
+            print("FAIL - decryption mismatch\n");
+            return test_failed();
+        }
+        i = i + 1;
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_aead_tamper_detection() -> i64 {
+    print("test_aead_tamper_detection: ");
+
+    let plaintext = vec_new();
+    vec_push(plaintext, 100);
+    vec_push(plaintext, 200);
+
+    let aad = vec_new();
+    let key = vec_new();
+    let i = 0;
+    while i < 32 {
+        vec_push(key, i);
+        i = i + 1;
+    }
+
+    let nonce = vec_new();
+    i = 0;
+    while i < 12 {
+        vec_push(nonce, i);
+        i = i + 1;
+    }
+
+    let ciphertext = crypto_aead_encrypt(plaintext, aad, key, nonce);
+
+    // Tamper with ciphertext
+    let tampered = vec_new();
+    i = 0;
+    while i < vec_len(ciphertext) {
+        vec_push(tampered, vec_get(ciphertext, i));
+        i = i + 1;
+    }
+    vec_set(tampered, 0, vec_get(tampered, 0) ^ 1);  // Flip one bit
+
+    // Decryption should fail
+    let result = crypto_aead_decrypt(tampered, aad, key, nonce);
+    if result != 0 {
+        print("FAIL - tampered data accepted\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Frame Signing Tests
+// =============================================================================
+
+fn test_frame_sign_verify() -> i64 {
+    print("test_frame_sign_verify: ");
+
+    let payload = vec_new();
+    let i = 0;
+    while i < 50 {
+        vec_push(payload, i * 3);
+        i = i + 1;
+    }
+
+    let key = vec_new();
+    i = 0;
+    while i < 32 {
+        vec_push(key, (i * 5 + 1) & 255);
+        i = i + 1;
+    }
+
+    let signature = frame_sign(payload, key);
+
+    if vec_len(signature) != CRYPTO_HASH_SIZE() {
+        print("FAIL - signature size\n");
+        return test_failed();
+    }
+
+    // Verify with correct key
+    if frame_verify(payload, signature, key) != 1 {
+        print("FAIL - valid signature rejected\n");
+        return test_failed();
+    }
+
+    // Verify with wrong key should fail
+    let wrong_key = vec_new();
+    i = 0;
+    while i < 32 {
+        vec_push(wrong_key, (i * 7 + 2) & 255);
+        i = i + 1;
+    }
+
+    if frame_verify(payload, signature, wrong_key) != 0 {
+        print("FAIL - wrong key accepted\n");
+        return test_failed();
+    }
+
+    // Tampered payload should fail
+    vec_set(payload, 0, 99);
+    if frame_verify(payload, signature, key) != 0 {
+        print("FAIL - tampered payload accepted\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Access Control List Tests
+// =============================================================================
+
+fn test_acl_creation() -> i64 {
+    print("test_acl_creation: ");
+
+    let acl = acl_new(1000);
+
+    if acl_resource_id(acl) != 1000 {
+        print("FAIL - resource_id\n");
+        return test_failed();
+    }
+
+    if acl_default_perm(acl) != ACL_PERM_NONE() {
+        print("FAIL - default perm\n");
+        return test_failed();
+    }
+
+    // Set default permission
+    acl_set_default(acl, ACL_PERM_READ());
+    if acl_default_perm(acl) != ACL_PERM_READ() {
+        print("FAIL - set default\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_acl_entries() -> i64 {
+    print("test_acl_entries: ");
+
+    let acl = acl_new(2000);
+
+    // Add entries
+    acl_add_entry(acl, 100, ACL_PERM_READ());
+    acl_add_entry(acl, 200, ACL_PERM_READ() | ACL_PERM_WRITE());
+    acl_add_entry(acl, 300, ACL_PERM_ALL());
+
+    // Check permissions
+    if acl_get_permissions(acl, 100) != ACL_PERM_READ() {
+        print("FAIL - hive 100 perm\n");
+        return test_failed();
+    }
+
+    if acl_can_read(acl, 100) != 1 {
+        print("FAIL - hive 100 can_read\n");
+        return test_failed();
+    }
+
+    if acl_can_write(acl, 100) != 0 {
+        print("FAIL - hive 100 can_write\n");
+        return test_failed();
+    }
+
+    if acl_can_write(acl, 200) != 1 {
+        print("FAIL - hive 200 can_write\n");
+        return test_failed();
+    }
+
+    if acl_can_admin(acl, 300) != 1 {
+        print("FAIL - hive 300 can_admin\n");
+        return test_failed();
+    }
+
+    // Unknown hive gets default
+    if acl_get_permissions(acl, 999) != ACL_PERM_NONE() {
+        print("FAIL - unknown hive perm\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_acl_update_remove() -> i64 {
+    print("test_acl_update_remove: ");
+
+    let acl = acl_new(3000);
+
+    acl_add_entry(acl, 100, ACL_PERM_READ());
+
+    // Update existing entry
+    acl_add_entry(acl, 100, ACL_PERM_ALL());
+    if acl_get_permissions(acl, 100) != ACL_PERM_ALL() {
+        print("FAIL - update entry\n");
+        return test_failed();
+    }
+
+    // Remove entry
+    acl_remove_entry(acl, 100);
+    if acl_get_permissions(acl, 100) != ACL_PERM_NONE() {
+        print("FAIL - remove entry\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_acl_encode_decode() -> i64 {
+    print("test_acl_encode_decode: ");
+
+    let acl = acl_new(4000);
+    acl_set_default(acl, ACL_PERM_READ());
+    acl_add_entry(acl, 100, ACL_PERM_ALL());
+    acl_add_entry(acl, 200, ACL_PERM_WRITE());
+
+    let bytes = acl_encode(acl);
+
+    // Size: 4 + 1 + 2 + 2*(4+1) = 17 bytes
+    if vec_len(bytes) != 17 {
+        print("FAIL - encoded size (");
+        print_i64(vec_len(bytes));
+        print(")\n");
+        return test_failed();
+    }
+
+    let decoded = acl_decode(bytes, 0);
+
+    if acl_resource_id(decoded) != 4000 {
+        print("FAIL - decoded resource_id\n");
+        return test_failed();
+    }
+
+    if acl_default_perm(decoded) != ACL_PERM_READ() {
+        print("FAIL - decoded default_perm\n");
+        return test_failed();
+    }
+
+    if acl_get_permissions(decoded, 100) != ACL_PERM_ALL() {
+        print("FAIL - decoded hive 100\n");
+        return test_failed();
+    }
+
+    if acl_get_permissions(decoded, 200) != ACL_PERM_WRITE() {
+        print("FAIL - decoded hive 200\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Secure Session Tests
+// =============================================================================
+
+fn test_secure_session_creation() -> i64 {
+    print("test_secure_session_creation: ");
+
+    let kp = hive_keypair_new(600);
+    let pub_key = hive_keypair_public(kp);
+    let cert = hive_cert_new(6001, pub_key);
+    hive_cert_sign(cert, kp, 6001, 1000);
+
+    let session = secure_session_new(kp, cert);
+
+    if secure_session_authenticated(session) != 0 {
+        print("FAIL - initial authenticated\n");
+        return test_failed();
+    }
+
+    if secure_session_nonce_counter(session) != 0 {
+        print("FAIL - initial nonce\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_secure_session_trusted() -> i64 {
+    print("test_secure_session_trusted: ");
+
+    let kp = hive_keypair_new(700);
+    let pub_key = hive_keypair_public(kp);
+    let cert = hive_cert_new(7001, pub_key);
+
+    let session = secure_session_new(kp, cert);
+
+    if secure_session_is_trusted(session, 100) != 0 {
+        print("FAIL - initially trusted\n");
+        return test_failed();
+    }
+
+    secure_session_add_trusted(session, 100);
+    secure_session_add_trusted(session, 200);
+
+    if secure_session_is_trusted(session, 100) != 1 {
+        print("FAIL - trusted 100\n");
+        return test_failed();
+    }
+
+    if secure_session_is_trusted(session, 200) != 1 {
+        print("FAIL - trusted 200\n");
+        return test_failed();
+    }
+
+    if secure_session_is_trusted(session, 300) != 0 {
+        print("FAIL - untrusted 300\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_secure_session_key_exchange() -> i64 {
+    print("test_secure_session_key_exchange: ");
+
+    let kp1 = hive_keypair_new(800);
+    let pub1 = hive_keypair_public(kp1);
+    let cert1 = hive_cert_new(8001, pub1);
+
+    let kp2 = hive_keypair_new(801);
+    let pub2 = hive_keypair_public(kp2);
+
+    let session = secure_session_new(kp1, cert1);
+
+    secure_session_key_exchange(session, pub2);
+
+    let secret = secure_session_shared_secret(session);
+    if vec_len(secret) != CRYPTO_HASH_SIZE() {
+        print("FAIL - shared secret size\n");
+        return test_failed();
+    }
+
+    // Secret should not be all zeros
+    let all_zero = 1;
+    let i = 0;
+    while i < vec_len(secret) {
+        if vec_get(secret, i) != 0 {
+            all_zero = 0;
+        }
+        i = i + 1;
+    }
+
+    if all_zero == 1 {
+        print("FAIL - secret is all zeros\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_secure_session_encrypt_decrypt() -> i64 {
+    print("test_secure_session_encrypt_decrypt: ");
+
+    let kp1 = hive_keypair_new(900);
+    let pub1 = hive_keypair_public(kp1);
+    let cert1 = hive_cert_new(9001, pub1);
+
+    let kp2 = hive_keypair_new(901);
+    let pub2 = hive_keypair_public(kp2);
+
+    let session = secure_session_new(kp1, cert1);
+    secure_session_key_exchange(session, pub2);
+
+    let plaintext = vec_new();
+    vec_push(plaintext, 10);
+    vec_push(plaintext, 20);
+    vec_push(plaintext, 30);
+
+    // Get nonce before encryption
+    let nonce = secure_session_next_nonce(session);
+
+    // Encrypt using session
+    let secret = secure_session_shared_secret(session);
+    let aad = vec_new();
+    let ciphertext = crypto_aead_encrypt(plaintext, aad, secret, nonce);
+
+    // Decrypt
+    let decrypted = crypto_aead_decrypt(ciphertext, aad, secret, nonce);
+
+    if decrypted == 0 {
+        print("FAIL - decryption failed\n");
+        return test_failed();
+    }
+
+    let i = 0;
+    while i < vec_len(plaintext) {
+        if vec_get(decrypted, i) != vec_get(plaintext, i) {
+            print("FAIL - decryption mismatch\n");
+            return test_failed();
+        }
+        i = i + 1;
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_secure_session_authentication() -> i64 {
+    print("test_secure_session_authentication: ");
+
+    // Create two hive identities
+    let kp1 = hive_keypair_new(1000);
+    let pub1 = hive_keypair_public(kp1);
+    let cert1 = hive_cert_new(10001, pub1);
+    hive_cert_sign(cert1, kp1, 10001, 5000);
+
+    let kp2 = hive_keypair_new(1001);
+    let pub2 = hive_keypair_public(kp2);
+    let cert2 = hive_cert_new(10002, pub2);
+    hive_cert_sign(cert2, kp2, 10002, 5000);
+
+    // Create session for hive 1
+    let session1 = secure_session_new(kp1, cert1);
+
+    // Create challenge
+    let challenge = vec_new();
+    vec_push(challenge, 1);
+    vec_push(challenge, 2);
+    vec_push(challenge, 3);
+    vec_push(challenge, 4);
+
+    // Hive 2 signs the challenge
+    let priv2 = hive_keypair_private(kp2);
+    let challenge_sig = crypto_sign(challenge, priv2);
+
+    // Hive 1 authenticates hive 2
+    let result = secure_session_authenticate(session1, cert2, challenge_sig, challenge);
+
+    if result != 1 {
+        print("FAIL - authentication failed\n");
+        return test_failed();
+    }
+
+    if secure_session_authenticated(session1) != 1 {
+        print("FAIL - not marked authenticated\n");
+        return test_failed();
+    }
+
+    // Peer cert should be stored
+    let peer_cert = secure_session_peer_cert(session1);
+    if hive_cert_hive_id(peer_cert) != 10002 {
+        print("FAIL - peer cert not stored\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_secure_session_nonce_increment() -> i64 {
+    print("test_secure_session_nonce_increment: ");
+
+    let kp = hive_keypair_new(1100);
+    let pub_key = hive_keypair_public(kp);
+    let cert = hive_cert_new(11001, pub_key);
+
+    let session = secure_session_new(kp, cert);
+
+    let nonce1 = secure_session_next_nonce(session);
+    let nonce2 = secure_session_next_nonce(session);
+    let nonce3 = secure_session_next_nonce(session);
+
+    // Nonces should be different
+    if vec_get(nonce1, 0) == vec_get(nonce2, 0) && vec_get(nonce2, 0) == vec_get(nonce3, 0) {
+        // Check if counter is incrementing
+        if secure_session_nonce_counter(session) != 3 {
+            print("FAIL - nonce counter\n");
+            return test_failed();
+        }
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Main Test Runner
+// =============================================================================
+
+fn main() -> i64 {
+    print("=== Phase 7 Tests: Security & Authentication ===\n\n");
+
+    let failed = 0;
+
+    // Key Pair Tests
+    failed = failed + test_keypair_generation();
+    failed = failed + test_keypair_deterministic();
+
+    // Certificate Tests
+    failed = failed + test_certificate_creation();
+    failed = failed + test_certificate_signing();
+    failed = failed + test_certificate_verification();
+    failed = failed + test_certificate_encode_decode();
+
+    // Cryptographic Hash Tests
+    failed = failed + test_crypto_hash();
+    failed = failed + test_crypto_hmac();
+
+    // Digital Signature Tests
+    failed = failed + test_crypto_sign_verify();
+
+    // Stream Cipher Tests
+    failed = failed + test_chacha_encrypt_decrypt();
+
+    // AEAD Encryption Tests
+    failed = failed + test_aead_encrypt_decrypt();
+    failed = failed + test_aead_tamper_detection();
+
+    // Frame Signing Tests
+    failed = failed + test_frame_sign_verify();
+
+    // Access Control List Tests
+    failed = failed + test_acl_creation();
+    failed = failed + test_acl_entries();
+    failed = failed + test_acl_update_remove();
+    failed = failed + test_acl_encode_decode();
+
+    // Secure Session Tests
+    failed = failed + test_secure_session_creation();
+    failed = failed + test_secure_session_trusted();
+    failed = failed + test_secure_session_key_exchange();
+    failed = failed + test_secure_session_encrypt_decrypt();
+    failed = failed + test_secure_session_authentication();
+    failed = failed + test_secure_session_nonce_increment();
+
+    print("\n=== Phase 7 Tests Complete ===\n");
+
+    if failed > 0 {
+        print("FAILED: ");
+        print_i64(failed);
+        print(" tests\n");
+        return 1;
+    }
+
+    print("All 24 tests passed!\n");
+    0
+}

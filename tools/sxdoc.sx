@@ -5,7 +5,13 @@
 // Licensed under AGPL-3.0 - see LICENSE file
 // https://github.com/senuamedia/simplex-lang
 
-fn VERSION() -> i64 { string_from("0.9.0") }
+// Import shared modules (TASK-011 Phase 1 completion)
+use lib::version;
+use lib::safety;
+use lib::platform;
+
+// Version - now uses centralized constant
+fn VERSION() -> i64 { SXDOC_VERSION() }
 
 fn show_help() -> i64 {
     println("sxdoc - Simplex Documentation Generator");
@@ -31,15 +37,12 @@ fn show_version() -> i64 {
 // Cross-Platform Support
 // ========================================
 
-/// Detect the operating system
+/// Detect the operating system - now uses shared platform module
 /// Returns: "windows", "linux", or "macos"
+/// TASK-011: Eliminated duplication across 5+ files
 fn get_os_name() -> i64 {
-    // Check for Windows via WINDIR environment variable
-    let windir: i64 = cli_getenv("WINDIR");
-    if windir != 0 {
-        if string_len(windir) > 0 {
-            return string_from("windows");
-        }
+    platform::get_os_name()
+}
     }
     // Check for macOS via OSTYPE or uname
     let ostype: i64 = cli_getenv("OSTYPE");

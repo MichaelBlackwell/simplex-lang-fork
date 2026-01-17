@@ -1,0 +1,475 @@
+// TASK-014: Epistemic Health Monitors
+//
+// Metrics that indicate epistemic health (or lack thereof).
+// These metrics modulate temperature in epistemic annealing.
+//
+// When health is poor:
+// - Temperature should increase (more exploration)
+// - Learning rate should decrease (less confident updates)
+// - Beliefs should be scrutinized more carefully
+
+use simplex_std::dual::dual;
+use std::collections::VecDeque;
+
+/// Individual health metric with history tracking
+#[derive(Clone)]
+pub struct HealthMetric {
+    /// Current value as dual (for gradient flow)
+    pub value: dual,
+
+    /// History of values for trend detection
+    history: VecDeque<f64>,
+
+    /// Maximum history length
+    max_history: usize,
+
+    /// Exponential moving average
+    ema: f64,
+
+    /// EMA decay factor
+    ema_alpha: f64,
+
+    /// Healthy range (min, max)
+    healthy_range: (f64, f64),
+
+    /// Name for debugging
+    name: String,
+}
+
+impl HealthMetric {
+    /// Create a new health metric
+    pub fn new(name: &str, initial_value: f64, healthy_range: (f64, f64)) -> Self {
+        HealthMetric {
+            value: dual::constant(initial_value),
+            history: VecDeque::new(),
+            max_history: 100,
+            ema: initial_value,
+            ema_alpha: 0.1,
+            healthy_range,
+            name: name.to_string(),
+        }
+    }
+
+    /// Update with new value
+    pub fn update(&mut self, new_value: f64) {
+        // Update history
+        self.history.push_back(new_value);
+        if self.history.len() > self.max_history {
+            self.history.pop_front();
+        }
+
+        // Update EMA
+        self.ema = self.ema_alpha * new_value + (1.0 - self.ema_alpha) * self.ema;
+
+        // Compute derivative as rate of change
+        let derivative = if self.history.len() >= 2 {
+            let recent: Vec<f64> = self.history.iter().rev().take(10).cloned().collect();
+            if recent.len() >= 2 {
+                (recent[0] - recent[recent.len() - 1]) / recent.len() as f64
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+
+        self.value = dual::new(new_value, derivative);
+    }
+
+    /// Update with value as dual (preserves derivative)
+    pub fn update_dual(&mut self, new_value: dual) {
+        self.history.push_back(new_value.val);
+        if self.history.len() > self.max_history {
+            self.history.pop_front();
+        }
+        self.ema = self.ema_alpha * new_value.val + (1.0 - self.ema_alpha) * self.ema;
+        self.value = new_value;
+    }
+
+    /// Is this metric in the healthy range?
+    pub fn is_healthy(&self) -> bool {
+        self.value.val >= self.healthy_range.0 && self.value.val <= self.healthy_range.1
+    }
+
+    /// How far outside healthy range (0 if healthy)
+    pub fn unhealthiness(&self) -> f64 {
+        if self.value.val < self.healthy_range.0 {
+            self.healthy_range.0 - self.value.val
+        } else if self.value.val > self.healthy_range.1 {
+            self.value.val - self.healthy_range.1
+        } else {
+            0.0
+        }
+    }
+
+    /// Get trend direction (-1 declining, 0 stable, +1 improving)
+    pub fn trend(&self) -> i32 {
+        if self.history.len() < 5 {
+            return 0;
+        }
+
+        let recent: Vec<f64> = self.history.iter().rev().take(5).cloned().collect();
+        let older: Vec<f64> = self.history.iter().rev().skip(5).take(5).cloned().collect();
+
+        if older.is_empty() {
+            return 0;
+        }
+
+        let recent_avg: f64 = recent.iter().sum::<f64>() / recent.len() as f64;
+        let older_avg: f64 = older.iter().sum::<f64>() / older.len() as f64;
+
+        if recent_avg > older_avg + 0.05 {
+            1
+        } else if recent_avg < older_avg - 0.05 {
+            -1
+        } else {
+            0
+        }
+    }
+
+    /// Get smoothed value (EMA)
+    pub fn smoothed(&self) -> f64 {
+        self.ema
+    }
+
+    /// Get rate of change (derivative)
+    pub fn rate_of_change(&self) -> f64 {
+        self.value.der
+    }
+}
+
+/// Collection of epistemic health metrics
+#[derive(Clone)]
+pub struct EpistemicMonitors {
+    /// How much do different belief sources agree? (0 = total disagreement, 1 = full agreement)
+    pub source_agreement: HealthMetric,
+
+    /// How well do beliefs predict observations? (0 = all wrong, 1 = all correct)
+    pub predictive_accuracy: HealthMetric,
+
+    /// How fast is confidence growing vs evidence? (should be low)
+    /// High values indicate suspicious confidence growth
+    pub confidence_velocity: HealthMetric,
+
+    /// How much are we exploring vs exploiting? (should be balanced)
+    pub exploration_ratio: HealthMetric,
+
+    /// How old is our evidence on average? (in arbitrary time units)
+    pub evidence_staleness: HealthMetric,
+
+    /// What fraction of beliefs have sufficient evidence?
+    pub evidence_coverage: HealthMetric,
+
+    /// How often do predictions fail?
+    pub prediction_failure_rate: HealthMetric,
+
+    /// How calibrated are our confidence scores?
+    pub calibration_error: HealthMetric,
+}
+
+impl EpistemicMonitors {
+    /// Create monitors with default healthy ranges
+    pub fn new() -> Self {
+        EpistemicMonitors {
+            source_agreement: HealthMetric::new("source_agreement", 0.8, (0.6, 1.0)),
+            predictive_accuracy: HealthMetric::new("predictive_accuracy", 0.8, (0.7, 1.0)),
+            confidence_velocity: HealthMetric::new("confidence_velocity", 0.0, (0.0, 0.1)),
+            exploration_ratio: HealthMetric::new("exploration_ratio", 0.3, (0.1, 0.5)),
+            evidence_staleness: HealthMetric::new("evidence_staleness", 0.0, (0.0, 100.0)),
+            evidence_coverage: HealthMetric::new("evidence_coverage", 0.8, (0.6, 1.0)),
+            prediction_failure_rate: HealthMetric::new("prediction_failure_rate", 0.1, (0.0, 0.2)),
+            calibration_error: HealthMetric::new("calibration_error", 0.05, (0.0, 0.1)),
+        }
+    }
+
+    /// Update source agreement metric
+    pub fn update_source_agreement(&mut self, agreement: f64) {
+        self.source_agreement.update(agreement.max(0.0).min(1.0));
+    }
+
+    /// Update predictive accuracy metric
+    pub fn update_predictive_accuracy(&mut self, accuracy: f64) {
+        self.predictive_accuracy.update(accuracy.max(0.0).min(1.0));
+    }
+
+    /// Update confidence velocity metric
+    pub fn update_confidence_velocity(&mut self, velocity: f64) {
+        self.confidence_velocity.update(velocity.abs());
+    }
+
+    /// Update exploration ratio metric
+    pub fn update_exploration_ratio(&mut self, ratio: f64) {
+        self.exploration_ratio.update(ratio.max(0.0).min(1.0));
+    }
+
+    /// Update evidence staleness metric
+    pub fn update_evidence_staleness(&mut self, staleness: f64) {
+        self.evidence_staleness.update(staleness.max(0.0));
+    }
+
+    /// Update evidence coverage metric
+    pub fn update_evidence_coverage(&mut self, coverage: f64) {
+        self.evidence_coverage.update(coverage.max(0.0).min(1.0));
+    }
+
+    /// Record a prediction outcome
+    pub fn record_prediction(&mut self, was_correct: bool, confidence: f64) {
+        // Update predictive accuracy
+        let current = self.predictive_accuracy.value.val;
+        let new_accuracy = if was_correct {
+            current * 0.99 + 0.01
+        } else {
+            current * 0.99
+        };
+        self.predictive_accuracy.update(new_accuracy);
+
+        // Update failure rate
+        let current_failure = self.prediction_failure_rate.value.val;
+        let new_failure = if was_correct {
+            current_failure * 0.99
+        } else {
+            current_failure * 0.99 + 0.01
+        };
+        self.prediction_failure_rate.update(new_failure);
+
+        // Update calibration error (difference between confidence and accuracy)
+        let actual = if was_correct { 1.0 } else { 0.0 };
+        let error = (confidence - actual).abs();
+        let current_ece = self.calibration_error.value.val;
+        self.calibration_error.update(current_ece * 0.99 + error * 0.01);
+    }
+
+    /// Compute overall epistemic health score (0 = very unhealthy, 1 = very healthy)
+    pub fn overall_health(&self) -> f64 {
+        let mut score = 0.0;
+        let mut weights = 0.0;
+
+        // Source agreement (weight: 2)
+        score += self.source_agreement.value.val * 2.0;
+        weights += 2.0;
+
+        // Predictive accuracy (weight: 3 - most important)
+        score += self.predictive_accuracy.value.val * 3.0;
+        weights += 3.0;
+
+        // Confidence velocity (inverse - low is healthy) (weight: 1)
+        let conf_vel_health = (1.0 - self.confidence_velocity.value.val * 10.0).max(0.0);
+        score += conf_vel_health * 1.0;
+        weights += 1.0;
+
+        // Exploration ratio (centered at 0.3) (weight: 1)
+        let exp_health = 1.0 - (self.exploration_ratio.value.val - 0.3).abs() * 2.0;
+        score += exp_health.max(0.0) * 1.0;
+        weights += 1.0;
+
+        // Evidence staleness (inverse - low is healthy) (weight: 1)
+        let stale_health = (1.0 - self.evidence_staleness.value.val / 200.0).max(0.0);
+        score += stale_health * 1.0;
+        weights += 1.0;
+
+        // Evidence coverage (weight: 2)
+        score += self.evidence_coverage.value.val * 2.0;
+        weights += 2.0;
+
+        // Calibration error (inverse) (weight: 2)
+        let cal_health = (1.0 - self.calibration_error.value.val * 10.0).max(0.0);
+        score += cal_health * 2.0;
+        weights += 2.0;
+
+        score / weights
+    }
+
+    /// Get health as dual number (for gradient flow)
+    pub fn overall_health_dual(&self) -> dual {
+        // Use source agreement and predictive accuracy as key components
+        let agreement = self.source_agreement.value;
+        let accuracy = self.predictive_accuracy.value;
+        let cal_health = dual::constant(1.0) - self.calibration_error.value * dual::constant(10.0);
+
+        // Weighted combination
+        (agreement * dual::constant(0.3) +
+         accuracy * dual::constant(0.4) +
+         cal_health.max(dual::constant(0.0)) * dual::constant(0.3))
+    }
+
+    /// Check if any metric is critically unhealthy
+    pub fn has_critical_issue(&self) -> bool {
+        !self.source_agreement.is_healthy() && self.source_agreement.value.val < 0.4 ||
+        !self.predictive_accuracy.is_healthy() && self.predictive_accuracy.value.val < 0.5 ||
+        self.confidence_velocity.value.val > 0.2 ||
+        self.calibration_error.value.val > 0.2
+    }
+
+    /// Get list of current issues
+    pub fn get_issues(&self) -> Vec<String> {
+        let mut issues = Vec::new();
+
+        if !self.source_agreement.is_healthy() {
+            issues.push(format!(
+                "Source agreement low: {:.2} (healthy: {:.2}-{:.2})",
+                self.source_agreement.value.val,
+                self.source_agreement.healthy_range.0,
+                self.source_agreement.healthy_range.1
+            ));
+        }
+
+        if !self.predictive_accuracy.is_healthy() {
+            issues.push(format!(
+                "Predictive accuracy low: {:.2} (healthy: {:.2}-{:.2})",
+                self.predictive_accuracy.value.val,
+                self.predictive_accuracy.healthy_range.0,
+                self.predictive_accuracy.healthy_range.1
+            ));
+        }
+
+        if !self.confidence_velocity.is_healthy() {
+            issues.push(format!(
+                "Confidence growing too fast: {:.3}/step (healthy: <{:.2})",
+                self.confidence_velocity.value.val,
+                self.confidence_velocity.healthy_range.1
+            ));
+        }
+
+        if !self.calibration_error.is_healthy() {
+            issues.push(format!(
+                "Calibration error high: {:.3} (healthy: <{:.2})",
+                self.calibration_error.value.val,
+                self.calibration_error.healthy_range.1
+            ));
+        }
+
+        if !self.evidence_coverage.is_healthy() {
+            issues.push(format!(
+                "Evidence coverage low: {:.2} (healthy: >{:.2})",
+                self.evidence_coverage.value.val,
+                self.evidence_coverage.healthy_range.0
+            ));
+        }
+
+        if !self.evidence_staleness.is_healthy() {
+            issues.push(format!(
+                "Evidence too stale: {:.1} (healthy: <{:.1})",
+                self.evidence_staleness.value.val,
+                self.evidence_staleness.healthy_range.1
+            ));
+        }
+
+        issues
+    }
+
+    /// Get a summary of epistemic health
+    pub fn summary(&self) -> String {
+        format!(
+            "Epistemic Health: {:.2}\n  Agreement: {:.2} | Accuracy: {:.2} | ECE: {:.3}\n  Conf Velocity: {:.3} | Exploration: {:.2} | Coverage: {:.2}",
+            self.overall_health(),
+            self.source_agreement.value.val,
+            self.predictive_accuracy.value.val,
+            self.calibration_error.value.val,
+            self.confidence_velocity.value.val,
+            self.exploration_ratio.value.val,
+            self.evidence_coverage.value.val
+        )
+    }
+
+    /// Reset all monitors to initial values
+    pub fn reset(&mut self) {
+        *self = EpistemicMonitors::new();
+    }
+}
+
+impl Default for EpistemicMonitors {
+    fn default() -> Self {
+        EpistemicMonitors::new()
+    }
+}
+
+/// Snapshot of epistemic health at a point in time
+#[derive(Clone)]
+pub struct EpistemicHealth {
+    /// Overall health score
+    pub score: f64,
+
+    /// Individual metric values
+    pub source_agreement: f64,
+    pub predictive_accuracy: f64,
+    pub confidence_velocity: f64,
+    pub exploration_ratio: f64,
+    pub evidence_staleness: f64,
+    pub evidence_coverage: f64,
+    pub calibration_error: f64,
+
+    /// Is there a critical issue?
+    pub has_critical_issue: bool,
+
+    /// List of active issues
+    pub issues: Vec<String>,
+}
+
+impl EpistemicHealth {
+    /// Create snapshot from monitors
+    pub fn from_monitors(monitors: &EpistemicMonitors) -> Self {
+        EpistemicHealth {
+            score: monitors.overall_health(),
+            source_agreement: monitors.source_agreement.value.val,
+            predictive_accuracy: monitors.predictive_accuracy.value.val,
+            confidence_velocity: monitors.confidence_velocity.value.val,
+            exploration_ratio: monitors.exploration_ratio.value.val,
+            evidence_staleness: monitors.evidence_staleness.value.val,
+            evidence_coverage: monitors.evidence_coverage.value.val,
+            calibration_error: monitors.calibration_error.value.val,
+            has_critical_issue: monitors.has_critical_issue(),
+            issues: monitors.get_issues(),
+        }
+    }
+
+    /// Is the system epistemically healthy?
+    pub fn is_healthy(&self) -> bool {
+        self.score > 0.7 && !self.has_critical_issue
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_health_metric() {
+        let mut metric = HealthMetric::new("test", 0.5, (0.3, 0.8));
+
+        assert!(metric.is_healthy());
+        assert_eq!(metric.unhealthiness(), 0.0);
+
+        // Update to unhealthy value
+        metric.update(0.2);
+        assert!(!metric.is_healthy());
+        assert!((metric.unhealthiness() - 0.1).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_epistemic_monitors() {
+        let mut monitors = EpistemicMonitors::new();
+
+        // Initial state should be healthy
+        assert!(monitors.overall_health() > 0.5);
+
+        // Simulate poor predictions
+        for _ in 0..20 {
+            monitors.record_prediction(false, 0.9);
+        }
+
+        // Health should drop
+        assert!(monitors.overall_health() < 0.7);
+        assert!(monitors.get_issues().len() > 0);
+    }
+
+    #[test]
+    fn test_confidence_velocity_detection() {
+        let mut monitors = EpistemicMonitors::new();
+
+        // Simulate suspicious confidence growth
+        monitors.update_confidence_velocity(0.25);
+
+        assert!(!monitors.confidence_velocity.is_healthy());
+        assert!(monitors.get_issues().iter().any(|i| i.contains("Confidence")));
+    }
+}

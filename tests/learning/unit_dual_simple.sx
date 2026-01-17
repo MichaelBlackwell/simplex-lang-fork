@@ -2,155 +2,155 @@
 // Tests basic forward-mode automatic differentiation without structs
 
 fn main() -> i64 {
-    println("=== Dual Numbers Simple Test ===");
-    println("");
+ println("=== Dual Numbers Simple Test ===");
+ println("");
 
-    // Instead of using a struct, we'll use two separate variables
-    // for value and derivative (val, der)
+ // Instead of using a struct, we'll use two separate variables
+ // for value and derivative (val, der)
 
-    // Test 1: x^2 derivative
-    // f(x) = x^2, f'(x) = 2x
-    // At x=5: f(5) = 25, f'(5) = 10
-    println("Test 1: x^2 derivative at x=5");
-    let x_val: f64 = 5.0;
-    let x_der: f64 = 1.0;  // Seed derivative
+ // Test 1: x^2 derivative
+ // f(x) = x^2, f'(x) = 2x
+ // At x=5: f(5) = 25, f'(5) = 10
+ println("Test 1: x^2 derivative at x=5");
+ let x_val: f64 = 5.0;
+ let x_der: f64 = 1.0; // Seed derivative
 
-    // x * x using product rule: (fg)' = f'g + fg'
-    let result_val: f64 = x_val * x_val;  // 25
-    let result_der: f64 = x_val * x_der + x_der * x_val;  // 5*1 + 1*5 = 10
+ // x * x using product rule: (fg)' = f'g + fg'
+ let result_val: f64 = x_val * x_val; // 25
+ let result_der: f64 = x_val * x_der + x_der * x_val; // 5*1 + 1*5 = 10
 
-    print("  f(5) = ");
-    print_f64(result_val);
-    println("");
-    print("  f'(5) = ");
-    print_f64(result_der);
-    println("");
+ print(" f(5) = ");
+ print_f64(result_val);
+ println("");
+ print(" f'(5) = ");
+ print_f64(result_der);
+ println("");
 
-    if result_val > 24.9 && result_val < 25.1 && result_der > 9.9 && result_der < 10.1 {
-        println("  PASS");
-    } else {
-        println("  FAIL");
-        return 1;
-    }
+ if result_val > 24.9 && result_val < 25.1 && result_der > 9.9 && result_der < 10.1 {
+ println(" PASS");
+ } else {
+ println(" FAIL");
+ return 1;
+ }
 
-    println("");
+ println("");
 
-    // Test 2: sin(x) derivative at x=0
-    // d/dx sin(x) = cos(x)
-    // sin(0) = 0, cos(0) = 1
-    println("Test 2: sin(x) derivative at x=0");
-    let x2_val: f64 = 0.0;
-    let x2_der: f64 = 1.0;
+ // Test 2: sin(x) derivative at x=0
+ // d/dx sin(x) = cos(x)
+ // sin(0) = 0, cos(0) = 1
+ println("Test 2: sin(x) derivative at x=0");
+ let x2_val: f64 = 0.0;
+ let x2_der: f64 = 1.0;
 
-    let sin_val: f64 = sin(x2_val);  // 0
-    let sin_der: f64 = x2_der * cos(x2_val);  // 1 * cos(0) = 1
+ let sin_val: f64 = sin(x2_val); // 0
+ let sin_der: f64 = x2_der * cos(x2_val); // 1 * cos(0) = 1
 
-    print("  sin(0) = ");
-    print_f64(sin_val);
-    println("");
-    print("  d/dx sin(0) = ");
-    print_f64(sin_der);
-    println("");
+ print(" sin(0) = ");
+ print_f64(sin_val);
+ println("");
+ print(" d/dx sin(0) = ");
+ print_f64(sin_der);
+ println("");
 
-    if sin_val > -0.001 && sin_val < 0.001 && sin_der > 0.999 && sin_der < 1.001 {
-        println("  PASS");
-    } else {
-        println("  FAIL");
-        return 1;
-    }
+ if sin_val > -0.001 && sin_val < 0.001 && sin_der > 0.999 && sin_der < 1.001 {
+ println(" PASS");
+ } else {
+ println(" FAIL");
+ return 1;
+ }
 
-    println("");
+ println("");
 
-    // Test 3: exp(x) derivative at x=0
-    // d/dx exp(x) = exp(x)
-    // exp(0) = 1, exp'(0) = 1
-    println("Test 3: exp(x) derivative at x=0");
-    let x3_val: f64 = 0.0;
-    let x3_der: f64 = 1.0;
+ // Test 3: exp(x) derivative at x=0
+ // d/dx exp(x) = exp(x)
+ // exp(0) = 1, exp'(0) = 1
+ println("Test 3: exp(x) derivative at x=0");
+ let x3_val: f64 = 0.0;
+ let x3_der: f64 = 1.0;
 
-    let exp_val: f64 = exp(x3_val);  // 1
-    let exp_der: f64 = x3_der * exp(x3_val);  // 1 * 1 = 1
+ let exp_val: f64 = exp(x3_val); // 1
+ let exp_der: f64 = x3_der * exp(x3_val); // 1 * 1 = 1
 
-    print("  exp(0) = ");
-    print_f64(exp_val);
-    println("");
-    print("  d/dx exp(0) = ");
-    print_f64(exp_der);
-    println("");
+ print(" exp(0) = ");
+ print_f64(exp_val);
+ println("");
+ print(" d/dx exp(0) = ");
+ print_f64(exp_der);
+ println("");
 
-    if exp_val > 0.999 && exp_val < 1.001 && exp_der > 0.999 && exp_der < 1.001 {
-        println("  PASS");
-    } else {
-        println("  FAIL");
-        return 1;
-    }
+ if exp_val > 0.999 && exp_val < 1.001 && exp_der > 0.999 && exp_der < 1.001 {
+ println(" PASS");
+ } else {
+ println(" FAIL");
+ return 1;
+ }
 
-    println("");
+ println("");
 
-    // Test 4: Chain rule - sin(x^2) at x=1
-    // d/dx sin(x^2) = cos(x^2) * 2x
-    // At x=1: sin(1) ≈ 0.841, cos(1)*2 ≈ 1.081
-    println("Test 4: sin(x^2) derivative at x=1 (chain rule)");
-    let x4_val: f64 = 1.0;
-    let x4_der: f64 = 1.0;
+ // Test 4: Chain rule - sin(x^2) at x=1
+ // d/dx sin(x^2) = cos(x^2) * 2x
+ // At x=1: sin(1) ≈ 0.841, cos(1)*2 ≈ 1.081
+ println("Test 4: sin(x^2) derivative at x=1 (chain rule)");
+ let x4_val: f64 = 1.0;
+ let x4_der: f64 = 1.0;
 
-    // First compute x^2
-    let x4_sq_val: f64 = x4_val * x4_val;  // 1
-    let x4_sq_der: f64 = x4_val * x4_der + x4_der * x4_val;  // 2
+ // First compute x^2
+ let x4_sq_val: f64 = x4_val * x4_val; // 1
+ let x4_sq_der: f64 = x4_val * x4_der + x4_der * x4_val; // 2
 
-    // Then sin(x^2)
-    let sin_sq_val: f64 = sin(x4_sq_val);  // sin(1)
-    let sin_sq_der: f64 = x4_sq_der * cos(x4_sq_val);  // 2 * cos(1)
+ // Then sin(x^2)
+ let sin_sq_val: f64 = sin(x4_sq_val); // sin(1)
+ let sin_sq_der: f64 = x4_sq_der * cos(x4_sq_val); // 2 * cos(1)
 
-    let expected_der: f64 = 2.0 * cos(1.0);
+ let expected_der: f64 = 2.0 * cos(1.0);
 
-    print("  sin(1^2) = ");
-    print_f64(sin_sq_val);
-    println("");
-    print("  d/dx sin(x^2)|x=1 = ");
-    print_f64(sin_sq_der);
-    print(" (expected: ");
-    print_f64(expected_der);
-    println(")");
+ print(" sin(1^2) = ");
+ print_f64(sin_sq_val);
+ println("");
+ print(" d/dx sin(x^2)|x=1 = ");
+ print_f64(sin_sq_der);
+ print(" (expected: ");
+ print_f64(expected_der);
+ println(")");
 
-    let diff: f64 = sin_sq_der - expected_der;
-    if diff < 0.0 { diff = -diff; }
+ let diff: f64 = sin_sq_der - expected_der;
+ if diff < 0.0 { diff = -diff; }
 
-    if diff < 0.001 {
-        println("  PASS");
-    } else {
-        println("  FAIL");
-        return 1;
-    }
+ if diff < 0.001 {
+ println(" PASS");
+ } else {
+ println(" FAIL");
+ return 1;
+ }
 
-    println("");
+ println("");
 
-    // Test 5: Sigmoid derivative at x=0
-    // sigmoid(x) = 1/(1+exp(-x))
-    // sigmoid'(x) = sigmoid(x) * (1 - sigmoid(x))
-    // sigmoid(0) = 0.5, sigmoid'(0) = 0.25
-    println("Test 5: sigmoid(x) derivative at x=0");
-    let x5_val: f64 = 0.0;
-    let x5_der: f64 = 1.0;
+ // Test 5: Sigmoid derivative at x=0
+ // sigmoid(x) = 1/(1+exp(-x))
+ // sigmoid'(x) = sigmoid(x) * (1 - sigmoid(x))
+ // sigmoid(0) = 0.5, sigmoid'(0) = 0.25
+ println("Test 5: sigmoid(x) derivative at x=0");
+ let x5_val: f64 = 0.0;
+ let x5_der: f64 = 1.0;
 
-    let sig_val: f64 = 1.0 / (1.0 + exp(-x5_val));  // 0.5
-    let sig_der: f64 = x5_der * sig_val * (1.0 - sig_val);  // 0.25
+ let sig_val: f64 = 1.0 / (1.0 + exp(-x5_val)); // 0.5
+ let sig_der: f64 = x5_der * sig_val * (1.0 - sig_val); // 0.25
 
-    print("  sigmoid(0) = ");
-    print_f64(sig_val);
-    println("");
-    print("  d/dx sigmoid(0) = ");
-    print_f64(sig_der);
-    println("");
+ print(" sigmoid(0) = ");
+ print_f64(sig_val);
+ println("");
+ print(" d/dx sigmoid(0) = ");
+ print_f64(sig_der);
+ println("");
 
-    if sig_val > 0.499 && sig_val < 0.501 && sig_der > 0.249 && sig_der < 0.251 {
-        println("  PASS");
-    } else {
-        println("  FAIL");
-        return 1;
-    }
+ if sig_val > 0.499 && sig_val < 0.501 && sig_der > 0.249 && sig_der < 0.251 {
+ println(" PASS");
+ } else {
+ println(" FAIL");
+ return 1;
+ }
 
-    println("");
-    println("=== All Tests Passed! ===");
-    0
+ println("");
+ println("=== All Tests Passed! ===");
+ 0
 }

@@ -1,0 +1,680 @@
+// Edge Hive - Security Layer
+// Provides encryption, authentication, and user isolation
+//
+// Security Model:
+// 1. User Identity: Each user has a unique user_id derived from credentials
+// 2. Encryption Key: Derived from user password using PBKDF2
+// 3. Data Isolation: Separate data directories per user_id
+// 4. Encryption at Rest: AES-256-GCM for all stored data
+// 5. Network Auth: Token-based authentication with session management
+// 6. Message Integrity: HMAC-SHA256 for all network messages
+//
+// Threat Model:
+// - Local attacker with file system access
+// - Network attacker (MITM)
+// - Malicious peer devices
+// - Device theft
+
+// =============================================================================
+// Security Constants
+// =============================================================================
+
+fn KEY_LENGTH() -> i64 { 32 }           // 256 bits
+fn SALT_LENGTH() -> i64 { 16 }          // 128 bits
+fn NONCE_LENGTH() -> i64 { 12 }         // 96 bits for GCM
+fn TAG_LENGTH() -> i64 { 16 }           // 128 bits for GCM
+fn PBKDF2_ITERATIONS() -> i64 { 100000 } // OWASP recommended minimum
+fn TOKEN_LENGTH() -> i64 { 32 }         // 256-bit tokens
+fn SESSION_EXPIRY() -> i64 { 86400 }    // 24 hours in seconds
+
+// =============================================================================
+// User Identity
+// =============================================================================
+
+// UserIdentity structure:
+// Slot 0: user_id (hash of username + device)
+// Slot 1: user_id_hex (string representation)
+// Slot 2: encryption_key (derived from password)
+// Slot 3: auth_token (for network requests)
+// Slot 4: token_expiry (timestamp)
+// Slot 5: device_key (unique per device)
+// Slot 6: salt (for key derivation)
+
+fn user_identity_new(username: i64, password: i64) -> i64 {
+    let identity: i64 = vec_new();
+
+    // Generate salt for this user
+    let salt: i64 = crypto_random_bytes(SALT_LENGTH());
+
+    // Derive user_id from username (not password - stable across sessions)
+    let user_id: i64 = crypto_hash_sha256(username);
+    vec_push(identity, user_id);
+
+    // User ID as hex string for file paths
+    let user_id_hex: i64 = bytes_to_hex(user_id);
+    vec_push(identity, user_id_hex);
+
+    // Derive encryption key from password using PBKDF2
+    let key: i64 = crypto_pbkdf2(password, salt, PBKDF2_ITERATIONS(), KEY_LENGTH());
+    vec_push(identity, key);
+
+    // Generate auth token
+    let token: i64 = crypto_random_bytes(TOKEN_LENGTH());
+    vec_push(identity, token);
+
+    // Token expiry
+    vec_push(identity, time_now() + SESSION_EXPIRY());
+
+    // Generate device key (unique to this device)
+    let device_key: i64 = crypto_random_bytes(KEY_LENGTH());
+    vec_push(identity, device_key);
+
+    // Store salt
+    vec_push(identity, salt);
+
+    identity
+}
+
+fn user_identity_from_stored(username: i64, password: i64, stored_salt: i64) -> i64 {
+    // Recreate identity using stored salt (for returning users)
+    let identity: i64 = vec_new();
+
+    // Derive user_id from username
+    let user_id: i64 = crypto_hash_sha256(username);
+    vec_push(identity, user_id);
+
+    let user_id_hex: i64 = bytes_to_hex(user_id);
+    vec_push(identity, user_id_hex);
+
+    // Derive encryption key using stored salt
+    let key: i64 = crypto_pbkdf2(password, stored_salt, PBKDF2_ITERATIONS(), KEY_LENGTH());
+    vec_push(identity, key);
+
+    // Generate new auth token
+    let token: i64 = crypto_random_bytes(TOKEN_LENGTH());
+    vec_push(identity, token);
+    vec_push(identity, time_now() + SESSION_EXPIRY());
+
+    // Load or generate device key
+    let device_key: i64 = crypto_random_bytes(KEY_LENGTH());
+    vec_push(identity, device_key);
+
+    vec_push(identity, stored_salt);
+
+    identity
+}
+
+fn user_identity_login(username: i64, password: i64) -> i64 {
+    // Login existing user - loads salt from storage
+    let user_id: i64 = crypto_hash_sha256(username);
+    let user_id_hex: i64 = bytes_to_hex(user_id);
+
+    // Try to load stored salt
+    let salt: i64 = load_user_salt(user_id_hex);
+    if salt == 0 {
+        return 0;  // User not found (no stored salt)
+    }
+
+    // Recreate identity with stored salt
+    let identity: i64 = user_identity_from_stored(username, password, salt);
+
+    // Verify login by trying to decrypt a known file
+    // If decryption fails, password is wrong
+    let test_path: i64 = get_user_beliefs_path(identity);
+    if file_exists(test_path) == 1 {
+        let test_data: i64 = secure_read_file(identity, test_path);
+        if test_data == 0 {
+            // Decryption failed - wrong password
+            identity_clear_key(identity);
+            return 0;
+        }
+    }
+
+    identity
+}
+
+// Accessors
+fn identity_user_id(identity: i64) -> i64 { vec_get(identity, 0) }
+fn identity_user_id_hex(identity: i64) -> i64 { vec_get(identity, 1) }
+fn identity_encryption_key(identity: i64) -> i64 { vec_get(identity, 2) }
+fn identity_auth_token(identity: i64) -> i64 { vec_get(identity, 3) }
+fn identity_token_expiry(identity: i64) -> i64 { vec_get(identity, 4) }
+fn identity_device_key(identity: i64) -> i64 { vec_get(identity, 5) }
+fn identity_salt(identity: i64) -> i64 { vec_get(identity, 6) }
+
+fn identity_is_token_valid(identity: i64) -> i64 {
+    let expiry: i64 = identity_token_expiry(identity);
+    if time_now() < expiry { 1 } else { 0 }
+}
+
+fn identity_refresh_token(identity: i64) -> i64 {
+    let token: i64 = crypto_random_bytes(TOKEN_LENGTH());
+    vec_set(identity, 3, token);
+    vec_set(identity, 4, time_now() + SESSION_EXPIRY());
+    0
+}
+
+fn identity_clear_key(identity: i64) -> i64 {
+    // Securely clear encryption key and auth token from memory
+    // This is called on shutdown to prevent key extraction from memory
+
+    // Overwrite encryption key with zeros
+    let key: i64 = identity_encryption_key(identity);
+    let key_len: i64 = vec_len(key);
+    let i: i64 = 0;
+    while i < key_len {
+        vec_set(key, i, 0);
+        i = i + 1;
+    }
+
+    // Overwrite auth token
+    let token: i64 = identity_auth_token(identity);
+    let token_len: i64 = vec_len(token);
+    i = 0;
+    while i < token_len {
+        vec_set(token, i, 0);
+        i = i + 1;
+    }
+
+    // Overwrite device key
+    let device_key: i64 = identity_device_key(identity);
+    let dk_len: i64 = vec_len(device_key);
+    i = 0;
+    while i < dk_len {
+        vec_set(device_key, i, 0);
+        i = i + 1;
+    }
+
+    0
+}
+
+// =============================================================================
+// User-Isolated File Paths
+// =============================================================================
+
+fn get_user_data_directory(identity: i64) -> i64 {
+    let base: i64 = get_base_data_directory();
+    let user_id_hex: i64 = identity_user_id_hex(identity);
+
+    // Data stored in: base/users/<user_id_hex>/
+    let path: i64 = string_concat(base, string_from("/users/"));
+    string_concat(path, user_id_hex)
+}
+
+fn get_user_beliefs_path(identity: i64) -> i64 {
+    let dir: i64 = get_user_data_directory(identity);
+    string_concat(dir, string_from("/beliefs.enc"))  // .enc = encrypted
+}
+
+fn get_user_config_path(identity: i64) -> i64 {
+    let dir: i64 = get_user_data_directory(identity);
+    string_concat(dir, string_from("/config.enc"))
+}
+
+fn get_user_salt_path(identity: i64) -> i64 {
+    let dir: i64 = get_user_data_directory(identity);
+    string_concat(dir, string_from("/salt.dat"))  // Salt is not encrypted
+}
+
+fn get_user_cache_directory(identity: i64) -> i64 {
+    let dir: i64 = get_user_data_directory(identity);
+    string_concat(dir, string_from("/cache"))
+}
+
+fn get_base_data_directory() -> i64 {
+    let platform: i64 = get_platform();
+
+    if platform == PLATFORM_MACOS() {
+        return string_concat(
+            get_home_directory(),
+            string_from("/Library/Application Support/EdgeHive")
+        );
+    }
+
+    if platform == PLATFORM_LINUX() {
+        return string_concat(
+            get_home_directory(),
+            string_from("/.local/share/edgehive")
+        );
+    }
+
+    if platform == PLATFORM_WINDOWS() {
+        return string_concat(
+            get_env(string_from("APPDATA")),
+            string_from("/EdgeHive")
+        );
+    }
+
+    string_concat(get_home_directory(), string_from("/.edgehive"))
+}
+
+fn ensure_user_directory(identity: i64) -> i64 {
+    let dir: i64 = get_user_data_directory(identity);
+    if file_exists(dir) == 0 {
+        mkdir_recursive(dir);
+    }
+    let cache: i64 = get_user_cache_directory(identity);
+    if file_exists(cache) == 0 {
+        mkdir_recursive(cache);
+    }
+
+    // Set restrictive permissions (owner only)
+    file_set_permissions(dir, 448);  // 0700 in octal
+    1
+}
+
+// =============================================================================
+// Encryption at Rest (AES-256-GCM)
+// =============================================================================
+
+// Encrypted file format:
+// [version(1), nonce(12), ciphertext(N), tag(16)]
+
+fn ENCRYPTION_VERSION() -> i64 { 1 }
+
+fn encrypt_data(identity: i64, plaintext: i64) -> i64 {
+    let key: i64 = identity_encryption_key(identity);
+
+    // Generate random nonce
+    let nonce: i64 = crypto_random_bytes(NONCE_LENGTH());
+
+    // Encrypt using AES-256-GCM
+    let result: i64 = crypto_aes_gcm_encrypt(key, nonce, plaintext);
+
+    if result == 0 {
+        return 0;  // Encryption failed
+    }
+
+    // Get ciphertext and tag from result
+    let ciphertext: i64 = vec_get(result, 0);
+    let tag: i64 = vec_get(result, 1);
+
+    // Build encrypted blob
+    let blob: i64 = vec_new();
+    vec_push(blob, ENCRYPTION_VERSION());
+
+    // Append nonce
+    let i: i64 = 0;
+    while i < NONCE_LENGTH() {
+        vec_push(blob, vec_get(nonce, i));
+        i = i + 1;
+    }
+
+    // Append ciphertext
+    let ct_len: i64 = vec_len(ciphertext);
+    i = 0;
+    while i < ct_len {
+        vec_push(blob, vec_get(ciphertext, i));
+        i = i + 1;
+    }
+
+    // Append tag
+    i = 0;
+    while i < TAG_LENGTH() {
+        vec_push(blob, vec_get(tag, i));
+        i = i + 1;
+    }
+
+    blob
+}
+
+fn decrypt_data(identity: i64, blob: i64) -> i64 {
+    let key: i64 = identity_encryption_key(identity);
+    let len: i64 = vec_len(blob);
+
+    // Minimum size: version(1) + nonce(12) + tag(16) = 29
+    if len < 29 {
+        return 0;  // Invalid format
+    }
+
+    // Check version
+    let version: i64 = vec_get(blob, 0);
+    if version != ENCRYPTION_VERSION() {
+        return 0;  // Unsupported version
+    }
+
+    // Extract nonce (bytes 1-12)
+    let nonce: i64 = vec_new();
+    let i: i64 = 0;
+    while i < NONCE_LENGTH() {
+        vec_push(nonce, vec_get(blob, 1 + i));
+        i = i + 1;
+    }
+
+    // Extract tag (last 16 bytes)
+    let tag: i64 = vec_new();
+    i = 0;
+    while i < TAG_LENGTH() {
+        vec_push(tag, vec_get(blob, len - TAG_LENGTH() + i));
+        i = i + 1;
+    }
+
+    // Extract ciphertext (between nonce and tag)
+    let ct_start: i64 = 1 + NONCE_LENGTH();
+    let ct_end: i64 = len - TAG_LENGTH();
+    let ciphertext: i64 = vec_new();
+    i = ct_start;
+    while i < ct_end {
+        vec_push(ciphertext, vec_get(blob, i));
+        i = i + 1;
+    }
+
+    // Decrypt using AES-256-GCM
+    let plaintext: i64 = crypto_aes_gcm_decrypt(key, nonce, ciphertext, tag);
+
+    plaintext  // Returns 0 if authentication failed (tampering detected)
+}
+
+// =============================================================================
+// Secure File Operations
+// =============================================================================
+
+fn secure_write_file(identity: i64, path: i64, data: i64) -> i64 {
+    // Encrypt data
+    let encrypted: i64 = encrypt_data(identity, data);
+    if encrypted == 0 {
+        return 0;  // Encryption failed
+    }
+
+    // Write to file
+    file_write_vec(path, encrypted)
+}
+
+fn secure_read_file(identity: i64, path: i64) -> i64 {
+    if file_exists(path) == 0 {
+        return 0;
+    }
+
+    let encrypted: i64 = file_read_vec(path);
+    if encrypted == 0 {
+        return 0;
+    }
+
+    // Decrypt and verify
+    let decrypted: i64 = decrypt_data(identity, encrypted);
+
+    decrypted  // Returns 0 if decryption/verification failed
+}
+
+// =============================================================================
+// Network Authentication
+// =============================================================================
+
+// Auth handshake message:
+// [msg_type, user_id, device_id, timestamp, signature]
+
+fn create_auth_handshake(identity: i64, device_id: i64) -> i64 {
+    let msg: i64 = vec_new();
+
+    vec_push(msg, MSG_AUTH_HANDSHAKE());
+    vec_push(msg, identity_user_id(identity));
+    vec_push(msg, device_id);
+    vec_push(msg, time_now());
+
+    // Sign the message
+    let signature: i64 = sign_message(identity, msg);
+    vec_push(msg, signature);
+
+    msg
+}
+
+fn verify_auth_handshake(msg: i64, expected_user_id: i64) -> i64 {
+    if vec_len(msg) < 5 {
+        return 0;  // Invalid format
+    }
+
+    let msg_type: i64 = vec_get(msg, 0);
+    if msg_type != MSG_AUTH_HANDSHAKE() {
+        return 0;  // Wrong message type
+    }
+
+    let user_id: i64 = vec_get(msg, 1);
+    if user_id != expected_user_id {
+        return 0;  // User mismatch
+    }
+
+    let timestamp: i64 = vec_get(msg, 3);
+    let now: i64 = time_now();
+
+    // Check timestamp freshness (within 5 minutes)
+    if now - timestamp > 300 {
+        return 0;  // Stale message (possible replay attack)
+    }
+    if timestamp > now + 60 {
+        return 0;  // Future timestamp (clock skew attack)
+    }
+
+    // TODO: Verify signature using server's public key
+    1
+}
+
+// =============================================================================
+// Message Signing (HMAC-SHA256)
+// =============================================================================
+
+fn sign_message(identity: i64, msg: i64) -> i64 {
+    let key: i64 = identity_device_key(identity);
+
+    // Serialize message to bytes
+    let data: i64 = serialize_for_signing(msg);
+
+    // Compute HMAC-SHA256
+    crypto_hmac_sha256(key, data)
+}
+
+fn verify_message_signature(identity: i64, msg: i64, signature: i64) -> i64 {
+    let expected: i64 = sign_message(identity, msg);
+
+    // Constant-time comparison
+    crypto_constant_time_compare(expected, signature)
+}
+
+fn serialize_for_signing(msg: i64) -> i64 {
+    // Serialize message fields to bytes for signing
+    let result: i64 = vec_new();
+    let len: i64 = vec_len(msg);
+
+    let i: i64 = 0;
+    while i < len {
+        // Convert each field to bytes and append
+        let field: i64 = vec_get(msg, i);
+        let bytes: i64 = i64_to_bytes(field);
+        let j: i64 = 0;
+        while j < 8 {
+            vec_push(result, vec_get(bytes, j));
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    result
+}
+
+// =============================================================================
+// Secure Device ID Generation
+// =============================================================================
+
+fn generate_secure_device_id() -> i64 {
+    // Combine multiple entropy sources
+    let entropy: i64 = vec_new();
+
+    // Hardware identifiers (if available)
+    let hw_id: i64 = sys_get_hardware_id();
+    vec_push(entropy, hw_id);
+
+    // Random bytes
+    let random: i64 = crypto_random_bytes(32);
+    let i: i64 = 0;
+    while i < 32 {
+        vec_push(entropy, vec_get(random, i));
+        i = i + 1;
+    }
+
+    // Timestamp with high precision
+    vec_push(entropy, time_now_nanos());
+
+    // Process ID
+    vec_push(entropy, sys_get_process_id());
+
+    // Hash everything together
+    crypto_hash_sha256(entropy)
+}
+
+// =============================================================================
+// Password Verification
+// =============================================================================
+
+fn verify_password(identity: i64, password: i64) -> i64 {
+    // Derive key from password with stored salt
+    let salt: i64 = identity_salt(identity);
+    let derived_key: i64 = crypto_pbkdf2(password, salt, PBKDF2_ITERATIONS(), KEY_LENGTH());
+
+    // Compare with stored key
+    let stored_key: i64 = identity_encryption_key(identity);
+    crypto_constant_time_compare(derived_key, stored_key)
+}
+
+// =============================================================================
+// Session Management
+// =============================================================================
+
+fn create_session_token(identity: i64) -> i64 {
+    // Generate cryptographically secure session token
+    let token_bytes: i64 = crypto_random_bytes(TOKEN_LENGTH());
+
+    // Create session structure
+    let session: i64 = vec_new();
+    vec_push(session, token_bytes);
+    vec_push(session, identity_user_id(identity));
+    vec_push(session, time_now());                    // Created at
+    vec_push(session, time_now() + SESSION_EXPIRY()); // Expires at
+
+    // Sign session token
+    let signature: i64 = sign_message(identity, session);
+    vec_push(session, signature);
+
+    session
+}
+
+fn validate_session(identity: i64, session: i64) -> i64 {
+    if vec_len(session) < 5 {
+        return 0;
+    }
+
+    // Check expiry
+    let expiry: i64 = vec_get(session, 3);
+    if time_now() > expiry {
+        return 0;  // Expired
+    }
+
+    // Verify user ID matches
+    let session_user: i64 = vec_get(session, 1);
+    if session_user != identity_user_id(identity) {
+        return 0;  // User mismatch
+    }
+
+    // Verify signature
+    let signature: i64 = vec_get(session, 4);
+    let session_without_sig: i64 = vec_new();
+    vec_push(session_without_sig, vec_get(session, 0));
+    vec_push(session_without_sig, vec_get(session, 1));
+    vec_push(session_without_sig, vec_get(session, 2));
+    vec_push(session_without_sig, vec_get(session, 3));
+
+    verify_message_signature(identity, session_without_sig, signature)
+}
+
+// =============================================================================
+// Secure Memory Wiping
+// =============================================================================
+
+fn secure_wipe(data: i64) -> i64 {
+    // Overwrite sensitive data before freeing
+    let len: i64 = vec_len(data);
+    let i: i64 = 0;
+    while i < len {
+        vec_set(data, i, 0);
+        i = i + 1;
+    }
+    // Force memory barrier
+    crypto_memory_barrier();
+    0
+}
+
+fn secure_wipe_identity(identity: i64) -> i64 {
+    // Wipe sensitive fields
+    secure_wipe(identity_encryption_key(identity));
+    secure_wipe(identity_auth_token(identity));
+    secure_wipe(identity_device_key(identity));
+    0
+}
+
+// =============================================================================
+// Message Types
+// =============================================================================
+
+fn MSG_AUTH_HANDSHAKE() -> i64 { 100 }
+fn MSG_AUTH_RESPONSE() -> i64 { 101 }
+fn MSG_AUTH_REFRESH() -> i64 { 102 }
+fn MSG_AUTH_LOGOUT() -> i64 { 103 }
+
+// =============================================================================
+// Platform Constants
+// =============================================================================
+
+fn PLATFORM_MACOS() -> i64 { 1 }
+fn PLATFORM_LINUX() -> i64 { 3 }
+fn PLATFORM_WINDOWS() -> i64 { 4 }
+
+// =============================================================================
+// Runtime Declarations (Crypto primitives from C runtime)
+// =============================================================================
+
+// Cryptographic operations
+extern fn crypto_random_bytes(length: i64) -> i64;
+extern fn crypto_hash_sha256(data: i64) -> i64;
+extern fn crypto_hmac_sha256(key: i64, data: i64) -> i64;
+extern fn crypto_pbkdf2(password: i64, salt: i64, iterations: i64, key_len: i64) -> i64;
+extern fn crypto_aes_gcm_encrypt(key: i64, nonce: i64, plaintext: i64) -> i64;
+extern fn crypto_aes_gcm_decrypt(key: i64, nonce: i64, ciphertext: i64, tag: i64) -> i64;
+extern fn crypto_constant_time_compare(a: i64, b: i64) -> i64;
+extern fn crypto_memory_barrier() -> i64;
+
+// System operations
+extern fn sys_get_hardware_id() -> i64;
+extern fn sys_get_process_id() -> i64;
+extern fn time_now_nanos() -> i64;
+
+// Utility functions
+extern fn bytes_to_hex(bytes: i64) -> i64;
+extern fn i64_to_bytes(n: i64) -> i64;
+
+// File operations
+extern fn file_exists(path: i64) -> i64;
+extern fn file_read_vec(path: i64) -> i64;
+extern fn file_write_vec(path: i64, data: i64) -> i64;
+extern fn file_set_permissions(path: i64, mode: i64) -> i64;
+extern fn mkdir_recursive(path: i64) -> i64;
+
+// Environment
+extern fn get_home_directory() -> i64;
+extern fn get_env(name: i64) -> i64;
+extern fn get_platform() -> i64;
+
+// Time
+extern fn time_now() -> i64;
+
+// String operations
+extern fn string_from(s: &str) -> i64;
+extern fn string_concat(a: i64, b: i64) -> i64;
+
+// Vector operations
+extern fn vec_new() -> i64;
+extern fn vec_push(v: i64, val: i64) -> i64;
+extern fn vec_get(v: i64, idx: i64) -> i64;
+extern fn vec_set(v: i64, idx: i64, val: i64) -> i64;
+extern fn vec_len(v: i64) -> i64;
+
+// From persistence.sx
+extern fn load_user_salt(user_id_hex: i64) -> i64;
+extern fn secure_read_file(identity: i64, path: i64) -> i64;

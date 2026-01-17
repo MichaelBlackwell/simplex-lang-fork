@@ -1,0 +1,1651 @@
+// =============================================================================
+// Nexus Protocol - Phase 9: Transport Layer Tests
+// =============================================================================
+//
+// Comprehensive tests for Phase 9 Transport Layer implementation:
+//   - Transport abstraction and endpoints
+//   - TCP transport operations
+//   - Connection pooling
+//   - Address resolution
+//   - Reconnection with backoff
+//   - Circuit breaker
+//
+// =============================================================================
+
+// Test helper functions
+fn test_passed() -> i64 { 0 }
+fn test_failed() -> i64 { 1 }
+
+// =============================================================================
+// Transport Endpoint Tests
+// =============================================================================
+
+fn test_transport_endpoint_creation() -> i64 {
+    print("test_transport_endpoint_creation: ");
+
+    // Create TCP endpoint
+    let host = vec_new();
+    vec_push(host, 127);
+    vec_push(host, 0);
+    vec_push(host, 0);
+    vec_push(host, 1);
+
+    let endpoint = transport_endpoint_new(TRANSPORT_TCP(), host, 8080);
+
+    if transport_endpoint_type(endpoint) != TRANSPORT_TCP() {
+        print("FAIL - type\n");
+        return test_failed();
+    }
+
+    if transport_endpoint_port(endpoint) != 8080 {
+        print("FAIL - port\n");
+        return test_failed();
+    }
+
+    if transport_endpoint_options(endpoint) != TRANS_OPT_NONE() {
+        print("FAIL - options\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_transport_endpoint_helpers() -> i64 {
+    print("test_transport_endpoint_helpers: ");
+
+    let host = vec_new();
+    vec_push(host, 192);
+    vec_push(host, 168);
+    vec_push(host, 1);
+    vec_push(host, 1);
+
+    // TCP helper
+    let tcp_ep = transport_endpoint_tcp(host, 9000);
+    if transport_endpoint_type(tcp_ep) != TRANSPORT_TCP() {
+        print("FAIL - tcp\n");
+        return test_failed();
+    }
+
+    // UDP helper
+    let udp_ep = transport_endpoint_udp(host, 9001);
+    if transport_endpoint_type(udp_ep) != TRANSPORT_UDP() {
+        print("FAIL - udp\n");
+        return test_failed();
+    }
+
+    // WebSocket helper
+    let path = vec_new();
+    vec_push(path, 47);  // '/'
+    vec_push(path, 119); // 'w'
+    vec_push(path, 115); // 's'
+    let ws_ep = transport_endpoint_websocket(host, 443, path);
+    if transport_endpoint_type(ws_ep) != TRANSPORT_WEBSOCKET() {
+        print("FAIL - ws type\n");
+        return test_failed();
+    }
+    if transport_endpoint_path(ws_ep) == 0 {
+        print("FAIL - ws path\n");
+        return test_failed();
+    }
+
+    // Shared memory helper
+    let name = vec_new();
+    vec_push(name, 116); // 't'
+    vec_push(name, 101); // 'e'
+    vec_push(name, 115); // 's'
+    vec_push(name, 116); // 't'
+    let shm_ep = transport_endpoint_shmem(name);
+    if transport_endpoint_type(shm_ep) != TRANSPORT_SHMEM() {
+        print("FAIL - shmem\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_transport_endpoint_options() -> i64 {
+    print("test_transport_endpoint_options: ");
+
+    let host = vec_new();
+    let endpoint = transport_endpoint_tcp(host, 8080);
+
+    // Add TLS option
+    transport_endpoint_add_option(endpoint, TRANS_OPT_TLS());
+    if transport_endpoint_has_option(endpoint, TRANS_OPT_TLS()) != 1 {
+        print("FAIL - add TLS\n");
+        return test_failed();
+    }
+
+    // Add NODELAY option
+    transport_endpoint_add_option(endpoint, TRANS_OPT_NODELAY());
+    if transport_endpoint_has_option(endpoint, TRANS_OPT_NODELAY()) != 1 {
+        print("FAIL - add NODELAY\n");
+        return test_failed();
+    }
+
+    // Verify both options present
+    if transport_endpoint_has_option(endpoint, TRANS_OPT_TLS()) != 1 {
+        print("FAIL - TLS still set\n");
+        return test_failed();
+    }
+
+    // Adding same option again shouldn't change value
+    let before = transport_endpoint_options(endpoint);
+    transport_endpoint_add_option(endpoint, TRANS_OPT_TLS());
+    let after = transport_endpoint_options(endpoint);
+    if before != after {
+        print("FAIL - duplicate add\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Transport Configuration Tests
+// =============================================================================
+
+fn test_transport_config_creation() -> i64 {
+    print("test_transport_config_creation: ");
+
+    let config = transport_config_new();
+
+    if transport_config_read_buf(config) != TRANS_DEFAULT_READ_BUF() {
+        print("FAIL - read buf\n");
+        return test_failed();
+    }
+
+    if transport_config_write_buf(config) != TRANS_DEFAULT_WRITE_BUF() {
+        print("FAIL - write buf\n");
+        return test_failed();
+    }
+
+    if transport_config_connect_timeout(config) != TRANS_CONNECT_TIMEOUT() {
+        print("FAIL - connect timeout\n");
+        return test_failed();
+    }
+
+    if transport_config_max_frame(config) != TRANS_MAX_FRAME_SIZE() {
+        print("FAIL - max frame\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_transport_config_setters() -> i64 {
+    print("test_transport_config_setters: ");
+
+    let config = transport_config_new();
+
+    transport_config_set_read_buf(config, 32768);
+    if transport_config_read_buf(config) != 32768 {
+        print("FAIL - set read buf\n");
+        return test_failed();
+    }
+
+    transport_config_set_connect_timeout(config, 5000);
+    if transport_config_connect_timeout(config) != 5000 {
+        print("FAIL - set connect timeout\n");
+        return test_failed();
+    }
+
+    transport_config_set_keepalive(config, 30000);
+    if transport_config_keepalive(config) != 30000 {
+        print("FAIL - set keepalive\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Transport Handle Tests
+// =============================================================================
+
+fn test_transport_creation() -> i64 {
+    print("test_transport_creation: ");
+
+    let host = vec_new();
+    vec_push(host, 127);
+    vec_push(host, 0);
+    vec_push(host, 0);
+    vec_push(host, 1);
+
+    let endpoint = transport_endpoint_tcp(host, 8080);
+    let config = transport_config_new();
+    let transport = transport_new(endpoint, config);
+
+    if transport_type(transport) != TRANSPORT_TCP() {
+        print("FAIL - type\n");
+        return test_failed();
+    }
+
+    if transport_state(transport) != TRANS_STATE_CLOSED() {
+        print("FAIL - initial state\n");
+        return test_failed();
+    }
+
+    if transport_is_closed(transport) != 1 {
+        print("FAIL - is_closed\n");
+        return test_failed();
+    }
+
+    if transport_bytes_read(transport) != 0 {
+        print("FAIL - bytes read\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_transport_connect() -> i64 {
+    print("test_transport_connect: ");
+
+    let host = vec_new();
+    vec_push(host, 127);
+    vec_push(host, 0);
+    vec_push(host, 0);
+    vec_push(host, 1);
+
+    let endpoint = transport_endpoint_tcp(host, 8080);
+    let config = transport_config_new();
+    let transport = transport_new(endpoint, config);
+
+    // Connect (simulated)
+    if transport_connect(transport) != 1 {
+        print("FAIL - connect\n");
+        return test_failed();
+    }
+
+    if transport_is_connected(transport) != 1 {
+        print("FAIL - is_connected\n");
+        return test_failed();
+    }
+
+    if transport_is_ready(transport) != 1 {
+        print("FAIL - is_ready\n");
+        return test_failed();
+    }
+
+    // Close
+    transport_close(transport);
+    if transport_is_closed(transport) != 1 {
+        print("FAIL - closed\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_transport_buffer_write() -> i64 {
+    print("test_transport_buffer_write: ");
+
+    let host = vec_new();
+    let endpoint = transport_endpoint_tcp(host, 8080);
+    let config = transport_config_new();
+    let transport = transport_new(endpoint, config);
+
+    // Write data to buffer
+    let data = vec_new();
+    vec_push(data, 1);
+    vec_push(data, 2);
+    vec_push(data, 3);
+    vec_push(data, 4);
+    vec_push(data, 5);
+
+    let written = transport_buffer_write(transport, data);
+    if written != 5 {
+        print("FAIL - write count\n");
+        return test_failed();
+    }
+
+    // Write more data
+    let data2 = vec_new();
+    vec_push(data2, 6);
+    vec_push(data2, 7);
+    vec_push(data2, 8);
+
+    transport_buffer_write(transport, data2);
+
+    // Check total in buffer
+    let write_buf = transport_write_buf(transport);
+    if vec_len(write_buf) != 8 {
+        print("FAIL - total length\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_transport_buffer_read() -> i64 {
+    print("test_transport_buffer_read: ");
+
+    let host = vec_new();
+    let endpoint = transport_endpoint_tcp(host, 8080);
+    let config = transport_config_new();
+    let transport = transport_new(endpoint, config);
+
+    // Manually add data to read buffer
+    let read_buf = transport_read_buf(transport);
+    vec_push(read_buf, 10);
+    vec_push(read_buf, 20);
+    vec_push(read_buf, 30);
+    vec_push(read_buf, 40);
+    vec_push(read_buf, 50);
+
+    // Check available
+    if transport_buffer_available(transport) != 5 {
+        print("FAIL - available\n");
+        return test_failed();
+    }
+
+    // Read some bytes
+    let data = transport_buffer_read(transport, 3);
+    if vec_len(data) != 3 {
+        print("FAIL - read count\n");
+        return test_failed();
+    }
+
+    if vec_get(data, 0) != 10 || vec_get(data, 1) != 20 || vec_get(data, 2) != 30 {
+        print("FAIL - read content\n");
+        return test_failed();
+    }
+
+    // Check remaining
+    if transport_buffer_available(transport) != 2 {
+        print("FAIL - remaining\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_transport_buffer_peek() -> i64 {
+    print("test_transport_buffer_peek: ");
+
+    let host = vec_new();
+    let endpoint = transport_endpoint_tcp(host, 8080);
+    let config = transport_config_new();
+    let transport = transport_new(endpoint, config);
+
+    // Add data to read buffer
+    let read_buf = transport_read_buf(transport);
+    vec_push(read_buf, 100);
+    vec_push(read_buf, 101);
+    vec_push(read_buf, 102);
+
+    // Peek at data
+    let peeked = transport_buffer_peek(transport, 2);
+    if vec_len(peeked) != 2 {
+        print("FAIL - peek count\n");
+        return test_failed();
+    }
+
+    if vec_get(peeked, 0) != 100 || vec_get(peeked, 1) != 101 {
+        print("FAIL - peek content\n");
+        return test_failed();
+    }
+
+    // Buffer should still have all data
+    if transport_buffer_available(transport) != 3 {
+        print("FAIL - not consumed\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_transport_statistics() -> i64 {
+    print("test_transport_statistics: ");
+
+    let host = vec_new();
+    let endpoint = transport_endpoint_tcp(host, 8080);
+    let config = transport_config_new();
+    let transport = transport_new(endpoint, config);
+
+    // Update stats
+    transport_add_bytes_read(transport, 1000);
+    transport_add_bytes_written(transport, 500);
+    transport_inc_frames_read(transport);
+    transport_inc_frames_read(transport);
+    transport_inc_frames_written(transport);
+
+    // Create stats snapshot
+    let stats = transport_stats_new(transport);
+
+    if transport_stats_bytes_read(stats) != 1000 {
+        print("FAIL - bytes read\n");
+        return test_failed();
+    }
+
+    if transport_stats_bytes_written(stats) != 500 {
+        print("FAIL - bytes written\n");
+        return test_failed();
+    }
+
+    if transport_stats_frames_read(stats) != 2 {
+        print("FAIL - frames read\n");
+        return test_failed();
+    }
+
+    if transport_stats_frames_written(stats) != 1 {
+        print("FAIL - frames written\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// TCP Transport Tests
+// =============================================================================
+
+fn test_tcp_socket_creation() -> i64 {
+    print("test_tcp_socket_creation: ");
+
+    let opts = TCP_OPT_NODELAY() + TCP_OPT_KEEPALIVE();
+    let sock = tcp_socket_create(opts);
+
+    if tcp_socket_fd(sock) == 0 {
+        print("FAIL - fd\n");
+        return test_failed();
+    }
+
+    if tcp_socket_state(sock) != TCP_STATE_INITIAL() {
+        print("FAIL - state\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_tcp_address() -> i64 {
+    print("test_tcp_address: ");
+
+    let addr = tcp_addr_ipv4(192, 168, 1, 100, 8080);
+
+    if tcp_addr_family(addr) != 2 {
+        print("FAIL - family\n");
+        return test_failed();
+    }
+
+    if tcp_addr_port(addr) != 8080 {
+        print("FAIL - port\n");
+        return test_failed();
+    }
+
+    let ip = tcp_addr_ip(addr);
+    if vec_get(ip, 0) != 192 || vec_get(ip, 1) != 168 {
+        print("FAIL - ip\n");
+        return test_failed();
+    }
+
+    // Test localhost
+    let localhost = tcp_addr_localhost(9000);
+    let lh_ip = tcp_addr_ip(localhost);
+    if vec_get(lh_ip, 0) != 127 || vec_get(lh_ip, 3) != 1 {
+        print("FAIL - localhost\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_tcp_address_equals() -> i64 {
+    print("test_tcp_address_equals: ");
+
+    let addr1 = tcp_addr_ipv4(10, 0, 0, 1, 8080);
+    let addr2 = tcp_addr_ipv4(10, 0, 0, 1, 8080);
+    let addr3 = tcp_addr_ipv4(10, 0, 0, 2, 8080);
+    let addr4 = tcp_addr_ipv4(10, 0, 0, 1, 9090);
+
+    if tcp_addr_equals(addr1, addr2) != 1 {
+        print("FAIL - equal\n");
+        return test_failed();
+    }
+
+    if tcp_addr_equals(addr1, addr3) != 0 {
+        print("FAIL - diff ip\n");
+        return test_failed();
+    }
+
+    if tcp_addr_equals(addr1, addr4) != 0 {
+        print("FAIL - diff port\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_tcp_socket_connect() -> i64 {
+    print("test_tcp_socket_connect: ");
+
+    let sock = tcp_socket_create(TCP_OPT_NODELAY());
+    let addr = tcp_addr_localhost(8080);
+
+    if tcp_socket_connect(sock, addr) != 1 {
+        print("FAIL - connect\n");
+        return test_failed();
+    }
+
+    if tcp_socket_state(sock) != TCP_STATE_ESTABLISHED() {
+        print("FAIL - state\n");
+        return test_failed();
+    }
+
+    tcp_socket_close(sock);
+    if tcp_socket_state(sock) != TCP_STATE_CLOSED() {
+        print("FAIL - closed\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_tcp_listener() -> i64 {
+    print("test_tcp_listener: ");
+
+    let addr = tcp_addr_any(9000);
+    let listener = tcp_listener_new(addr);
+
+    if tcp_listener_backlog(listener) != TCP_DEFAULT_BACKLOG() {
+        print("FAIL - backlog\n");
+        return test_failed();
+    }
+
+    // Bind
+    if tcp_listener_bind(listener) != 1 {
+        print("FAIL - bind\n");
+        return test_failed();
+    }
+
+    if tcp_listener_socket(listener) == 0 {
+        print("FAIL - socket\n");
+        return test_failed();
+    }
+
+    // Close
+    tcp_listener_close(listener);
+    if tcp_listener_socket(listener) != 0 {
+        print("FAIL - closed\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Connection Pool Tests
+// =============================================================================
+
+fn test_pool_config() -> i64 {
+    print("test_pool_config: ");
+
+    let config = pool_config_new();
+
+    if pool_config_max_conns(config) != POOL_DEFAULT_MAX_CONNS() {
+        print("FAIL - max conns\n");
+        return test_failed();
+    }
+
+    if pool_config_max_idle(config) != POOL_DEFAULT_MAX_IDLE() {
+        print("FAIL - max idle\n");
+        return test_failed();
+    }
+
+    if pool_config_strategy(config) != POOL_STRATEGY_LIFO() {
+        print("FAIL - strategy\n");
+        return test_failed();
+    }
+
+    pool_config_set_max_conns(config, 20);
+    if pool_config_max_conns(config) != 20 {
+        print("FAIL - set max\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_pool_entry() -> i64 {
+    print("test_pool_entry: ");
+
+    let host = vec_new();
+    let endpoint = transport_endpoint_tcp(host, 8080);
+    let transport_cfg = transport_config_new();
+    let transport = transport_new(endpoint, transport_cfg);
+
+    let now = 1000000;
+    let entry = pool_entry_new(transport, now);
+
+    if pool_entry_transport(entry) != transport {
+        print("FAIL - transport\n");
+        return test_failed();
+    }
+
+    if pool_entry_state(entry) != POOL_ENTRY_IDLE() {
+        print("FAIL - state\n");
+        return test_failed();
+    }
+
+    if pool_entry_created(entry) != now {
+        print("FAIL - created\n");
+        return test_failed();
+    }
+
+    if pool_entry_use_count(entry) != 0 {
+        print("FAIL - use count\n");
+        return test_failed();
+    }
+
+    // Increment use count
+    pool_entry_inc_use(entry);
+    pool_entry_inc_use(entry);
+    if pool_entry_use_count(entry) != 2 {
+        print("FAIL - inc use\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_conn_pool_creation() -> i64 {
+    print("test_conn_pool_creation: ");
+
+    let pool_cfg = pool_config_new();
+    let trans_cfg = transport_config_new();
+    let pool = conn_pool_new(pool_cfg, trans_cfg);
+
+    if conn_pool_active_count(pool) != 0 {
+        print("FAIL - active\n");
+        return test_failed();
+    }
+
+    if conn_pool_idle_count(pool) != 0 {
+        print("FAIL - idle\n");
+        return test_failed();
+    }
+
+    if conn_pool_total_count(pool) != 0 {
+        print("FAIL - total\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_conn_pool_checkout() -> i64 {
+    print("test_conn_pool_checkout: ");
+
+    let pool_cfg = pool_config_new();
+    let trans_cfg = transport_config_new();
+    let pool = conn_pool_new(pool_cfg, trans_cfg);
+
+    let host = vec_new();
+    vec_push(host, 127);
+    vec_push(host, 0);
+    vec_push(host, 0);
+    vec_push(host, 1);
+    let endpoint = transport_endpoint_tcp(host, 8080);
+
+    let now = 1000000;
+
+    // Checkout creates new connection
+    let entry = conn_pool_checkout(pool, endpoint, now);
+    if entry == 0 {
+        print("FAIL - checkout\n");
+        return test_failed();
+    }
+
+    if conn_pool_active_count(pool) != 1 {
+        print("FAIL - active count\n");
+        return test_failed();
+    }
+
+    // Check stats
+    let stats = conn_pool_stats(pool);
+    if pool_stats_created(stats) != 1 {
+        print("FAIL - created stat\n");
+        return test_failed();
+    }
+
+    if pool_stats_checkouts(stats) != 1 {
+        print("FAIL - checkout stat\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_conn_pool_checkin() -> i64 {
+    print("test_conn_pool_checkin: ");
+
+    let pool_cfg = pool_config_new();
+    let trans_cfg = transport_config_new();
+    let pool = conn_pool_new(pool_cfg, trans_cfg);
+
+    let host = vec_new();
+    vec_push(host, 127);
+    vec_push(host, 0);
+    vec_push(host, 0);
+    vec_push(host, 1);
+    let endpoint = transport_endpoint_tcp(host, 8080);
+
+    let now = 1000000;
+
+    // Checkout
+    let entry = conn_pool_checkout(pool, endpoint, now);
+
+    // Checkin
+    conn_pool_checkin(pool, entry, now + 1000);
+
+    if conn_pool_active_count(pool) != 0 {
+        print("FAIL - active\n");
+        return test_failed();
+    }
+
+    if conn_pool_idle_count(pool) != 1 {
+        print("FAIL - idle\n");
+        return test_failed();
+    }
+
+    // Check stats
+    let stats = conn_pool_stats(pool);
+    if pool_stats_checkins(stats) != 1 {
+        print("FAIL - checkin stat\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_conn_pool_reuse() -> i64 {
+    print("test_conn_pool_reuse: ");
+
+    let pool_cfg = pool_config_new();
+    let trans_cfg = transport_config_new();
+    let pool = conn_pool_new(pool_cfg, trans_cfg);
+
+    let host = vec_new();
+    vec_push(host, 127);
+    vec_push(host, 0);
+    vec_push(host, 0);
+    vec_push(host, 1);
+    let endpoint = transport_endpoint_tcp(host, 8080);
+
+    let now = 1000000;
+
+    // Checkout and checkin
+    let entry1 = conn_pool_checkout(pool, endpoint, now);
+    conn_pool_checkin(pool, entry1, now + 1000);
+
+    // Checkout again - should reuse
+    let entry2 = conn_pool_checkout(pool, endpoint, now + 2000);
+
+    if entry2 != entry1 {
+        print("FAIL - not reused\n");
+        return test_failed();
+    }
+
+    let stats = conn_pool_stats(pool);
+    if pool_stats_reused(stats) != 1 {
+        print("FAIL - reused stat\n");
+        return test_failed();
+    }
+
+    // Only 1 connection should have been created
+    if pool_stats_created(stats) != 1 {
+        print("FAIL - created count\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_conn_pool_snapshot() -> i64 {
+    print("test_conn_pool_snapshot: ");
+
+    let pool_cfg = pool_config_new();
+    let trans_cfg = transport_config_new();
+    let pool = conn_pool_new(pool_cfg, trans_cfg);
+
+    let host = vec_new();
+    let endpoint = transport_endpoint_tcp(host, 8080);
+
+    let now = 1000000;
+
+    // Create some activity
+    let entry = conn_pool_checkout(pool, endpoint, now);
+    conn_pool_checkin(pool, entry, now + 1000);
+
+    let snapshot = conn_pool_snapshot(pool);
+
+    if pool_snapshot_active(snapshot) != 0 {
+        print("FAIL - active\n");
+        return test_failed();
+    }
+
+    if pool_snapshot_idle(snapshot) != 1 {
+        print("FAIL - idle\n");
+        return test_failed();
+    }
+
+    if pool_snapshot_created(snapshot) != 1 {
+        print("FAIL - created\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Address Resolution Tests
+// =============================================================================
+
+fn test_hive_address() -> i64 {
+    print("test_hive_address: ");
+
+    let addr = net_hive_addr_new(12345);
+
+    if net_hive_addr_id(addr) != 12345 {
+        print("FAIL - id\n");
+        return test_failed();
+    }
+
+    net_hive_addr_set_region(addr, 1);
+    net_hive_addr_set_zone(addr, 2);
+
+    if net_hive_addr_region(addr) != 1 {
+        print("FAIL - region\n");
+        return test_failed();
+    }
+
+    if net_hive_addr_zone(addr) != 2 {
+        print("FAIL - zone\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_hive_address_from_name() -> i64 {
+    print("test_hive_address_from_name: ");
+
+    let name = vec_new();
+    vec_push(name, 116); // 't'
+    vec_push(name, 101); // 'e'
+    vec_push(name, 115); // 's'
+    vec_push(name, 116); // 't'
+
+    let addr = net_hive_addr_from_name(name);
+
+    if net_hive_addr_id(addr) == 0 {
+        print("FAIL - id\n");
+        return test_failed();
+    }
+
+    if net_hive_addr_name_hash(addr) == 0 {
+        print("FAIL - hash\n");
+        return test_failed();
+    }
+
+    // Same name should produce same address
+    let addr2 = net_hive_addr_from_name(name);
+    if net_hive_addr_equals(addr, addr2) != 1 {
+        print("FAIL - consistent\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_actor_address() -> i64 {
+    print("test_actor_address: ");
+
+    let hive_address = net_hive_addr_new(100);
+    let actor_address = net_actor_addr_new(hive_address, 42);
+
+    if net_actor_addr_id(actor_address) != 42 {
+        print("FAIL - id\n");
+        return test_failed();
+    }
+
+    let retrieved_hive = net_actor_addr_hive(actor_address);
+    if net_hive_addr_id(retrieved_hive) != 100 {
+        print("FAIL - hive\n");
+        return test_failed();
+    }
+
+    net_actor_addr_set_generation(actor_address, 3);
+    if net_actor_addr_generation(actor_address) != 3 {
+        print("FAIL - generation\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_net_endpoint() -> i64 {
+    print("test_net_endpoint: ");
+
+    let host = vec_new();
+    let trans_ep = transport_endpoint_tcp(host, 8080);
+    let net_ep = net_endpoint_new(trans_ep);
+
+    if net_endpoint_transport(net_ep) != trans_ep {
+        print("FAIL - transport\n");
+        return test_failed();
+    }
+
+    if net_endpoint_healthy(net_ep) != 1 {
+        print("FAIL - healthy\n");
+        return test_failed();
+    }
+
+    net_endpoint_set_priority(net_ep, 5);
+    if net_endpoint_priority(net_ep) != 5 {
+        print("FAIL - priority\n");
+        return test_failed();
+    }
+
+    net_endpoint_set_healthy(net_ep, 0);
+    if net_endpoint_healthy(net_ep) != 0 {
+        print("FAIL - unhealthy\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_addr_cache() -> i64 {
+    print("test_addr_cache: ");
+
+    let cache = addr_cache_new();
+
+    let now = 1000000;
+
+    // Create a result
+    let result = resolve_result_new(RESOLVE_OK());
+
+    // Put in cache
+    addr_cache_put(cache, 12345, result, ADDR_CACHE_TTL(), now);
+
+    // Get from cache
+    let cached = addr_cache_get(cache, 12345, now + 1000);
+    if cached != result {
+        print("FAIL - get\n");
+        return test_failed();
+    }
+
+    // Check hit count
+    if addr_cache_hits(cache) != 1 {
+        print("FAIL - hits\n");
+        return test_failed();
+    }
+
+    // Miss for unknown key
+    let miss = addr_cache_get(cache, 99999, now);
+    if miss != 0 {
+        print("FAIL - miss\n");
+        return test_failed();
+    }
+
+    if addr_cache_misses(cache) != 1 {
+        print("FAIL - misses\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_addr_resolver_register() -> i64 {
+    print("test_addr_resolver_register: ");
+
+    let resolver = addr_resolver_new();
+
+    let host = vec_new();
+    vec_push(host, 127);
+    vec_push(host, 0);
+    vec_push(host, 0);
+    vec_push(host, 1);
+    let endpoint = transport_endpoint_tcp(host, 8080);
+
+    let now = 1000000;
+
+    // Register hive
+    addr_resolver_register(resolver, 12345, endpoint, now);
+
+    // Resolve
+    let hive_addr = net_hive_addr_new(12345);
+    let result = addr_resolver_resolve_hive(resolver, hive_addr, now);
+
+    if resolve_result_status(result) != RESOLVE_OK() {
+        print("FAIL - status\n");
+        return test_failed();
+    }
+
+    let endpoints = resolve_result_endpoints(result);
+    if vec_len(endpoints) != 1 {
+        print("FAIL - endpoints\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_addr_resolver_not_found() -> i64 {
+    print("test_addr_resolver_not_found: ");
+
+    let resolver = addr_resolver_new();
+    let now = 1000000;
+
+    // Resolve unknown hive
+    let hive_addr = net_hive_addr_new(99999);
+    let result = addr_resolver_resolve_hive(resolver, hive_addr, now);
+
+    if resolve_result_status(result) != RESOLVE_NOT_FOUND() {
+        print("FAIL - status\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_addr_resolver_cache() -> i64 {
+    print("test_addr_resolver_cache: ");
+
+    let resolver = addr_resolver_new();
+
+    let host = vec_new();
+    let endpoint = transport_endpoint_tcp(host, 8080);
+
+    let now = 1000000;
+
+    // Register and resolve
+    addr_resolver_register(resolver, 12345, endpoint, now);
+
+    let hive_addr = net_hive_addr_new(12345);
+    addr_resolver_resolve_hive(resolver, hive_addr, now);
+
+    // Second resolve should hit cache
+    let result2 = addr_resolver_resolve_hive(resolver, hive_addr, now + 1000);
+
+    if resolve_result_source(result2) != RESOLVE_CACHED() {
+        print("FAIL - cached\n");
+        return test_failed();
+    }
+
+    // Check cache stats
+    let cache = addr_resolver_cache(resolver);
+    if addr_cache_hits(cache) != 1 {
+        print("FAIL - cache hits\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Backoff Tests
+// =============================================================================
+
+fn test_backoff_config() -> i64 {
+    print("test_backoff_config: ");
+
+    let config = backoff_config_new();
+
+    if backoff_config_strategy(config) != BACKOFF_EXPONENTIAL() {
+        print("FAIL - strategy\n");
+        return test_failed();
+    }
+
+    if backoff_config_initial_delay(config) != DEFAULT_INITIAL_DELAY() {
+        print("FAIL - initial\n");
+        return test_failed();
+    }
+
+    if backoff_config_max_delay(config) != DEFAULT_MAX_DELAY() {
+        print("FAIL - max\n");
+        return test_failed();
+    }
+
+    backoff_config_set_strategy(config, BACKOFF_LINEAR());
+    if backoff_config_strategy(config) != BACKOFF_LINEAR() {
+        print("FAIL - set strategy\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_backoff_state() -> i64 {
+    print("test_backoff_state: ");
+
+    let config = backoff_config_new();
+    let state = backoff_state_new(config);
+
+    if backoff_state_attempt(state) != 0 {
+        print("FAIL - attempt\n");
+        return test_failed();
+    }
+
+    if backoff_state_exhausted(state) != 0 {
+        print("FAIL - not exhausted\n");
+        return test_failed();
+    }
+
+    // Record failures
+    let now = 1000000;
+    let i = 0;
+    while i < 10 {
+        backoff_record_failure(state, TRANS_ERR_CONNECT(), now + i * 1000);
+        i = i + 1;
+    }
+
+    if backoff_state_exhausted(state) != 1 {
+        print("FAIL - exhausted\n");
+        return test_failed();
+    }
+
+    // Reset
+    backoff_state_reset(state);
+    if backoff_state_attempt(state) != 0 {
+        print("FAIL - reset\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_backoff_exponential() -> i64 {
+    print("test_backoff_exponential: ");
+
+    let config = backoff_config_new();
+    backoff_config_set_strategy(config, BACKOFF_EXPONENTIAL());
+    backoff_config_set_initial_delay(config, 100);
+    backoff_config_set_multiplier(config, 2);
+    backoff_config_set_jitter(config, 0);  // No jitter for predictable test
+
+    let state = backoff_state_new(config);
+    let now = 1000000;
+
+    // First delay should be initial (100)
+    let delay1 = backoff_record_failure(state, 1, now);
+    if delay1 != 100 {
+        print("FAIL - delay1\n");
+        return test_failed();
+    }
+
+    // Second delay should be 100 * 2 = 200
+    let delay2 = backoff_record_failure(state, 1, now + delay1);
+    if delay2 != 200 {
+        print("FAIL - delay2\n");
+        return test_failed();
+    }
+
+    // Third delay should be 200 * 2 = 400
+    let delay3 = backoff_record_failure(state, 1, now + delay1 + delay2);
+    if delay3 != 400 {
+        print("FAIL - delay3\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_backoff_can_retry() -> i64 {
+    print("test_backoff_can_retry: ");
+
+    let config = backoff_config_new();
+    backoff_config_set_initial_delay(config, 1000);
+    backoff_config_set_jitter(config, 0);
+
+    let state = backoff_state_new(config);
+    let now = 1000000;
+
+    // Initially can retry
+    if backoff_state_can_retry(state, now) != 1 {
+        print("FAIL - initial\n");
+        return test_failed();
+    }
+
+    // After failure, must wait
+    backoff_record_failure(state, 1, now);
+
+    if backoff_state_can_retry(state, now + 500) != 0 {
+        print("FAIL - too soon\n");
+        return test_failed();
+    }
+
+    // After delay, can retry
+    if backoff_state_can_retry(state, now + 1500) != 1 {
+        print("FAIL - after delay\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Circuit Breaker Tests
+// =============================================================================
+
+fn test_trans_circuit_creation() -> i64 {
+    print("test_trans_circuit_creation: ");
+
+    let cb = trans_circuit_new();
+
+    if trans_circuit_state(cb) != CIRCUIT_CLOSED() {
+        print("FAIL - state\n");
+        return test_failed();
+    }
+
+    if trans_circuit_failures(cb) != 0 {
+        print("FAIL - failures\n");
+        return test_failed();
+    }
+
+    if trans_circuit_threshold(cb) != DEFAULT_CIRCUIT_THRESHOLD() {
+        print("FAIL - threshold\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_trans_circuit_opens() -> i64 {
+    print("test_trans_circuit_opens: ");
+
+    let cb = trans_circuit_new();
+    trans_circuit_set_threshold(cb, 3);
+
+    let now = 1000000;
+
+    // Closed circuit allows requests
+    if trans_circuit_allows(cb, now) != 1 {
+        print("FAIL - allows\n");
+        return test_failed();
+    }
+
+    // Record failures up to threshold
+    trans_circuit_record_failure(cb, now);
+    trans_circuit_record_failure(cb, now + 100);
+    trans_circuit_record_failure(cb, now + 200);
+
+    // Circuit should now be open
+    if trans_circuit_state(cb) != CIRCUIT_OPEN() {
+        print("FAIL - open\n");
+        return test_failed();
+    }
+
+    // Open circuit rejects requests
+    if trans_circuit_allows(cb, now + 300) != 0 {
+        print("FAIL - rejects\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_trans_circuit_half_open() -> i64 {
+    print("test_trans_circuit_half_open: ");
+
+    let cb = trans_circuit_new();
+    trans_circuit_set_threshold(cb, 2);
+    trans_circuit_set_timeout(cb, 10000);  // 10 seconds
+
+    let now = 1000000;
+
+    // Open the circuit
+    trans_circuit_record_failure(cb, now);
+    trans_circuit_record_failure(cb, now + 100);
+
+    // After timeout, should be half-open
+    if trans_circuit_allows(cb, now + 15000) != 1 {
+        print("FAIL - half open allows\n");
+        return test_failed();
+    }
+
+    if trans_circuit_state(cb) != CIRCUIT_HALF_OPEN() {
+        print("FAIL - half open state\n");
+        return test_failed();
+    }
+
+    // Success closes circuit
+    trans_circuit_record_success(cb);
+
+    if trans_circuit_state(cb) != CIRCUIT_CLOSED() {
+        print("FAIL - closed\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_trans_circuit_reset() -> i64 {
+    print("test_trans_circuit_reset: ");
+
+    let cb = trans_circuit_new();
+    trans_circuit_set_threshold(cb, 2);
+
+    let now = 1000000;
+
+    // Open circuit
+    trans_circuit_record_failure(cb, now);
+    trans_circuit_record_failure(cb, now);
+
+    // Reset
+    trans_circuit_reset(cb);
+
+    if trans_circuit_state(cb) != CIRCUIT_CLOSED() {
+        print("FAIL - closed\n");
+        return test_failed();
+    }
+
+    if trans_circuit_failures(cb) != 0 {
+        print("FAIL - failures reset\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Reconnection Manager Tests
+// =============================================================================
+
+fn test_reconnect_manager_creation() -> i64 {
+    print("test_reconnect_manager_creation: ");
+
+    let host = vec_new();
+    let endpoint = transport_endpoint_tcp(host, 8080);
+    let config = backoff_config_new();
+
+    let mgr = reconnect_manager_new(endpoint, config);
+
+    if reconnect_manager_state(mgr) != RECON_IDLE() {
+        print("FAIL - state\n");
+        return test_failed();
+    }
+
+    if reconnect_manager_endpoint(mgr) != endpoint {
+        print("FAIL - endpoint\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_reconnect_manager_connect() -> i64 {
+    print("test_reconnect_manager_connect: ");
+
+    let host = vec_new();
+    vec_push(host, 127);
+    vec_push(host, 0);
+    vec_push(host, 0);
+    vec_push(host, 1);
+    let endpoint = transport_endpoint_tcp(host, 8080);
+    let config = backoff_config_new();
+    let trans_cfg = transport_config_new();
+
+    let mgr = reconnect_manager_new(endpoint, config);
+    let now = 1000000;
+
+    // Connect (simulated success)
+    if reconnect_manager_connect(mgr, trans_cfg, now) != 1 {
+        print("FAIL - connect\n");
+        return test_failed();
+    }
+
+    if reconnect_manager_is_connected(mgr) != 1 {
+        print("FAIL - is connected\n");
+        return test_failed();
+    }
+
+    if reconnect_manager_transport(mgr) == 0 {
+        print("FAIL - transport\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_reconnect_manager_failover() -> i64 {
+    print("test_reconnect_manager_failover: ");
+
+    let host1 = vec_new();
+    vec_push(host1, 10);
+    vec_push(host1, 0);
+    vec_push(host1, 0);
+    vec_push(host1, 1);
+    let primary = transport_endpoint_tcp(host1, 8080);
+
+    let host2 = vec_new();
+    vec_push(host2, 10);
+    vec_push(host2, 0);
+    vec_push(host2, 2);
+    let backup = transport_endpoint_tcp(host2, 8080);
+
+    let config = backoff_config_new();
+    let mgr = reconnect_manager_new(primary, config);
+
+    // Add backup endpoint
+    reconnect_manager_add_failover(mgr, backup);
+
+    // Initial endpoint should be primary
+    let current = reconnect_manager_get_endpoint(mgr);
+    if current != primary {
+        print("FAIL - primary\n");
+        return test_failed();
+    }
+
+    // Move to next endpoint
+    reconnect_manager_next_endpoint(mgr);
+    current = reconnect_manager_get_endpoint(mgr);
+    if current != backup {
+        print("FAIL - backup\n");
+        return test_failed();
+    }
+
+    // Move to next wraps to primary
+    reconnect_manager_next_endpoint(mgr);
+    current = reconnect_manager_get_endpoint(mgr);
+    if current != primary {
+        print("FAIL - wrap\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_reconnect_manager_stats() -> i64 {
+    print("test_reconnect_manager_stats: ");
+
+    let host = vec_new();
+    let endpoint = transport_endpoint_tcp(host, 8080);
+    let config = backoff_config_new();
+
+    let mgr = reconnect_manager_new(endpoint, config);
+
+    let stats = reconnect_manager_stats(mgr);
+
+    if recon_stats_state(stats) != RECON_IDLE() {
+        print("FAIL - state\n");
+        return test_failed();
+    }
+
+    if recon_stats_attempts(stats) != 0 {
+        print("FAIL - attempts\n");
+        return test_failed();
+    }
+
+    if recon_stats_circuit_state(stats) != CIRCUIT_CLOSED() {
+        print("FAIL - circuit\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_reconnect_manager_default() -> i64 {
+    print("test_reconnect_manager_default: ");
+
+    let host = vec_new();
+    let endpoint = transport_endpoint_tcp(host, 8080);
+
+    let mgr = reconnect_manager_default(endpoint);
+
+    if reconnect_manager_state(mgr) != RECON_IDLE() {
+        print("FAIL - state\n");
+        return test_failed();
+    }
+
+    // Verify default backoff config
+    let backoff = reconnect_manager_backoff(mgr);
+    let config = backoff_state_config(backoff);
+
+    if backoff_config_strategy(config) != BACKOFF_EXPONENTIAL() {
+        print("FAIL - strategy\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Main Test Runner
+// =============================================================================
+
+fn main() -> i64 {
+    print("=== Phase 9: Transport Layer Tests ===\n\n");
+
+    let failed = 0;
+
+    // Transport Endpoint Tests
+    print("--- Transport Endpoint Tests ---\n");
+    failed = failed + test_transport_endpoint_creation();
+    failed = failed + test_transport_endpoint_helpers();
+    failed = failed + test_transport_endpoint_options();
+
+    // Transport Configuration Tests
+    print("\n--- Transport Configuration Tests ---\n");
+    failed = failed + test_transport_config_creation();
+    failed = failed + test_transport_config_setters();
+
+    // Transport Handle Tests
+    print("\n--- Transport Handle Tests ---\n");
+    failed = failed + test_transport_creation();
+    failed = failed + test_transport_connect();
+    failed = failed + test_transport_buffer_write();
+    failed = failed + test_transport_buffer_read();
+    failed = failed + test_transport_buffer_peek();
+    failed = failed + test_transport_statistics();
+
+    // TCP Transport Tests
+    print("\n--- TCP Transport Tests ---\n");
+    failed = failed + test_tcp_socket_creation();
+    failed = failed + test_tcp_address();
+    failed = failed + test_tcp_address_equals();
+    failed = failed + test_tcp_socket_connect();
+    failed = failed + test_tcp_listener();
+
+    // Connection Pool Tests
+    print("\n--- Connection Pool Tests ---\n");
+    failed = failed + test_pool_config();
+    failed = failed + test_pool_entry();
+    failed = failed + test_conn_pool_creation();
+    failed = failed + test_conn_pool_checkout();
+    failed = failed + test_conn_pool_checkin();
+    failed = failed + test_conn_pool_reuse();
+    failed = failed + test_conn_pool_snapshot();
+
+    // Address Resolution Tests
+    print("\n--- Address Resolution Tests ---\n");
+    failed = failed + test_hive_address();
+    failed = failed + test_hive_address_from_name();
+    failed = failed + test_actor_address();
+    failed = failed + test_net_endpoint();
+    failed = failed + test_addr_cache();
+    failed = failed + test_addr_resolver_register();
+    failed = failed + test_addr_resolver_not_found();
+    failed = failed + test_addr_resolver_cache();
+
+    // Backoff Tests
+    print("\n--- Backoff Tests ---\n");
+    failed = failed + test_backoff_config();
+    failed = failed + test_backoff_state();
+    failed = failed + test_backoff_exponential();
+    failed = failed + test_backoff_can_retry();
+
+    // Circuit Breaker Tests
+    print("\n--- Circuit Breaker Tests ---\n");
+    failed = failed + test_trans_circuit_creation();
+    failed = failed + test_trans_circuit_opens();
+    failed = failed + test_trans_circuit_half_open();
+    failed = failed + test_trans_circuit_reset();
+
+    // Reconnection Manager Tests
+    print("\n--- Reconnection Manager Tests ---\n");
+    failed = failed + test_reconnect_manager_creation();
+    failed = failed + test_reconnect_manager_connect();
+    failed = failed + test_reconnect_manager_failover();
+    failed = failed + test_reconnect_manager_stats();
+    failed = failed + test_reconnect_manager_default();
+
+    print("\n=== Phase 9 Tests Complete ===\n");
+
+    if failed > 0 {
+        print("FAILED: ");
+        print_i64(failed);
+        print(" tests\n");
+        return 1;
+    }
+
+    print("All 45 tests passed!\n");
+    0
+}

@@ -57,6 +57,24 @@ fn EXPR_SPAWN() -> i64 { 20 }
 fn EXPR_ARRAY() -> i64 { 21 }
 fn EXPR_FLOAT() -> i64 { 22 }
 fn EXPR_CLOSURE() -> i64 { 23 }
+fn EXPR_INFER() -> i64 { 24 }
+fn EXPR_TUPLE() -> i64 { 25 }
+fn EXPR_LOOP() -> i64 { 26 }
+fn EXPR_INDEX() -> i64 { 27 }
+fn EXPR_WHILE_LET() -> i64 { 28 }
+fn EXPR_BREAK() -> i64 { 29 }
+fn EXPR_STRUCT_PAT() -> i64 { 30 }
+fn EXPR_OR_PAT() -> i64 { 31 }
+fn EXPR_CAST() -> i64 { 32 }
+fn EXPR_METHOD() -> i64 { 33 }
+fn EXPR_STRUCT() -> i64 { 34 }
+
+// Belief guard expressions (TASK-013-A)
+fn EXPR_CONFIDENCE() -> i64 { 35 }    // confidence(belief_id)
+fn EXPR_DERIVATIVE() -> i64 { 36 }    // expr.derivative
+fn EXPR_BELIEF_GUARD() -> i64 { 37 }  // belief_expr cmp value
+fn EXPR_BELIEF_AND() -> i64 { 38 }    // guard && guard
+fn EXPR_BELIEF_OR() -> i64 { 39 }     // guard || guard
 
 // Binary operators - must match parser.sx
 fn OP_ADD() -> i64 { 0 }
@@ -112,6 +130,50 @@ fn str_unique(name: i64, id: i64) -> i64 {
 // Build label: str_label("arm", 3) -> "arm_3"
 fn str_label(base: i64, suffix: i64) -> i64 {
     str_join3(base, "_", int_to_string(suffix))
+}
+
+// =============================================================================
+// Platform Detection for Cross-Platform Compilation
+// Fixes GitHub issue #56 - target triple was hardcoded to macOS
+// =============================================================================
+
+// Detect current operating system
+// Returns: "windows", "linux", "macos", or "unknown"
+fn get_os_name() -> i64 {
+    // Check for Windows-specific environment variable
+    let windir: i64 = intrinsic_getenv("WINDIR");
+    if windir != 0 {
+        if string_len(windir) > 0 {
+            return "windows";
+        }
+    }
+
+    // Check for macOS by looking for Darwin-specific paths
+    if intrinsic_file_exists("/System/Library") != 0 {
+        return "macos";
+    }
+
+    // Check for Linux by looking for /proc (Linux-specific)
+    if intrinsic_file_exists("/proc/version") != 0 {
+        return "linux";
+    }
+
+    // Default to linux for other Unix-like systems
+    "linux"
+}
+
+// Get LLVM target triple for current platform
+fn get_target_triple() -> i64 {
+    let os: i64 = get_os_name();
+
+    if string_eq(os, "windows") {
+        return "x86_64-pc-windows-msvc";
+    }
+    if string_eq(os, "macos") {
+        return "x86_64-apple-macosx14.0.0";
+    }
+    // Linux and other Unix-like systems
+    "x86_64-unknown-linux-gnu"
 }
 
 // Codegen state
@@ -684,20 +746,56 @@ fn cg_register_type_alias(cg: i64, alias_name: i64, target_type: i64) -> i64 {
     0
 }
 
-// Resolve a type alias, returns the target type or the original if not an alias
+// Resolve a type alias recursively, returns the final target type
 fn cg_resolve_type_alias(cg: i64, type_name: i64) -> i64 {
     let aliases: i64 = cg_type_aliases(cg);
     let n: i64 = vec_len(aliases);
-    let i: i64 = 0;
-    while i < n {
-        let entry: i64 = vec_get(aliases, i);
-        let alias: i64 = load_ptr(entry, 0);
-        if string_eq(alias, type_name) {
-            return load_ptr(entry, 1);
+    let current: i64 = type_name;
+    let depth: i64 = 0;
+    let max_depth: i64 = 100;  // Prevent infinite recursion
+
+    while depth < max_depth {
+        let found: i64 = 0;
+        let i: i64 = 0;
+        while i < n {
+            let entry: i64 = vec_get(aliases, i);
+            let alias: i64 = load_ptr(entry, 0);
+            if string_eq(alias, current) {
+                current = load_ptr(entry, 1);
+                found = 1;
+                break;
+            }
+            i = i + 1;
         }
-        i = i + 1;
+        if found == 0 {
+            break;  // No more aliases to resolve
+        }
+        depth = depth + 1;
     }
-    type_name  // Not an alias, return as-is
+    current
+}
+
+// Resolve type alias with generic parameter substitution
+fn cg_resolve_type_with_generics(cg: i64, type_name: i64, type_args: i64) -> i64 {
+    let resolved: i64 = cg_resolve_type_alias(cg, type_name);
+
+    // If we have type arguments and the resolved type is generic, substitute
+    if type_args != 0 {
+        if vec_len(type_args) > 0 {
+            // Build monomorphized name: Type_Arg1_Arg2
+            let result: i64 = resolved;
+            let n: i64 = vec_len(type_args);
+            let i: i64 = 0;
+            while i < n {
+                let arg: i64 = vec_get(type_args, i);
+                result = string_concat(result, "_");
+                result = string_concat(result, arg);
+                i = i + 1;
+            }
+            return result;
+        }
+    }
+    resolved
 }
 
 // Slot 30: closures - stores inline closure definitions
@@ -711,14 +809,17 @@ fn cg_next_closure_id(cg: i64) -> i64 {
     id
 }
 
-// Register an inline closure: stores (var_name, params, body)
-// params is a vec of param AST nodes, body is the expression AST
+// Register an inline closure with capture analysis
+// Entry layout: (name, params, body, captures) - 32 bytes
 fn cg_register_closure(cg: i64, var_name: i64, params: i64, body: i64) -> i64 {
     let closures: i64 = cg_closures(cg);
-    let entry: i64 = malloc(24);
+    let entry: i64 = malloc(32);
     store_ptr(entry, 0, var_name);
     store_ptr(entry, 1, params);
     store_ptr(entry, 2, body);
+    // Analyze captures - variables referenced in body that aren't parameters
+    let captures: i64 = analyze_closure_captures(params, body);
+    store_ptr(entry, 3, captures);
     vec_push(closures, entry);
     0
 }
@@ -1085,6 +1186,309 @@ fn collect_locals_from_block(block: i64) -> i64 {
     result
 }
 
+// Collect all identifier references from an expression (for capture analysis)
+fn collect_referenced_ids(expr: i64, result: i64) -> i64 {
+    if expr == 0 {
+        return 0;
+    }
+    let tag: i64 = load_i64(expr, 0);
+
+    // Identifier - add to result
+    if tag == EXPR_IDENT() {
+        let name: i64 = load_ptr(expr, 1);
+        // Only add if not already in result
+        let n: i64 = vec_len(result);
+        let found: i64 = 0;
+        let i: i64 = 0;
+        while i < n {
+            if string_eq(vec_get(result, i), name) {
+                found = 1;
+                break;
+            }
+            i = i + 1;
+        }
+        if found == 0 {
+            vec_push(result, name);
+        }
+        return 0;
+    }
+
+    // Binary - recurse on left and right
+    if tag == EXPR_BINARY() {
+        let left: i64 = load_ptr(expr, 2);
+        let right: i64 = load_ptr(expr, 3);
+        collect_referenced_ids(left, result);
+        collect_referenced_ids(right, result);
+        return 0;
+    }
+
+    // Unary - recurse on operand
+    if tag == EXPR_UNARY() {
+        let operand: i64 = load_ptr(expr, 2);
+        collect_referenced_ids(operand, result);
+        return 0;
+    }
+
+    // Call - recurse on callee and args
+    if tag == EXPR_CALL() {
+        let callee: i64 = load_ptr(expr, 1);
+        let args: i64 = load_ptr(expr, 2);
+        collect_referenced_ids(callee, result);
+        let n: i64 = vec_len(args);
+        let i: i64 = 0;
+        while i < n {
+            collect_referenced_ids(vec_get(args, i), result);
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    // Method call - recurse on receiver and args
+    if tag == EXPR_METHOD() {
+        let receiver: i64 = load_ptr(expr, 1);
+        let args: i64 = load_ptr(expr, 3);
+        collect_referenced_ids(receiver, result);
+        let n: i64 = vec_len(args);
+        let i: i64 = 0;
+        while i < n {
+            collect_referenced_ids(vec_get(args, i), result);
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    // Field access - recurse on base
+    if tag == EXPR_FIELD() {
+        let base: i64 = load_ptr(expr, 1);
+        collect_referenced_ids(base, result);
+        return 0;
+    }
+
+    // Index access - recurse on base and index
+    if tag == EXPR_INDEX() {
+        let base: i64 = load_ptr(expr, 1);
+        let index: i64 = load_ptr(expr, 2);
+        collect_referenced_ids(base, result);
+        collect_referenced_ids(index, result);
+        return 0;
+    }
+
+    // Block - recurse on statements and result
+    if tag == EXPR_BLOCK() {
+        let stmts: i64 = load_ptr(expr, 1);
+        let result_expr: i64 = load_ptr(expr, 2);
+        let n: i64 = vec_len(stmts);
+        let i: i64 = 0;
+        while i < n {
+            let stmt: i64 = vec_get(stmts, i);
+            collect_referenced_ids_stmt(stmt, result);
+            i = i + 1;
+        }
+        if result_expr != 0 {
+            collect_referenced_ids(result_expr, result);
+        }
+        return 0;
+    }
+
+    // If - recurse on condition, then, else
+    if tag == EXPR_IF() {
+        let cond: i64 = load_ptr(expr, 1);
+        let then_block: i64 = load_ptr(expr, 2);
+        let else_block: i64 = load_ptr(expr, 3);
+        collect_referenced_ids(cond, result);
+        collect_referenced_ids(then_block, result);
+        if else_block != 0 {
+            collect_referenced_ids(else_block, result);
+        }
+        return 0;
+    }
+
+    // While - recurse on condition and body
+    if tag == EXPR_WHILE() {
+        let cond: i64 = load_ptr(expr, 1);
+        let body: i64 = load_ptr(expr, 2);
+        collect_referenced_ids(cond, result);
+        collect_referenced_ids(body, result);
+        return 0;
+    }
+
+    // For - recurse on range and body
+    if tag == EXPR_FOR() {
+        let start: i64 = load_ptr(expr, 2);
+        let end: i64 = load_ptr(expr, 3);
+        let body: i64 = load_ptr(expr, 4);
+        collect_referenced_ids(start, result);
+        collect_referenced_ids(end, result);
+        collect_referenced_ids(body, result);
+        return 0;
+    }
+
+    // Match - recurse on scrutinee and arm bodies
+    if tag == EXPR_MATCH() {
+        let scrutinee: i64 = load_ptr(expr, 1);
+        let arms: i64 = load_ptr(expr, 2);
+        collect_referenced_ids(scrutinee, result);
+        let n: i64 = vec_len(arms);
+        let i: i64 = 0;
+        while i < n {
+            let arm: i64 = vec_get(arms, i);
+            let body: i64 = load_ptr(arm, 1);
+            collect_referenced_ids(body, result);
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    // Array - recurse on elements
+    if tag == EXPR_ARRAY() {
+        let elems: i64 = load_ptr(expr, 1);
+        let n: i64 = vec_len(elems);
+        let i: i64 = 0;
+        while i < n {
+            collect_referenced_ids(vec_get(elems, i), result);
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    // Tuple - recurse on elements
+    if tag == EXPR_TUPLE() {
+        let elems: i64 = load_ptr(expr, 1);
+        let n: i64 = vec_len(elems);
+        let i: i64 = 0;
+        while i < n {
+            collect_referenced_ids(vec_get(elems, i), result);
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    // Struct literal - recurse on field values
+    if tag == EXPR_STRUCT() {
+        let fields: i64 = load_ptr(expr, 2);
+        let n: i64 = vec_len(fields);
+        let i: i64 = 0;
+        while i < n {
+            let field: i64 = vec_get(fields, i);
+            let val: i64 = load_ptr(field, 1);
+            collect_referenced_ids(val, result);
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    // Cast - recurse on expression
+    if tag == EXPR_CAST() {
+        let inner: i64 = load_ptr(expr, 1);
+        collect_referenced_ids(inner, result);
+        return 0;
+    }
+
+    // Try - recurse on expression
+    if tag == EXPR_TRY() {
+        let inner: i64 = load_ptr(expr, 1);
+        collect_referenced_ids(inner, result);
+        return 0;
+    }
+
+    // Closure - recurse into body (nested closures can capture from outer)
+    if tag == EXPR_CLOSURE() {
+        let body: i64 = load_ptr(expr, 2);
+        collect_referenced_ids(body, result);
+        return 0;
+    }
+
+    0
+}
+
+// Collect referenced identifiers from a statement
+fn collect_referenced_ids_stmt(stmt: i64, result: i64) -> i64 {
+    if stmt == 0 {
+        return 0;
+    }
+    let tag: i64 = load_i64(stmt, 0);
+
+    // Let statement - recurse on init expression
+    if tag == STMT_LET() {
+        let init_expr: i64 = load_ptr(stmt, 3);
+        if init_expr != 0 {
+            collect_referenced_ids(init_expr, result);
+        }
+        return 0;
+    }
+
+    // Expression statement
+    if tag == STMT_EXPR() {
+        let expr: i64 = load_ptr(stmt, 1);
+        collect_referenced_ids(expr, result);
+        return 0;
+    }
+
+    // Return statement
+    if tag == STMT_RETURN() {
+        let expr: i64 = load_ptr(stmt, 1);
+        if expr != 0 {
+            collect_referenced_ids(expr, result);
+        }
+        return 0;
+    }
+
+    // Assign statement
+    if tag == STMT_ASSIGN() {
+        let target: i64 = load_ptr(stmt, 1);
+        let value: i64 = load_ptr(stmt, 2);
+        collect_referenced_ids(target, result);
+        collect_referenced_ids(value, result);
+        return 0;
+    }
+
+    0
+}
+
+// Analyze captures for a closure: find variables referenced in body that are not params
+// Returns a vec of captured variable names
+fn analyze_closure_captures(params: i64, body: i64) -> i64 {
+    // Collect all referenced identifiers in the body
+    let refs: i64 = vec_new();
+    collect_referenced_ids(body, refs);
+
+    // Collect parameter names
+    let param_names: i64 = vec_new();
+    let n: i64 = vec_len(params);
+    let i: i64 = 0;
+    while i < n {
+        let param: i64 = vec_get(params, i);
+        let pname: i64 = load_ptr(param, 0);
+        vec_push(param_names, pname);
+        i = i + 1;
+    }
+
+    // Filter: captures are references that are not parameters
+    let captures: i64 = vec_new();
+    n = vec_len(refs);
+    i = 0;
+    while i < n {
+        let ref_name: i64 = vec_get(refs, i);
+        // Check if this is a parameter
+        let is_param: i64 = 0;
+        let j: i64 = 0;
+        let np: i64 = vec_len(param_names);
+        while j < np {
+            if string_eq(vec_get(param_names, j), ref_name) {
+                is_param = 1;
+                break;
+            }
+            j = j + 1;
+        }
+        if is_param == 0 {
+            vec_push(captures, ref_name);
+        }
+        i = i + 1;
+    }
+
+    captures
+}
+
 fn cg_output(cg: i64) -> i64 {
     load_ptr(cg, 0)
 }
@@ -1224,6 +1628,29 @@ fn lookup_variant(cg: i64, enum_name: i64, var_name: i64) -> i64 {
     0 - 1  // Return -1 when not found
 }
 
+// Look up enum variant index by variant name only (searches all enums)
+fn lookup_variant_any(cg: i64, var_name: i64) -> i64 {
+    let enums: i64 = cg_enums(cg);
+    let n: i64 = vec_len(enums);
+    let i: i64 = 0;
+
+    while i < n {
+        let entry: i64 = vec_get(enums, i);
+        let variants: i64 = load_ptr(entry, 1);
+        let m: i64 = vec_len(variants);
+        let j: i64 = 0;
+        while j < m {
+            let v: i64 = vec_get(variants, j);
+            if string_eq(v, var_name) {
+                return j;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    0 - 1  // Return -1 when not found
+}
+
 // Register builtin enums (Option, Result) for enum construction without explicit enum definition
 fn register_builtin_enums(cg: i64) -> i64 {
     // Option<T>: None=0, Some=1
@@ -1273,16 +1700,27 @@ fn cg_loop_depth(cg: i64) -> i64 {
     load_i64(cg, 10)
 }
 
-// Push loop context onto stack - pair is (continue_label, break_label)
+// Push loop context onto stack - triple is (continue_label, break_label, result_ptr)
 fn push_loop(cg: i64, continue_label: i64, break_label: i64) -> i64 {
     let stack: i64 = cg_loop_stack(cg);
     let depth: i64 = cg_loop_depth(cg);
-    let pair: i64 = malloc(16);
-    store_ptr(pair, 0, continue_label);
-    store_ptr(pair, 1, break_label);
-    vec_push(stack, pair);
+    let ctx: i64 = malloc(24);  // 3 pointers: continue, break, result
+    store_ptr(ctx, 0, continue_label);
+    store_ptr(ctx, 1, break_label);
+    store_ptr(ctx, 2, 0);  // result_ptr initially null
+    vec_push(stack, ctx);
     store_i64(cg, 10, depth + 1);
     0
+}
+
+// Get current loop context (top of stack)
+fn cg_current_loop(cg: i64) -> i64 {
+    let depth: i64 = cg_loop_depth(cg);
+    if depth == 0 {
+        return 0;
+    }
+    let stack: i64 = cg_loop_stack(cg);
+    vec_get(stack, depth - 1)
 }
 
 // Pop loop context from stack
@@ -1370,6 +1808,23 @@ fn lookup_struct_fields(cg: i64, struct_name: i64) -> i64 {
         let name: i64 = load_ptr(entry, 0);
         if string_eq(name, struct_name) {
             return load_ptr(entry, 1);
+        }
+        i = i + 1;
+    }
+    0
+}
+
+// Look up struct definition by name (returns the entry or 0 if not found)
+fn cg_lookup_struct(cg: i64, struct_name: i64) -> i64 {
+    let structs: i64 = cg_structs(cg);
+    let n: i64 = vec_len(structs);
+    let i: i64 = 0;
+
+    while i < n {
+        let entry: i64 = vec_get(structs, i);
+        let name: i64 = load_ptr(entry, 0);
+        if string_eq(name, struct_name) {
+            return entry;
         }
         i = i + 1;
     }
@@ -1631,7 +2086,8 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
         return temp;
     }
 
-    // Path - enum variant
+    // Path - enum variant (no payload)
+    // Allocate memory and store tag for consistency with payloaded enums
     if tag == EXPR_PATH() {
         let segments: i64 = load_ptr(expr, 1);
         let len: i64 = vec_len(segments);
@@ -1639,7 +2095,24 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
             let enum_name: i64 = vec_get(segments, 0);
             let var_name: i64 = vec_get(segments, 1);
             let idx: i64 = lookup_variant(cg, enum_name, var_name);
-            return int_to_string(idx);
+            // Allocate 8 bytes for tag only
+            let ptr_t: i64 = cg_next_temp(cg);
+            emit(cg, "  %t");
+            emit(cg, int_to_string(ptr_t));
+            emit_line(cg, " = call ptr @malloc(i64 8)");
+            // Store tag at offset 0
+            emit(cg, "  store i64 ");
+            emit(cg, int_to_string(idx));
+            emit(cg, ", ptr %t");
+            emit_line(cg, int_to_string(ptr_t));
+            // Convert to i64 for return
+            let ret_t: i64 = cg_next_temp(cg);
+            emit(cg, "  %t");
+            emit(cg, int_to_string(ret_t));
+            emit(cg, " = ptrtoint ptr %t");
+            emit(cg, int_to_string(ptr_t));
+            emit_line(cg, " to i64");
+            return string_concat("%t", int_to_string(ret_t));
         }
         return string_from("0");
     }
@@ -1650,8 +2123,51 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
         let args: i64 = load_ptr(expr, 2);
         let type_args: i64 = load_ptr(expr, 3);  // Generic type arguments (or 0)
 
-        // Get function name
-        let callee_name: i64 = load_ptr(callee, 1);
+        // Get function name - handle both identifiers and path expressions
+        var callee_name: i64 = 0;
+        let callee_tag: i64 = load_i64(callee, 0);
+        if callee_tag == EXPR_PATH() {
+            // Path expression like Vec::new or std::io::read
+            let segments: i64 = load_ptr(callee, 1);
+            let seg_len: i64 = vec_len(segments);
+            if seg_len == 2 {
+                let type_part: i64 = vec_get(segments, 0);
+                let method_part: i64 = vec_get(segments, 1);
+                // Handle Vec::new() -> vec_new()
+                if string_eq(type_part, string_from("Vec")) {
+                    if string_eq(method_part, string_from("new")) {
+                        callee_name = string_from("vec_new");
+                    }
+                }
+                // Handle Option::Some, Option::None
+                if string_eq(type_part, string_from("Option")) {
+                    callee_name = method_part;
+                }
+                // Handle Result::Ok, Result::Err
+                if string_eq(type_part, string_from("Result")) {
+                    callee_name = method_part;
+                }
+                // Check if type_part is a user-defined enum
+                if callee_name == 0 {
+                    let enum_variant_idx: i64 = lookup_variant(cg, type_part, method_part);
+                    if enum_variant_idx >= 0 {
+                        // Use just the variant name for lookup
+                        callee_name = method_part;
+                    }
+                }
+                // Default: join with underscore for static method calls
+                if callee_name == 0 {
+                    callee_name = string_concat(type_part, string_concat("_", method_part));
+                }
+            } else {
+                if seg_len > 0 {
+                    callee_name = vec_get(segments, seg_len - 1);
+                }
+            }
+        } else {
+            // Simple identifier
+            callee_name = load_ptr(callee, 1);
+        }
 
         // Check if this is a closure call (inline expansion)
         let closure_entry: i64 = cg_lookup_closure(cg, callee_name);
@@ -1828,6 +2344,13 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
             emit_intrinsic_void_ptr2(cg, "intrinsic_write_file", vec_get(arg_values, 0), vec_get(arg_values, 1));
             return string_from("0");
         }
+        if string_eq(callee_name, "file_write") {
+            emit_intrinsic_void_ptr2(cg, "intrinsic_write_file", vec_get(arg_values, 0), vec_get(arg_values, 1));
+            return string_from("0");
+        }
+        if string_eq(callee_name, "remove_path") {
+            return emit_intrinsic_i64_ptr(cg, "intrinsic_remove_path", vec_get(arg_values, 0));
+        }
         if string_eq(callee_name, "free") {
             emit_intrinsic_void_ptr(cg, "free", vec_get(arg_values, 0));
             return string_from("0");
@@ -1867,6 +2390,10 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
             return emit_intrinsic_ptr_i64(cg, "intrinsic_string_from_char", vec_get(arg_values, 0));
         }
         if string_eq(callee_name, "vec_new") {
+            return emit_intrinsic_ptr_void(cg, "intrinsic_vec_new");
+        }
+        // Handle mangled name from Vec::new() syntax
+        if string_eq(callee_name, "Vec_new") {
             return emit_intrinsic_ptr_void(cg, "intrinsic_vec_new");
         }
         if string_eq(callee_name, "vec_get") {
@@ -1941,6 +2468,20 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
         }
         if string_eq(callee_name, "path_ext") {
             return emit_intrinsic_ptr_ptr(cg, "intrinsic_path_extension", vec_get(arg_values, 0));
+        }
+        if string_eq(callee_name, "file_copy") {
+            return emit_intrinsic_i64_ptr_ptr(cg, "file_copy", vec_get(arg_values, 0), vec_get(arg_values, 1));
+        }
+        if string_eq(callee_name, "file_rename") {
+            return emit_intrinsic_i64_ptr_ptr(cg, "file_rename", vec_get(arg_values, 0), vec_get(arg_values, 1));
+        }
+        if string_eq(callee_name, "stderr_write") {
+            emit_intrinsic_void_ptr(cg, "stderr_write", vec_get(arg_values, 0));
+            return string_from("0");
+        }
+        if string_eq(callee_name, "stderr_writeln") {
+            emit_intrinsic_void_ptr(cg, "stderr_writeln", vec_get(arg_values, 0));
+            return string_from("0");
         }
 
         // Arena intrinsics
@@ -2289,6 +2830,55 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
             return string_from("0");
         }
 
+        // ===== USER-DEFINED ENUM VARIANT CONSTRUCTORS =====
+        // Check if callee_name is an enum variant for any registered enum
+        let any_variant_idx: i64 = lookup_variant_any(cg, callee_name);
+        if any_variant_idx >= 0 {
+            // Found an enum variant - generate construction inline
+            let num_payloads: i64 = vec_len(arg_values);
+            let size: i64 = 8 + num_payloads * 8;
+
+            let malloc_t: i64 = cg_next_temp(cg);
+            emit(cg, "  %t");
+            emit(cg, int_to_string(malloc_t));
+            emit(cg, " = call ptr @malloc(i64 ");
+            emit(cg, int_to_string(size));
+            emit_line(cg, ")");
+
+            // Store tag
+            emit(cg, "  store i64 ");
+            emit(cg, int_to_string(any_variant_idx));
+            emit(cg, ", ptr %t");
+            emit_line(cg, int_to_string(malloc_t));
+
+            // Store payloads at offset 8, 16, etc.
+            let pi: i64 = 0;
+            while pi < num_payloads {
+                let offset: i64 = 8 + pi * 8;
+                let gep_t: i64 = cg_next_temp(cg);
+                emit(cg, "  %t");
+                emit(cg, int_to_string(gep_t));
+                emit(cg, " = getelementptr i8, ptr %t");
+                emit(cg, int_to_string(malloc_t));
+                emit(cg, ", i64 ");
+                emit_line(cg, int_to_string(offset));
+                emit(cg, "  store i64 ");
+                emit(cg, vec_get(arg_values, pi));
+                emit(cg, ", ptr %t");
+                emit_line(cg, int_to_string(gep_t));
+                pi = pi + 1;
+            }
+
+            // Return ptr as i64
+            let result_t: i64 = cg_next_temp(cg);
+            emit(cg, "  %t");
+            emit(cg, int_to_string(result_t));
+            emit(cg, " = ptrtoint ptr %t");
+            emit(cg, int_to_string(malloc_t));
+            emit_line(cg, " to i64");
+            return string_concat("%t", int_to_string(result_t));
+        }
+
         // Check if this is a generic function call
         let emit_callee: i64 = callee_name;
         if type_args != 0 {
@@ -2500,6 +3090,21 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
     // While expression
     if tag == EXPR_WHILE() {
         return gen_while(cg, expr);
+    }
+
+    // While-let expression
+    if tag == EXPR_WHILE_LET() {
+        return gen_while_let(cg, expr);
+    }
+
+    // Loop expression
+    if tag == EXPR_LOOP() {
+        return gen_loop(cg, expr);
+    }
+
+    // Break expression with value
+    if tag == EXPR_BREAK() {
+        return gen_break_value(cg, expr);
     }
 
     // For expression
@@ -2998,6 +3603,68 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
             }
         }
 
+        // ===== INLINE VEC METHODS =====
+        // Handle Vec<T> methods by mapping to intrinsic functions
+        if string_eq(base_type, string_from("Vec")) {
+            if string_eq(method_name, string_from("len")) {
+                // vec.len() -> intrinsic_vec_len(vec)
+                return emit_intrinsic_i64_ptr(cg, "intrinsic_vec_len", obj_val);
+            }
+
+            if string_eq(method_name, string_from("push")) {
+                // vec.push(item) -> intrinsic_vec_push(vec, item)
+                let item_val: i64 = string_from("0");
+                if vec_len(arg_values) > 0 {
+                    item_val = vec_get(arg_values, 0);
+                }
+                emit_intrinsic_void_ptr2(cg, "intrinsic_vec_push", obj_val, item_val);
+                return string_from("0");
+            }
+
+            if string_eq(method_name, string_from("get")) {
+                // vec.get(idx) -> intrinsic_vec_get(vec, idx)
+                let idx_val: i64 = string_from("0");
+                if vec_len(arg_values) > 0 {
+                    idx_val = vec_get(arg_values, 0);
+                }
+                return emit_intrinsic_ptr_ptr_i64(cg, "intrinsic_vec_get", obj_val, idx_val);
+            }
+
+            if string_eq(method_name, string_from("pop")) {
+                // vec.pop() -> intrinsic_vec_pop(vec)
+                return emit_intrinsic_ptr_ptr(cg, "intrinsic_vec_pop", obj_val);
+            }
+
+            if string_eq(method_name, string_from("clear")) {
+                // vec.clear() -> intrinsic_vec_clear(vec)
+                emit_intrinsic_void_ptr(cg, "intrinsic_vec_clear", obj_val);
+                return string_from("0");
+            }
+
+            if string_eq(method_name, string_from("is_empty")) {
+                // vec.is_empty() -> intrinsic_vec_len(vec) == 0
+                let len_t: i64 = cg_next_temp(cg);
+                emit(cg, "  %t");
+                emit(cg, int_to_string(len_t));
+                emit(cg, " = call i64 @intrinsic_vec_len(i64 ");
+                emit(cg, obj_val);
+                emit_line(cg, ")");
+                let cmp_t: i64 = cg_next_temp(cg);
+                emit(cg, "  %t");
+                emit(cg, int_to_string(cmp_t));
+                emit(cg, " = icmp eq i64 %t");
+                emit(cg, int_to_string(len_t));
+                emit_line(cg, ", 0");
+                let result_t: i64 = cg_next_temp(cg);
+                emit(cg, "  %t");
+                emit(cg, int_to_string(result_t));
+                emit(cg, " = zext i1 %t");
+                emit(cg, int_to_string(cmp_t));
+                emit_line(cg, " to i64");
+                return string_concat("%t", int_to_string(result_t));
+            }
+        }
+
         // Static dispatch - build mangled function name: TypeName_methodName
         let callee_name: i64 = method_name;
         if type_name != 0 {
@@ -3231,6 +3898,21 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
         return string_concat("%t", int_to_string(result_t));
     }
 
+    // EXPR_INFER - AI model inference
+    if tag == EXPR_INFER() {
+        let prompt: i64 = load_ptr(expr, 1);
+        // Generate the prompt expression
+        let prompt_val: i64 = gen_expr(cg, prompt);
+        // Call the runtime inference function
+        let result_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(result_t));
+        emit(cg, " = call i64 @model_infer(i64 ");
+        emit(cg, prompt_val);
+        emit_line(cg, ")");
+        return string_concat("%t", int_to_string(result_t));
+    }
+
     // EXPR_FLOAT - floating point literal
     if tag == EXPR_FLOAT() {
         let text: i64 = load_ptr(expr, 1);
@@ -3245,6 +3927,100 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
         emit(cg, "@.str.mod.");
         emit(cg, int_to_string(str_idx));
         emit_line(cg, ")");
+        return string_concat("%t", int_to_string(result_t));
+    }
+
+    // EXPR_TUPLE - tuple literal (a, b, c)
+    // Layout: Allocate struct with each element at 8-byte offsets
+    if tag == EXPR_TUPLE() {
+        let elements: i64 = load_ptr(expr, 1);
+        let len: i64 = vec_len(elements);
+        let size: i64 = len * 8;
+        if size == 0 {
+            size = 8;  // At least 8 bytes for empty tuple
+        }
+
+        // Allocate memory for tuple
+        let ptr_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(ptr_t));
+        emit(cg, " = call ptr @malloc(i64 ");
+        emit(cg, int_to_string(size));
+        emit_line(cg, ")");
+
+        // Store each element at offset i * 8
+        let i: i64 = 0;
+        while i < len {
+            let elem: i64 = vec_get(elements, i);
+            let elem_val: i64 = gen_expr(cg, elem);
+            let offset: i64 = i * 8;
+
+            let gep_t: i64 = cg_next_temp(cg);
+            emit(cg, "  %t");
+            emit(cg, int_to_string(gep_t));
+            emit(cg, " = getelementptr i8, ptr %t");
+            emit(cg, int_to_string(ptr_t));
+            emit(cg, ", i64 ");
+            emit_line(cg, int_to_string(offset));
+
+            emit(cg, "  store i64 ");
+            emit(cg, elem_val);
+            emit(cg, ", ptr %t");
+            emit_line(cg, int_to_string(gep_t));
+
+            i = i + 1;
+        }
+
+        // Return tuple pointer as i64
+        let result_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(result_t));
+        emit(cg, " = ptrtoint ptr %t");
+        emit(cg, int_to_string(ptr_t));
+        emit_line(cg, " to i64");
+        return string_concat("%t", int_to_string(result_t));
+    }
+
+    // EXPR_INDEX - array/tuple indexing expr[index]
+    if tag == EXPR_INDEX() {
+        let base: i64 = load_ptr(expr, 1);
+        let index: i64 = load_ptr(expr, 2);
+
+        let base_val: i64 = gen_expr(cg, base);
+        let index_val: i64 = gen_expr(cg, index);
+
+        // Convert base to ptr
+        let base_ptr: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(base_ptr));
+        emit(cg, " = inttoptr i64 ");
+        emit(cg, base_val);
+        emit_line(cg, " to ptr");
+
+        // Calculate offset = index * 8
+        let offset_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(offset_t));
+        emit(cg, " = mul i64 ");
+        emit(cg, index_val);
+        emit_line(cg, ", 8");
+
+        // GEP to get element pointer
+        let elem_ptr: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(elem_ptr));
+        emit(cg, " = getelementptr i8, ptr %t");
+        emit(cg, int_to_string(base_ptr));
+        emit(cg, ", i64 %t");
+        emit_line(cg, int_to_string(offset_t));
+
+        // Load the value
+        let result_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(result_t));
+        emit(cg, " = load i64, ptr %t");
+        emit_line(cg, int_to_string(elem_ptr));
+
         return string_concat("%t", int_to_string(result_t));
     }
 
@@ -3283,6 +4059,245 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
         emit(cg, " = ptrtoint ptr %t");
         emit(cg, int_to_string(vec_t));
         emit_line(cg, " to i64");
+        return string_concat("%t", int_to_string(result_t));
+    }
+
+    // EXPR_CONFIDENCE - confidence(belief_id)
+    // Layout: tag(0), belief_id(1)
+    // Returns confidence value of specified belief (dual.val) as i64 bit pattern
+    if tag == EXPR_CONFIDENCE() {
+        let belief_id: i64 = load_ptr(expr, 1);
+        let id_val: i64 = gen_expr(cg, belief_id);
+
+        // Call runtime to get belief confidence value
+        // Returns f64 bit pattern in i64
+        let result_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(result_t));
+        emit(cg, " = call i64 @belief_guard_get_confidence(i64 ");
+        emit(cg, id_val);
+        emit_line(cg, ")");
+
+        return string_concat("%t", int_to_string(result_t));
+    }
+
+    // EXPR_DERIVATIVE - expr.derivative
+    // Layout: tag(0), inner_expr(1)
+    // Returns derivative of confidence (dual.der) as i64 bit pattern
+    if tag == EXPR_DERIVATIVE() {
+        let inner: i64 = load_ptr(expr, 1);
+        let inner_val: i64 = gen_expr(cg, inner);
+
+        // Call runtime to get belief derivative value
+        // The inner expression is a confidence() expression - extract derivative
+        let result_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(result_t));
+        emit(cg, " = call i64 @belief_guard_get_derivative(i64 ");
+        emit(cg, inner_val);
+        emit_line(cg, ")");
+
+        return string_concat("%t", int_to_string(result_t));
+    }
+
+    // EXPR_BELIEF_GUARD - belief_expr cmp value
+    // Layout: tag(0), left(1), op(2), right(3)
+    // Returns 1 if guard condition is satisfied, 0 otherwise
+    if tag == EXPR_BELIEF_GUARD() {
+        let left: i64 = load_ptr(expr, 1);
+        let op: i64 = load_i64(expr, 2);
+        let right: i64 = load_ptr(expr, 3);
+
+        let left_val: i64 = gen_expr(cg, left);
+        let right_val: i64 = gen_expr(cg, right);
+
+        // Compare as f64 bit patterns - use fcmp for floating point comparison
+        // First bitcast i64 to double
+        let left_f: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(left_f));
+        emit(cg, " = bitcast i64 ");
+        emit(cg, left_val);
+        emit_line(cg, " to double");
+
+        let right_f: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(right_f));
+        emit(cg, " = bitcast i64 ");
+        emit(cg, right_val);
+        emit_line(cg, " to double");
+
+        // Determine comparison type based on operator
+        let cmp_op: i64 = string_from("olt");  // default: less than
+        if op == OP_LT() {
+            cmp_op = string_from("olt");
+        }
+        if op == OP_LE() {
+            cmp_op = string_from("ole");
+        }
+        if op == OP_GT() {
+            cmp_op = string_from("ogt");
+        }
+        if op == OP_GE() {
+            cmp_op = string_from("oge");
+        }
+        if op == OP_EQ() {
+            cmp_op = string_from("oeq");
+        }
+        if op == OP_NE() {
+            cmp_op = string_from("one");
+        }
+
+        let cmp_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(cmp_t));
+        emit(cg, " = fcmp ");
+        emit(cg, cmp_op);
+        emit(cg, " double %t");
+        emit(cg, int_to_string(left_f));
+        emit(cg, ", %t");
+        emit_line(cg, int_to_string(right_f));
+
+        // Extend i1 to i64
+        let result_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(result_t));
+        emit(cg, " = zext i1 %t");
+        emit(cg, int_to_string(cmp_t));
+        emit_line(cg, " to i64");
+
+        return string_concat("%t", int_to_string(result_t));
+    }
+
+    // EXPR_BELIEF_AND - guard && guard
+    // Layout: tag(0), left(1), right(2)
+    // Short-circuit evaluation: returns 1 if both guards are true
+    if tag == EXPR_BELIEF_AND() {
+        let left: i64 = load_ptr(expr, 1);
+        let right: i64 = load_ptr(expr, 2);
+
+        let left_val: i64 = gen_expr(cg, left);
+
+        // Short-circuit: if left is false (0), result is 0
+        let lbl: i64 = cg_next_label(cg);
+        let entry_lbl: i64 = string_concat("belief_and_entry", int_to_string(lbl));
+        let eval_right: i64 = string_concat("belief_and_right", int_to_string(lbl));
+        let short_lbl: i64 = string_concat("belief_and_short", int_to_string(lbl));
+        let done_lbl: i64 = string_concat("belief_and_done", int_to_string(lbl));
+
+        // Create entry label block for phi
+        emit(cg, "  br label %");
+        emit_line(cg, entry_lbl);
+        emit(cg, entry_lbl);
+        emit_line(cg, ":");
+
+        let cmp_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(cmp_t));
+        emit(cg, " = icmp ne i64 ");
+        emit(cg, left_val);
+        emit_line(cg, ", 0");
+
+        emit(cg, "  br i1 %t");
+        emit(cg, int_to_string(cmp_t));
+        emit(cg, ", label %");
+        emit(cg, eval_right);
+        emit(cg, ", label %");
+        emit_line(cg, short_lbl);
+
+        // Short-circuit path - left was false, return 0
+        emit(cg, short_lbl);
+        emit_line(cg, ":");
+        emit(cg, "  br label %");
+        emit_line(cg, done_lbl);
+
+        // Evaluate right side
+        emit(cg, eval_right);
+        emit_line(cg, ":");
+        let right_val: i64 = gen_expr(cg, right);
+        emit(cg, "  br label %");
+        emit_line(cg, done_lbl);
+
+        // Merge
+        emit(cg, done_lbl);
+        emit_line(cg, ":");
+        let result_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(result_t));
+        emit(cg, " = phi i64 [ 0, %");
+        emit(cg, short_lbl);
+        emit(cg, " ], [ ");
+        emit(cg, right_val);
+        emit(cg, ", %");
+        emit(cg, eval_right);
+        emit_line(cg, " ]");
+
+        return string_concat("%t", int_to_string(result_t));
+    }
+
+    // EXPR_BELIEF_OR - guard || guard
+    // Layout: tag(0), left(1), right(2)
+    // Short-circuit evaluation: returns 1 if either guard is true
+    if tag == EXPR_BELIEF_OR() {
+        let left: i64 = load_ptr(expr, 1);
+        let right: i64 = load_ptr(expr, 2);
+
+        let left_val: i64 = gen_expr(cg, left);
+
+        // Short-circuit: if left is true (non-0), result is 1
+        let lbl: i64 = cg_next_label(cg);
+        let entry_lbl: i64 = string_concat("belief_or_entry", int_to_string(lbl));
+        let eval_right: i64 = string_concat("belief_or_right", int_to_string(lbl));
+        let short_lbl: i64 = string_concat("belief_or_short", int_to_string(lbl));
+        let done_lbl: i64 = string_concat("belief_or_done", int_to_string(lbl));
+
+        // Create entry label block for phi
+        emit(cg, "  br label %");
+        emit_line(cg, entry_lbl);
+        emit(cg, entry_lbl);
+        emit_line(cg, ":");
+
+        let cmp_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(cmp_t));
+        emit(cg, " = icmp eq i64 ");
+        emit(cg, left_val);
+        emit_line(cg, ", 0");
+
+        emit(cg, "  br i1 %t");
+        emit(cg, int_to_string(cmp_t));
+        emit(cg, ", label %");
+        emit(cg, eval_right);
+        emit(cg, ", label %");
+        emit_line(cg, short_lbl);
+
+        // Short-circuit path - left was true, return 1
+        emit(cg, short_lbl);
+        emit_line(cg, ":");
+        emit(cg, "  br label %");
+        emit_line(cg, done_lbl);
+
+        // Evaluate right side
+        emit(cg, eval_right);
+        emit_line(cg, ":");
+        let right_val: i64 = gen_expr(cg, right);
+        emit(cg, "  br label %");
+        emit_line(cg, done_lbl);
+
+        // Merge
+        emit(cg, done_lbl);
+        emit_line(cg, ":");
+        let result_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(result_t));
+        emit(cg, " = phi i64 [ 1, %");
+        emit(cg, short_lbl);
+        emit(cg, " ], [ ");
+        emit(cg, right_val);
+        emit(cg, ", %");
+        emit(cg, eval_right);
+        emit_line(cg, " ]");
+
         return string_concat("%t", int_to_string(result_t));
     }
 
@@ -3534,6 +4549,229 @@ fn gen_for(cg: i64, expr: i64) -> i64 {
     string_from("0")
 }
 
+// Generate while-let expression: while let Pattern = scrutinee { body }
+// Continues looping as long as the pattern matches
+fn gen_while_let(cg: i64, expr: i64) -> i64 {
+    let pattern: i64 = load_ptr(expr, 1);
+    let scrutinee: i64 = load_ptr(expr, 2);
+    let body: i64 = load_ptr(expr, 3);
+
+    let l: i64 = cg_next_label(cg);
+    let loop_lbl: i64 = string_concat("whilelet", int_to_string(l));
+    let match_lbl: i64 = string_concat("whileletmatch", int_to_string(l));
+    let body_lbl: i64 = string_concat("whileletbody", int_to_string(l));
+    let end_lbl: i64 = string_concat("whileletend", int_to_string(l));
+
+    emit(cg, "  br label %");
+    emit_line(cg, loop_lbl);
+
+    // Loop header - evaluate scrutinee
+    emit(cg, loop_lbl);
+    emit_line(cg, ":");
+    let scru_val: i64 = gen_expr(cg, scrutinee);
+
+    // Check if pattern matches - similar to if-let
+    // For enum patterns like Some(x), check the tag
+    let pat_tag: i64 = 0;
+    if pattern != 0 {
+        pat_tag = load_i64(pattern, 0);
+    }
+
+    // Handle enum variant patterns: Some(x)
+    if pat_tag == EXPR_CALL() {
+        // Pattern is EnumName(binding) - check tag
+        let variant_name: i64 = load_ptr(pattern, 1);
+        let args: i64 = load_ptr(pattern, 2);
+
+        // Load discriminant from scrutinee (at offset 0)
+        let ptr_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(ptr_t));
+        emit(cg, " = inttoptr i64 ");
+        emit(cg, scru_val);
+        emit_line(cg, " to ptr");
+
+        let tag_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(tag_t));
+        emit(cg, " = load i64, ptr %t");
+        emit_line(cg, int_to_string(ptr_t));
+
+        // Get expected tag for this variant
+        let expected_tag: i64 = 1;  // Default: Some = 1, None = 0
+        if string_eq(variant_name, "None") {
+            expected_tag = 0;
+        }
+
+        let cmp_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(cmp_t));
+        emit(cg, " = icmp eq i64 %t");
+        emit(cg, int_to_string(tag_t));
+        emit(cg, ", ");
+        emit_line(cg, int_to_string(expected_tag));
+
+        emit(cg, "  br i1 %t");
+        emit(cg, int_to_string(cmp_t));
+        emit(cg, ", label %");
+        emit(cg, match_lbl);
+        emit(cg, ", label %");
+        emit_line(cg, end_lbl);
+
+        // Match succeeded - extract binding and execute body
+        emit(cg, match_lbl);
+        emit_line(cg, ":");
+
+        // Extract binding if present
+        if vec_len(args) > 0 {
+            let binding: i64 = vec_get(args, 0);
+            let bind_tag: i64 = load_i64(binding, 0);
+            if bind_tag == EXPR_IDENT() {
+                let bind_name: i64 = load_ptr(binding, 1);
+
+                // Load value from offset 8 (after tag)
+                let val_gep: i64 = cg_next_temp(cg);
+                emit(cg, "  %t");
+                emit(cg, int_to_string(val_gep));
+                emit(cg, " = getelementptr i8, ptr %t");
+                emit(cg, int_to_string(ptr_t));
+                emit_line(cg, ", i64 8");
+
+                let val_t: i64 = cg_next_temp(cg);
+                emit(cg, "  %t");
+                emit(cg, int_to_string(val_t));
+                emit(cg, " = load i64, ptr %t");
+                emit_line(cg, int_to_string(val_gep));
+
+                // Create local binding
+                let local_id: i64 = cg_next_temp(cg);
+                let unique_name: i64 = str_unique(bind_name, local_id);
+                emit(cg, "  %local.");
+                emit(cg, unique_name);
+                emit_line(cg, " = alloca i64");
+                emit(cg, "  store i64 %t");
+                emit(cg, int_to_string(val_t));
+                emit(cg, ", ptr %local.");
+                emit_line(cg, unique_name);
+                add_local(cg, bind_name, unique_name);
+            }
+        }
+
+        emit(cg, "  br label %");
+        emit_line(cg, body_lbl);
+    } else {
+        // For other patterns, assume always matches (like identifier pattern)
+        emit(cg, "  br label %");
+        emit_line(cg, body_lbl);
+    }
+
+    // Loop body
+    emit(cg, body_lbl);
+    emit_line(cg, ":");
+    push_loop(cg, loop_lbl, end_lbl);
+    gen_block(cg, body);
+    pop_loop(cg);
+    emit(cg, "  br label %");
+    emit_line(cg, loop_lbl);
+
+    // End
+    emit(cg, end_lbl);
+    emit_line(cg, ":");
+
+    string_from("0")
+}
+
+// Generate loop expression: loop { body }
+// Infinite loop that can be exited with break value
+fn gen_loop(cg: i64, expr: i64) -> i64 {
+    let body: i64 = load_ptr(expr, 1);
+
+    let l: i64 = cg_next_label(cg);
+    let loop_lbl: i64 = string_concat("loop", int_to_string(l));
+    let end_lbl: i64 = string_concat("loopend", int_to_string(l));
+
+    // Allocate result slot for break value
+    let result_t: i64 = cg_next_temp(cg);
+    emit(cg, "  %loopresult");
+    emit(cg, int_to_string(l));
+    emit_line(cg, " = alloca i64");
+    emit(cg, "  store i64 0, ptr %loopresult");
+    emit_line(cg, int_to_string(l));
+
+    emit(cg, "  br label %");
+    emit_line(cg, loop_lbl);
+
+    // Loop header
+    emit(cg, loop_lbl);
+    emit_line(cg, ":");
+
+    // Push loop context with result slot
+    push_loop(cg, loop_lbl, end_lbl);
+    // Store result slot name for break to use
+    let loop_ctx: i64 = cg_current_loop(cg);
+    if loop_ctx != 0 {
+        let result_name: i64 = string_concat("%loopresult", int_to_string(l));
+        store_ptr(loop_ctx, 2, result_name);  // Store result ptr at offset 2
+    }
+
+    gen_block(cg, body);
+    pop_loop(cg);
+
+    // Loop back unconditionally
+    emit(cg, "  br label %");
+    emit_line(cg, loop_lbl);
+
+    // End - load result
+    emit(cg, end_lbl);
+    emit_line(cg, ":");
+    let final_t: i64 = cg_next_temp(cg);
+    emit(cg, "  %t");
+    emit(cg, int_to_string(final_t));
+    emit(cg, " = load i64, ptr %loopresult");
+    emit_line(cg, int_to_string(l));
+
+    return string_concat("%t", int_to_string(final_t));
+}
+
+// Generate break with value expression
+fn gen_break_value(cg: i64, expr: i64) -> i64 {
+    let value: i64 = load_ptr(expr, 1);
+
+    // Get current loop context
+    let loop_ctx: i64 = cg_current_loop(cg);
+    if loop_ctx == 0 {
+        // No loop context - error (but emit something to avoid crash)
+        emit_line(cg, "  ; ERROR: break outside loop");
+        return string_from("0");
+    }
+
+    let end_lbl: i64 = load_ptr(loop_ctx, 1);
+    let result_ptr: i64 = load_ptr(loop_ctx, 2);
+
+    // Store break value if present
+    if value != 0 {
+        let val: i64 = gen_expr(cg, value);
+        if result_ptr != 0 {
+            emit(cg, "  store i64 ");
+            emit(cg, val);
+            emit(cg, ", ptr ");
+            emit_line(cg, result_ptr);
+        }
+    }
+
+    // Branch to end
+    emit(cg, "  br label %");
+    emit_line(cg, end_lbl);
+
+    // Need a dummy block for code after break (unreachable)
+    let l: i64 = cg_next_label(cg);
+    emit(cg, "afterbreak");
+    emit(cg, int_to_string(l));
+    emit_line(cg, ":");
+
+    string_from("0")
+}
+
 // Generate match expression
 // Lowered to a series of if-else comparisons
 fn gen_match(cg: i64, expr: i64) -> i64 {
@@ -3546,6 +4784,7 @@ fn gen_match(cg: i64, expr: i64) -> i64 {
 
     let l: i64 = cg_next_label(cg);
     let end_lbl: i64 = string_concat("matchend", int_to_string(l));
+    let fail_lbl: i64 = string_concat("matchfail", int_to_string(l));
 
     // Collect arm labels and results for phi
     let arm_labels: i64 = vec_new();
@@ -3563,7 +4802,15 @@ fn gen_match(cg: i64, expr: i64) -> i64 {
         let arm_lbl: i64 = str_label(base_lbl, i);
         let guard_lbl: i64 = string_concat(arm_lbl, "_guard");
         let arm_end_lbl: i64 = string_concat(arm_lbl, "_end");
-        let next_lbl: i64 = str_label(base_lbl, i + 1);
+        let check_lbl: i64 = str_label(str_label("check", l), i);
+        let next_check_lbl: i64 = str_label(str_label("check", l), i + 1);
+
+        // Emit check block label (except for first arm which follows entry)
+        if i > 0 {
+            emit(cg, check_lbl);
+            emit_line(cg, ":");
+            cg_set_terminated(cg, false);
+        }
 
         // Check if this is the last arm or wildcard
         let is_last: i64 = i == num_arms - 1;
@@ -3574,12 +4821,105 @@ fn gen_match(cg: i64, expr: i64) -> i64 {
         // EXPR_IDENT = 3, and binding patterns bind the scrutinee to a variable
         let is_binding: i64 = 0;
         let binding_name: i64 = 0;
+        let is_enum_pattern: i64 = 0;
+        let enum_variant_name: i64 = 0;
+        let enum_bindings: i64 = 0;
+        let expected_tag: i64 = 0;
         if pattern != 0 {
             let pat_tag: i64 = load_i64(pattern, 0);
             if pat_tag == EXPR_IDENT() {
-                // This is a binding pattern - binds scrutinee to variable
-                is_binding = 1;
-                binding_name = load_ptr(pattern, 1);
+                // Check if it's an enum variant (None, etc.) or a binding
+                let ident_name: i64 = load_ptr(pattern, 1);
+                let variant_tag: i64 = lookup_variant_any(cg, ident_name);
+                if variant_tag >= 0 {
+                    // It's an enum variant without payload (like None)
+                    is_enum_pattern = 1;
+                    enum_variant_name = ident_name;
+                    expected_tag = variant_tag;
+                    enum_bindings = vec_new();
+                } else {
+                    // Regular binding pattern
+                    is_binding = 1;
+                    binding_name = ident_name;
+                }
+            } else {
+                if pat_tag == EXPR_CALL() {
+                    // Enum variant with payload: Some(x), Ok(val), etc.
+                    is_enum_pattern = 1;
+                    let callee: i64 = load_ptr(pattern, 1);
+                    let callee_tag: i64 = load_i64(callee, 0);
+                    if callee_tag == EXPR_IDENT() {
+                        enum_variant_name = load_ptr(callee, 1);
+                    } else {
+                        if callee_tag == EXPR_PATH() {
+                            // EnumName::Variant - get the variant name from segments
+                            let segments: i64 = load_ptr(callee, 1);
+                            let num_segs: i64 = vec_len(segments);
+                            if num_segs > 0 {
+                                enum_variant_name = vec_get(segments, num_segs - 1);
+                            }
+                        }
+                    }
+                    enum_bindings = load_ptr(pattern, 2);
+                    expected_tag = lookup_variant_any(cg, enum_variant_name);
+                    if expected_tag < 0 {
+                        expected_tag = 0;
+                    }
+                } else {
+                    if pat_tag == EXPR_PATH() {
+                        // EnumName::Variant without payload
+                        // EXPR_PATH layout: tag(0), segments(1)
+                        // segments is a vector like ["Color", "Red"]
+                        is_enum_pattern = 1;
+                        let segments: i64 = load_ptr(pattern, 1);
+                        let num_segs: i64 = vec_len(segments);
+                        if num_segs > 0 {
+                            enum_variant_name = vec_get(segments, num_segs - 1);
+                        }
+                        expected_tag = lookup_variant_any(cg, enum_variant_name);
+                        if expected_tag < 0 {
+                            expected_tag = 0;
+                        }
+                        enum_bindings = vec_new();
+                    }
+                }
+            }
+        }
+
+        // Check for tuple pattern - EXPR_TUPLE
+        let is_tuple_pattern: i64 = 0;
+        let tuple_elements: i64 = 0;
+        if pattern != 0 {
+            let pat_tag: i64 = load_i64(pattern, 0);
+            if pat_tag == EXPR_TUPLE() {
+                is_tuple_pattern = 1;
+                tuple_elements = load_ptr(pattern, 1);
+            }
+        }
+
+        // Check for struct pattern - EXPR_STRUCT_PAT
+        let is_struct_pattern: i64 = 0;
+        let struct_type_name: i64 = 0;
+        let struct_fields: i64 = 0;
+        let struct_has_rest: i64 = 0;
+        if pattern != 0 {
+            let pat_tag: i64 = load_i64(pattern, 0);
+            if pat_tag == EXPR_STRUCT_PAT() {
+                is_struct_pattern = 1;
+                struct_type_name = load_ptr(pattern, 1);
+                struct_fields = load_ptr(pattern, 2);
+                struct_has_rest = load_i64(pattern, 3);
+            }
+        }
+
+        // Check for or-pattern - EXPR_OR_PAT
+        let is_or_pattern: i64 = 0;
+        let or_alternatives: i64 = 0;
+        if pattern != 0 {
+            let pat_tag: i64 = load_i64(pattern, 0);
+            if pat_tag == EXPR_OR_PAT() {
+                is_or_pattern = 1;
+                or_alternatives = load_ptr(pattern, 1);
             }
         }
 
@@ -3604,32 +4944,112 @@ fn gen_match(cg: i64, expr: i64) -> i64 {
                     emit_line(cg, arm_lbl);
                 }
             } else {
-                // Value pattern - compare scrutinee to pattern
-                let pat_val: i64 = gen_expr(cg, pattern);
-
-                // Compare scrutinee == pattern
-                let cmp_t: i64 = cg_next_temp(cg);
-                emit(cg, "  %t");
-                emit(cg, int_to_string(cmp_t));
-                emit(cg, " = icmp eq i64 ");
-                emit(cg, scru_val);
-                emit(cg, ", ");
-                emit_line(cg, pat_val);
-
-                // Branch: if match goto guard_check or arm, else goto next/end
-                emit(cg, "  br i1 %t");
-                emit(cg, int_to_string(cmp_t));
-                emit(cg, ", label %");
-                if has_guard != 0 {
-                    emit(cg, guard_lbl);
+                if is_tuple_pattern != 0 {
+                    // Tuple pattern - always matches, extract elements as bindings
+                    // Go to guard or arm
+                    if has_guard != 0 {
+                        emit(cg, "  br label %");
+                        emit_line(cg, guard_lbl);
+                    } else {
+                        emit(cg, "  br label %");
+                        emit_line(cg, arm_lbl);
+                    }
                 } else {
-                    emit(cg, arm_lbl);
+                if is_struct_pattern != 0 {
+                    // Struct pattern - always matches, extract field bindings
+                    // Go to guard or arm
+                    if has_guard != 0 {
+                        emit(cg, "  br label %");
+                        emit_line(cg, guard_lbl);
+                    } else {
+                        emit(cg, "  br label %");
+                        emit_line(cg, arm_lbl);
+                    }
+                } else {
+                if is_or_pattern != 0 {
+                    // Or-pattern - check each alternative with short-circuit
+                    // For now, treat first alternative as if it always matches (simplification)
+                    // More complete: generate check for each alternative
+                    if has_guard != 0 {
+                        emit(cg, "  br label %");
+                        emit_line(cg, guard_lbl);
+                    } else {
+                        emit(cg, "  br label %");
+                        emit_line(cg, arm_lbl);
+                    }
+                } else {
+                if is_enum_pattern != 0 {
+                    // Enum pattern - compare tag at offset 0
+                    // Convert scrutinee to ptr
+                    let ptr_t: i64 = cg_next_temp(cg);
+                    emit(cg, "  %t");
+                    emit(cg, int_to_string(ptr_t));
+                    emit(cg, " = inttoptr i64 ");
+                    emit(cg, scru_val);
+                    emit_line(cg, " to ptr");
+
+                    // Load tag from offset 0
+                    let tag_t: i64 = cg_next_temp(cg);
+                    emit(cg, "  %t");
+                    emit(cg, int_to_string(tag_t));
+                    emit(cg, " = load i64, ptr %t");
+                    emit_line(cg, int_to_string(ptr_t));
+
+                    // Compare tag with expected
+                    let cmp_t: i64 = cg_next_temp(cg);
+                    emit(cg, "  %t");
+                    emit(cg, int_to_string(cmp_t));
+                    emit(cg, " = icmp eq i64 %t");
+                    emit(cg, int_to_string(tag_t));
+                    emit(cg, ", ");
+                    emit_line(cg, int_to_string(expected_tag));
+
+                    // Branch on tag match
+                    emit(cg, "  br i1 %t");
+                    emit(cg, int_to_string(cmp_t));
+                    emit(cg, ", label %");
+                    if has_guard != 0 {
+                        emit(cg, guard_lbl);
+                    } else {
+                        emit(cg, arm_lbl);
+                    }
+                    emit(cg, ", label %");
+                    if is_last != 0 {
+                        emit_line(cg, fail_lbl);
+                    } else {
+                        emit_line(cg, next_check_lbl);
+                    }
+                } else {
+                    // Value pattern - compare scrutinee to pattern
+                    let pat_val: i64 = gen_expr(cg, pattern);
+
+                    // Compare scrutinee == pattern
+                    let cmp_t: i64 = cg_next_temp(cg);
+                    emit(cg, "  %t");
+                    emit(cg, int_to_string(cmp_t));
+                    emit(cg, " = icmp eq i64 ");
+                    emit(cg, scru_val);
+                    emit(cg, ", ");
+                    emit_line(cg, pat_val);
+
+                    // Branch: if match goto guard_check or arm, else goto next/end
+                    emit(cg, "  br i1 %t");
+                    emit(cg, int_to_string(cmp_t));
+                    emit(cg, ", label %");
+                    if has_guard != 0 {
+                        emit(cg, guard_lbl);
+                    } else {
+                        emit(cg, arm_lbl);
+                    }
+                    emit(cg, ", label %");
+                    if is_last != 0 {
+                        emit_line(cg, fail_lbl);
+                    } else {
+                        emit_line(cg, next_check_lbl);
+                    }
                 }
-                emit(cg, ", label %");
-                if is_last != 0 {
-                    emit_line(cg, end_lbl);
-                } else {
-                    emit_line(cg, next_lbl);
+                }
+                }
                 }
             }
         }
@@ -3671,7 +5091,7 @@ fn gen_match(cg: i64, expr: i64) -> i64 {
             if is_last != 0 {
                 emit_line(cg, end_lbl);
             } else {
-                emit_line(cg, next_lbl);
+                emit_line(cg, next_check_lbl);
             }
         }
 
@@ -3696,6 +5116,345 @@ fn gen_match(cg: i64, expr: i64) -> i64 {
             }
         }
 
+        // If tuple pattern, extract elements and create bindings
+        if is_tuple_pattern != 0 {
+            if tuple_elements != 0 {
+                let num_elems: i64 = vec_len(tuple_elements);
+                if num_elems > 0 {
+                    // Convert scrutinee to ptr for element extraction
+                    let tup_ptr: i64 = cg_next_temp(cg);
+                    emit(cg, "  %t");
+                    emit(cg, int_to_string(tup_ptr));
+                    emit(cg, " = inttoptr i64 ");
+                    emit(cg, scru_val);
+                    emit_line(cg, " to ptr");
+
+                    let ti: i64 = 0;
+                    while ti < num_elems {
+                        let elem_pat: i64 = vec_get(tuple_elements, ti);
+                        // Check if element is an identifier pattern (binding)
+                        if elem_pat != 0 {
+                            let elem_tag: i64 = load_i64(elem_pat, 0);
+                            if elem_tag == EXPR_IDENT() {
+                                let elem_name: i64 = load_ptr(elem_pat, 1);
+
+                                // Element at offset ti * 8
+                                let offset: i64 = ti * 8;
+                                let gep_t: i64 = cg_next_temp(cg);
+                                emit(cg, "  %t");
+                                emit(cg, int_to_string(gep_t));
+                                emit(cg, " = getelementptr i8, ptr %t");
+                                emit(cg, int_to_string(tup_ptr));
+                                emit(cg, ", i64 ");
+                                emit_line(cg, int_to_string(offset));
+
+                                // Load element value
+                                let val_t: i64 = cg_next_temp(cg);
+                                emit(cg, "  %t");
+                                emit(cg, int_to_string(val_t));
+                                emit(cg, " = load i64, ptr %t");
+                                emit_line(cg, int_to_string(gep_t));
+
+                                // Create local binding
+                                let bind_id: i64 = cg_next_temp(cg);
+                                let unique_name: i64 = str_unique(elem_name, bind_id);
+                                emit(cg, "  %local.");
+                                emit(cg, unique_name);
+                                emit_line(cg, " = alloca i64");
+                                emit(cg, "  store i64 %t");
+                                emit(cg, int_to_string(val_t));
+                                emit(cg, ", ptr %local.");
+                                emit_line(cg, unique_name);
+                                add_local(cg, elem_name, unique_name);
+                            }
+                        }
+                        ti = ti + 1;
+                    }
+                }
+            }
+        }
+
+        // If struct pattern, extract field values and create bindings
+        if is_struct_pattern != 0 {
+            if struct_fields != 0 {
+                let num_fields: i64 = vec_len(struct_fields);
+                if num_fields > 0 {
+                    // Convert scrutinee to ptr for field extraction
+                    let struct_ptr: i64 = cg_next_temp(cg);
+                    emit(cg, "  %t");
+                    emit(cg, int_to_string(struct_ptr));
+                    emit(cg, " = inttoptr i64 ");
+                    emit(cg, scru_val);
+                    emit_line(cg, " to ptr");
+
+                    // Get struct definition to know field offsets
+                    let struct_def: i64 = cg_lookup_struct(cg, struct_type_name);
+                    let fi: i64 = 0;
+                    while fi < num_fields {
+                        let field_entry: i64 = vec_get(struct_fields, fi);
+                        let field_name: i64 = load_ptr(field_entry, 0);
+                        let binding: i64 = load_ptr(field_entry, 1);
+
+                        // Find field offset in struct definition
+                        let field_offset: i64 = 0;
+                        if struct_def != 0 {
+                            let fields: i64 = load_ptr(struct_def, 1);
+                            let nf: i64 = vec_len(fields);
+                            let fj: i64 = 0;
+                            while fj < nf {
+                                let f: i64 = vec_get(fields, fj);
+                                let fname: i64 = load_ptr(f, 0);
+                                if string_eq(fname, field_name) {
+                                    field_offset = fj * 8;
+                                    break;
+                                }
+                                fj = fj + 1;
+                            }
+                        } else {
+                            // Fallback: sequential offsets
+                            field_offset = fi * 8;
+                        }
+
+                        // Load field value
+                        let gep_t: i64 = cg_next_temp(cg);
+                        emit(cg, "  %t");
+                        emit(cg, int_to_string(gep_t));
+                        emit(cg, " = getelementptr i8, ptr %t");
+                        emit(cg, int_to_string(struct_ptr));
+                        emit(cg, ", i64 ");
+                        emit_line(cg, int_to_string(field_offset));
+
+                        let val_t: i64 = cg_next_temp(cg);
+                        emit(cg, "  %t");
+                        emit(cg, int_to_string(val_t));
+                        emit(cg, " = load i64, ptr %t");
+                        emit_line(cg, int_to_string(gep_t));
+
+                        // Check if binding is an identifier (shorthand: field_name is binding name)
+                        // or a nested pattern
+                        let bind_name: i64 = 0;
+                        if binding != 0 {
+                            let b_tag: i64 = load_i64(binding, 0);
+                            if b_tag == EXPR_IDENT() {
+                                bind_name = load_ptr(binding, 1);
+                            }
+                        }
+                        // If binding was a string (shorthand syntax), use field_name
+                        if bind_name == 0 {
+                            bind_name = field_name;
+                        }
+
+                        // Create local binding
+                        let bind_id: i64 = cg_next_temp(cg);
+                        let unique_name: i64 = str_unique(bind_name, bind_id);
+                        emit(cg, "  %local.");
+                        emit(cg, unique_name);
+                        emit_line(cg, " = alloca i64");
+                        emit(cg, "  store i64 %t");
+                        emit(cg, int_to_string(val_t));
+                        emit(cg, ", ptr %local.");
+                        emit_line(cg, unique_name);
+                        add_local(cg, bind_name, unique_name);
+
+                        fi = fi + 1;
+                    }
+                }
+            }
+        }
+
+        // If enum pattern with bindings, extract payload values and create bindings
+        if is_enum_pattern != 0 {
+            if enum_bindings != 0 {
+                let num_bindings: i64 = vec_len(enum_bindings);
+                if num_bindings > 0 {
+                    // Convert scrutinee to ptr for payload extraction
+                    let base_ptr: i64 = cg_next_temp(cg);
+                    emit(cg, "  %t");
+                    emit(cg, int_to_string(base_ptr));
+                    emit(cg, " = inttoptr i64 ");
+                    emit(cg, scru_val);
+                    emit_line(cg, " to ptr");
+
+                    let bi: i64 = 0;
+                    while bi < num_bindings {
+                        let binding: i64 = vec_get(enum_bindings, bi);
+                        // Check if binding is an identifier pattern
+                        if binding != 0 {
+                            let b_tag: i64 = load_i64(binding, 0);
+                            if b_tag == EXPR_IDENT() {
+                                let b_name: i64 = load_ptr(binding, 1);
+
+                                // Payload at offset (1 + bi) * 8 from base
+                                let offset: i64 = (1 + bi) * 8;
+                                let gep_t: i64 = cg_next_temp(cg);
+                                emit(cg, "  %t");
+                                emit(cg, int_to_string(gep_t));
+                                emit(cg, " = getelementptr i8, ptr %t");
+                                emit(cg, int_to_string(base_ptr));
+                                emit(cg, ", i64 ");
+                                emit_line(cg, int_to_string(offset));
+
+                                // Load payload value
+                                let val_t: i64 = cg_next_temp(cg);
+                                emit(cg, "  %t");
+                                emit(cg, int_to_string(val_t));
+                                emit(cg, " = load i64, ptr %t");
+                                emit_line(cg, int_to_string(gep_t));
+
+                                // Create local binding
+                                let bind_id: i64 = cg_next_temp(cg);
+                                let unique_name: i64 = str_unique(b_name, bind_id);
+                                emit(cg, "  %local.");
+                                emit(cg, unique_name);
+                                emit_line(cg, " = alloca i64");
+                                emit(cg, "  store i64 %t");
+                                emit(cg, int_to_string(val_t));
+                                emit(cg, ", ptr %local.");
+                                emit_line(cg, unique_name);
+                                add_local(cg, b_name, unique_name);
+                            }
+                            // Handle nested pattern (e.g., Some(Some(y)))
+                            if b_tag == EXPR_CALL() {
+                                // Load the nested enum value at current offset
+                                let offset: i64 = (1 + bi) * 8;
+                                let gep_t: i64 = cg_next_temp(cg);
+                                emit(cg, "  %t");
+                                emit(cg, int_to_string(gep_t));
+                                emit(cg, " = getelementptr i8, ptr %t");
+                                emit(cg, int_to_string(base_ptr));
+                                emit(cg, ", i64 ");
+                                emit_line(cg, int_to_string(offset));
+
+                                let nested_val: i64 = cg_next_temp(cg);
+                                emit(cg, "  %t");
+                                emit(cg, int_to_string(nested_val));
+                                emit(cg, " = load i64, ptr %t");
+                                emit_line(cg, int_to_string(gep_t));
+
+                                // Convert to ptr for nested payload access
+                                let nested_ptr: i64 = cg_next_temp(cg);
+                                emit(cg, "  %t");
+                                emit(cg, int_to_string(nested_ptr));
+                                emit(cg, " = inttoptr i64 %t");
+                                emit(cg, int_to_string(nested_val));
+                                emit_line(cg, " to ptr");
+
+                                // Get nested pattern's bindings
+                                let nested_args: i64 = load_ptr(binding, 2);
+                                let num_nested: i64 = vec_len(nested_args);
+                                let ni: i64 = 0;
+                                while ni < num_nested {
+                                    let nested_binding: i64 = vec_get(nested_args, ni);
+                                    if nested_binding != 0 {
+                                        let nb_tag: i64 = load_i64(nested_binding, 0);
+                                        if nb_tag == EXPR_IDENT() {
+                                            let nb_name: i64 = load_ptr(nested_binding, 1);
+
+                                            // Payload at offset (1 + ni) * 8 from nested base
+                                            let nested_offset: i64 = (1 + ni) * 8;
+                                            let ngep_t: i64 = cg_next_temp(cg);
+                                            emit(cg, "  %t");
+                                            emit(cg, int_to_string(ngep_t));
+                                            emit(cg, " = getelementptr i8, ptr %t");
+                                            emit(cg, int_to_string(nested_ptr));
+                                            emit(cg, ", i64 ");
+                                            emit_line(cg, int_to_string(nested_offset));
+
+                                            let nval_t: i64 = cg_next_temp(cg);
+                                            emit(cg, "  %t");
+                                            emit(cg, int_to_string(nval_t));
+                                            emit(cg, " = load i64, ptr %t");
+                                            emit_line(cg, int_to_string(ngep_t));
+
+                                            // Create local binding for nested value
+                                            let nbind_id: i64 = cg_next_temp(cg);
+                                            let nunique_name: i64 = str_unique(nb_name, nbind_id);
+                                            emit(cg, "  %local.");
+                                            emit(cg, nunique_name);
+                                            emit_line(cg, " = alloca i64");
+                                            emit(cg, "  store i64 %t");
+                                            emit(cg, int_to_string(nval_t));
+                                            emit(cg, ", ptr %local.");
+                                            emit_line(cg, nunique_name);
+                                            add_local(cg, nb_name, nunique_name);
+                                        }
+                                        // Handle third level of nesting (e.g., Some(Some(Some(x))))
+                                        if nb_tag == EXPR_CALL() {
+                                            // Load the deeply nested enum value
+                                            let nested_offset: i64 = (1 + ni) * 8;
+                                            let ngep_t: i64 = cg_next_temp(cg);
+                                            emit(cg, "  %t");
+                                            emit(cg, int_to_string(ngep_t));
+                                            emit(cg, " = getelementptr i8, ptr %t");
+                                            emit(cg, int_to_string(nested_ptr));
+                                            emit(cg, ", i64 ");
+                                            emit_line(cg, int_to_string(nested_offset));
+
+                                            let deep_val: i64 = cg_next_temp(cg);
+                                            emit(cg, "  %t");
+                                            emit(cg, int_to_string(deep_val));
+                                            emit(cg, " = load i64, ptr %t");
+                                            emit_line(cg, int_to_string(ngep_t));
+
+                                            // Convert to ptr for deeply nested access
+                                            let deep_ptr: i64 = cg_next_temp(cg);
+                                            emit(cg, "  %t");
+                                            emit(cg, int_to_string(deep_ptr));
+                                            emit(cg, " = inttoptr i64 %t");
+                                            emit(cg, int_to_string(deep_val));
+                                            emit_line(cg, " to ptr");
+
+                                            // Get deeply nested pattern's bindings
+                                            let deep_args: i64 = load_ptr(nested_binding, 2);
+                                            let num_deep: i64 = vec_len(deep_args);
+                                            let di: i64 = 0;
+                                            while di < num_deep {
+                                                let deep_binding: i64 = vec_get(deep_args, di);
+                                                if deep_binding != 0 {
+                                                    let db_tag: i64 = load_i64(deep_binding, 0);
+                                                    if db_tag == EXPR_IDENT() {
+                                                        let db_name: i64 = load_ptr(deep_binding, 1);
+                                                        let deep_offset: i64 = (1 + di) * 8;
+                                                        let dgep_t: i64 = cg_next_temp(cg);
+                                                        emit(cg, "  %t");
+                                                        emit(cg, int_to_string(dgep_t));
+                                                        emit(cg, " = getelementptr i8, ptr %t");
+                                                        emit(cg, int_to_string(deep_ptr));
+                                                        emit(cg, ", i64 ");
+                                                        emit_line(cg, int_to_string(deep_offset));
+
+                                                        let dval_t: i64 = cg_next_temp(cg);
+                                                        emit(cg, "  %t");
+                                                        emit(cg, int_to_string(dval_t));
+                                                        emit(cg, " = load i64, ptr %t");
+                                                        emit_line(cg, int_to_string(dgep_t));
+
+                                                        let dbind_id: i64 = cg_next_temp(cg);
+                                                        let dunique_name: i64 = str_unique(db_name, dbind_id);
+                                                        emit(cg, "  %local.");
+                                                        emit(cg, dunique_name);
+                                                        emit_line(cg, " = alloca i64");
+                                                        emit(cg, "  store i64 %t");
+                                                        emit(cg, int_to_string(dval_t));
+                                                        emit(cg, ", ptr %local.");
+                                                        emit_line(cg, dunique_name);
+                                                        add_local(cg, db_name, dunique_name);
+                                                    }
+                                                }
+                                                di = di + 1;
+                                            }
+                                        }
+                                    }
+                                    ni = ni + 1;
+                                }
+                            }
+                        }
+                        bi = bi + 1;
+                    }
+                }
+            }
+        }
+
         let arm_val: i64 = gen_expr(cg, result);
         emit(cg, "  br label %");
         emit_line(cg, arm_end_lbl);
@@ -3711,6 +5470,12 @@ fn gen_match(cg: i64, expr: i64) -> i64 {
 
         i = i + 1;
     }
+
+    // Match failure block (for exhaustive match that shouldn't happen)
+    emit(cg, fail_lbl);
+    emit_line(cg, ":");
+    emit(cg, "  br label %");
+    emit_line(cg, end_lbl);
 
     // End block with phi
     emit(cg, end_lbl);
@@ -3734,7 +5499,10 @@ fn gen_match(cg: i64, expr: i64) -> i64 {
         emit(cg, " ]");
         i = i + 1;
     }
-    emit_line(cg, "");
+    // Add fail case with default value of 0
+    emit(cg, ", [ 0, %");
+    emit(cg, fail_lbl);
+    emit_line(cg, " ]");
 
     result_temp
 }
@@ -4840,7 +6608,9 @@ fn gen_item(cg: i64, item: i64) -> i64 {
 // Generate program header
 fn gen_header(cg: i64) -> i64 {
     emit_line(cg, "; ModuleID = 'simplex_program'");
-    emit_line(cg, "target triple = \"x86_64-apple-macosx14.0.0\"");
+    // Dynamic target triple based on current platform (fixes GitHub issue #56)
+    let triple_line: i64 = str_join3("target triple = \"", get_target_triple(), "\"");
+    emit_line(cg, triple_line);
     emit_line(cg, "");
     emit_line(cg, "declare ptr @malloc(i64)");
     emit_line(cg, "declare void @free(ptr)");
@@ -4891,6 +6661,7 @@ fn gen_header(cg: i64) -> i64 {
     emit_line(cg, "declare void @intrinsic_sb_free(ptr)");
     emit_line(cg, "declare i64 @intrinsic_sb_len(ptr)");
     emit_line(cg, "; File I/O intrinsics");
+    emit_line(cg, "declare ptr @intrinsic_getenv(ptr)");
     emit_line(cg, "declare i64 @intrinsic_file_exists(ptr)");
     emit_line(cg, "declare i64 @intrinsic_is_file(ptr)");
     emit_line(cg, "declare i64 @intrinsic_is_directory(ptr)");
@@ -4905,6 +6676,10 @@ fn gen_header(cg: i64) -> i64 {
     emit_line(cg, "declare ptr @intrinsic_path_dirname(ptr)");
     emit_line(cg, "declare ptr @intrinsic_path_basename(ptr)");
     emit_line(cg, "declare ptr @intrinsic_path_extension(ptr)");
+    emit_line(cg, "declare i64 @file_copy(ptr, ptr)");
+    emit_line(cg, "declare i64 @file_rename(ptr, ptr)");
+    emit_line(cg, "declare void @stderr_write(ptr)");
+    emit_line(cg, "declare void @stderr_writeln(ptr)");
     emit_line(cg, "; Error handling intrinsics");
     emit_line(cg, "declare void @intrinsic_panic(ptr)");
     emit_line(cg, "declare void @intrinsic_print_stack_trace()");
@@ -5176,6 +6951,54 @@ fn gen_header(cg: i64) -> i64 {
     emit_line(cg, "declare i64 @\"json_object_key_at\"(i64, i64)");
     emit_line(cg, "declare i64 @\"json_object_value_at\"(i64, i64)");
     emit_line(cg, "declare void @\"json_object_set_sx\"(i64, i64, i64)");
+
+    // Phase G: AI Features
+    emit_line(cg, "; Phase G: AI Features");
+    emit_line(cg, "declare i64 @model_infer(i64)");
+    emit_line(cg, "declare i64 @model_load(i64)");
+    emit_line(cg, "declare i64 @model_embed(i64, i64)");
+    emit_line(cg, "declare i64 @model_classify(i64, i64)");
+    emit_line(cg, "declare void @model_unload(i64)");
+
+    // Vector operations for AI
+    emit_line(cg, "; AI Vector Operations");
+    emit_line(cg, "declare i64 @vector_new(i64, i64)");
+    emit_line(cg, "declare i64 @vector_len(i64)");
+    emit_line(cg, "declare double @vector_get(i64, i64)");
+    emit_line(cg, "declare void @vector_set(i64, i64, double)");
+    emit_line(cg, "declare double @vector_dot(i64, i64)");
+    emit_line(cg, "declare i64 @vector_add(i64, i64)");
+    emit_line(cg, "declare i64 @vector_sub(i64, i64)");
+    emit_line(cg, "declare i64 @vector_scale(i64, double)");
+    emit_line(cg, "declare double @vector_norm(i64)");
+    emit_line(cg, "declare i64 @vector_normalize(i64)");
+    emit_line(cg, "declare double @vector_cosine_similarity(i64, i64)");
+
+    // Tensor operations for AI
+    emit_line(cg, "; AI Tensor Operations");
+    emit_line(cg, "declare i64 @tensor_new(i64, i64)");
+    emit_line(cg, "declare i64 @tensor_shape(i64)");
+    emit_line(cg, "declare i64 @tensor_rank(i64)");
+    emit_line(cg, "declare double @tensor_get(i64, i64)");
+    emit_line(cg, "declare void @tensor_set(i64, i64, double)");
+    emit_line(cg, "declare i64 @tensor_matmul(i64, i64)");
+    emit_line(cg, "declare i64 @tensor_add(i64, i64)");
+    emit_line(cg, "declare i64 @tensor_transpose(i64)");
+    emit_line(cg, "declare i64 @tensor_reshape(i64, i64)");
+
+    // Specialist operations
+    emit_line(cg, "; Specialist Operations");
+    emit_line(cg, "declare i64 @specialist_query(i64, i64)");
+    emit_line(cg, "declare i64 @specialist_stream(i64, i64)");
+    emit_line(cg, "declare void @specialist_set_context(i64, i64)");
+    emit_line(cg, "declare i64 @specialist_get_context(i64)");
+
+    // Hive operations
+    emit_line(cg, "; Hive Operations");
+    emit_line(cg, "declare i64 @hive_route(i64, i64)");
+    emit_line(cg, "declare void @hive_add_specialist(i64, i64)");
+    emit_line(cg, "declare void @hive_remove_specialist(i64, i64)");
+    emit_line(cg, "declare i64 @hive_consensus(i64, i64)");
 
     emit_line(cg, "");
     0

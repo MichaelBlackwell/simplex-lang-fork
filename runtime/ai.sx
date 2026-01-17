@@ -1,0 +1,484 @@
+// Simplex AI Runtime Library
+// Pure Simplex implementation of AI/Cognitive primitives
+// Part of the Simplex Standard Library
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0 - see LICENSE file
+// https://github.com/senuamedia/simplex
+
+// ============================================================================
+// Module: ai - AI Model Interface
+// ============================================================================
+
+// AI Provider configuration
+struct ProviderConfig {
+    name: String,
+    api_key: String,
+    base_url: String,
+    model: String,
+    temperature: i64,  // Stored as int * 100 (e.g., 70 = 0.7)
+    max_tokens: i64
+}
+
+// Create a new provider config with defaults
+fn provider_config_new(name: String, model: String) -> ProviderConfig {
+    ProviderConfig {
+        name: name,
+        api_key: string_from(""),
+        base_url: string_from(""),
+        model: model,
+        temperature: 70,  // 0.7 default
+        max_tokens: 4096
+    }
+}
+
+// Set temperature (0-100 representing 0.0-1.0)
+fn provider_set_temperature(config: ProviderConfig, temp: i64) -> ProviderConfig {
+    ProviderConfig {
+        name: config.name,
+        api_key: config.api_key,
+        base_url: config.base_url,
+        model: config.model,
+        temperature: temp,
+        max_tokens: config.max_tokens
+    }
+}
+
+// LLM Request structure
+struct LLMRequest {
+    prompt: String,
+    system_prompt: String,
+    temperature: i64,
+    max_tokens: i64,
+    stop_sequences: Vec<String>
+}
+
+// LLM Response structure
+struct LLMResponse {
+    content: String,
+    usage_input_tokens: i64,
+    usage_output_tokens: i64,
+    model: String,
+    finish_reason: String
+}
+
+// Create a simple LLM request
+fn llm_request_new(prompt: String) -> LLMRequest {
+    LLMRequest {
+        prompt: prompt,
+        system_prompt: string_from("You are a helpful AI assistant."),
+        temperature: 70,
+        max_tokens: 4096,
+        stop_sequences: Vec::new()
+    }
+}
+
+// ============================================================================
+// Module: memory - Cognitive Memory System
+// ============================================================================
+
+// Memory entry with importance scoring
+struct MemoryEntry {
+    content: String,
+    importance: i64,    // 0-100 importance score
+    timestamp: i64,     // Creation timestamp
+    access_count: i64,  // How often accessed
+    last_access: i64    // Last access timestamp
+}
+
+// Episodic memory - experiences and events
+struct EpisodicMemory {
+    entries: Vec<MemoryEntry>,
+    capacity: i64,
+    decay_rate: i64  // How fast memories fade (0-100)
+}
+
+// Create new episodic memory store
+fn episodic_new(capacity: i64) -> EpisodicMemory {
+    EpisodicMemory {
+        entries: Vec::new(),
+        capacity: capacity,
+        decay_rate: 10  // 10% decay per cycle
+    }
+}
+
+// Store an experience in episodic memory
+fn episodic_store(mem: EpisodicMemory, content: String, importance: i64) -> EpisodicMemory {
+    let entry: MemoryEntry = MemoryEntry {
+        content: content,
+        importance: importance,
+        timestamp: now_ms(),
+        access_count: 0,
+        last_access: now_ms()
+    };
+
+    // Add to entries
+    let mut entries: Vec<MemoryEntry> = mem.entries;
+    vec_push(entries, entry);
+
+    // If over capacity, remove lowest importance entries
+    while vec_len(entries) > mem.capacity {
+        let min_idx: i64 = find_min_importance(entries);
+        vec_remove(entries, min_idx);
+    }
+
+    EpisodicMemory {
+        entries: entries,
+        capacity: mem.capacity,
+        decay_rate: mem.decay_rate
+    }
+}
+
+// Find entry with minimum importance
+fn find_min_importance(entries: Vec<MemoryEntry>) -> i64 {
+    let min_idx: i64 = 0;
+    let min_importance: i64 = 101;  // Higher than max
+    let i: i64 = 0;
+    let len: i64 = vec_len(entries);
+    while i < len {
+        let entry: MemoryEntry = vec_get(entries, i);
+        if entry.importance < min_importance {
+            min_importance = entry.importance;
+            min_idx = i;
+        }
+        i = i + 1;
+    }
+    min_idx
+}
+
+// Recall memories matching a query
+fn episodic_recall(mem: EpisodicMemory, query: String, max_results: i64) -> Vec<String> {
+    let results: Vec<String> = Vec::new();
+    let i: i64 = 0;
+    let len: i64 = vec_len(mem.entries);
+    let count: i64 = 0;
+
+    while i < len {
+        if count >= max_results {
+            return results;
+        }
+        let entry: MemoryEntry = vec_get(mem.entries, i);
+        // Simple substring matching for now
+        if string_contains(entry.content, query) {
+            vec_push(results, entry.content);
+            count = count + 1;
+        }
+        i = i + 1;
+    }
+    results
+}
+
+// Semantic memory - facts and knowledge
+struct SemanticMemory {
+    facts: Vec<MemoryEntry>,
+    capacity: i64
+}
+
+// Create new semantic memory store
+fn semantic_new(capacity: i64) -> SemanticMemory {
+    SemanticMemory {
+        facts: Vec::new(),
+        capacity: capacity
+    }
+}
+
+// Store a fact in semantic memory
+fn semantic_store(mem: SemanticMemory, fact: String, importance: i64) -> SemanticMemory {
+    let entry: MemoryEntry = MemoryEntry {
+        content: fact,
+        importance: importance,
+        timestamp: now_ms(),
+        access_count: 0,
+        last_access: now_ms()
+    };
+
+    let mut facts: Vec<MemoryEntry> = mem.facts;
+    vec_push(facts, entry);
+
+    SemanticMemory {
+        facts: facts,
+        capacity: mem.capacity
+    }
+}
+
+// ============================================================================
+// Module: beliefs - Belief System
+// ============================================================================
+
+// Belief with confidence level
+struct Belief {
+    content: String,
+    confidence: i64,  // 0-100 confidence percentage
+    source: String,   // Where this belief came from
+    timestamp: i64,
+    revision_count: i64
+}
+
+// Belief store
+struct BeliefStore {
+    beliefs: Vec<Belief>,
+    revision_threshold: i64  // Minimum confidence for revision
+}
+
+// Create new belief store
+fn beliefs_new(revision_threshold: i64) -> BeliefStore {
+    BeliefStore {
+        beliefs: Vec::new(),
+        revision_threshold: revision_threshold
+    }
+}
+
+// Add or update a belief
+fn beliefs_add(store: BeliefStore, content: String, confidence: i64, source: String) -> BeliefStore {
+    let belief: Belief = Belief {
+        content: content,
+        confidence: confidence,
+        source: source,
+        timestamp: now_ms(),
+        revision_count: 0
+    };
+
+    // Check if belief already exists and should be revised
+    let mut beliefs: Vec<Belief> = store.beliefs;
+    let existing_idx: i64 = find_belief(beliefs, content);
+
+    if existing_idx >= 0 {
+        let existing: Belief = vec_get(beliefs, existing_idx);
+        // Only revise if new confidence is higher than threshold
+        if confidence >= store.revision_threshold {
+            let revised: Belief = Belief {
+                content: content,
+                confidence: confidence,
+                source: source,
+                timestamp: now_ms(),
+                revision_count: existing.revision_count + 1
+            };
+            vec_set(beliefs, existing_idx, revised);
+        }
+    } else {
+        vec_push(beliefs, belief);
+    }
+
+    BeliefStore {
+        beliefs: beliefs,
+        revision_threshold: store.revision_threshold
+    }
+}
+
+// Find belief by content (returns -1 if not found)
+fn find_belief(beliefs: Vec<Belief>, content: String) -> i64 {
+    let i: i64 = 0;
+    let len: i64 = vec_len(beliefs);
+    while i < len {
+        let b: Belief = vec_get(beliefs, i);
+        if string_eq(b.content, content) {
+            return i;
+        }
+        i = i + 1;
+    }
+    -1
+}
+
+// Query beliefs above a confidence threshold
+fn beliefs_query(store: BeliefStore, min_confidence: i64) -> Vec<Belief> {
+    let results: Vec<Belief> = Vec::new();
+    let i: i64 = 0;
+    let len: i64 = vec_len(store.beliefs);
+
+    while i < len {
+        let b: Belief = vec_get(store.beliefs, i);
+        if b.confidence >= min_confidence {
+            vec_push(results, b);
+        }
+        i = i + 1;
+    }
+    results
+}
+
+// ============================================================================
+// Module: anima - Cognitive Soul
+// ============================================================================
+
+// Complete Anima structure - the cognitive soul of an AI agent
+struct Anima {
+    name: String,
+    purpose: String,
+    values: Vec<String>,
+    episodic: EpisodicMemory,
+    semantic: SemanticMemory,
+    beliefs: BeliefStore,
+    model: String,        // Associated SLM model
+    temperature: i64      // Default inference temperature
+}
+
+// Create a new Anima with default configuration
+fn anima_new(name: String, purpose: String) -> Anima {
+    Anima {
+        name: name,
+        purpose: purpose,
+        values: Vec::new(),
+        episodic: episodic_new(1000),
+        semantic: semantic_new(1000),
+        beliefs: beliefs_new(30),  // 30% threshold for belief revision
+        model: string_from("default"),
+        temperature: 70
+    }
+}
+
+// Remember an experience (episodic memory)
+fn anima_remember(soul: Anima, experience: String, importance: i64) -> Anima {
+    Anima {
+        name: soul.name,
+        purpose: soul.purpose,
+        values: soul.values,
+        episodic: episodic_store(soul.episodic, experience, importance),
+        semantic: soul.semantic,
+        beliefs: soul.beliefs,
+        model: soul.model,
+        temperature: soul.temperature
+    }
+}
+
+// Learn a fact (semantic memory)
+fn anima_learn(soul: Anima, fact: String, importance: i64) -> Anima {
+    Anima {
+        name: soul.name,
+        purpose: soul.purpose,
+        values: soul.values,
+        episodic: soul.episodic,
+        semantic: semantic_store(soul.semantic, fact, importance),
+        beliefs: soul.beliefs,
+        model: soul.model,
+        temperature: soul.temperature
+    }
+}
+
+// Form a belief
+fn anima_believe(soul: Anima, belief: String, confidence: i64) -> Anima {
+    Anima {
+        name: soul.name,
+        purpose: soul.purpose,
+        values: soul.values,
+        episodic: soul.episodic,
+        semantic: soul.semantic,
+        beliefs: beliefs_add(soul.beliefs, belief, confidence, soul.name),
+        model: soul.model,
+        temperature: soul.temperature
+    }
+}
+
+// Recall memories for a goal
+fn anima_recall(soul: Anima, goal: String, max_results: i64) -> Vec<String> {
+    // Combine episodic and semantic recall
+    let episodic_results: Vec<String> = episodic_recall(soul.episodic, goal, max_results);
+    // TODO: Add semantic recall and merge results
+    episodic_results
+}
+
+// ============================================================================
+// Module: specialist - AI Specialist Actor
+// ============================================================================
+
+// Specialist configuration
+struct SpecialistConfig {
+    name: String,
+    model: String,
+    temperature: i64,
+    anima: Anima  // The specialist's cognitive soul
+}
+
+// Create a new specialist
+fn specialist_new(name: String, model: String, purpose: String) -> SpecialistConfig {
+    SpecialistConfig {
+        name: name,
+        model: model,
+        temperature: 70,
+        anima: anima_new(name, purpose)
+    }
+}
+
+// ============================================================================
+// Module: hive - Cognitive Hive Collective
+// ============================================================================
+
+// Shared memory for hive (mnemonic)
+struct HiveMnemonic {
+    episodic: EpisodicMemory,
+    semantic: SemanticMemory,
+    beliefs: BeliefStore
+}
+
+// Create new hive mnemonic (shared memory)
+fn mnemonic_new(capacity: i64) -> HiveMnemonic {
+    HiveMnemonic {
+        episodic: episodic_new(capacity),
+        semantic: semantic_new(capacity),
+        beliefs: beliefs_new(50)  // Higher threshold for shared beliefs
+    }
+}
+
+// Share knowledge to hive mnemonic
+fn mnemonic_share(mem: HiveMnemonic, content: String, importance: i64) -> HiveMnemonic {
+    HiveMnemonic {
+        episodic: episodic_store(mem.episodic, content, importance),
+        semantic: mem.semantic,
+        beliefs: mem.beliefs
+    }
+}
+
+// Recall from hive mnemonic
+fn mnemonic_recall(mem: HiveMnemonic, query: String, max_results: i64) -> Vec<String> {
+    episodic_recall(mem.episodic, query, max_results)
+}
+
+// Hive configuration
+struct HiveConfig {
+    name: String,
+    specialists: Vec<String>,  // Names of specialists in this hive
+    mnemonic: HiveMnemonic,    // Shared cognitive memory
+    router: String,            // Routing strategy name
+    strategy: String           // Supervision strategy name
+}
+
+// Create a new hive
+fn hive_new(name: String) -> HiveConfig {
+    HiveConfig {
+        name: name,
+        specialists: Vec::new(),
+        mnemonic: mnemonic_new(10000),  // Large shared memory
+        router: string_from("SemanticRouter"),
+        strategy: string_from("OneForOne")
+    }
+}
+
+// Add a specialist to the hive
+fn hive_add_specialist(hive: HiveConfig, specialist_name: String) -> HiveConfig {
+    let mut specialists: Vec<String> = hive.specialists;
+    vec_push(specialists, specialist_name);
+    HiveConfig {
+        name: hive.name,
+        specialists: specialists,
+        mnemonic: hive.mnemonic,
+        router: hive.router,
+        strategy: hive.strategy
+    }
+}
+
+// ============================================================================
+// External declarations (implemented in C runtime or native)
+// ============================================================================
+
+// Time functions
+fn now_ms() -> i64;
+
+// String operations
+fn string_from(s: String) -> String;
+fn string_eq(a: String, b: String) -> bool;
+fn string_contains(haystack: String, needle: String) -> bool;
+
+// Vec operations
+fn vec_len(v: Vec<i64>) -> i64;
+fn vec_get(v: Vec<i64>, idx: i64) -> i64;
+fn vec_push(v: Vec<i64>, item: i64);
+fn vec_set(v: Vec<i64>, idx: i64, item: i64);
+fn vec_remove(v: Vec<i64>, idx: i64);

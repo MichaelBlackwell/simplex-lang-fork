@@ -1,0 +1,1303 @@
+// Nexus Protocol - Phase 8 Tests
+// Secure Protocol Integration & Encrypted Communication
+//
+// Tests:
+// 1. Secure frame encryption/decryption
+// 2. Secure frame signing/verification
+// 3. Frame security context management
+// 4. Secure connection handshake
+// 5. Certificate exchange
+// 6. Challenge-response authentication
+// 7. Session establishment
+// 8. End-to-end secure communication
+
+fn test_passed() -> i64 { 0 }
+fn test_failed() -> i64 { 1 }
+
+// =============================================================================
+// Frame Security Context Tests
+// =============================================================================
+
+fn test_frame_sec_ctx_creation() -> i64 {
+    print("test_frame_sec_ctx_creation: ");
+
+    // Create a keypair, cert and session first
+    let keypair = hive_keypair_new(100);
+    let pub_key = hive_keypair_public(keypair);
+    let cert = hive_cert_new(1, pub_key);
+    hive_cert_sign(cert, keypair, 1, 1000000);
+    let session = secure_session_new(keypair, cert);
+
+    // Create frame security context
+    let ctx = frame_sec_ctx_new(session);
+
+    if ctx == 0 {
+        print("FAIL - ctx is 0\n");
+        return test_failed();
+    }
+
+    if frame_sec_ctx_session(ctx) != session {
+        print("FAIL - session mismatch\n");
+        return test_failed();
+    }
+
+    if frame_sec_ctx_seq_send(ctx) != 0 {
+        print("FAIL - initial send seq\n");
+        return test_failed();
+    }
+
+    if frame_sec_ctx_seq_recv(ctx) != 0 {
+        print("FAIL - initial recv seq\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_frame_sec_ctx_nonce_generation() -> i64 {
+    print("test_frame_sec_ctx_nonce_generation: ");
+
+    let keypair = hive_keypair_new(101);
+    let pub_key = hive_keypair_public(keypair);
+    let cert = hive_cert_new(1, pub_key);
+    hive_cert_sign(cert, keypair, 1, 1000000);
+    let session = secure_session_new(keypair, cert);
+    let ctx = frame_sec_ctx_new(session);
+
+    // Generate nonces
+    let nonce1 = frame_sec_ctx_next_nonce(ctx);
+    let nonce2 = frame_sec_ctx_next_nonce(ctx);
+
+    if vec_len(nonce1) != 12 {
+        print("FAIL - nonce1 size\n");
+        return test_failed();
+    }
+
+    if vec_len(nonce2) != 12 {
+        print("FAIL - nonce2 size\n");
+        return test_failed();
+    }
+
+    // Nonces should be different (sequence number increments)
+    let different = 0;
+    let i = 0;
+    while i < 12 {
+        if vec_get(nonce1, i) != vec_get(nonce2, i) {
+            different = 1;
+        }
+        i = i + 1;
+    }
+
+    if different != 1 {
+        print("FAIL - nonces identical\n");
+        return test_failed();
+    }
+
+    // Sequence number should have incremented
+    if frame_sec_ctx_seq_send(ctx) != 2 {
+        print("FAIL - send seq\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Secure Frame Encryption Tests
+// =============================================================================
+
+fn test_secure_frame_encrypt_decrypt() -> i64 {
+    print("test_secure_frame_encrypt_decrypt: ");
+
+    // Setup: create two parties with shared session
+    let keypair1 = hive_keypair_new(200);
+    let pub1 = hive_keypair_public(keypair1);
+    let cert1 = hive_cert_new(1, pub1);
+    hive_cert_sign(cert1, keypair1, 1, 1000000);
+
+    let keypair2 = hive_keypair_new(201);
+    let pub2 = hive_keypair_public(keypair2);
+    let cert2 = hive_cert_new(2, pub2);
+    hive_cert_sign(cert2, keypair2, 2, 1000000);
+
+    let session1 = secure_session_new(keypair1, cert1);
+    let session2 = secure_session_new(keypair2, cert2);
+
+    // Key exchange
+    secure_session_key_exchange(session1, pub2);
+    secure_session_key_exchange(session2, pub1);
+
+    let ctx1 = frame_sec_ctx_new(session1);
+    let ctx2 = frame_sec_ctx_new(session2);
+
+    // Create a test frame
+    let frame = vec_new();
+    vec_push(frame, NEXUS_MAGIC_BYTE_0());
+    vec_push(frame, NEXUS_MAGIC_BYTE_1());
+    vec_push(frame, FRAME_SYNC());
+    vec_push(frame, 0);  // flags
+    let i = 0;
+    while i < 20 {
+        vec_push(frame, i * 3);
+        i = i + 1;
+    }
+
+    let original_len = vec_len(frame);
+
+    // Encrypt with ctx1
+    let encrypted = secure_frame_encrypt(frame, ctx1);
+    if encrypted == 0 {
+        print("FAIL - encryption\n");
+        return test_failed();
+    }
+
+    if vec_len(encrypted) <= original_len {
+        print("FAIL - encrypted size\n");
+        return test_failed();
+    }
+
+    // Decrypt with ctx2 (using same derived keys)
+    let decrypted = secure_frame_decrypt(encrypted, ctx2);
+    if decrypted == 0 {
+        print("FAIL - decryption\n");
+        return test_failed();
+    }
+
+    if vec_len(decrypted) != original_len {
+        print("FAIL - decrypted size\n");
+        return test_failed();
+    }
+
+    // Verify contents match
+    i = 0;
+    while i < original_len {
+        if vec_get(decrypted, i) != vec_get(frame, i) {
+            print("FAIL - content mismatch\n");
+            return test_failed();
+        }
+        i = i + 1;
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_secure_frame_tamper_detection() -> i64 {
+    print("test_secure_frame_tamper_detection: ");
+
+    let keypair = hive_keypair_new(210);
+    let pub_key = hive_keypair_public(keypair);
+    let cert = hive_cert_new(1, pub_key);
+    hive_cert_sign(cert, keypair, 1, 1000000);
+    let session = secure_session_new(keypair, cert);
+    // Self key exchange to establish shared secret
+    secure_session_key_exchange(session, pub_key);
+    let ctx = frame_sec_ctx_new(session);
+
+    // Create a test frame
+    let frame = vec_new();
+    let i = 0;
+    while i < 32 {
+        vec_push(frame, i);
+        i = i + 1;
+    }
+
+    // Encrypt
+    let encrypted = secure_frame_encrypt(frame, ctx);
+    if encrypted == 0 {
+        print("FAIL - encryption\n");
+        return test_failed();
+    }
+
+    // Tamper with encrypted data (modify a byte in the middle)
+    let tamper_pos = vec_len(encrypted) / 2;
+    let original = vec_get(encrypted, tamper_pos);
+    vec_set(encrypted, tamper_pos, (original + 1) % 256);
+
+    // Create fresh context for decryption
+    let ctx2 = frame_sec_ctx_new(session);
+    let decrypted = secure_frame_decrypt(encrypted, ctx2);
+
+    // Decryption should fail (return 0) due to auth tag mismatch
+    if decrypted != 0 {
+        print("FAIL - tampered should fail\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Secure Frame Signing Tests
+// =============================================================================
+
+fn test_secure_frame_sign_verify() -> i64 {
+    print("test_secure_frame_sign_verify: ");
+
+    let keypair = hive_keypair_new(300);
+    let pub_key = hive_keypair_public(keypair);
+    let cert = hive_cert_new(1, pub_key);
+    hive_cert_sign(cert, keypair, 1, 1000000);
+    let session = secure_session_new(keypair, cert);
+    // Self key exchange to establish shared secret
+    secure_session_key_exchange(session, pub_key);
+    let ctx = frame_sec_ctx_new(session);
+
+    // Create a test frame
+    let frame = vec_new();
+    vec_push(frame, NEXUS_MAGIC_BYTE_0());
+    vec_push(frame, NEXUS_MAGIC_BYTE_1());
+    vec_push(frame, FRAME_CATALOG());
+    let i = 0;
+    while i < 50 {
+        vec_push(frame, i % 256);
+        i = i + 1;
+    }
+
+    let original_len = vec_len(frame);
+
+    // Sign the frame
+    let signed = secure_frame_sign(frame, ctx);
+    if signed == 0 {
+        print("FAIL - signing\n");
+        return test_failed();
+    }
+
+    if vec_len(signed) <= original_len {
+        print("FAIL - signed size\n");
+        return test_failed();
+    }
+
+    // Verify the signed frame
+    let verified = secure_frame_verify(signed, ctx);
+    if verified == 0 {
+        print("FAIL - verification\n");
+        return test_failed();
+    }
+
+    if vec_len(verified) != original_len {
+        print("FAIL - verified size\n");
+        return test_failed();
+    }
+
+    // Verify contents match
+    i = 0;
+    while i < original_len {
+        if vec_get(verified, i) != vec_get(frame, i) {
+            print("FAIL - content mismatch\n");
+            return test_failed();
+        }
+        i = i + 1;
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_secure_frame_signature_tamper() -> i64 {
+    print("test_secure_frame_signature_tamper: ");
+
+    let keypair = hive_keypair_new(310);
+    let pub_key = hive_keypair_public(keypair);
+    let cert = hive_cert_new(1, pub_key);
+    hive_cert_sign(cert, keypair, 1, 1000000);
+    let session = secure_session_new(keypair, cert);
+    // Self key exchange to establish shared secret
+    secure_session_key_exchange(session, pub_key);
+    let ctx = frame_sec_ctx_new(session);
+
+    // Create and sign a frame
+    let frame = vec_new();
+    let i = 0;
+    while i < 20 {
+        vec_push(frame, i * 7);
+        i = i + 1;
+    }
+
+    let signed = secure_frame_sign(frame, ctx);
+    if signed == 0 {
+        print("FAIL - signing\n");
+        return test_failed();
+    }
+
+    // Tamper with the frame content (not signature)
+    vec_set(signed, 10, (vec_get(signed, 10) + 1) % 256);
+
+    // Verification should fail
+    let verified = secure_frame_verify(signed, ctx);
+    if verified != 0 {
+        print("FAIL - tampered should fail\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Secure Frame Wrap/Unwrap Tests
+// =============================================================================
+
+fn test_secure_frame_wrap_unwrap() -> i64 {
+    print("test_secure_frame_wrap_unwrap: ");
+
+    let keypair1 = hive_keypair_new(400);
+    let pub1 = hive_keypair_public(keypair1);
+    let cert1 = hive_cert_new(1, pub1);
+    hive_cert_sign(cert1, keypair1, 1, 1000000);
+
+    let keypair2 = hive_keypair_new(401);
+    let pub2 = hive_keypair_public(keypair2);
+    let cert2 = hive_cert_new(2, pub2);
+    hive_cert_sign(cert2, keypair2, 2, 1000000);
+
+    let session1 = secure_session_new(keypair1, cert1);
+    let session2 = secure_session_new(keypair2, cert2);
+
+    secure_session_key_exchange(session1, pub2);
+    secure_session_key_exchange(session2, pub1);
+
+    let ctx1 = frame_sec_ctx_new(session1);
+    let ctx2 = frame_sec_ctx_new(session2);
+
+    // Create a realistic frame
+    let frame = vec_new();
+    vec_push(frame, NEXUS_MAGIC_BYTE_0());
+    vec_push(frame, NEXUS_MAGIC_BYTE_1());
+    vec_push(frame, FRAME_BASELINE());
+    vec_push(frame, FLAG_COMPRESSED());
+
+    let i = 0;
+    while i < 100 {
+        vec_push(frame, (i * 11) % 256);
+        i = i + 1;
+    }
+
+    let original_len = vec_len(frame);
+
+    // Wrap (sign + encrypt)
+    let wrapped = secure_frame_wrap(frame, ctx1);
+    if wrapped == 0 {
+        print("FAIL - wrap\n");
+        return test_failed();
+    }
+
+    if vec_len(wrapped) <= original_len {
+        print("FAIL - wrapped size\n");
+        return test_failed();
+    }
+
+    // Unwrap (decrypt + verify)
+    let unwrapped = secure_frame_unwrap(wrapped, ctx2);
+    if unwrapped == 0 {
+        print("FAIL - unwrap\n");
+        return test_failed();
+    }
+
+    if vec_len(unwrapped) != original_len {
+        print("FAIL - unwrapped size\n");
+        return test_failed();
+    }
+
+    // Verify contents
+    i = 0;
+    while i < original_len {
+        if vec_get(unwrapped, i) != vec_get(frame, i) {
+            print("FAIL - content mismatch\n");
+            return test_failed();
+        }
+        i = i + 1;
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Secure Connection Tests
+// =============================================================================
+
+fn test_secure_conn_creation() -> i64 {
+    print("test_secure_conn_creation: ");
+
+    let keypair = hive_keypair_new(500);
+    let pub_key = hive_keypair_public(keypair);
+    let cert = hive_cert_new(1, pub_key);
+    hive_cert_sign(cert, keypair, 1, 1000000);
+
+    let conn = secure_conn_new(keypair, cert);
+
+    if conn == 0 {
+        print("FAIL - conn is 0\n");
+        return test_failed();
+    }
+
+    if secure_conn_state(conn) != SCONN_DISCONNECTED() {
+        print("FAIL - initial state\n");
+        return test_failed();
+    }
+
+    if secure_conn_local_keypair(conn) != keypair {
+        print("FAIL - keypair\n");
+        return test_failed();
+    }
+
+    if secure_conn_local_cert(conn) != cert {
+        print("FAIL - cert\n");
+        return test_failed();
+    }
+
+    if secure_conn_security_level(conn) != SEC_LEVEL_FULL() {
+        print("FAIL - security level\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_secure_conn_security_levels() -> i64 {
+    print("test_secure_conn_security_levels: ");
+
+    let keypair = hive_keypair_new(510);
+    let pub_key = hive_keypair_public(keypair);
+    let cert = hive_cert_new(1, pub_key);
+    hive_cert_sign(cert, keypair, 1, 1000000);
+
+    let conn = secure_conn_new(keypair, cert);
+
+    // Test different security levels
+    secure_conn_set_security_level(conn, SEC_LEVEL_NONE());
+    if secure_conn_security_level(conn) != SEC_LEVEL_NONE() {
+        print("FAIL - NONE\n");
+        return test_failed();
+    }
+
+    secure_conn_set_security_level(conn, SEC_LEVEL_SIGNED());
+    if secure_conn_security_level(conn) != SEC_LEVEL_SIGNED() {
+        print("FAIL - SIGNED\n");
+        return test_failed();
+    }
+
+    secure_conn_set_security_level(conn, SEC_LEVEL_ENCRYPTED());
+    if secure_conn_security_level(conn) != SEC_LEVEL_ENCRYPTED() {
+        print("FAIL - ENCRYPTED\n");
+        return test_failed();
+    }
+
+    secure_conn_set_security_level(conn, SEC_LEVEL_FULL());
+    if secure_conn_security_level(conn) != SEC_LEVEL_FULL() {
+        print("FAIL - FULL\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_secure_hello_build_parse() -> i64 {
+    print("test_secure_hello_build_parse: ");
+
+    // Create initiator
+    let keypair1 = hive_keypair_new(520);
+    let pub1 = hive_keypair_public(keypair1);
+    let cert1 = hive_cert_new(1, pub1);
+    hive_cert_sign(cert1, keypair1, 1, 1000000);
+    let conn1 = secure_conn_new(keypair1, cert1);
+
+    // Create responder
+    let keypair2 = hive_keypair_new(521);
+    let pub2 = hive_keypair_public(keypair2);
+    let cert2 = hive_cert_new(2, pub2);
+    hive_cert_sign(cert2, keypair2, 2, 1000000);
+    let conn2 = secure_conn_new(keypair2, cert2);
+
+    // Build HELLO from initiator
+    let hello = secure_hello_build(conn1);
+    if hello == 0 {
+        print("FAIL - build HELLO\n");
+        return test_failed();
+    }
+
+    if vec_len(hello) < 40 {
+        print("FAIL - HELLO size\n");
+        return test_failed();
+    }
+
+    // Verify magic bytes
+    if vec_get(hello, 0) != NEXUS_MAGIC_BYTE_0() {
+        print("FAIL - magic 0\n");
+        return test_failed();
+    }
+
+    if vec_get(hello, 1) != NEXUS_MAGIC_BYTE_1() {
+        print("FAIL - magic 1\n");
+        return test_failed();
+    }
+
+    if vec_get(hello, 5) != FRAME_HELLO() {
+        print("FAIL - frame type\n");
+        return test_failed();
+    }
+
+    // Parse HELLO on responder
+    let result = secure_hello_parse(conn2, hello);
+    if result != 1 {
+        print("FAIL - parse HELLO\n");
+        return test_failed();
+    }
+
+    // Responder should now have initiator's info
+    if secure_conn_remote_pubkey(conn2) == 0 {
+        print("FAIL - remote pubkey\n");
+        return test_failed();
+    }
+
+    if secure_conn_remote_cert(conn2) == 0 {
+        print("FAIL - remote cert\n");
+        return test_failed();
+    }
+
+    if secure_conn_remote_challenge(conn2) == 0 {
+        print("FAIL - remote challenge\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_secure_welcome_build_parse() -> i64 {
+    print("test_secure_welcome_build_parse: ");
+
+    // Setup: complete HELLO exchange first
+    let keypair1 = hive_keypair_new(530);
+    let pub1 = hive_keypair_public(keypair1);
+    let cert1 = hive_cert_new(1, pub1);
+    hive_cert_sign(cert1, keypair1, 1, 1000000);
+    let conn1 = secure_conn_new(keypair1, cert1);
+
+    let keypair2 = hive_keypair_new(531);
+    let pub2 = hive_keypair_public(keypair2);
+    let cert2 = hive_cert_new(2, pub2);
+    hive_cert_sign(cert2, keypair2, 2, 1000000);
+    let conn2 = secure_conn_new(keypair2, cert2);
+
+    // HELLO exchange
+    let hello = secure_hello_build(conn1);
+    secure_hello_parse(conn2, hello);
+
+    // Build WELCOME from responder
+    let welcome = secure_welcome_build(conn2);
+    if welcome == 0 {
+        print("FAIL - build WELCOME\n");
+        return test_failed();
+    }
+
+    if vec_get(welcome, 5) != FRAME_WELCOME() {
+        print("FAIL - frame type\n");
+        return test_failed();
+    }
+
+    // Parse WELCOME on initiator
+    let result = secure_welcome_parse(conn1, welcome);
+    if result != 1 {
+        print("FAIL - parse WELCOME\n");
+        return test_failed();
+    }
+
+    // Initiator should now have responder's info
+    if secure_conn_remote_pubkey(conn1) == 0 {
+        print("FAIL - remote pubkey\n");
+        return test_failed();
+    }
+
+    if secure_conn_remote_cert(conn1) == 0 {
+        print("FAIL - remote cert\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_secure_full_handshake() -> i64 {
+    print("test_secure_full_handshake: ");
+
+    // Create two parties
+    let keypair1 = hive_keypair_new(540);
+    let pub1 = hive_keypair_public(keypair1);
+    let cert1 = hive_cert_new(1, pub1);
+    hive_cert_sign(cert1, keypair1, 1, 1000000);
+    let initiator = secure_conn_new(keypair1, cert1);
+
+    let keypair2 = hive_keypair_new(541);
+    let pub2 = hive_keypair_public(keypair2);
+    let cert2 = hive_cert_new(2, pub2);
+    hive_cert_sign(cert2, keypair2, 2, 1000000);
+    let responder = secure_conn_new(keypair2, cert2);
+
+    // Perform full handshake
+    let result = secure_conn_full_handshake(initiator, responder);
+    if result != 1 {
+        print("FAIL - handshake\n");
+        return test_failed();
+    }
+
+    // Both should be authenticated
+    if secure_conn_is_authenticated(initiator) != 1 {
+        print("FAIL - initiator auth\n");
+        return test_failed();
+    }
+
+    if secure_conn_is_authenticated(responder) != 1 {
+        print("FAIL - responder auth\n");
+        return test_failed();
+    }
+
+    // Both should have sessions established
+    if secure_conn_session(initiator) == 0 {
+        print("FAIL - initiator session\n");
+        return test_failed();
+    }
+
+    if secure_conn_session(responder) == 0 {
+        print("FAIL - responder session\n");
+        return test_failed();
+    }
+
+    // Both should have frame contexts
+    if secure_conn_frame_ctx(initiator) == 0 {
+        print("FAIL - initiator ctx\n");
+        return test_failed();
+    }
+
+    if secure_conn_frame_ctx(responder) == 0 {
+        print("FAIL - responder ctx\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_secure_conn_send_recv_frame() -> i64 {
+    print("test_secure_conn_send_recv_frame: ");
+
+    // Setup authenticated connections
+    let keypair1 = hive_keypair_new(550);
+    let pub1 = hive_keypair_public(keypair1);
+    let cert1 = hive_cert_new(1, pub1);
+    hive_cert_sign(cert1, keypair1, 1, 1000000);
+    let conn1 = secure_conn_new(keypair1, cert1);
+
+    let keypair2 = hive_keypair_new(551);
+    let pub2 = hive_keypair_public(keypair2);
+    let cert2 = hive_cert_new(2, pub2);
+    hive_cert_sign(cert2, keypair2, 2, 1000000);
+    let conn2 = secure_conn_new(keypair2, cert2);
+
+    // Complete handshake
+    secure_conn_full_handshake(conn1, conn2);
+
+    // Create a test frame
+    let frame = vec_new();
+    vec_push(frame, NEXUS_MAGIC_BYTE_0());
+    vec_push(frame, NEXUS_MAGIC_BYTE_1());
+    vec_push(frame, FRAME_SYNC());
+    vec_push(frame, 0);
+    let i = 0;
+    while i < 30 {
+        vec_push(frame, (i * 13) % 256);
+        i = i + 1;
+    }
+
+    let original_len = vec_len(frame);
+
+    // Send from conn1 (applies security)
+    let secured = secure_conn_send_frame(conn1, frame);
+    if secured == 0 {
+        print("FAIL - send_frame\n");
+        return test_failed();
+    }
+
+    if vec_len(secured) <= original_len {
+        print("FAIL - secured size\n");
+        return test_failed();
+    }
+
+    // Receive on conn2 (removes security)
+    let received = secure_conn_recv_frame(conn2, secured);
+    if received == 0 {
+        print("FAIL - recv_frame\n");
+        return test_failed();
+    }
+
+    if vec_len(received) != original_len {
+        print("FAIL - received size\n");
+        return test_failed();
+    }
+
+    // Verify contents
+    i = 0;
+    while i < original_len {
+        if vec_get(received, i) != vec_get(frame, i) {
+            print("FAIL - content mismatch\n");
+            return test_failed();
+        }
+        i = i + 1;
+    }
+
+    // Check stats were updated
+    if secure_conn_frames_sent(conn1) != 1 {
+        print("FAIL - frames_sent\n");
+        return test_failed();
+    }
+
+    if secure_conn_frames_received(conn2) != 1 {
+        print("FAIL - frames_received\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_secure_conn_state_transitions() -> i64 {
+    print("test_secure_conn_state_transitions: ");
+
+    let keypair = hive_keypair_new(560);
+    let pub_key = hive_keypair_public(keypair);
+    let cert = hive_cert_new(1, pub_key);
+    hive_cert_sign(cert, keypair, 1, 1000000);
+    let conn = secure_conn_new(keypair, cert);
+
+    // Initial state
+    if secure_conn_state(conn) != SCONN_DISCONNECTED() {
+        print("FAIL - initial state\n");
+        return test_failed();
+    }
+
+    // Set various states
+    secure_conn_set_state(conn, SCONN_CONNECTING());
+    if secure_conn_state(conn) != SCONN_CONNECTING() {
+        print("FAIL - CONNECTING\n");
+        return test_failed();
+    }
+
+    secure_conn_set_state(conn, SCONN_HELLO_SENT());
+    if secure_conn_state(conn) != SCONN_HELLO_SENT() {
+        print("FAIL - HELLO_SENT\n");
+        return test_failed();
+    }
+
+    secure_conn_set_state(conn, SCONN_AUTHENTICATED());
+    if secure_conn_state(conn) != SCONN_AUTHENTICATED() {
+        print("FAIL - AUTHENTICATED\n");
+        return test_failed();
+    }
+
+    secure_conn_set_state(conn, SCONN_SYNCING());
+    if secure_conn_state(conn) != SCONN_SYNCING() {
+        print("FAIL - SYNCING\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_secure_conn_error_handling() -> i64 {
+    print("test_secure_conn_error_handling: ");
+
+    let keypair = hive_keypair_new(570);
+    let pub_key = hive_keypair_public(keypair);
+    let cert = hive_cert_new(1, pub_key);
+    hive_cert_sign(cert, keypair, 1, 1000000);
+    let conn = secure_conn_new(keypair, cert);
+
+    // Initially no error
+    if secure_conn_has_error(conn) != 0 {
+        print("FAIL - initial error state\n");
+        return test_failed();
+    }
+
+    if secure_conn_error_code(conn) != ERR_NONE() {
+        print("FAIL - initial error code\n");
+        return test_failed();
+    }
+
+    // Set an error
+    secure_conn_set_error(conn, ERR_AUTH_FAILED(), 0);
+    if secure_conn_has_error(conn) != 1 {
+        print("FAIL - has_error\n");
+        return test_failed();
+    }
+
+    if secure_conn_error_code(conn) != ERR_AUTH_FAILED() {
+        print("FAIL - error code\n");
+        return test_failed();
+    }
+
+    if secure_conn_state(conn) != SCONN_ERROR() {
+        print("FAIL - ERROR state\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_secure_conn_trusted_certs() -> i64 {
+    print("test_secure_conn_trusted_certs: ");
+
+    let keypair = hive_keypair_new(580);
+    let pub_key = hive_keypair_public(keypair);
+    let cert = hive_cert_new(1, pub_key);
+    hive_cert_sign(cert, keypair, 1, 1000000);
+    let conn = secure_conn_new(keypair, cert);
+
+    // Create some trusted certs
+    let trusted_keypair1 = hive_keypair_new(581);
+    let trusted_pub1 = hive_keypair_public(trusted_keypair1);
+    let trusted_cert1 = hive_cert_new(10, trusted_pub1);
+
+    let trusted_keypair2 = hive_keypair_new(582);
+    let trusted_pub2 = hive_keypair_public(trusted_keypair2);
+    let trusted_cert2 = hive_cert_new(11, trusted_pub2);
+
+    // Add to trusted list
+    secure_conn_add_trusted_cert(conn, trusted_cert1);
+    secure_conn_add_trusted_cert(conn, trusted_cert2);
+
+    // Check if certs are trusted
+    if secure_conn_is_cert_trusted(conn, trusted_cert1) != 1 {
+        print("FAIL - trusted_cert1\n");
+        return test_failed();
+    }
+
+    if secure_conn_is_cert_trusted(conn, trusted_cert2) != 1 {
+        print("FAIL - trusted_cert2\n");
+        return test_failed();
+    }
+
+    // Untrusted cert should not be in list
+    let untrusted_keypair = hive_keypair_new(599);
+    let untrusted_pub = hive_keypair_public(untrusted_keypair);
+    let untrusted_cert = hive_cert_new(99, untrusted_pub);
+    if secure_conn_is_cert_trusted(conn, untrusted_cert) != 0 {
+        print("FAIL - untrusted_cert\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_secure_conn_disconnect() -> i64 {
+    print("test_secure_conn_disconnect: ");
+
+    let keypair1 = hive_keypair_new(600);
+    let pub1 = hive_keypair_public(keypair1);
+    let cert1 = hive_cert_new(1, pub1);
+    hive_cert_sign(cert1, keypair1, 1, 1000000);
+    let conn1 = secure_conn_new(keypair1, cert1);
+
+    let keypair2 = hive_keypair_new(601);
+    let pub2 = hive_keypair_public(keypair2);
+    let cert2 = hive_cert_new(2, pub2);
+    hive_cert_sign(cert2, keypair2, 2, 1000000);
+    let conn2 = secure_conn_new(keypair2, cert2);
+
+    // Complete handshake
+    secure_conn_full_handshake(conn1, conn2);
+
+    // Disconnect
+    let disc_frame = secure_conn_disconnect(conn1);
+    if disc_frame == 0 {
+        print("FAIL - disconnect frame\n");
+        return test_failed();
+    }
+
+    if secure_conn_state(conn1) != SCONN_CLOSING() {
+        print("FAIL - CLOSING state\n");
+        return test_failed();
+    }
+
+    // Handle disconnect on other side
+    secure_conn_handle_disconnect(conn2, disc_frame);
+    if secure_conn_state(conn2) != SCONN_DISCONNECTED() {
+        print("FAIL - DISCONNECTED state\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_secure_conn_reset() -> i64 {
+    print("test_secure_conn_reset: ");
+
+    let keypair = hive_keypair_new(610);
+    let pub_key = hive_keypair_public(keypair);
+    let cert = hive_cert_new(1, pub_key);
+    hive_cert_sign(cert, keypair, 1, 1000000);
+    let conn = secure_conn_new(keypair, cert);
+
+    // Set some state
+    secure_conn_set_state(conn, SCONN_SYNCING());
+    secure_conn_set_error(conn, ERR_TIMEOUT(), 0);
+
+    // Reset
+    secure_conn_reset(conn);
+
+    // Verify reset state
+    if secure_conn_state(conn) != SCONN_DISCONNECTED() {
+        print("FAIL - state after reset\n");
+        return test_failed();
+    }
+
+    if secure_conn_error_code(conn) != ERR_NONE() {
+        print("FAIL - error after reset\n");
+        return test_failed();
+    }
+
+    if secure_conn_session(conn) != 0 {
+        print("FAIL - session after reset\n");
+        return test_failed();
+    }
+
+    if secure_conn_frame_ctx(conn) != 0 {
+        print("FAIL - frame_ctx after reset\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_secure_conn_stats() -> i64 {
+    print("test_secure_conn_stats: ");
+
+    let keypair1 = hive_keypair_new(620);
+    let pub1 = hive_keypair_public(keypair1);
+    let cert1 = hive_cert_new(1, pub1);
+    hive_cert_sign(cert1, keypair1, 1, 1000000);
+    let conn1 = secure_conn_new(keypair1, cert1);
+
+    let keypair2 = hive_keypair_new(621);
+    let pub2 = hive_keypair_public(keypair2);
+    let cert2 = hive_cert_new(2, pub2);
+    hive_cert_sign(cert2, keypair2, 2, 1000000);
+    let conn2 = secure_conn_new(keypair2, cert2);
+
+    // Complete handshake
+    secure_conn_full_handshake(conn1, conn2);
+
+    // Send multiple frames
+    let i = 0;
+    while i < 5 {
+        let frame = vec_new();
+        let j = 0;
+        while j < 20 {
+            vec_push(frame, j);
+            j = j + 1;
+        }
+        let secured = secure_conn_send_frame(conn1, frame);
+        secure_conn_recv_frame(conn2, secured);
+        i = i + 1;
+    }
+
+    // Check stats
+    let stats1 = secure_conn_get_stats(conn1);
+    if vec_get(stats1, 0) != 5 {
+        print("FAIL - conn1 frames sent\n");
+        return test_failed();
+    }
+
+    let stats2 = secure_conn_get_stats(conn2);
+    if vec_get(stats2, 1) != 5 {
+        print("FAIL - conn2 frames received\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Key Rotation Tests
+// =============================================================================
+
+fn test_frame_sec_ctx_rekey() -> i64 {
+    print("test_frame_sec_ctx_rekey: ");
+
+    let keypair = hive_keypair_new(700);
+    let pub_key = hive_keypair_public(keypair);
+    let cert = hive_cert_new(1, pub_key);
+    hive_cert_sign(cert, keypair, 1, 1000000);
+    let session = secure_session_new(keypair, cert);
+    let ctx = frame_sec_ctx_new(session);
+
+    // Get initial key material (indirectly via nonce)
+    let nonce1 = frame_sec_ctx_next_nonce(ctx);
+
+    // Initiate rekey
+    let result = secure_frame_initiate_rekey(ctx);
+    if result != 1 {
+        print("FAIL - rekey\n");
+        return test_failed();
+    }
+
+    // Rekey count should be incremented
+    if frame_sec_ctx_rekey_count(ctx) != 1 {
+        print("FAIL - rekey count\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Integration Tests
+// =============================================================================
+
+fn test_end_to_end_secure_communication() -> i64 {
+    print("test_end_to_end_secure_communication: ");
+
+    // Create two hives
+    let hive1_keypair = hive_keypair_new(800);
+    let hive1_pub = hive_keypair_public(hive1_keypair);
+    let hive1_cert = hive_cert_new(1001, hive1_pub);
+    hive_cert_sign(hive1_cert, hive1_keypair, 1001, 2000000);
+    let hive1 = secure_conn_new(hive1_keypair, hive1_cert);
+
+    let hive2_keypair = hive_keypair_new(801);
+    let hive2_pub = hive_keypair_public(hive2_keypair);
+    let hive2_cert = hive_cert_new(1002, hive2_pub);
+    hive_cert_sign(hive2_cert, hive2_keypair, 1002, 2000000);
+    let hive2 = secure_conn_new(hive2_keypair, hive2_cert);
+
+    // Step 1: Establish secure connection
+    let handshake_result = secure_conn_full_handshake(hive1, hive2);
+    if handshake_result != 1 {
+        print("FAIL - handshake\n");
+        return test_failed();
+    }
+
+    // Step 2: Exchange several secure frames
+    let messages_sent = 0;
+    let messages_received = 0;
+
+    let i = 0;
+    while i < 10 {
+        // Hive1 sends a sync frame
+        let sync_frame = vec_new();
+        vec_push(sync_frame, NEXUS_MAGIC_BYTE_0());
+        vec_push(sync_frame, NEXUS_MAGIC_BYTE_1());
+        vec_push(sync_frame, FRAME_SYNC());
+        vec_push(sync_frame, 0);
+
+        // Add frame number and some data
+        vec_push(sync_frame, i);
+        let j = 0;
+        while j < 20 {
+            vec_push(sync_frame, (i + j) % 256);
+            j = j + 1;
+        }
+
+        // Send securely
+        let secured = secure_conn_send_frame(hive1, sync_frame);
+        messages_sent = messages_sent + 1;
+
+        // Receive and verify
+        let received = secure_conn_recv_frame(hive2, secured);
+        if received != 0 {
+            // Verify the frame number
+            if vec_get(received, 4) == i {
+                messages_received = messages_received + 1;
+            }
+        }
+
+        i = i + 1;
+    }
+
+    if messages_sent != 10 {
+        print("FAIL - messages_sent\n");
+        return test_failed();
+    }
+
+    if messages_received != 10 {
+        print("FAIL - messages_received\n");
+        return test_failed();
+    }
+
+    // Step 3: Hive2 responds
+    let response = vec_new();
+    vec_push(response, NEXUS_MAGIC_BYTE_0());
+    vec_push(response, NEXUS_MAGIC_BYTE_1());
+    vec_push(response, FRAME_CHECKSUM());
+    vec_push(response, 0);
+    i = 0;
+    while i < 32 {
+        vec_push(response, 0);
+        i = i + 1;
+    }
+
+    let secured_response = secure_conn_send_frame(hive2, response);
+    let received_response = secure_conn_recv_frame(hive1, secured_response);
+    if received_response == 0 {
+        print("FAIL - receive response\n");
+        return test_failed();
+    }
+
+    if vec_get(received_response, 2) != FRAME_CHECKSUM() {
+        print("FAIL - response type\n");
+        return test_failed();
+    }
+
+    // Step 4: Clean disconnect
+    let disc = secure_conn_disconnect(hive1);
+    secure_conn_handle_disconnect(hive2, disc);
+
+    if secure_conn_state(hive1) != SCONN_CLOSING() {
+        print("FAIL - hive1 state\n");
+        return test_failed();
+    }
+
+    if secure_conn_state(hive2) != SCONN_DISCONNECTED() {
+        print("FAIL - hive2 state\n");
+        return test_failed();
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+fn test_bidirectional_secure_sync() -> i64 {
+    print("test_bidirectional_secure_sync: ");
+
+    let keypair1 = hive_keypair_new(900);
+    let pub1 = hive_keypair_public(keypair1);
+    let cert1 = hive_cert_new(1, pub1);
+    hive_cert_sign(cert1, keypair1, 1, 1000000);
+    let conn1 = secure_conn_new(keypair1, cert1);
+
+    let keypair2 = hive_keypair_new(901);
+    let pub2 = hive_keypair_public(keypair2);
+    let cert2 = hive_cert_new(2, pub2);
+    hive_cert_sign(cert2, keypair2, 2, 1000000);
+    let conn2 = secure_conn_new(keypair2, cert2);
+
+    secure_conn_full_handshake(conn1, conn2);
+
+    // Alternate sending between both sides
+    let i = 0;
+    while i < 6 {
+        let frame = vec_new();
+        vec_push(frame, NEXUS_MAGIC_BYTE_0());
+        vec_push(frame, NEXUS_MAGIC_BYTE_1());
+        vec_push(frame, FRAME_SYNC());
+        vec_push(frame, i);
+
+        if i % 2 == 0 {
+            // conn1 -> conn2
+            let secured = secure_conn_send_frame(conn1, frame);
+            let received = secure_conn_recv_frame(conn2, secured);
+            if received == 0 {
+                print("FAIL - conn2 receive\n");
+                return test_failed();
+            }
+            if vec_get(received, 3) != i {
+                print("FAIL - frame number (c1->c2)\n");
+                return test_failed();
+            }
+        } else {
+            // conn2 -> conn1
+            let secured = secure_conn_send_frame(conn2, frame);
+            let received = secure_conn_recv_frame(conn1, secured);
+            if received == 0 {
+                print("FAIL - conn1 receive\n");
+                return test_failed();
+            }
+            if vec_get(received, 3) != i {
+                print("FAIL - frame number (c2->c1)\n");
+                return test_failed();
+            }
+        }
+
+        i = i + 1;
+    }
+
+    print("PASS\n");
+    test_passed()
+}
+
+// =============================================================================
+// Main Test Runner
+// =============================================================================
+
+fn main() -> i64 {
+    print("=== Phase 8 Tests: Secure Protocol Integration ===\n\n");
+
+    let failed = 0;
+
+    // Frame Security Context Tests
+    print("--- Frame Security Context Tests ---\n");
+    failed = failed + test_frame_sec_ctx_creation();
+    failed = failed + test_frame_sec_ctx_nonce_generation();
+
+    // Secure Frame Encryption Tests
+    print("\n--- Secure Frame Encryption Tests ---\n");
+    failed = failed + test_secure_frame_encrypt_decrypt();
+    failed = failed + test_secure_frame_tamper_detection();
+
+    // Secure Frame Signing Tests
+    print("\n--- Secure Frame Signing Tests ---\n");
+    failed = failed + test_secure_frame_sign_verify();
+    failed = failed + test_secure_frame_signature_tamper();
+
+    // Secure Frame Wrap/Unwrap Tests
+    print("\n--- Secure Frame Wrap/Unwrap Tests ---\n");
+    failed = failed + test_secure_frame_wrap_unwrap();
+
+    // Secure Connection Tests
+    print("\n--- Secure Connection Tests ---\n");
+    failed = failed + test_secure_conn_creation();
+    failed = failed + test_secure_conn_security_levels();
+    failed = failed + test_secure_hello_build_parse();
+    failed = failed + test_secure_welcome_build_parse();
+    failed = failed + test_secure_full_handshake();
+    failed = failed + test_secure_conn_send_recv_frame();
+    failed = failed + test_secure_conn_state_transitions();
+    failed = failed + test_secure_conn_error_handling();
+    failed = failed + test_secure_conn_trusted_certs();
+    failed = failed + test_secure_conn_disconnect();
+    failed = failed + test_secure_conn_reset();
+    failed = failed + test_secure_conn_stats();
+
+    // Key Rotation Tests
+    print("\n--- Key Rotation Tests ---\n");
+    failed = failed + test_frame_sec_ctx_rekey();
+
+    // Integration Tests
+    print("\n--- Integration Tests ---\n");
+    failed = failed + test_end_to_end_secure_communication();
+    failed = failed + test_bidirectional_secure_sync();
+
+    print("\n=== Phase 8 Tests Complete ===\n");
+
+    if failed > 0 {
+        print("FAILED: ");
+        print_i64(failed);
+        print(" tests\n");
+        return 1;
+    }
+
+    print("All 22 tests passed!\n");
+    0
+}

@@ -1,0 +1,292 @@
+// Simplex Platform Utilities
+// Consolidated OS detection and path utilities
+// Duplicates functions from: sxc.sx, sxpm.sx, sxdoc.sx, tools/sxc.sx, tools/compiler.sx
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0 - see LICENSE file
+// https://github.com/senuamedia/simplex
+
+// OS Detection (deduplicated from 5+ locations)
+// ========================================
+
+// Get OS name - unified implementation
+// Previously duplicated in sxc.sx:16, sxpm.sx:119, sxdoc.sx:36, tools/sxc.sx:16, tools/compiler.sx:11
+pub fn get_os_name() -> i64 {
+    // Use unified environment detection approach from TASK-010
+    let windir: i64 = env_get(string_from("WINDIR"));
+    if windir != 0 {
+        return string_from("windows");
+    }
+    
+    // Check for macOS
+    let home: i64 = env_get(string_from("HOME"));
+    if home != 0 {
+        // Additional macOS-specific check
+        let tmpdir: i64 = env_get(string_from("TMPDIR"));
+        if tmpdir != 0 && string_contains(tmpdir, string_from("/var/folders/")) {
+            return string_from("macos");
+        }
+        return string_from("linux");  // Default to Linux for Unix-like
+    }
+    
+    return string_from("unknown");
+}
+
+// Check if running on Windows
+pub fn is_windows() -> bool {
+    let os: i64 = get_os_name();
+    string_eq(os, string_from("windows"))
+}
+
+// Check if running on macOS  
+pub fn is_macos() -> bool {
+    let os: i64 = get_os_name();
+    string_eq(os, string_from("macos"))
+}
+
+// Check if running on Linux
+pub fn is_linux() -> bool {
+    let os: i64 = get_os_name();
+    string_eq(os, string_from("linux"))
+}
+
+// Path Utilities (deduplicated from 4+ locations)
+// ========================================
+
+// Get path separator character for current OS
+// Previously duplicated in 4+ tools
+pub fn get_path_separator() -> i64 {
+    if is_windows() {
+        return string_from("\\");
+    } else {
+        return string_from("/");
+    }
+}
+
+// Get path separator as single character
+pub fn get_path_separator_char() -> i64 {
+    if is_windows() {
+        return 92;  // ASCII for '\'
+    } else {
+        return 47;  // ASCII for '/'
+    }
+}
+
+// Check if character is a path separator
+// Previously duplicated in 2+ locations
+pub fn is_path_separator(c: i64) -> bool {
+    c == 47 || c == 92  // '/' or '\'
+}
+
+// Join two path components with appropriate separator
+// Previously duplicated in 2+ locations
+pub fn path_join(base: i64, relative: i64) -> i64 {
+    if string_len(base) == 0 {
+        return relative;
+    }
+    if string_len(relative) == 0 {
+        return base;
+    }
+    
+    let base_last: i64 = string_char_at(base, string_len(base) - 1);
+    let rel_first: i64 = string_char_at(relative, 0);
+    
+    if is_path_separator(base_last) || is_path_separator(rel_first) {
+        // Already has separator
+        return string_concat(base, relative);
+    } else {
+        // Need to add separator
+        return string_concat(string_concat(base, get_path_separator()), relative);
+    }
+}
+
+// Get temporary directory for current OS
+// Previously duplicated in 2+ locations
+pub fn get_temp_dir() -> i64 {
+    if is_windows() {
+        let temp: i64 = env_get(string_from("TEMP"));
+        if temp != 0 {
+            return temp;
+        }
+        let tmp: i64 = env_get(string_from("TMP"));
+        if tmp != 0 {
+            return tmp;
+        }
+        return string_from("C:\\temp");
+    } else {
+        // Unix-like systems
+        let tmp: i64 = env_get(string_from("TMPDIR"));
+        if tmp != 0 {
+            return tmp;
+        }
+        return string_from("/tmp");
+    }
+}
+
+// Get executable extension for current OS
+pub fn get_exe_extension() -> i64 {
+    if is_windows() {
+        return string_from(".exe");
+    } else {
+        return string_from("");
+    }
+}
+
+// Get shared library extension for current OS
+pub fn get_dll_extension() -> i64 {
+    if is_windows() {
+        return string_from(".dll");
+    } else if is_macos() {
+        return string_from(".dylib");
+    } else {
+        return string_from(".so");
+    }
+}
+
+// File System Utilities
+// ========================================
+
+// Get directory part of a path
+// Extracted from main.sx:1300-1313 for sharing
+pub fn get_directory(path: i64) -> i64 {
+    let len: i64 = string_len(path);
+    let i: i64 = len - 1;
+    while i >= 0 {
+        let c: i64 = string_char_at(path, i);
+        if c == 47 || c == 92 {  // '/' or '\'
+            return string_slice(path, 0, i + 1);
+        }
+        i = i - 1;
+    }
+    // No directory, return current directory
+    string_from(".")
+}
+
+// Get filename part of a path
+pub fn get_filename(path: i64) -> i64 {
+    let len: i64 = string_len(path);
+    let i: i64 = len - 1;
+    while i >= 0 {
+        let c: i64 = string_char_at(path, i);
+        if c == 47 || c == 92 {  // '/' or '\'
+            return string_slice(path, i + 1, len);
+        }
+        i = i - 1;
+    }
+    // No separator, return path as-is
+    path
+}
+
+// Get file extension without the dot
+pub fn get_file_extension(path: i64) -> i64 {
+    let filename: i64 = get_filename(path);
+    let len: i64 = string_len(filename);
+    let i: i64 = len - 1;
+    while i >= 0 {
+        let c: i64 = string_char_at(filename, i);
+        if c == 46 {  // '.'
+            return string_slice(filename, i + 1, len);
+        }
+        i = i - 1;
+    }
+    // No extension found
+    string_from("")
+}
+
+// Replace file extension
+// Enhanced version from main.sx:1776-1791
+pub fn replace_file_extension(path: i64, new_ext: i64) -> i64 {
+    let len: i64 = string_len(path);
+    let i: i64 = len - 1;
+    while i >= 0 {
+        let c: i64 = string_char_at(path, i);
+        if c == 46 {  // Found '.'
+            let base: i64 = string_slice(path, 0, i);
+            if string_len(new_ext) == 0 || string_char_at(new_ext, 0) == 46 {
+                return string_concat(base, new_ext);
+            } else {
+                return string_concat(string_concat(base, string_from(".")), new_ext);
+            }
+        }
+        i = i - 1;
+    }
+    // No dot found, just append
+    if string_len(new_ext) == 0 || string_char_at(new_ext, 0) == 46 {
+        return string_concat(path, new_ext);
+    } else {
+        return string_concat(string_concat(path, string_from(".")), new_ext);
+    }
+}
+
+// Common Shell Commands
+// ========================================
+
+// Get compiler command for current platform
+pub fn get_cc_command() -> i64 {
+    if is_windows() {
+        return string_from("clang");
+    } else {
+        return string_from("clang");
+    }
+}
+
+// Get linker flags for current platform
+pub fn get_linker_flags() -> i64 {
+    if is_windows() {
+        return string_from("-lm -lssl -lcrypto -lsqlite3");
+    } else if is_macos() {
+        return string_from("-lm -lssl -lcrypto -lsqlite3 -L/usr/local/opt/openssl/lib -L/usr/local/opt/sqlite/lib");
+    } else {
+        return string_from("-lm -lssl -lcrypto -lsqlite3 -lpthread");
+    }
+}
+
+// Get include flags for current platform
+pub fn get_include_flags() -> i64 {
+    if is_windows() {
+        return string_from("");
+    } else if is_macos() {
+        return string_from("-I/usr/local/opt/openssl/include -I/usr/local/opt/sqlite/include");
+    } else {
+        return string_from("");
+    }
+}
+
+// LLVM Paths (platform-specific)
+// ========================================
+
+// Get LLVM installation path
+pub fn get_llvm_path() -> i64 {
+    if is_macos() {
+        return string_from("/usr/local/opt/llvm/bin");
+    } else if is_linux() {
+        return string_from("/usr/bin");
+    } else {
+        return string_from("clang");
+    }
+}
+
+// Get llc command with full path
+pub fn get_llc_command() -> i64 {
+    if is_macos() {
+        return string_concat(get_llvm_path(), string_from("/llc"));
+    } else {
+        return string_from("llc");
+    }
+}
+
+// Architecture Detection
+// ========================================
+
+// Get system architecture
+pub fn get_arch() -> i64 {
+    // This would need to be implemented based on available system info
+    // For now, assume x86_64
+    string_from("x86_64")
+}
+
+// Check if 64-bit system
+pub fn is_64bit() -> bool {
+    let arch: i64 = get_arch();
+    string_contains(arch, string_from("64"))
+}

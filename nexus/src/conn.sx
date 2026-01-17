@@ -1,0 +1,726 @@
+// Nexus Protocol - Connection and Handshake Module
+//
+// Phase 2: Implements the connection lifecycle and handshake protocol
+//
+// Connection State Machine:
+//   DISCONNECTED -> (connect) -> CONNECTING -> (send HELLO) -> HANDSHAKE
+//   HANDSHAKE -> (recv WELCOME) -> CATALOG_EXCHANGE -> (exchange catalogs)
+//   CATALOG_EXCHANGE -> (recv CATALOG_ACK) -> BASELINE -> (send/recv baseline)
+//   BASELINE -> (baseline complete) -> SYNCING -> (normal operation)
+//
+// Handshake Protocol:
+//   Client                          Server
+//     |                               |
+//     |------- HELLO (version) ------>|
+//     |                               |
+//     |<------ WELCOME (version) -----|
+//     |                               |
+//     |------- CATALOG (beliefs) ---->|
+//     |                               |
+//     |<------ CATALOG_ACK ---------- |
+//     |                               |
+//     |<------ BASELINE (state) ------|
+//     |                               |
+//     |------- BASELINE_ACK --------->|
+//     |                               |
+//     |<======= SYNC frames =========>|
+//     |                               |
+
+// =============================================================================
+// HELLO Frame
+// =============================================================================
+
+// HELLO Frame Payload:
+// - Protocol version (2 bytes): major.minor
+// - Hive ID (8 bytes): unique identifier for sending hive
+// - Capabilities (2 bytes): bitfield of supported features
+// - Max beliefs (2 bytes): maximum beliefs we can handle
+
+fn HELLO_CAP_COMPRESSION() -> i64 { 1 }    // Supports compressed frames
+fn HELLO_CAP_ENCRYPTION() -> i64 { 2 }     // Supports encrypted frames
+fn HELLO_CAP_DUAL_NUMBERS() -> i64 { 4 }   // Supports dual number encoding
+fn HELLO_CAP_ADAPTIVE_SYNC() -> i64 { 8 }  // Supports adaptive sync rate
+
+// Create HELLO payload
+fn hello_payload_new(hive_id: i64, capabilities: i64, max_beliefs: i64) -> i64 {
+    let payload = vec_new();
+
+    // Protocol version (2 bytes)
+    vec_push(payload, NEXUS_VERSION_MAJOR());
+    vec_push(payload, NEXUS_VERSION_MINOR());
+
+    // Hive ID (8 bytes, big-endian)
+    vec_push(payload, (hive_id >> 56) & 255);
+    vec_push(payload, (hive_id >> 48) & 255);
+    vec_push(payload, (hive_id >> 40) & 255);
+    vec_push(payload, (hive_id >> 32) & 255);
+    vec_push(payload, (hive_id >> 24) & 255);
+    vec_push(payload, (hive_id >> 16) & 255);
+    vec_push(payload, (hive_id >> 8) & 255);
+    vec_push(payload, hive_id & 255);
+
+    // Capabilities (2 bytes, big-endian)
+    vec_push(payload, (capabilities >> 8) & 255);
+    vec_push(payload, capabilities & 255);
+
+    // Max beliefs (2 bytes, big-endian)
+    vec_push(payload, (max_beliefs >> 8) & 255);
+    vec_push(payload, max_beliefs & 255);
+
+    payload
+}
+
+// Parse HELLO payload
+// Returns: vec [version_major, version_minor, hive_id, capabilities, max_beliefs]
+fn hello_payload_parse(payload: i64) -> i64 {
+    if vec_len(payload) < 14 {
+        return 0;  // Error: payload too small
+    }
+
+    let result = vec_new();
+
+    // Protocol version
+    vec_push(result, vec_get(payload, 0));  // major
+    vec_push(result, vec_get(payload, 1));  // minor
+
+    // Hive ID (8 bytes, big-endian)
+    let hive_id = (vec_get(payload, 2) << 56) |
+                  (vec_get(payload, 3) << 48) |
+                  (vec_get(payload, 4) << 40) |
+                  (vec_get(payload, 5) << 32) |
+                  (vec_get(payload, 6) << 24) |
+                  (vec_get(payload, 7) << 16) |
+                  (vec_get(payload, 8) << 8) |
+                  vec_get(payload, 9);
+    vec_push(result, hive_id);
+
+    // Capabilities (2 bytes)
+    let caps = (vec_get(payload, 10) << 8) | vec_get(payload, 11);
+    vec_push(result, caps);
+
+    // Max beliefs (2 bytes)
+    let max_beliefs = (vec_get(payload, 12) << 8) | vec_get(payload, 13);
+    vec_push(result, max_beliefs);
+
+    result
+}
+
+// Create HELLO frame
+fn conn_create_hello(hive_id: i64, capabilities: i64, max_beliefs: i64) -> i64 {
+    let frame = frame_new_hello();
+    let payload = hello_payload_new(hive_id, capabilities, max_beliefs);
+    frame_set_payload(frame, payload);
+    frame_encode(frame)
+}
+
+// =============================================================================
+// WELCOME Frame
+// =============================================================================
+
+// WELCOME Frame Payload: Same structure as HELLO
+// - Protocol version (2 bytes)
+// - Hive ID (8 bytes)
+// - Capabilities (2 bytes): negotiated capabilities
+// - Max beliefs (2 bytes): negotiated max beliefs
+
+fn conn_create_welcome(hive_id: i64, capabilities: i64, max_beliefs: i64) -> i64 {
+    let frame = frame_new_welcome();
+    let payload = hello_payload_new(hive_id, capabilities, max_beliefs);
+    frame_set_payload(frame, payload);
+    frame_encode(frame)
+}
+
+// Negotiate capabilities: return intersection of both peers' capabilities
+fn negotiate_capabilities(local_caps: i64, remote_caps: i64) -> i64 {
+    local_caps & remote_caps
+}
+
+// Negotiate max beliefs: return minimum of both peers' limits
+fn negotiate_max_beliefs(local_max: i64, remote_max: i64) -> i64 {
+    if local_max < remote_max {
+        local_max
+    } else {
+        remote_max
+    }
+}
+
+// =============================================================================
+// CATALOG Frame
+// =============================================================================
+
+// CATALOG Frame Payload:
+// - Belief count (2 bytes)
+// - For each belief:
+//   - Belief UUID (16 bytes) or compact ID
+
+// For simplicity, we use compact sequential IDs (belief index = position)
+// The catalog just contains the count and a checksum of the belief structure
+
+fn catalog_payload_new(belief_count: i64, structure_checksum: i64) -> i64 {
+    let payload = vec_new();
+
+    // Belief count (2 bytes, big-endian)
+    vec_push(payload, (belief_count >> 8) & 255);
+    vec_push(payload, belief_count & 255);
+
+    // Structure checksum (8 bytes, big-endian)
+    vec_push(payload, (structure_checksum >> 56) & 255);
+    vec_push(payload, (structure_checksum >> 48) & 255);
+    vec_push(payload, (structure_checksum >> 40) & 255);
+    vec_push(payload, (structure_checksum >> 32) & 255);
+    vec_push(payload, (structure_checksum >> 24) & 255);
+    vec_push(payload, (structure_checksum >> 16) & 255);
+    vec_push(payload, (structure_checksum >> 8) & 255);
+    vec_push(payload, structure_checksum & 255);
+
+    payload
+}
+
+// Parse CATALOG payload
+// Returns: vec [belief_count, structure_checksum]
+fn catalog_payload_parse(payload: i64) -> i64 {
+    if vec_len(payload) < 10 {
+        return 0;  // Error
+    }
+
+    let result = vec_new();
+
+    // Belief count
+    let count = (vec_get(payload, 0) << 8) | vec_get(payload, 1);
+    vec_push(result, count);
+
+    // Structure checksum
+    let checksum = (vec_get(payload, 2) << 56) |
+                   (vec_get(payload, 3) << 48) |
+                   (vec_get(payload, 4) << 40) |
+                   (vec_get(payload, 5) << 32) |
+                   (vec_get(payload, 6) << 24) |
+                   (vec_get(payload, 7) << 16) |
+                   (vec_get(payload, 8) << 8) |
+                   vec_get(payload, 9);
+    vec_push(result, checksum);
+
+    result
+}
+
+fn conn_create_catalog(belief_count: i64, structure_checksum: i64) -> i64 {
+    let frame = frame_new_catalog();
+    let payload = catalog_payload_new(belief_count, structure_checksum);
+    frame_set_payload(frame, payload);
+    frame_encode(frame)
+}
+
+// =============================================================================
+// BASELINE Frame
+// =============================================================================
+
+// BASELINE Frame Payload:
+// - Tick number (2 bytes): starting tick for sync
+// - State checksum (8 bytes): verification checksum
+// - Belief data (variable): encoded belief values
+
+fn baseline_payload_new(tick: i64, checksum: i64, values: i64) -> i64 {
+    let payload = vec_new();
+
+    // Tick (2 bytes, big-endian)
+    vec_push(payload, (tick >> 8) & 255);
+    vec_push(payload, tick & 255);
+
+    // State checksum (8 bytes, big-endian)
+    vec_push(payload, (checksum >> 56) & 255);
+    vec_push(payload, (checksum >> 48) & 255);
+    vec_push(payload, (checksum >> 40) & 255);
+    vec_push(payload, (checksum >> 32) & 255);
+    vec_push(payload, (checksum >> 24) & 255);
+    vec_push(payload, (checksum >> 16) & 255);
+    vec_push(payload, (checksum >> 8) & 255);
+    vec_push(payload, checksum & 255);
+
+    // Belief values (4 bytes each, big-endian)
+    var i = 0;
+    while i < vec_len(values) {
+        let v = vec_get(values, i);
+        vec_push(payload, (v >> 24) & 255);
+        vec_push(payload, (v >> 16) & 255);
+        vec_push(payload, (v >> 8) & 255);
+        vec_push(payload, v & 255);
+        i = i + 1;
+    }
+
+    payload
+}
+
+// Parse BASELINE payload
+// Returns: vec [tick, checksum, values...]
+fn baseline_payload_parse(payload: i64, belief_count: i64) -> i64 {
+    let min_size = 10 + belief_count * 4;
+    if vec_len(payload) < min_size {
+        return 0;  // Error
+    }
+
+    let result = vec_new();
+
+    // Tick
+    let tick = (vec_get(payload, 0) << 8) | vec_get(payload, 1);
+    vec_push(result, tick);
+
+    // Checksum
+    let checksum = (vec_get(payload, 2) << 56) |
+                   (vec_get(payload, 3) << 48) |
+                   (vec_get(payload, 4) << 40) |
+                   (vec_get(payload, 5) << 32) |
+                   (vec_get(payload, 6) << 24) |
+                   (vec_get(payload, 7) << 16) |
+                   (vec_get(payload, 8) << 8) |
+                   vec_get(payload, 9);
+    vec_push(result, checksum);
+
+    // Values
+    var i = 0;
+    var offset = 10;
+    while i < belief_count {
+        let v = (vec_get(payload, offset) << 24) |
+                (vec_get(payload, offset + 1) << 16) |
+                (vec_get(payload, offset + 2) << 8) |
+                vec_get(payload, offset + 3);
+        vec_push(result, v);
+        offset = offset + 4;
+        i = i + 1;
+    }
+
+    result
+}
+
+fn conn_create_baseline(tick: i64, checksum: i64, values: i64) -> i64 {
+    let frame = frame_new_baseline();
+    let payload = baseline_payload_new(tick, checksum, values);
+    frame_set_payload(frame, payload);
+    frame_encode(frame)
+}
+
+// =============================================================================
+// Connection State Machine
+// =============================================================================
+
+// Connection Structure:
+// Slot 0: state (connection state)
+// Slot 1: local_hive_id
+// Slot 2: remote_hive_id
+// Slot 3: local_capabilities
+// Slot 4: negotiated_capabilities
+// Slot 5: local_max_beliefs
+// Slot 6: negotiated_max_beliefs
+// Slot 7: belief_count
+// Slot 8: structure_checksum
+// Slot 9: sync_session (after handshake complete)
+// Slot 10: tick
+// Slot 11: error_code
+
+fn conn_new(hive_id: i64, capabilities: i64, max_beliefs: i64) -> i64 {
+    let conn = vec_new();
+    vec_push(conn, CONN_DISCONNECTED());  // Slot 0: state
+    vec_push(conn, hive_id);              // Slot 1: local_hive_id
+    vec_push(conn, 0);                    // Slot 2: remote_hive_id
+    vec_push(conn, capabilities);         // Slot 3: local_capabilities
+    vec_push(conn, 0);                    // Slot 4: negotiated_capabilities
+    vec_push(conn, max_beliefs);          // Slot 5: local_max_beliefs
+    vec_push(conn, 0);                    // Slot 6: negotiated_max_beliefs
+    vec_push(conn, 0);                    // Slot 7: belief_count
+    vec_push(conn, 0);                    // Slot 8: structure_checksum
+    vec_push(conn, 0);                    // Slot 9: sync_session
+    vec_push(conn, 0);                    // Slot 10: tick
+    vec_push(conn, ERR_NONE());           // Slot 11: error_code
+    conn
+}
+
+// Accessors
+fn conn_state(conn: i64) -> i64 { vec_get(conn, 0) }
+fn conn_local_hive_id(conn: i64) -> i64 { vec_get(conn, 1) }
+fn conn_remote_hive_id(conn: i64) -> i64 { vec_get(conn, 2) }
+fn conn_local_capabilities(conn: i64) -> i64 { vec_get(conn, 3) }
+fn conn_negotiated_capabilities(conn: i64) -> i64 { vec_get(conn, 4) }
+fn conn_local_max_beliefs(conn: i64) -> i64 { vec_get(conn, 5) }
+fn conn_negotiated_max_beliefs(conn: i64) -> i64 { vec_get(conn, 6) }
+fn conn_belief_count(conn: i64) -> i64 { vec_get(conn, 7) }
+fn conn_structure_checksum(conn: i64) -> i64 { vec_get(conn, 8) }
+fn conn_sync_session(conn: i64) -> i64 { vec_get(conn, 9) }
+fn conn_tick(conn: i64) -> i64 { vec_get(conn, 10) }
+fn conn_error_code(conn: i64) -> i64 { vec_get(conn, 11) }
+
+// State transitions
+fn conn_set_state(conn: i64, state: i64) -> i64 {
+    vec_set(conn, 0, state);
+    0
+}
+
+fn conn_set_error(conn: i64, error: i64) -> i64 {
+    vec_set(conn, 0, CONN_ERROR());
+    vec_set(conn, 11, error);
+    0
+}
+
+fn conn_is_connected(conn: i64) -> i64 {
+    let state = conn_state(conn);
+    if state == CONN_SYNCING() || state == CONN_IDLE() {
+        1
+    } else {
+        0
+    }
+}
+
+fn conn_is_handshaking(conn: i64) -> i64 {
+    let state = conn_state(conn);
+    if state == CONN_CONNECTING() ||
+       state == CONN_HANDSHAKE() ||
+       state == CONN_CATALOG_EXCHANGE() ||
+       state == CONN_BASELINE() {
+        1
+    } else {
+        0
+    }
+}
+
+// =============================================================================
+// Client-Side Handshake (Initiator)
+// =============================================================================
+
+// Start connection as client
+fn conn_connect(conn: i64) -> i64 {
+    if conn_state(conn) != CONN_DISCONNECTED() {
+        return 0;  // Already connected/connecting
+    }
+
+    conn_set_state(conn, CONN_CONNECTING());
+
+    // Create and return HELLO frame
+    conn_create_hello(
+        conn_local_hive_id(conn),
+        conn_local_capabilities(conn),
+        conn_local_max_beliefs(conn)
+    )
+}
+
+// Process WELCOME frame (client receives this)
+fn conn_handle_welcome(conn: i64, frame_bytes: i64) -> i64 {
+    if conn_state(conn) != CONN_HANDSHAKE() {
+        return ERR_INVALID_FRAME_TYPE();
+    }
+
+    let frame = frame_decode(frame_bytes);
+    if frame == 0 {
+        conn_set_error(conn, ERR_DECODE_ERROR());
+        return ERR_DECODE_ERROR();
+    }
+
+    if frame_type(frame) != FRAME_WELCOME() {
+        conn_set_error(conn, ERR_INVALID_FRAME_TYPE());
+        return ERR_INVALID_FRAME_TYPE();
+    }
+
+    let payload = frame_payload(frame);
+    let parsed = hello_payload_parse(payload);
+    if parsed == 0 {
+        conn_set_error(conn, ERR_DECODE_ERROR());
+        return ERR_DECODE_ERROR();
+    }
+
+    // Check version compatibility
+    let remote_major = vec_get(parsed, 0);
+    let remote_minor = vec_get(parsed, 1);
+    if remote_major != NEXUS_VERSION_MAJOR() {
+        conn_set_error(conn, ERR_INVALID_VERSION());
+        return ERR_INVALID_VERSION();
+    }
+
+    // Store negotiated values
+    vec_set(conn, 2, vec_get(parsed, 2));  // remote_hive_id
+
+    let negotiated_caps = negotiate_capabilities(
+        conn_local_capabilities(conn),
+        vec_get(parsed, 3)
+    );
+    vec_set(conn, 4, negotiated_caps);
+
+    let negotiated_beliefs = negotiate_max_beliefs(
+        conn_local_max_beliefs(conn),
+        vec_get(parsed, 4)
+    );
+    vec_set(conn, 6, negotiated_beliefs);
+
+    // Transition to catalog exchange
+    conn_set_state(conn, CONN_CATALOG_EXCHANGE());
+
+    ERR_NONE()
+}
+
+// =============================================================================
+// Server-Side Handshake (Responder)
+// =============================================================================
+
+// Process HELLO frame (server receives this)
+fn conn_handle_hello(conn: i64, frame_bytes: i64) -> i64 {
+    if conn_state(conn) != CONN_DISCONNECTED() &&
+       conn_state(conn) != CONN_CONNECTING() {
+        return ERR_INVALID_FRAME_TYPE();
+    }
+
+    let frame = frame_decode(frame_bytes);
+    if frame == 0 {
+        conn_set_error(conn, ERR_DECODE_ERROR());
+        return ERR_DECODE_ERROR();
+    }
+
+    if frame_type(frame) != FRAME_HELLO() {
+        conn_set_error(conn, ERR_INVALID_FRAME_TYPE());
+        return ERR_INVALID_FRAME_TYPE();
+    }
+
+    let payload = frame_payload(frame);
+    let parsed = hello_payload_parse(payload);
+    if parsed == 0 {
+        conn_set_error(conn, ERR_DECODE_ERROR());
+        return ERR_DECODE_ERROR();
+    }
+
+    // Check version compatibility
+    let remote_major = vec_get(parsed, 0);
+    if remote_major != NEXUS_VERSION_MAJOR() {
+        conn_set_error(conn, ERR_INVALID_VERSION());
+        return ERR_INVALID_VERSION();
+    }
+
+    // Store negotiated values
+    vec_set(conn, 2, vec_get(parsed, 2));  // remote_hive_id
+
+    let negotiated_caps = negotiate_capabilities(
+        conn_local_capabilities(conn),
+        vec_get(parsed, 3)
+    );
+    vec_set(conn, 4, negotiated_caps);
+
+    let negotiated_beliefs = negotiate_max_beliefs(
+        conn_local_max_beliefs(conn),
+        vec_get(parsed, 4)
+    );
+    vec_set(conn, 6, negotiated_beliefs);
+
+    // Transition to handshake complete (waiting to send WELCOME)
+    conn_set_state(conn, CONN_HANDSHAKE());
+
+    ERR_NONE()
+}
+
+// Create WELCOME response (server sends this)
+fn conn_create_welcome_response(conn: i64) -> i64 {
+    conn_create_welcome(
+        conn_local_hive_id(conn),
+        conn_negotiated_capabilities(conn),
+        conn_negotiated_max_beliefs(conn)
+    )
+}
+
+// =============================================================================
+// Catalog Exchange
+// =============================================================================
+
+// Set the belief catalog info
+fn conn_set_catalog(conn: i64, belief_count: i64, structure_checksum: i64) -> i64 {
+    vec_set(conn, 7, belief_count);
+    vec_set(conn, 8, structure_checksum);
+    0
+}
+
+// Create CATALOG frame
+fn conn_create_catalog_frame(conn: i64) -> i64 {
+    conn_create_catalog(
+        conn_belief_count(conn),
+        conn_structure_checksum(conn)
+    )
+}
+
+// Handle received CATALOG frame
+fn conn_handle_catalog(conn: i64, frame_bytes: i64) -> i64 {
+    let frame = frame_decode(frame_bytes);
+    if frame == 0 {
+        conn_set_error(conn, ERR_DECODE_ERROR());
+        return ERR_DECODE_ERROR();
+    }
+
+    if frame_type(frame) != FRAME_CATALOG() {
+        conn_set_error(conn, ERR_INVALID_FRAME_TYPE());
+        return ERR_INVALID_FRAME_TYPE();
+    }
+
+    let payload = frame_payload(frame);
+    let parsed = catalog_payload_parse(payload);
+    if parsed == 0 {
+        conn_set_error(conn, ERR_DECODE_ERROR());
+        return ERR_DECODE_ERROR();
+    }
+
+    let remote_count = vec_get(parsed, 0);
+    let remote_checksum = vec_get(parsed, 1);
+
+    // Verify catalogs match
+    if remote_count != conn_belief_count(conn) {
+        conn_set_error(conn, ERR_CATALOG_MISMATCH());
+        return ERR_CATALOG_MISMATCH();
+    }
+
+    if remote_checksum != conn_structure_checksum(conn) {
+        conn_set_error(conn, ERR_CATALOG_MISMATCH());
+        return ERR_CATALOG_MISMATCH();
+    }
+
+    // Transition to baseline phase
+    conn_set_state(conn, CONN_BASELINE());
+
+    ERR_NONE()
+}
+
+// =============================================================================
+// Baseline Exchange
+// =============================================================================
+
+// Create BASELINE frame with initial state
+fn conn_create_baseline_frame(conn: i64, values: i64) -> i64 {
+    let tick = conn_tick(conn);
+
+    // Compute state checksum
+    let checksum = compute_values_checksum(values);
+
+    conn_create_baseline(tick, checksum, values)
+}
+
+// Handle received BASELINE frame
+fn conn_handle_baseline(conn: i64, frame_bytes: i64) -> i64 {
+    let frame = frame_decode(frame_bytes);
+    if frame == 0 {
+        conn_set_error(conn, ERR_DECODE_ERROR());
+        return ERR_DECODE_ERROR();
+    }
+
+    if frame_type(frame) != FRAME_BASELINE() {
+        conn_set_error(conn, ERR_INVALID_FRAME_TYPE());
+        return ERR_INVALID_FRAME_TYPE();
+    }
+
+    let payload = frame_payload(frame);
+    let belief_count = conn_belief_count(conn);
+    let parsed = baseline_payload_parse(payload, belief_count);
+    if parsed == 0 {
+        conn_set_error(conn, ERR_DECODE_ERROR());
+        return ERR_DECODE_ERROR();
+    }
+
+    let tick = vec_get(parsed, 0);
+    let checksum = vec_get(parsed, 1);
+
+    // Extract values
+    let values = vec_new();
+    var i = 0;
+    while i < belief_count {
+        vec_push(values, vec_get(parsed, 2 + i));
+        i = i + 1;
+    }
+
+    // Verify checksum
+    let computed = compute_values_checksum(values);
+    if computed != checksum {
+        conn_set_error(conn, ERR_CHECKSUM_MISMATCH());
+        return ERR_CHECKSUM_MISMATCH();
+    }
+
+    // Initialize sync session
+    let session = sync_session_new(belief_count);
+    sync_session_init(session, values);
+    vec_set(conn, 9, session);
+
+    // Set tick
+    vec_set(conn, 10, tick);
+
+    // Transition to syncing state
+    conn_set_state(conn, CONN_SYNCING());
+
+    ERR_NONE()
+}
+
+// Get the initialized sync session
+fn conn_get_session(conn: i64) -> i64 {
+    conn_sync_session(conn)
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+// Simple checksum for values (XOR with rotation)
+fn compute_values_checksum(values: i64) -> i64 {
+    var checksum = 0;
+    var i = 0;
+    while i < vec_len(values) {
+        let val = vec_get(values, i);
+        checksum = checksum ^ val;
+        // Rotate left by 7 bits
+        checksum = ((checksum << 7) | (checksum >> 57)) & 18446744073709551615;
+        i = i + 1;
+    }
+    checksum
+}
+
+// State name for debugging
+fn conn_state_name(state: i64) -> i64 {
+    if state == CONN_DISCONNECTED() {
+        print("DISCONNECTED");
+    } else if state == CONN_CONNECTING() {
+        print("CONNECTING");
+    } else if state == CONN_HANDSHAKE() {
+        print("HANDSHAKE");
+    } else if state == CONN_CATALOG_EXCHANGE() {
+        print("CATALOG_EXCHANGE");
+    } else if state == CONN_BASELINE() {
+        print("BASELINE");
+    } else if state == CONN_SYNCING() {
+        print("SYNCING");
+    } else if state == CONN_IDLE() {
+        print("IDLE");
+    } else if state == CONN_ERROR() {
+        print("ERROR");
+    } else {
+        print("UNKNOWN");
+    }
+    0
+}
+
+// Print connection info
+fn conn_print(conn: i64) -> i64 {
+    print("Connection:\n");
+    print("  State: ");
+    conn_state_name(conn_state(conn));
+    print("\n");
+    print("  Local Hive ID: ");
+    print_i64(conn_local_hive_id(conn));
+    print("\n");
+    print("  Remote Hive ID: ");
+    print_i64(conn_remote_hive_id(conn));
+    print("\n");
+    print("  Negotiated Capabilities: ");
+    print_i64(conn_negotiated_capabilities(conn));
+    print("\n");
+    print("  Negotiated Max Beliefs: ");
+    print_i64(conn_negotiated_max_beliefs(conn));
+    print("\n");
+    print("  Belief Count: ");
+    print_i64(conn_belief_count(conn));
+    print("\n");
+    if conn_state(conn) == CONN_ERROR() {
+        print("  Error Code: ");
+        print_i64(conn_error_code(conn));
+        print("\n");
+    }
+    0
+}
+
+// Note: Functions from types.sx, bits.sx, frame.sx, and sync.sx are defined
+// in those files which must be included before this file when compiling
+// Built-in functions: vec_new, vec_push, vec_get, vec_set, vec_len, print, print_i64

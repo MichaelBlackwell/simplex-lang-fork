@@ -1,5 +1,5 @@
 // Neural Gate Test Suite
-// Tests for Phase 1: Neural IR and Neural Gates
+// Tests for : Neural IR and Neural Gates
 //
 // This test file verifies:
 // 1. Neural gate parsing and compilation
@@ -15,20 +15,20 @@
 
 // A simple threshold gate that returns true if confidence > 0.7
 neural_gate should_retry(confidence: f64) -> bool {
-    confidence > 0.7
+ confidence > 0.7
 }
 
 // Gate with contract clauses
 neural_gate memory_safe_path(analysis_confidence: f64) -> bool
-    requires analysis_confidence > 0.5
+ requires analysis_confidence > 0.5
 {
-    analysis_confidence > 0.95
+ analysis_confidence > 0.95
 }
 
 // Gate with hardware targeting annotation
 @cpu
 neural_gate batch_classifier(score: f64) -> bool {
-    score > 0.5
+ score > 0.5
 }
 
 // ============================================================================
@@ -36,20 +36,20 @@ neural_gate batch_classifier(score: f64) -> bool {
 // ============================================================================
 
 fn test_training_mode() -> i64 {
-    // Set training mode
-    neural_set_training_mode(1);
+ // Set training mode
+ neural_set_training_mode(1);
 
-    // Call the neural gate with a value above threshold
-    let result1: f64 = should_retry(0.8);
+ // Call the neural gate with a value above threshold
+ let result1: f64 = should_retry(0.8);
 
-    // In training mode, sigmoid is applied so result should be near 1.0
-    if result1 > 0.5 {
-        println("Test 2 PASS: Training mode produces soft output");
-        return 1;
-    }
+ // In training mode, sigmoid is applied so result should be near 1.0
+ if result1 > 0.5 {
+ println("Test 2 PASS: Training mode produces soft output");
+ return 1;
+ }
 
-    println("Test 2 FAIL: Training mode not working");
-    0
+ println("Test 2 FAIL: Training mode not working");
+ 0
 }
 
 // ============================================================================
@@ -57,27 +57,27 @@ fn test_training_mode() -> i64 {
 // ============================================================================
 
 fn test_inference_mode() -> i64 {
-    // Set inference mode
-    neural_set_training_mode(0);
+ // Set inference mode
+ neural_set_training_mode(0);
 
-    // Call the neural gate with a value above threshold
-    let result1: f64 = should_retry(0.8);
+ // Call the neural gate with a value above threshold
+ let result1: f64 = should_retry(0.8);
 
-    // In inference mode, result should be 1.0 (discrete true)
-    if result1 > 0.9 {
-        println("Test 3 PASS: Inference mode produces hard output");
-        return 1;
-    }
+ // In inference mode, result should be 1.0 (discrete true)
+ if result1 > 0.9 {
+ println("Test 3 PASS: Inference mode produces hard output");
+ return 1;
+ }
 
-    // Also test below threshold
-    let result2: f64 = should_retry(0.5);
-    if result2 < 0.1 {
-        println("Test 3 PASS: Inference mode produces hard false");
-        return 1;
-    }
+ // Also test below threshold
+ let result2: f64 = should_retry(0.5);
+ if result2 < 0.1 {
+ println("Test 3 PASS: Inference mode produces hard false");
+ return 1;
+ }
 
-    println("Test 3 FAIL: Inference mode not working");
-    0
+ println("Test 3 FAIL: Inference mode not working");
+ 0
 }
 
 // ============================================================================
@@ -85,35 +85,35 @@ fn test_inference_mode() -> i64 {
 // ============================================================================
 
 fn test_sigmoid() -> i64 {
-    // Test sigmoid function directly
-    let s0: f64 = neural_sigmoid(0.0);
-    // sigmoid(0) = 0.5
-    if s0 > 0.49 && s0 < 0.51 {
-        println("Test 4a PASS: sigmoid(0) = 0.5");
-    } else {
-        println("Test 4a FAIL: sigmoid(0) wrong");
-        return 0;
-    }
+ // Test sigmoid function directly
+ let s0: f64 = neural_sigmoid(0.0);
+ // sigmoid(0) = 0.5
+ if s0 > 0.49 && s0 < 0.51 {
+ println("Test 4a PASS: sigmoid(0) = 0.5");
+ } else {
+ println("Test 4a FAIL: sigmoid(0) wrong");
+ return 0;
+ }
 
-    // sigmoid(large positive) should be near 1
-    let s_pos: f64 = neural_sigmoid(5.0);
-    if s_pos > 0.99 {
-        println("Test 4b PASS: sigmoid(5) near 1");
-    } else {
-        println("Test 4b FAIL: sigmoid(5) wrong");
-        return 0;
-    }
+ // sigmoid(large positive) should be near 1
+ let s_pos: f64 = neural_sigmoid(5.0);
+ if s_pos > 0.99 {
+ println("Test 4b PASS: sigmoid(5) near 1");
+ } else {
+ println("Test 4b FAIL: sigmoid(5) wrong");
+ return 0;
+ }
 
-    // sigmoid(large negative) should be near 0
-    let s_neg: f64 = neural_sigmoid(-5.0);
-    if s_neg < 0.01 {
-        println("Test 4c PASS: sigmoid(-5) near 0");
-    } else {
-        println("Test 4c FAIL: sigmoid(-5) wrong");
-        return 0;
-    }
+ // sigmoid(large negative) should be near 0
+ let s_neg: f64 = neural_sigmoid(-5.0);
+ if s_neg < 0.01 {
+ println("Test 4c PASS: sigmoid(-5) near 0");
+ } else {
+ println("Test 4c FAIL: sigmoid(-5) wrong");
+ return 0;
+ }
 
-    1
+ 1
 }
 
 // ============================================================================
@@ -121,27 +121,27 @@ fn test_sigmoid() -> i64 {
 // ============================================================================
 
 fn test_temperature() -> i64 {
-    // Test temperature functions
-    neural_set_temperature(5.0);
-    let t1: f64 = neural_get_temperature();
+ // Test temperature functions
+ neural_set_temperature(5.0);
+ let t1: f64 = neural_get_temperature();
 
-    if t1 > 4.9 && t1 < 5.1 {
-        println("Test 5a PASS: Temperature set to 5.0");
-    } else {
-        println("Test 5a FAIL: Temperature not set correctly");
-        return 0;
-    }
+ if t1 > 4.9 && t1 < 5.1 {
+ println("Test 5a PASS: Temperature set to 5.0");
+ } else {
+ println("Test 5a FAIL: Temperature not set correctly");
+ return 0;
+ }
 
-    // Test exponential annealing
-    let new_temp: f64 = anneal_exponential(5.0, 0.9, 1);
-    if new_temp > 4.4 && new_temp < 4.6 {
-        println("Test 5b PASS: Exponential annealing works");
-    } else {
-        println("Test 5b FAIL: Exponential annealing wrong");
-        return 0;
-    }
+ // Test exponential annealing
+ let new_temp: f64 = anneal_exponential(5.0, 0.9, 1);
+ if new_temp > 4.4 && new_temp < 4.6 {
+ println("Test 5b PASS: Exponential annealing works");
+ } else {
+ println("Test 5b FAIL: Exponential annealing wrong");
+ return 0;
+ }
 
-    1
+ 1
 }
 
 // ============================================================================
@@ -149,20 +149,20 @@ fn test_temperature() -> i64 {
 // ============================================================================
 
 fn test_multiple_gates() -> i64 {
-    neural_set_training_mode(0);  // Inference mode
+ neural_set_training_mode(0); // Inference mode
 
-    // Test different gates
-    let r1: f64 = should_retry(0.8);      // 0.8 > 0.7 -> true
-    let r2: f64 = batch_classifier(0.6);  // 0.6 > 0.5 -> true
-    let r3: f64 = memory_safe_path(0.9);  // 0.9 < 0.95 -> false
+ // Test different gates
+ let r1: f64 = should_retry(0.8); // 0.8 > 0.7 -> true
+ let r2: f64 = batch_classifier(0.6); // 0.6 > 0.5 -> true
+ let r3: f64 = memory_safe_path(0.9); // 0.9 < 0.95 -> false
 
-    if r1 > 0.5 && r2 > 0.5 && r3 < 0.5 {
-        println("Test 6 PASS: Multiple gates work correctly");
-        return 1;
-    }
+ if r1 > 0.5 && r2 > 0.5 && r3 < 0.5 {
+ println("Test 6 PASS: Multiple gates work correctly");
+ return 1;
+ }
 
-    println("Test 6 FAIL: Gate results incorrect");
-    0
+ println("Test 6 FAIL: Gate results incorrect");
+ 0
 }
 
 // ============================================================================
@@ -170,29 +170,29 @@ fn test_multiple_gates() -> i64 {
 // ============================================================================
 
 fn test_gradient_tape() -> i64 {
-    let tape: i64 = grad_tape_new();
-    if tape != 0 {
-        println("Test 7a PASS: Gradient tape created");
-    } else {
-        println("Test 7a FAIL: Could not create tape");
-        return 0;
-    }
+ let tape: i64 = grad_tape_new();
+ if tape != 0 {
+ println("Test 7a PASS: Gradient tape created");
+ } else {
+ println("Test 7a FAIL: Could not create tape");
+ return 0;
+ }
 
-    grad_tape_set_training(tape, 1);
-    grad_tape_set_temperature(tape, 3.0);
+ grad_tape_set_training(tape, 1);
+ grad_tape_set_temperature(tape, 3.0);
 
-    let t: f64 = grad_tape_temperature(tape);
-    if t > 2.9 && t < 3.1 {
-        println("Test 7b PASS: Tape temperature set");
-    } else {
-        println("Test 7b FAIL: Tape temperature wrong");
-        return 0;
-    }
+ let t: f64 = grad_tape_temperature(tape);
+ if t > 2.9 && t < 3.1 {
+ println("Test 7b PASS: Tape temperature set");
+ } else {
+ println("Test 7b FAIL: Tape temperature wrong");
+ return 0;
+ }
 
-    grad_tape_free(tape);
-    println("Test 7c PASS: Tape freed");
+ grad_tape_free(tape);
+ println("Test 7c PASS: Tape freed");
 
-    1
+ 1
 }
 
 // ============================================================================
@@ -200,60 +200,60 @@ fn test_gradient_tape() -> i64 {
 // ============================================================================
 
 fn main() -> i64 {
-    println("=== Neural Gate Test Suite ===");
-    println("");
+ println("=== Neural Gate Test Suite ===");
+ println("");
 
-    let passed: i64 = 0;
-    let total: i64 = 6;
+ let passed: i64 = 0;
+ let total: i64 = 6;
 
-    // Test 2: Training mode
-    println("Running Test 2: Training Mode");
-    if test_training_mode() == 1 {
-        passed = passed + 1;
-    }
+ // Test 2: Training mode
+ println("Running Test 2: Training Mode");
+ if test_training_mode() == 1 {
+ passed = passed + 1;
+ }
 
-    // Test 3: Inference mode
-    println("");
-    println("Running Test 3: Inference Mode");
-    if test_inference_mode() == 1 {
-        passed = passed + 1;
-    }
+ // Test 3: Inference mode
+ println("");
+ println("Running Test 3: Inference Mode");
+ if test_inference_mode() == 1 {
+ passed = passed + 1;
+ }
 
-    // Test 4: Sigmoid
-    println("");
-    println("Running Test 4: Sigmoid Function");
-    if test_sigmoid() == 1 {
-        passed = passed + 1;
-    }
+ // Test 4: Sigmoid
+ println("");
+ println("Running Test 4: Sigmoid Function");
+ if test_sigmoid() == 1 {
+ passed = passed + 1;
+ }
 
-    // Test 5: Temperature
-    println("");
-    println("Running Test 5: Temperature Annealing");
-    if test_temperature() == 1 {
-        passed = passed + 1;
-    }
+ // Test 5: Temperature
+ println("");
+ println("Running Test 5: Temperature Annealing");
+ if test_temperature() == 1 {
+ passed = passed + 1;
+ }
 
-    // Test 6: Multiple gates
-    println("");
-    println("Running Test 6: Multiple Gates");
-    if test_multiple_gates() == 1 {
-        passed = passed + 1;
-    }
+ // Test 6: Multiple gates
+ println("");
+ println("Running Test 6: Multiple Gates");
+ if test_multiple_gates() == 1 {
+ passed = passed + 1;
+ }
 
-    // Test 7: Gradient tape
-    println("");
-    println("Running Test 7: Gradient Tape");
-    if test_gradient_tape() == 1 {
-        passed = passed + 1;
-    }
+ // Test 7: Gradient tape
+ println("");
+ println("Running Test 7: Gradient Tape");
+ if test_gradient_tape() == 1 {
+ passed = passed + 1;
+ }
 
-    println("");
-    println("=== Results ===");
-    if passed == total {
-        println("ALL 6 TESTS PASSED");
-        return 0;
-    } else {
-        println("SOME TESTS FAILED");
-        return 1;
-    }
+ println("");
+ println("=== Results ===");
+ if passed == total {
+ println("ALL 6 TESTS PASSED");
+ return 0;
+ } else {
+ println("SOME TESTS FAILED");
+ return 1;
+ }
 }

@@ -10,7 +10,7 @@ Traditional annealing uses fixed decay schedules:
 
 ```simplex
 // Traditional: exponential decay
-let temperature = initial_temp * 0.99.pow(step);
+let temperature = initial_temp * 0.99.pow(step)
 ```
 
 **Problems:**
@@ -33,10 +33,10 @@ Where:
 - **τ̇** (tau-dot) is the sensitivity: "How does changing temperature affect learning?"
 
 ```simplex
-use simplex::dual::dual;
+use simplex::dual::dual
 
 // Temperature is now a trainable dual number
-var tau: dual = dual::variable(1.0);
+var tau: dual = dual::variable(1.0)
 ```
 
 ---
@@ -52,17 +52,17 @@ Neural gates use the current τ to learn the task:
 ```simplex
 fn inner_loop(model: &mut Model, data: &Batch, tau: dual) {
     // Create gate with current temperature
-    let gate = Gate::gumbel(model.logits, temperature: tau);
+    let gate = Gate::gumbel(model.logits, temperature: tau)
 
     // Forward pass through the gate
-    let output = gate.forward(data);
+    let output = gate.forward(data)
 
     // Compute loss
-    let loss = compute_loss(output, data.target);
+    let loss = compute_loss(output, data.target)
 
     // Standard gradient descent on model weights
-    loss.backward();
-    optimizer.step(&mut model.params());
+    loss.backward()
+    optimizer.step(&mut model.params())
 }
 ```
 
@@ -73,14 +73,14 @@ After inner iterations, the system uses **Reverse-Mode AD** to look back through
 ```simplex
 fn outer_loop(tau: &mut dual, loss: f64) {
     // Extract the meta-gradient: ∂L/∂τ
-    let tau_gradient = tau.der;
+    let tau_gradient = tau.der
 
     // Update temperature based on meta-gradient
-    let meta_lr = 0.01;
-    *tau = dual::variable(tau.val - meta_lr * tau_gradient);
+    let meta_lr = 0.01
+    *tau = dual::variable(tau.val - meta_lr * tau_gradient)
 
     // Keep temperature positive
-    *tau = tau.max(dual::constant(0.01));
+    *tau = tau.max(dual::constant(0.01))
 }
 ```
 
@@ -139,44 +139,44 @@ Temperature updates based on the meta-gradient:
 ## Complete Training Loop
 
 ```simplex
-use simplex::dual::dual;
-use simplex::neural::Gate;
+use simplex::dual::dual
+use simplex::neural::Gate
 
 fn train_with_self_annealing(model: &mut Model, dataset: &Dataset) {
     // Initialize temperature as trainable dual number
-    var tau: dual = dual::variable(1.0);
-    let meta_lr = 0.01;
-    let model_lr = 0.001;
+    var tau: dual = dual::variable(1.0)
+    let meta_lr = 0.01
+    let model_lr = 0.001
 
     for epoch in 0..100 {
         for batch in dataset.batches() {
             // ===== FORWARD PASS =====
             // Create gate using current tau
             // Dual number system tracks how tau affects 'choice'
-            let gate = Gate::gumbel(model.logits(&batch.input), temperature: tau);
-            let output = gate.forward(&batch.input);
+            let gate = Gate::gumbel(model.logits(&batch.input), temperature: tau)
+            let output = gate.forward(&batch.input)
 
             // ===== LOSS COMPUTATION =====
-            let loss = mse_loss(&output, &batch.target);
+            let loss = mse_loss(&output, &batch.target)
 
             // ===== REVERSE MODE AD =====
             // Calculate standard loss gradient AND meta-gradient
-            loss.backward();  // Triggers chain rule back to tau
+            loss.backward()  // Triggers chain rule back to tau
 
             // ===== MODEL UPDATE (Inner Loop) =====
-            optimizer.step(&mut model.params(), lr: model_lr);
+            optimizer.step(&mut model.params(), lr: model_lr)
 
             // ===== META-UPDATE (Outer Loop) =====
             // Adjust tau based on whether a change would have reduced loss
-            let tau_gradient = tau.der;  // Extract ε coefficient (∂L/∂τ)
+            let tau_gradient = tau.der  // Extract ε coefficient (∂L/∂τ)
 
-            tau = dual::variable(tau.val - meta_lr * tau_gradient);
+            tau = dual::variable(tau.val - meta_lr * tau_gradient)
 
             // Ensure tau stays positive
-            tau = tau.max(dual::constant(0.01));
+            tau = tau.max(dual::constant(0.01))
         }
 
-        println(f"Epoch {epoch}: temp = {tau.val:.4}");
+        print("Epoch {epoch}: temp = {tau.val:.4}")
     }
 }
 ```
@@ -204,14 +204,14 @@ impl AdaptiveGate {
     }
 
     fn forward(&mut self, input: &Tensor) -> Tensor {
-        let gate = Gate::gumbel(self.logits, temperature: self.tau);
+        let gate = Gate::gumbel(self.logits, temperature: self.tau)
         gate.forward(input)
     }
 
     fn update_temperature(&mut self) {
-        let gradient = self.tau.der;
-        self.tau = dual::variable(self.tau.val - self.meta_lr * gradient);
-        self.tau = self.tau.max(dual::constant(0.01));
+        let gradient = self.tau.der
+        self.tau = dual::variable(self.tau.val - self.meta_lr * gradient)
+        self.tau = self.tau.max(dual::constant(0.01))
     }
 }
 ```
@@ -224,32 +224,32 @@ Self-learning annealing can trigger "re-heating" when stuck:
 
 ```simplex
 fn adaptive_train(model: &mut Model, data: &Dataset) {
-    var tau: dual = dual::variable(1.0);
-    var prev_loss = f64::MAX;
-    var stuck_count = 0;
+    var tau: dual = dual::variable(1.0)
+    var prev_loss = f64::MAX
+    var stuck_count = 0
 
     for step in 0..10000 {
-        let loss = train_step(model, data, tau);
+        let loss = train_step(model, data, tau)
 
         // Detect if stuck
         if (loss - prev_loss).abs() < 0.0001 {
-            stuck_count += 1;
+            stuck_count += 1
         } else {
-            stuck_count = 0;
+            stuck_count = 0
         }
 
         // Re-heat if stuck for too long
         if stuck_count > 50 {
-            tau = dual::variable(tau.val * 1.5);  // Increase temperature
-            stuck_count = 0;
-            println("Re-heating to escape local minimum");
+            tau = dual::variable(tau.val * 1.5)  // Increase temperature
+            stuck_count = 0
+            print("Re-heating to escape local minimum")
         }
 
         // Normal meta-update
-        tau = dual::variable(tau.val - 0.01 * tau.der);
-        tau = tau.max(dual::constant(0.01));
+        tau = dual::variable(tau.val - 0.01 * tau.der)
+        tau = tau.max(dual::constant(0.01))
 
-        prev_loss = loss;
+        prev_loss = loss
     }
 }
 ```
@@ -262,16 +262,16 @@ Self-learning annealing enables automatic transition from **Neural** (fuzzy) to 
 
 ```simplex
 fn train_to_symbolic(model: &mut Model, data: &Dataset) -> SymbolicProgram {
-    var tau: dual = dual::variable(1.0);
-    let freeze_threshold = 0.05;
+    var tau: dual = dual::variable(1.0)
+    let freeze_threshold = 0.05
 
     loop {
-        train_epoch(model, data, &mut tau);
+        train_epoch(model, data, &mut tau)
 
         // Check if temperature has cooled enough
         if tau.val < freeze_threshold {
-            println("Temperature frozen - extracting symbolic program");
-            break;
+            print("Temperature frozen - extracting symbolic program")
+            break
         }
     }
 
@@ -316,8 +316,8 @@ fn train_to_symbolic(model: &mut Model, data: &Dataset) -> SymbolicProgram {
 ## Practical Example: Learning a Classifier
 
 ```simplex
-use simplex::dual::dual;
-use simplex::neural::{Gate, Linear};
+use simplex::dual::dual
+use simplex::neural::{Gate, Linear}
 
 struct LearnableClassifier {
     layer1: Linear,
@@ -335,28 +335,28 @@ impl LearnableClassifier {
     }
 
     fn forward(&self, x: &Tensor) -> Tensor {
-        let h = self.layer1.forward(x).relu();
-        let logits = self.layer2.forward(&h);
+        let h = self.layer1.forward(x).relu()
+        let logits = self.layer2.forward(&h)
 
         // Gumbel-softmax with learnable temperature
-        let gate = Gate::gumbel(logits, temperature: self.gate_tau);
+        let gate = Gate::gumbel(logits, temperature: self.gate_tau)
         gate.sample()
     }
 
     fn train_step(&mut self, x: &Tensor, target: &Tensor, lr: f64, meta_lr: f64) {
-        let output = self.forward(x);
-        let loss = cross_entropy(&output, target);
+        let output = self.forward(x)
+        let loss = cross_entropy(&output, target)
 
-        loss.backward();
+        loss.backward()
 
         // Update model weights
-        self.layer1.update(lr);
-        self.layer2.update(lr);
+        self.layer1.update(lr)
+        self.layer2.update(lr)
 
         // Update temperature (meta-learning)
-        let tau_grad = self.gate_tau.der;
-        self.gate_tau = dual::variable(self.gate_tau.val - meta_lr * tau_grad);
-        self.gate_tau = self.gate_tau.max(dual::constant(0.01));
+        let tau_grad = self.gate_tau.der
+        self.gate_tau = dual::variable(self.gate_tau.val - meta_lr * tau_grad)
+        self.gate_tau = self.gate_tau.max(dual::constant(0.01))
     }
 }
 ```

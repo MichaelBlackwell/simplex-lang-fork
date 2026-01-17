@@ -1,0 +1,663 @@
+// ============================================================================
+// Prediction Module - High-Level Extrapolation API
+// ============================================================================
+// Part of Phase 11: Dual Number Inference
+//
+// This module provides a high-level API for predictions and extrapolations
+// based on dual numbers and trajectory tracking. It integrates with the
+// belief system to provide predictive capabilities for hive intelligence.
+// ============================================================================
+
+// Note: dual.sx and trajectory.sx are concatenated before this file by the build system
+
+// ============================================================================
+// Prediction Confidence Levels
+// ============================================================================
+
+// Confidence decreases with extrapolation distance
+fn CONFIDENCE_HIGH() -> i64 { 1000 }       // 100.0% - very recent/local
+fn CONFIDENCE_MEDIUM() -> i64 { 750 }      // 75.0% - moderate extrapolation
+fn CONFIDENCE_LOW() -> i64 { 500 }         // 50.0% - significant extrapolation
+fn CONFIDENCE_VERY_LOW() -> i64 { 250 }    // 25.0% - highly uncertain
+fn CONFIDENCE_NONE() -> i64 { 0 }          // 0% - no valid prediction
+
+// Confidence thresholds (time in ms from reference point)
+fn CONFIDENCE_HIGH_THRESHOLD() -> i64 { 1000 }      // Within 1 second
+fn CONFIDENCE_MEDIUM_THRESHOLD() -> i64 { 10000 }   // Within 10 seconds
+fn CONFIDENCE_LOW_THRESHOLD() -> i64 { 60000 }      // Within 1 minute
+fn CONFIDENCE_VERY_LOW_THRESHOLD() -> i64 { 300000 } // Within 5 minutes
+
+// ============================================================================
+// Prediction Result Structure
+// ============================================================================
+// Contains a predicted value along with metadata about the prediction
+//
+// Layout (64 bytes):
+//   offset 0:  value (i64) - predicted value
+//   offset 8:  confidence (i64) - confidence level (0-1000)
+//   offset 16: ref_time (i64) - reference time used for prediction
+//   offset 24: target_time (i64) - time the prediction is for
+//   offset 32: derivative (i64) - rate of change used
+//   offset 40: variance (i64) - uncertainty in the prediction
+//   offset 48: lower_bound (i64) - lower bound of confidence interval
+//   offset 56: upper_bound (i64) - upper bound of confidence interval
+
+fn PREDICTION_SIZE() -> i64 { 64 }
+
+fn PRED_OFFSET_VALUE() -> i64 { 0 }
+fn PRED_OFFSET_CONFIDENCE() -> i64 { 8 }
+fn PRED_OFFSET_REF_TIME() -> i64 { 16 }
+fn PRED_OFFSET_TARGET_TIME() -> i64 { 24 }
+fn PRED_OFFSET_DERIVATIVE() -> i64 { 32 }
+fn PRED_OFFSET_VARIANCE() -> i64 { 40 }
+fn PRED_OFFSET_LOWER_BOUND() -> i64 { 48 }
+fn PRED_OFFSET_UPPER_BOUND() -> i64 { 56 }
+
+// Create a prediction result
+fn prediction_new(value: i64, confidence: i64, ref_time: i64, target_time: i64) -> i64 {
+    let p = alloc(PREDICTION_SIZE());
+
+    store64(p + PRED_OFFSET_VALUE(), value);
+    store64(p + PRED_OFFSET_CONFIDENCE(), confidence);
+    store64(p + PRED_OFFSET_REF_TIME(), ref_time);
+    store64(p + PRED_OFFSET_TARGET_TIME(), target_time);
+    store64(p + PRED_OFFSET_DERIVATIVE(), 0);
+    store64(p + PRED_OFFSET_VARIANCE(), 0);
+    store64(p + PRED_OFFSET_LOWER_BOUND(), value);
+    store64(p + PRED_OFFSET_UPPER_BOUND(), value);
+
+    p
+}
+
+fn prediction_free(p: i64) {
+    // Memory would be freed here
+}
+
+// Prediction accessors
+fn prediction_value(p: i64) -> i64 { load64(p + PRED_OFFSET_VALUE()) }
+fn prediction_confidence(p: i64) -> i64 { load64(p + PRED_OFFSET_CONFIDENCE()) }
+fn prediction_ref_time(p: i64) -> i64 { load64(p + PRED_OFFSET_REF_TIME()) }
+fn prediction_target_time(p: i64) -> i64 { load64(p + PRED_OFFSET_TARGET_TIME()) }
+fn prediction_derivative(p: i64) -> i64 { load64(p + PRED_OFFSET_DERIVATIVE()) }
+fn prediction_variance(p: i64) -> i64 { load64(p + PRED_OFFSET_VARIANCE()) }
+fn prediction_lower_bound(p: i64) -> i64 { load64(p + PRED_OFFSET_LOWER_BOUND()) }
+fn prediction_upper_bound(p: i64) -> i64 { load64(p + PRED_OFFSET_UPPER_BOUND()) }
+
+// Set confidence interval
+fn prediction_set_bounds(p: i64, lower: i64, upper: i64) {
+    store64(p + PRED_OFFSET_LOWER_BOUND(), lower);
+    store64(p + PRED_OFFSET_UPPER_BOUND(), upper);
+}
+
+fn prediction_set_derivative(p: i64, derivative: i64) {
+    store64(p + PRED_OFFSET_DERIVATIVE(), derivative);
+}
+
+fn prediction_set_variance(p: i64, variance: i64) {
+    store64(p + PRED_OFFSET_VARIANCE(), variance);
+}
+
+// Check if prediction is valid
+fn prediction_is_valid(p: i64) -> i64 {
+    prediction_confidence(p) > CONFIDENCE_NONE()
+}
+
+// Get extrapolation distance in ms
+fn prediction_extrapolation_distance(p: i64) -> i64 {
+    let target = prediction_target_time(p);
+    let ref_t = prediction_ref_time(p);
+    let dist = target - ref_t;
+    if dist < 0 {
+        0 - dist
+    } else {
+        dist
+    }
+}
+
+// ============================================================================
+// Confidence Calculation
+// ============================================================================
+
+// Calculate confidence based on extrapolation distance
+fn calculate_confidence(ref_time: i64, target_time: i64) -> i64 {
+    let distance = target_time - ref_time;
+    if distance < 0 {
+        distance = 0 - distance;
+    }
+
+    if distance <= CONFIDENCE_HIGH_THRESHOLD() {
+        return CONFIDENCE_HIGH();
+    }
+    if distance <= CONFIDENCE_MEDIUM_THRESHOLD() {
+        // Linear interpolation from HIGH to MEDIUM
+        let range = CONFIDENCE_MEDIUM_THRESHOLD() - CONFIDENCE_HIGH_THRESHOLD();
+        let offset = distance - CONFIDENCE_HIGH_THRESHOLD();
+        return CONFIDENCE_HIGH() - (CONFIDENCE_HIGH() - CONFIDENCE_MEDIUM()) * offset / range;
+    }
+    if distance <= CONFIDENCE_LOW_THRESHOLD() {
+        let range = CONFIDENCE_LOW_THRESHOLD() - CONFIDENCE_MEDIUM_THRESHOLD();
+        let offset = distance - CONFIDENCE_MEDIUM_THRESHOLD();
+        return CONFIDENCE_MEDIUM() - (CONFIDENCE_MEDIUM() - CONFIDENCE_LOW()) * offset / range;
+    }
+    if distance <= CONFIDENCE_VERY_LOW_THRESHOLD() {
+        let range = CONFIDENCE_VERY_LOW_THRESHOLD() - CONFIDENCE_LOW_THRESHOLD();
+        let offset = distance - CONFIDENCE_LOW_THRESHOLD();
+        return CONFIDENCE_LOW() - (CONFIDENCE_LOW() - CONFIDENCE_VERY_LOW()) * offset / range;
+    }
+
+    CONFIDENCE_VERY_LOW()
+}
+
+// Adjust confidence based on trajectory stability
+fn adjust_confidence_for_stability(base_confidence: i64, trajectory: i64) -> i64 {
+    if trajectory == 0 {
+        return base_confidence / 2;  // No trajectory data
+    }
+
+    let variance = trajectory_rate_variance(trajectory);
+    let count = trajectory_count(trajectory);
+
+    // Reduce confidence if variance is high
+    let stability_factor = 1000;
+    if variance > DUAL_SCALE() * 100 {
+        stability_factor = 500;  // High variance, reduce by half
+    } else if variance > DUAL_SCALE() * 10 {
+        stability_factor = 750;  // Medium variance
+    }
+
+    // Increase confidence with more samples
+    let sample_factor = 1000;
+    if count < 3 {
+        sample_factor = 500;  // Very few samples
+    } else if count < 5 {
+        sample_factor = 750;  // Few samples
+    }
+
+    base_confidence * stability_factor / 1000 * sample_factor / 1000
+}
+
+// ============================================================================
+// Prediction Functions
+// ============================================================================
+
+// Predict value at a specific time from a dual number
+fn predict_from_dual(d: i64, target_time: i64) -> i64 {
+    if d == 0 {
+        return prediction_new(0, CONFIDENCE_NONE(), 0, target_time);
+    }
+
+    let value = dual_eval(d, target_time);
+    let ref_time = dual_ref_time(d);
+    let derivative = dual_derivative(d);
+
+    let confidence = calculate_confidence(ref_time, target_time);
+
+    let p = prediction_new(value, confidence, ref_time, target_time);
+    prediction_set_derivative(p, derivative);
+
+    // Estimate bounds based on extrapolation distance
+    let distance = target_time - ref_time;
+    if distance < 0 {
+        distance = 0 - distance;
+    }
+
+    // Uncertainty grows with distance (simple linear model)
+    let uncertainty = distance * derivative / 10000;
+    if uncertainty < 0 {
+        uncertainty = 0 - uncertainty;
+    }
+
+    prediction_set_bounds(p, value - uncertainty, value + uncertainty);
+
+    p
+}
+
+// Predict value at a specific time from a trajectory
+fn predict_from_trajectory(trajectory: i64, target_time: i64) -> i64 {
+    if trajectory == 0 {
+        return prediction_new(0, CONFIDENCE_NONE(), 0, target_time);
+    }
+
+    let count = trajectory_count(trajectory);
+    if count < TRAJECTORY_MIN_SAMPLES() {
+        // Not enough data - return current value with low confidence
+        let current = trajectory_current_value(trajectory);
+        let ref_time = trajectory_last_update(trajectory);
+        return prediction_new(current, CONFIDENCE_VERY_LOW(), ref_time, target_time);
+    }
+
+    // Get predicted value
+    let value = trajectory_predict(trajectory, target_time);
+    let ref_time = trajectory_last_update(trajectory);
+    let derivative = trajectory_derivative(trajectory);
+
+    // Calculate and adjust confidence
+    let base_confidence = calculate_confidence(ref_time, target_time);
+    let confidence = adjust_confidence_for_stability(base_confidence, trajectory);
+
+    let p = prediction_new(value, confidence, ref_time, target_time);
+    prediction_set_derivative(p, derivative);
+
+    // Use variance to estimate bounds
+    let variance = trajectory_rate_variance(trajectory);
+    prediction_set_variance(p, variance);
+
+    let distance = target_time - ref_time;
+    if distance < 0 {
+        distance = 0 - distance;
+    }
+
+    // Uncertainty based on variance and distance
+    let uncertainty = 0;
+    if variance > 0 {
+        // sqrt approximation: uncertainty ≈ sqrt(variance) * distance / 1000
+        // Using simple estimate: sqrt(x) ≈ x / (2 * sqrt_estimate) iteratively
+        let sqrt_var = variance;
+        let iter = 0;
+        while iter < 5 {
+            sqrt_var = (sqrt_var + variance / sqrt_var) / 2;
+            iter = iter + 1;
+        }
+        uncertainty = sqrt_var * distance / 1000;
+    }
+
+    prediction_set_bounds(p, value - uncertainty, value + uncertainty);
+
+    p
+}
+
+// ============================================================================
+// Time-Based Prediction Queries
+// ============================================================================
+
+// Predict when a target value will be reached
+fn predict_time_to_target(trajectory: i64, target_value: i64) -> i64 {
+    if trajectory == 0 {
+        return 0;  // Cannot predict
+    }
+
+    trajectory_predict_when(trajectory, target_value)
+}
+
+// Estimate time until a threshold is crossed
+fn predict_time_to_threshold(trajectory: i64, threshold: i64, direction: i64) -> i64 {
+    // direction: 1 = crossing from below, -1 = crossing from above
+    if trajectory == 0 {
+        return 0;
+    }
+
+    let current = trajectory_current_value(trajectory);
+    let derivative = trajectory_derivative(trajectory);
+
+    // Check if we'll ever cross the threshold
+    if direction > 0 {
+        // Want to cross from below
+        if current >= threshold {
+            return 0;  // Already above
+        }
+        if derivative <= 0 {
+            return 0;  // Not increasing, won't cross
+        }
+    } else {
+        // Want to cross from above
+        if current <= threshold {
+            return 0;  // Already below
+        }
+        if derivative >= 0 {
+            return 0;  // Not decreasing, won't cross
+        }
+    }
+
+    trajectory_predict_when(trajectory, threshold)
+}
+
+// ============================================================================
+// Batch Prediction
+// ============================================================================
+
+// Prediction batch structure for multiple predictions
+fn PRED_BATCH_SIZE() -> i64 { 24 }
+
+fn PBATCH_OFFSET_PREDICTIONS() -> i64 { 0 }
+fn PBATCH_OFFSET_COUNT() -> i64 { 8 }
+fn PBATCH_OFFSET_CAPACITY() -> i64 { 16 }
+
+fn prediction_batch_new(capacity: i64) -> i64 {
+    let b = alloc(PRED_BATCH_SIZE());
+    let predictions = alloc(capacity * 8);
+
+    store64(b + PBATCH_OFFSET_PREDICTIONS(), predictions);
+    store64(b + PBATCH_OFFSET_COUNT(), 0);
+    store64(b + PBATCH_OFFSET_CAPACITY(), capacity);
+
+    b
+}
+
+fn prediction_batch_free(b: i64) {
+    let predictions = load64(b + PBATCH_OFFSET_PREDICTIONS());
+    let count = load64(b + PBATCH_OFFSET_COUNT());
+
+    let i = 0;
+    while i < count {
+        let p = load64(predictions + i * 8);
+        if p != 0 {
+            prediction_free(p);
+        }
+        i = i + 1;
+    }
+}
+
+fn prediction_batch_count(b: i64) -> i64 {
+    load64(b + PBATCH_OFFSET_COUNT())
+}
+
+fn prediction_batch_add(b: i64, p: i64) -> i64 {
+    let count = load64(b + PBATCH_OFFSET_COUNT());
+    let capacity = load64(b + PBATCH_OFFSET_CAPACITY());
+
+    if count >= capacity {
+        return 0;  // Batch full
+    }
+
+    let predictions = load64(b + PBATCH_OFFSET_PREDICTIONS());
+    store64(predictions + count * 8, p);
+    store64(b + PBATCH_OFFSET_COUNT(), count + 1);
+
+    1
+}
+
+fn prediction_batch_get(b: i64, index: i64) -> i64 {
+    let count = load64(b + PBATCH_OFFSET_COUNT());
+    if index < 0 || index >= count {
+        return 0;
+    }
+
+    let predictions = load64(b + PBATCH_OFFSET_PREDICTIONS());
+    load64(predictions + index * 8)
+}
+
+// ============================================================================
+// Prediction Engine
+// ============================================================================
+// Manages predictions across multiple beliefs/trajectories
+//
+// Layout (56 bytes):
+//   offset 0:  trajectory_mgr (i64) - trajectory manager reference
+//   offset 8:  cache (i64) - prediction cache (LRU)
+//   offset 16: cache_size (i64) - max cache entries
+//   offset 24: cache_ttl (i64) - cache entry TTL in ms
+//   offset 32: predictions_made (i64) - total predictions made
+//   offset 40: cache_hits (i64) - cache hit count
+//   offset 48: default_horizon (i64) - default prediction horizon in ms
+
+fn PRED_ENGINE_SIZE() -> i64 { 56 }
+
+fn PENG_OFFSET_TRAJ_MGR() -> i64 { 0 }
+fn PENG_OFFSET_CACHE() -> i64 { 8 }
+fn PENG_OFFSET_CACHE_SIZE() -> i64 { 16 }
+fn PENG_OFFSET_CACHE_TTL() -> i64 { 24 }
+fn PENG_OFFSET_PREDICTIONS_MADE() -> i64 { 32 }
+fn PENG_OFFSET_CACHE_HITS() -> i64 { 40 }
+fn PENG_OFFSET_DEFAULT_HORIZON() -> i64 { 48 }
+
+fn prediction_engine_new(trajectory_mgr: i64) -> i64 {
+    let e = alloc(PRED_ENGINE_SIZE());
+
+    store64(e + PENG_OFFSET_TRAJ_MGR(), trajectory_mgr);
+    store64(e + PENG_OFFSET_CACHE(), vec_new());
+    store64(e + PENG_OFFSET_CACHE_SIZE(), 100);
+    store64(e + PENG_OFFSET_CACHE_TTL(), 1000);  // 1 second default TTL
+    store64(e + PENG_OFFSET_PREDICTIONS_MADE(), 0);
+    store64(e + PENG_OFFSET_CACHE_HITS(), 0);
+    store64(e + PENG_OFFSET_DEFAULT_HORIZON(), 10000);  // 10 second horizon
+
+    e
+}
+
+fn prediction_engine_free(e: i64) {
+    let cache = load64(e + PENG_OFFSET_CACHE());
+    vec_free(cache);
+}
+
+fn prediction_engine_trajectory_mgr(e: i64) -> i64 {
+    load64(e + PENG_OFFSET_TRAJ_MGR())
+}
+
+fn prediction_engine_predictions_made(e: i64) -> i64 {
+    load64(e + PENG_OFFSET_PREDICTIONS_MADE())
+}
+
+fn prediction_engine_cache_hits(e: i64) -> i64 {
+    load64(e + PENG_OFFSET_CACHE_HITS())
+}
+
+fn prediction_engine_set_cache_ttl(e: i64, ttl_ms: i64) {
+    store64(e + PENG_OFFSET_CACHE_TTL(), ttl_ms);
+}
+
+fn prediction_engine_set_default_horizon(e: i64, horizon_ms: i64) {
+    store64(e + PENG_OFFSET_DEFAULT_HORIZON(), horizon_ms);
+}
+
+// Record an observation
+fn prediction_engine_observe(e: i64, belief_id: i64, value: i64, timestamp: i64) -> i64 {
+    let mgr = prediction_engine_trajectory_mgr(e);
+    trajectory_manager_observe(mgr, belief_id, value, timestamp)
+}
+
+// Predict value for a belief at a specific time
+fn prediction_engine_predict(e: i64, belief_id: i64, target_time: i64) -> i64 {
+    let mgr = prediction_engine_trajectory_mgr(e);
+    let trajectory = trajectory_manager_get(mgr, belief_id);
+
+    let p = predict_from_trajectory(trajectory, target_time);
+
+    // Update stats
+    let predictions = load64(e + PENG_OFFSET_PREDICTIONS_MADE());
+    store64(e + PENG_OFFSET_PREDICTIONS_MADE(), predictions + 1);
+
+    p
+}
+
+// Predict value for a belief at default horizon from now
+fn prediction_engine_predict_ahead(e: i64, belief_id: i64, current_time: i64) -> i64 {
+    let horizon = load64(e + PENG_OFFSET_DEFAULT_HORIZON());
+    prediction_engine_predict(e, belief_id, current_time + horizon)
+}
+
+// Get dual number for a belief
+fn prediction_engine_get_dual(e: i64, belief_id: i64) -> i64 {
+    let mgr = prediction_engine_trajectory_mgr(e);
+    trajectory_manager_get_dual(mgr, belief_id)
+}
+
+// Predict when a belief will reach a target value
+fn prediction_engine_predict_when(e: i64, belief_id: i64, target_value: i64) -> i64 {
+    let mgr = prediction_engine_trajectory_mgr(e);
+    let trajectory = trajectory_manager_get(mgr, belief_id);
+    predict_time_to_target(trajectory, target_value)
+}
+
+// ============================================================================
+// Extrapolation Functions
+// ============================================================================
+
+// Extrapolate a series of values at regular intervals
+fn extrapolate_series(trajectory: i64, start_time: i64, interval_ms: i64, count: i64) -> i64 {
+    let batch = prediction_batch_new(count);
+
+    let i = 0;
+    while i < count {
+        let target_time = start_time + i * interval_ms;
+        let p = predict_from_trajectory(trajectory, target_time);
+        prediction_batch_add(batch, p);
+        i = i + 1;
+    }
+
+    batch
+}
+
+// Extrapolate with adaptive step size based on confidence
+fn extrapolate_adaptive(trajectory: i64, start_time: i64, end_time: i64, min_confidence: i64) -> i64 {
+    // Start with a reasonable initial capacity
+    let batch = prediction_batch_new(100);
+
+    let current_time = start_time;
+    let step = 1000;  // Start with 1 second steps
+
+    while current_time < end_time {
+        let p = predict_from_trajectory(trajectory, current_time);
+        let confidence = prediction_confidence(p);
+
+        if confidence < min_confidence {
+            // Stop if confidence is too low
+            prediction_free(p);
+            break;
+        }
+
+        if prediction_batch_add(batch, p) == 0 {
+            // Batch full
+            prediction_free(p);
+            break;
+        }
+
+        // Adjust step based on confidence
+        if confidence >= CONFIDENCE_HIGH() {
+            step = 500;  // Fine steps for high confidence
+        } else if confidence >= CONFIDENCE_MEDIUM() {
+            step = 1000;  // Medium steps
+        } else {
+            step = 2000;  // Larger steps for low confidence
+        }
+
+        current_time = current_time + step;
+    }
+
+    batch
+}
+
+// ============================================================================
+// Interpolation Functions (for filling gaps)
+// ============================================================================
+
+// Interpolate between two dual numbers at a given time
+fn interpolate_duals(d1: i64, d2: i64, target_time: i64) -> i64 {
+    let t1 = dual_ref_time(d1);
+    let t2 = dual_ref_time(d2);
+
+    // Calculate interpolation factor
+    let total_span = t2 - t1;
+    if total_span == 0 {
+        return dual_eval(d1, target_time);
+    }
+
+    let offset = target_time - t1;
+    let factor = offset * DUAL_SCALE() / total_span;
+
+    // Interpolate both value and derivative
+    let v1 = dual_eval(d1, target_time);
+    let v2 = dual_eval(d2, target_time);
+
+    // Weighted average based on proximity
+    let value = (v1 * (DUAL_SCALE() - factor) + v2 * factor) / DUAL_SCALE();
+
+    // Interpolate derivatives as well
+    let deriv1 = dual_derivative(d1);
+    let deriv2 = dual_derivative(d2);
+    let derivative = (deriv1 * (DUAL_SCALE() - factor) + deriv2 * factor) / DUAL_SCALE();
+
+    dual_new(value, derivative, target_time)
+}
+
+// ============================================================================
+// Trend Detection
+// ============================================================================
+
+// Trend types
+fn TREND_NONE() -> i64 { 0 }
+fn TREND_INCREASING() -> i64 { 1 }
+fn TREND_DECREASING() -> i64 { 2 }
+fn TREND_STABLE() -> i64 { 3 }
+fn TREND_OSCILLATING() -> i64 { 4 }
+fn TREND_ACCELERATING() -> i64 { 5 }
+fn TREND_DECELERATING() -> i64 { 6 }
+
+// Detect trend from trajectory
+fn detect_trend(trajectory: i64) -> i64 {
+    if trajectory == 0 {
+        return TREND_NONE();
+    }
+
+    let count = trajectory_count(trajectory);
+    if count < TRAJECTORY_MIN_SAMPLES() {
+        return TREND_NONE();
+    }
+
+    // Check basic trend from derivative
+    if trajectory_is_stable(trajectory) == 1 {
+        return TREND_STABLE();
+    }
+    if trajectory_is_increasing(trajectory) == 1 {
+        return TREND_INCREASING();
+    }
+    if trajectory_is_decreasing(trajectory) == 1 {
+        return TREND_DECREASING();
+    }
+
+    TREND_NONE()
+}
+
+// Detect trend with more detail (acceleration)
+fn detect_detailed_trend(trajectory: i64) -> i64 {
+    if trajectory == 0 {
+        return TREND_NONE();
+    }
+
+    let count = trajectory_count(trajectory);
+    if count < 3 {
+        return detect_trend(trajectory);  // Not enough for acceleration
+    }
+
+    // Check if derivatives are changing
+    let latest_rate = trajectory_latest_rate(trajectory);
+    let avg_rate = trajectory_average_rate(trajectory);
+
+    // Calculate acceleration (change in derivative)
+    let acceleration = latest_rate - avg_rate;
+
+    // Threshold for significant acceleration
+    let accel_threshold = DUAL_SCALE() / 10;  // 10% of scale
+
+    if acceleration > accel_threshold {
+        return TREND_ACCELERATING();
+    }
+    if acceleration < 0 - accel_threshold {
+        return TREND_DECELERATING();
+    }
+
+    // Check for oscillation (high variance with low average)
+    let variance = trajectory_rate_variance(trajectory);
+    let derivative = trajectory_derivative(trajectory);
+
+    // Ratio of variance to derivative magnitude
+    if derivative != 0 {
+        let ratio = variance * DUAL_SCALE() / (derivative * derivative);
+        if ratio > DUAL_SCALE() / 10 {  // High relative variance
+            return TREND_OSCILLATING();
+        }
+    }
+
+    detect_trend(trajectory)
+}
+
+// Get trend name as string (for debugging)
+fn trend_name(trend: i64) -> i64 {
+    if trend == TREND_NONE() { return "none"; }
+    if trend == TREND_INCREASING() { return "increasing"; }
+    if trend == TREND_DECREASING() { return "decreasing"; }
+    if trend == TREND_STABLE() { return "stable"; }
+    if trend == TREND_OSCILLATING() { return "oscillating"; }
+    if trend == TREND_ACCELERATING() { return "accelerating"; }
+    if trend == TREND_DECELERATING() { return "decelerating"; }
+    "unknown"
+}

@@ -20,11 +20,11 @@ fn HTTP_HEAD() -> i64 { 6 }
 fn HTTP_OPTIONS() -> i64 { 7 }
 
 fn method_name(method: i64) -> i64 {
-    if method == HTTP_GET() { 1 }      // "GET"
-    else if method == HTTP_POST() { 2 } // "POST"
-    else if method == HTTP_PUT() { 3 }  // "PUT"
-    else if method == HTTP_DELETE() { 4 } // "DELETE"
-    else { 0 }
+ if method == HTTP_GET() { 1 } // "GET"
+ else if method == HTTP_POST() { 2 } // "POST"
+ else if method == HTTP_PUT() { 3 } // "PUT"
+ else if method == HTTP_DELETE() { 4 } // "DELETE"
+ else { 0 }
 }
 
 // =============================================================================
@@ -32,37 +32,37 @@ fn method_name(method: i64) -> i64 {
 // =============================================================================
 
 fn status_is_info(code: i64) -> i64 {
-    if code >= 100 {
-        if code < 200 { 1 } else { 0 }
-    } else { 0 }
+ if code >= 100 {
+ if code < 200 { 1 } else { 0 }
+ } else { 0 }
 }
 
 fn status_is_success(code: i64) -> i64 {
-    if code >= 200 {
-        if code < 300 { 1 } else { 0 }
-    } else { 0 }
+ if code >= 200 {
+ if code < 300 { 1 } else { 0 }
+ } else { 0 }
 }
 
 fn status_is_redirect(code: i64) -> i64 {
-    if code >= 300 {
-        if code < 400 { 1 } else { 0 }
-    } else { 0 }
+ if code >= 300 {
+ if code < 400 { 1 } else { 0 }
+ } else { 0 }
 }
 
 fn status_is_client_error(code: i64) -> i64 {
-    if code >= 400 {
-        if code < 500 { 1 } else { 0 }
-    } else { 0 }
+ if code >= 400 {
+ if code < 500 { 1 } else { 0 }
+ } else { 0 }
 }
 
 fn status_is_server_error(code: i64) -> i64 {
-    if code >= 500 {
-        if code < 600 { 1 } else { 0 }
-    } else { 0 }
+ if code >= 500 {
+ if code < 600 { 1 } else { 0 }
+ } else { 0 }
 }
 
 fn status_is_error(code: i64) -> i64 {
-    if code >= 400 { 1 } else { 0 }
+ if code >= 400 { 1 } else { 0 }
 }
 
 // =============================================================================
@@ -76,38 +76,38 @@ fn status_is_error(code: i64) -> i64 {
 // bits 17-31: path length (simulated)
 
 fn url_encode(port: i64, is_https: i64, path_len: i64) -> i64 {
-    let result: i64 = port;
-    if is_https == 1 {
-        result = result + 65536;  // bit 16
-    }
-    result = result + path_len * 131072;  // bits 17+
-    result
+ let result: i64 = port;
+ if is_https == 1 {
+ result = result + 65536; // bit 16
+ }
+ result = result + path_len * 131072; // bits 17+
+ result
 }
 
 fn url_get_port(encoded: i64) -> i64 {
-    encoded % 65536
+ encoded % 65536
 }
 
 fn url_is_https(encoded: i64) -> i64 {
-    let shifted: i64 = encoded / 65536;
-    shifted % 2
+ let shifted: i64 = encoded / 65536;
+ shifted % 2
 }
 
 fn url_get_path_len(encoded: i64) -> i64 {
-    encoded / 131072
+ encoded / 131072
 }
 
 fn parse_url_simple(scheme_is_https: i64, port: i64, path_len: i64) -> i64 {
-    // If port is 0, use default based on scheme
-    let actual_port: i64 = port;
-    if actual_port == 0 {
-        if scheme_is_https == 1 {
-            actual_port = 443;
-        } else {
-            actual_port = 80;
-        }
-    }
-    url_encode(actual_port, scheme_is_https, path_len)
+ // If port is 0, use default based on scheme
+ let actual_port: i64 = port;
+ if actual_port == 0 {
+ if scheme_is_https == 1 {
+ actual_port = 443;
+ } else {
+ actual_port = 80;
+ }
+ }
+ url_encode(actual_port, scheme_is_https, path_len)
 }
 
 // =============================================================================
@@ -121,44 +121,44 @@ fn parse_url_simple(scheme_is_https: i64, port: i64, path_len: i64) -> i64 {
 // bit 17: has_json_body flag
 
 fn request_new(method: i64) -> i64 {
-    method
+ method
 }
 
 fn request_add_header(req: i64) -> i64 {
-    let header_count: i64 = (req / 256) % 256;
-    let method: i64 = req % 256;
-    let flags: i64 = req / 65536;
-    method + (header_count + 1) * 256 + flags * 65536
+ let header_count: i64 = (req / 256) % 256;
+ let method: i64 = req % 256;
+ let flags: i64 = req / 65536;
+ method + (header_count + 1) * 256 + flags * 65536
 }
 
 fn request_set_body(req: i64) -> i64 {
-    let base: i64 = req % 65536;
-    let flags: i64 = req / 65536;
-    base + (flags + 1) * 65536  // Set bit 16
+ let base: i64 = req % 65536;
+ let flags: i64 = req / 65536;
+ base + (flags + 1) * 65536 // Set bit 16
 }
 
 fn request_set_json_body(req: i64) -> i64 {
-    let base: i64 = req % 65536;
-    let flags: i64 = req / 65536;
-    base + (flags + 3) * 65536  // Set bits 16 and 17
+ let base: i64 = req % 65536;
+ let flags: i64 = req / 65536;
+ base + (flags + 3) * 65536 // Set bits 16 and 17
 }
 
 fn request_get_method(req: i64) -> i64 {
-    req % 256
+ req % 256
 }
 
 fn request_get_header_count(req: i64) -> i64 {
-    (req / 256) % 256
+ (req / 256) % 256
 }
 
 fn request_has_body(req: i64) -> i64 {
-    let flags: i64 = req / 65536;
-    flags % 2
+ let flags: i64 = req / 65536;
+ flags % 2
 }
 
 fn request_has_json_body(req: i64) -> i64 {
-    let flags: i64 = req / 65536;
-    (flags / 2) % 2
+ let flags: i64 = req / 65536;
+ (flags / 2) % 2
 }
 
 // =============================================================================
@@ -171,31 +171,31 @@ fn request_has_json_body(req: i64) -> i64 {
 // bit 24: has_body flag
 
 fn response_new(status: i64) -> i64 {
-    status
+ status
 }
 
 fn response_add_header(resp: i64) -> i64 {
-    let status: i64 = resp % 65536;
-    let header_count: i64 = (resp / 65536) % 256;
-    let flags: i64 = resp / 16777216;
-    status + (header_count + 1) * 65536 + flags * 16777216
+ let status: i64 = resp % 65536;
+ let header_count: i64 = (resp / 65536) % 256;
+ let flags: i64 = resp / 16777216;
+ status + (header_count + 1) * 65536 + flags * 16777216
 }
 
 fn response_set_body(resp: i64) -> i64 {
-    let base: i64 = resp % 16777216;
-    base + 16777216  // Set bit 24
+ let base: i64 = resp % 16777216;
+ base + 16777216 // Set bit 24
 }
 
 fn response_get_status(resp: i64) -> i64 {
-    resp % 65536
+ resp % 65536
 }
 
 fn response_get_header_count(resp: i64) -> i64 {
-    (resp / 65536) % 256
+ (resp / 65536) % 256
 }
 
 fn response_has_body(resp: i64) -> i64 {
-    resp / 16777216
+ resp / 16777216
 }
 
 // =============================================================================
@@ -203,18 +203,18 @@ fn response_has_body(resp: i64) -> i64 {
 // =============================================================================
 
 fn test_http_methods() -> i64 {
-    println("  Testing HTTP methods...");
+ println(" Testing HTTP methods...");
 
-    if HTTP_GET() != HTTP_POST() {
-        if HTTP_POST() != HTTP_PUT() {
-            if HTTP_PUT() != HTTP_DELETE() {
-                println("    PASS: HTTP methods");
-                return 0;
-            }
-        }
-    }
-    println("    FAIL: HTTP methods should be distinct");
-    1
+ if HTTP_GET() != HTTP_POST() {
+ if HTTP_POST() != HTTP_PUT() {
+ if HTTP_PUT() != HTTP_DELETE() {
+ println(" PASS: HTTP methods");
+ return 0;
+ }
+ }
+ }
+ println(" FAIL: HTTP methods should be distinct");
+ 1
 }
 
 // =============================================================================
@@ -222,54 +222,54 @@ fn test_http_methods() -> i64 {
 // =============================================================================
 
 fn test_status_codes() -> i64 {
-    println("  Testing status codes...");
+ println(" Testing status codes...");
 
-    // Test 200 OK
-    if status_is_success(200) != 1 {
-        println("    FAIL: 200 should be success");
-        return 1;
-    }
+ // Test 200 OK
+ if status_is_success(200) != 1 {
+ println(" FAIL: 200 should be success");
+ return 1;
+ }
 
-    // Test 201 Created
-    if status_is_success(201) != 1 {
-        println("    FAIL: 201 should be success");
-        return 1;
-    }
+ // Test 201 Created
+ if status_is_success(201) != 1 {
+ println(" FAIL: 201 should be success");
+ return 1;
+ }
 
-    // Test 301 Redirect
-    if status_is_redirect(301) != 1 {
-        println("    FAIL: 301 should be redirect");
-        return 1;
-    }
+ // Test 301 Redirect
+ if status_is_redirect(301) != 1 {
+ println(" FAIL: 301 should be redirect");
+ return 1;
+ }
 
-    // Test 404 Not Found
-    if status_is_client_error(404) != 1 {
-        println("    FAIL: 404 should be client error");
-        return 1;
-    }
+ // Test 404 Not Found
+ if status_is_client_error(404) != 1 {
+ println(" FAIL: 404 should be client error");
+ return 1;
+ }
 
-    // Test 500 Server Error
-    if status_is_server_error(500) != 1 {
-        println("    FAIL: 500 should be server error");
-        return 1;
-    }
+ // Test 500 Server Error
+ if status_is_server_error(500) != 1 {
+ println(" FAIL: 500 should be server error");
+ return 1;
+ }
 
-    // Test error classification
-    if status_is_error(404) != 1 {
-        println("    FAIL: 404 should be error");
-        return 1;
-    }
-    if status_is_error(500) != 1 {
-        println("    FAIL: 500 should be error");
-        return 1;
-    }
-    if status_is_error(200) != 0 {
-        println("    FAIL: 200 should not be error");
-        return 1;
-    }
+ // Test error classification
+ if status_is_error(404) != 1 {
+ println(" FAIL: 404 should be error");
+ return 1;
+ }
+ if status_is_error(500) != 1 {
+ println(" FAIL: 500 should be error");
+ return 1;
+ }
+ if status_is_error(200) != 0 {
+ println(" FAIL: 200 should not be error");
+ return 1;
+ }
 
-    println("    PASS: status codes");
-    0
+ println(" PASS: status codes");
+ 0
 }
 
 // =============================================================================
@@ -277,27 +277,27 @@ fn test_status_codes() -> i64 {
 // =============================================================================
 
 fn test_url_https() -> i64 {
-    println("  Testing URL parsing (HTTPS)...");
+ println(" Testing URL parsing (HTTPS)...");
 
-    let url: i64 = parse_url_simple(1, 8443, 10);
+ let url: i64 = parse_url_simple(1, 8443, 10);
 
-    if url_get_port(url) != 8443 {
-        println("    FAIL: port should be 8443");
-        return 1;
-    }
+ if url_get_port(url) != 8443 {
+ println(" FAIL: port should be 8443");
+ return 1;
+ }
 
-    if url_is_https(url) != 1 {
-        println("    FAIL: should be HTTPS");
-        return 1;
-    }
+ if url_is_https(url) != 1 {
+ println(" FAIL: should be HTTPS");
+ return 1;
+ }
 
-    if url_get_path_len(url) != 10 {
-        println("    FAIL: path length should be 10");
-        return 1;
-    }
+ if url_get_path_len(url) != 10 {
+ println(" FAIL: path length should be 10");
+ return 1;
+ }
 
-    println("    PASS: URL parsing (HTTPS)");
-    0
+ println(" PASS: URL parsing (HTTPS)");
+ 0
 }
 
 // =============================================================================
@@ -305,24 +305,24 @@ fn test_url_https() -> i64 {
 // =============================================================================
 
 fn test_url_default_ports() -> i64 {
-    println("  Testing URL default ports...");
+ println(" Testing URL default ports...");
 
-    // HTTP default port
-    let http_url: i64 = parse_url_simple(0, 0, 5);
-    if url_get_port(http_url) != 80 {
-        println("    FAIL: HTTP default port should be 80");
-        return 1;
-    }
+ // HTTP default port
+ let http_url: i64 = parse_url_simple(0, 0, 5);
+ if url_get_port(http_url) != 80 {
+ println(" FAIL: HTTP default port should be 80");
+ return 1;
+ }
 
-    // HTTPS default port
-    let https_url: i64 = parse_url_simple(1, 0, 5);
-    if url_get_port(https_url) != 443 {
-        println("    FAIL: HTTPS default port should be 443");
-        return 1;
-    }
+ // HTTPS default port
+ let https_url: i64 = parse_url_simple(1, 0, 5);
+ if url_get_port(https_url) != 443 {
+ println(" FAIL: HTTPS default port should be 443");
+ return 1;
+ }
 
-    println("    PASS: URL default ports");
-    0
+ println(" PASS: URL default ports");
+ 0
 }
 
 // =============================================================================
@@ -330,27 +330,27 @@ fn test_url_default_ports() -> i64 {
 // =============================================================================
 
 fn test_request_building() -> i64 {
-    println("  Testing request building...");
+ println(" Testing request building...");
 
-    let req: i64 = request_new(HTTP_POST());
+ let req: i64 = request_new(HTTP_POST());
 
-    if request_get_method(req) != HTTP_POST() {
-        println("    FAIL: method should be POST");
-        return 1;
-    }
+ if request_get_method(req) != HTTP_POST() {
+ println(" FAIL: method should be POST");
+ return 1;
+ }
 
-    // Add headers
-    req = request_add_header(req);
-    req = request_add_header(req);
-    req = request_add_header(req);
+ // Add headers
+ req = request_add_header(req);
+ req = request_add_header(req);
+ req = request_add_header(req);
 
-    if request_get_header_count(req) != 3 {
-        println("    FAIL: should have 3 headers");
-        return 1;
-    }
+ if request_get_header_count(req) != 3 {
+ println(" FAIL: should have 3 headers");
+ return 1;
+ }
 
-    println("    PASS: request building");
-    0
+ println(" PASS: request building");
+ 0
 }
 
 // =============================================================================
@@ -358,24 +358,24 @@ fn test_request_building() -> i64 {
 // =============================================================================
 
 fn test_request_body() -> i64 {
-    println("  Testing request with body...");
+ println(" Testing request with body...");
 
-    let req: i64 = request_new(HTTP_POST());
+ let req: i64 = request_new(HTTP_POST());
 
-    if request_has_body(req) != 0 {
-        println("    FAIL: new request should not have body");
-        return 1;
-    }
+ if request_has_body(req) != 0 {
+ println(" FAIL: new request should not have body");
+ return 1;
+ }
 
-    req = request_set_body(req);
+ req = request_set_body(req);
 
-    if request_has_body(req) != 1 {
-        println("    FAIL: request should have body after set");
-        return 1;
-    }
+ if request_has_body(req) != 1 {
+ println(" FAIL: request should have body after set");
+ return 1;
+ }
 
-    println("    PASS: request with body");
-    0
+ println(" PASS: request with body");
+ 0
 }
 
 // =============================================================================
@@ -383,23 +383,23 @@ fn test_request_body() -> i64 {
 // =============================================================================
 
 fn test_request_json_body() -> i64 {
-    println("  Testing request with JSON body...");
+ println(" Testing request with JSON body...");
 
-    let req: i64 = request_new(HTTP_POST());
-    req = request_set_json_body(req);
+ let req: i64 = request_new(HTTP_POST());
+ req = request_set_json_body(req);
 
-    if request_has_body(req) != 1 {
-        println("    FAIL: JSON body should set has_body flag");
-        return 1;
-    }
+ if request_has_body(req) != 1 {
+ println(" FAIL: JSON body should set has_body flag");
+ return 1;
+ }
 
-    if request_has_json_body(req) != 1 {
-        println("    FAIL: should have JSON body flag");
-        return 1;
-    }
+ if request_has_json_body(req) != 1 {
+ println(" FAIL: should have JSON body flag");
+ return 1;
+ }
 
-    println("    PASS: request with JSON body");
-    0
+ println(" PASS: request with JSON body");
+ 0
 }
 
 // =============================================================================
@@ -407,26 +407,26 @@ fn test_request_json_body() -> i64 {
 // =============================================================================
 
 fn test_response_building() -> i64 {
-    println("  Testing response building...");
+ println(" Testing response building...");
 
-    let resp: i64 = response_new(200);
+ let resp: i64 = response_new(200);
 
-    if response_get_status(resp) != 200 {
-        println("    FAIL: status should be 200");
-        return 1;
-    }
+ if response_get_status(resp) != 200 {
+ println(" FAIL: status should be 200");
+ return 1;
+ }
 
-    // Add headers
-    resp = response_add_header(resp);
-    resp = response_add_header(resp);
+ // Add headers
+ resp = response_add_header(resp);
+ resp = response_add_header(resp);
 
-    if response_get_header_count(resp) != 2 {
-        println("    FAIL: should have 2 headers");
-        return 1;
-    }
+ if response_get_header_count(resp) != 2 {
+ println(" FAIL: should have 2 headers");
+ return 1;
+ }
 
-    println("    PASS: response building");
-    0
+ println(" PASS: response building");
+ 0
 }
 
 // =============================================================================
@@ -434,24 +434,24 @@ fn test_response_building() -> i64 {
 // =============================================================================
 
 fn test_response_body() -> i64 {
-    println("  Testing response with body...");
+ println(" Testing response with body...");
 
-    let resp: i64 = response_new(200);
+ let resp: i64 = response_new(200);
 
-    if response_has_body(resp) != 0 {
-        println("    FAIL: new response should not have body");
-        return 1;
-    }
+ if response_has_body(resp) != 0 {
+ println(" FAIL: new response should not have body");
+ return 1;
+ }
 
-    resp = response_set_body(resp);
+ resp = response_set_body(resp);
 
-    if response_has_body(resp) != 1 {
-        println("    FAIL: response should have body after set");
-        return 1;
-    }
+ if response_has_body(resp) != 1 {
+ println(" FAIL: response should have body after set");
+ return 1;
+ }
 
-    println("    PASS: response with body");
-    0
+ println(" PASS: response with body");
+ 0
 }
 
 // =============================================================================
@@ -459,58 +459,58 @@ fn test_response_body() -> i64 {
 // =============================================================================
 
 fn test_common_status_codes() -> i64 {
-    println("  Testing common status codes...");
+ println(" Testing common status codes...");
 
-    // 100 Continue
-    if status_is_info(100) != 1 {
-        println("    FAIL: 100 should be info");
-        return 1;
-    }
+ // 100 Continue
+ if status_is_info(100) != 1 {
+ println(" FAIL: 100 should be info");
+ return 1;
+ }
 
-    // 204 No Content
-    if status_is_success(204) != 1 {
-        println("    FAIL: 204 should be success");
-        return 1;
-    }
+ // 204 No Content
+ if status_is_success(204) != 1 {
+ println(" FAIL: 204 should be success");
+ return 1;
+ }
 
-    // 302 Found
-    if status_is_redirect(302) != 1 {
-        println("    FAIL: 302 should be redirect");
-        return 1;
-    }
+ // 302 Found
+ if status_is_redirect(302) != 1 {
+ println(" FAIL: 302 should be redirect");
+ return 1;
+ }
 
-    // 304 Not Modified
-    if status_is_redirect(304) != 1 {
-        println("    FAIL: 304 should be redirect");
-        return 1;
-    }
+ // 304 Not Modified
+ if status_is_redirect(304) != 1 {
+ println(" FAIL: 304 should be redirect");
+ return 1;
+ }
 
-    // 401 Unauthorized
-    if status_is_client_error(401) != 1 {
-        println("    FAIL: 401 should be client error");
-        return 1;
-    }
+ // 401 Unauthorized
+ if status_is_client_error(401) != 1 {
+ println(" FAIL: 401 should be client error");
+ return 1;
+ }
 
-    // 403 Forbidden
-    if status_is_client_error(403) != 1 {
-        println("    FAIL: 403 should be client error");
-        return 1;
-    }
+ // 403 Forbidden
+ if status_is_client_error(403) != 1 {
+ println(" FAIL: 403 should be client error");
+ return 1;
+ }
 
-    // 502 Bad Gateway
-    if status_is_server_error(502) != 1 {
-        println("    FAIL: 502 should be server error");
-        return 1;
-    }
+ // 502 Bad Gateway
+ if status_is_server_error(502) != 1 {
+ println(" FAIL: 502 should be server error");
+ return 1;
+ }
 
-    // 503 Service Unavailable
-    if status_is_server_error(503) != 1 {
-        println("    FAIL: 503 should be server error");
-        return 1;
-    }
+ // 503 Service Unavailable
+ if status_is_server_error(503) != 1 {
+ println(" FAIL: 503 should be server error");
+ return 1;
+ }
 
-    println("    PASS: common status codes");
-    0
+ println(" PASS: common status codes");
+ 0
 }
 
 // =============================================================================
@@ -518,50 +518,50 @@ fn test_common_status_codes() -> i64 {
 // =============================================================================
 
 fn test_request_response_cycle() -> i64 {
-    println("  Testing request-response cycle...");
+ println(" Testing request-response cycle...");
 
-    // Build a POST request
-    let req: i64 = request_new(HTTP_POST());
-    req = request_add_header(req);  // Content-Type
-    req = request_add_header(req);  // Authorization
-    req = request_set_json_body(req);
+ // Build a POST request
+ let req: i64 = request_new(HTTP_POST());
+ req = request_add_header(req); // Content-Type
+ req = request_add_header(req); // Authorization
+ req = request_set_json_body(req);
 
-    // Simulate a 201 Created response
-    let resp: i64 = response_new(201);
-    resp = response_add_header(resp);  // Content-Type
-    resp = response_add_header(resp);  // Location
-    resp = response_set_body(resp);
+ // Simulate a 201 Created response
+ let resp: i64 = response_new(201);
+ resp = response_add_header(resp); // Content-Type
+ resp = response_add_header(resp); // Location
+ resp = response_set_body(resp);
 
-    // Verify request
-    if request_get_method(req) != HTTP_POST() {
-        println("    FAIL: method mismatch");
-        return 1;
-    }
-    if request_get_header_count(req) != 2 {
-        println("    FAIL: request header count mismatch");
-        return 1;
-    }
+ // Verify request
+ if request_get_method(req) != HTTP_POST() {
+ println(" FAIL: method mismatch");
+ return 1;
+ }
+ if request_get_header_count(req) != 2 {
+ println(" FAIL: request header count mismatch");
+ return 1;
+ }
 
-    // Verify response
-    if response_get_status(resp) != 201 {
-        println("    FAIL: status mismatch");
-        return 1;
-    }
-    if status_is_success(response_get_status(resp)) != 1 {
-        println("    FAIL: 201 should be success");
-        return 1;
-    }
-    if response_get_header_count(resp) != 2 {
-        println("    FAIL: response header count mismatch");
-        return 1;
-    }
-    if response_has_body(resp) != 1 {
-        println("    FAIL: response should have body");
-        return 1;
-    }
+ // Verify response
+ if response_get_status(resp) != 201 {
+ println(" FAIL: status mismatch");
+ return 1;
+ }
+ if status_is_success(response_get_status(resp)) != 1 {
+ println(" FAIL: 201 should be success");
+ return 1;
+ }
+ if response_get_header_count(resp) != 2 {
+ println(" FAIL: response header count mismatch");
+ return 1;
+ }
+ if response_has_body(resp) != 1 {
+ println(" FAIL: response should have body");
+ return 1;
+ }
 
-    println("    PASS: request-response cycle");
-    0
+ println(" PASS: request-response cycle");
+ 0
 }
 
 // =============================================================================
@@ -569,40 +569,40 @@ fn test_request_response_cycle() -> i64 {
 // =============================================================================
 
 fn test_method_semantics() -> i64 {
-    println("  Testing method semantics...");
+ println(" Testing method semantics...");
 
-    // GET requests typically don't have body
-    let get_req: i64 = request_new(HTTP_GET());
-    if request_has_body(get_req) != 0 {
-        println("    FAIL: GET should not have body by default");
-        return 1;
-    }
+ // GET requests typically don't have body
+ let get_req: i64 = request_new(HTTP_GET());
+ if request_has_body(get_req) != 0 {
+ println(" FAIL: GET should not have body by default");
+ return 1;
+ }
 
-    // DELETE requests typically don't have body
-    let del_req: i64 = request_new(HTTP_DELETE());
-    if request_has_body(del_req) != 0 {
-        println("    FAIL: DELETE should not have body by default");
-        return 1;
-    }
+ // DELETE requests typically don't have body
+ let del_req: i64 = request_new(HTTP_DELETE());
+ if request_has_body(del_req) != 0 {
+ println(" FAIL: DELETE should not have body by default");
+ return 1;
+ }
 
-    // POST requests can have body
-    let post_req: i64 = request_new(HTTP_POST());
-    post_req = request_set_body(post_req);
-    if request_has_body(post_req) != 1 {
-        println("    FAIL: POST should be able to have body");
-        return 1;
-    }
+ // POST requests can have body
+ let post_req: i64 = request_new(HTTP_POST());
+ post_req = request_set_body(post_req);
+ if request_has_body(post_req) != 1 {
+ println(" FAIL: POST should be able to have body");
+ return 1;
+ }
 
-    // PUT requests can have body
-    let put_req: i64 = request_new(HTTP_PUT());
-    put_req = request_set_body(put_req);
-    if request_has_body(put_req) != 1 {
-        println("    FAIL: PUT should be able to have body");
-        return 1;
-    }
+ // PUT requests can have body
+ let put_req: i64 = request_new(HTTP_PUT());
+ put_req = request_set_body(put_req);
+ if request_has_body(put_req) != 1 {
+ println(" FAIL: PUT should be able to have body");
+ return 1;
+ }
 
-    println("    PASS: method semantics");
-    0
+ println(" PASS: method semantics");
+ 0
 }
 
 // =============================================================================
@@ -610,30 +610,30 @@ fn test_method_semantics() -> i64 {
 // =============================================================================
 
 fn main() -> i64 {
-    println("=== HTTP Client Tests ===");
-    println("");
+ println("=== HTTP Client Tests ===");
+ println("");
 
-    let f1: i64 = test_http_methods();
-    let f2: i64 = test_status_codes();
-    let f3: i64 = test_url_https();
-    let f4: i64 = test_url_default_ports();
-    let f5: i64 = test_request_building();
-    let f6: i64 = test_request_body();
-    let f7: i64 = test_request_json_body();
-    let f8: i64 = test_response_building();
-    let f9: i64 = test_response_body();
-    let f10: i64 = test_common_status_codes();
-    let f11: i64 = test_request_response_cycle();
-    let f12: i64 = test_method_semantics();
+ let f1: i64 = test_http_methods();
+ let f2: i64 = test_status_codes();
+ let f3: i64 = test_url_https();
+ let f4: i64 = test_url_default_ports();
+ let f5: i64 = test_request_building();
+ let f6: i64 = test_request_body();
+ let f7: i64 = test_request_json_body();
+ let f8: i64 = test_response_building();
+ let f9: i64 = test_response_body();
+ let f10: i64 = test_common_status_codes();
+ let f11: i64 = test_request_response_cycle();
+ let f12: i64 = test_method_semantics();
 
-    let failures: i64 = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10 + f11 + f12;
+ let failures: i64 = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10 + f11 + f12;
 
-    println("");
-    if failures == 0 {
-        println("All HTTP Client tests passed!");
-    } else {
-        println("Some HTTP Client tests failed");
-    }
+ println("");
+ if failures == 0 {
+ println("All HTTP Client tests passed!");
+ } else {
+ println("Some HTTP Client tests failed");
+ }
 
-    failures
+ failures
 }

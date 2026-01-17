@@ -1,381 +1,381 @@
-// Phase 5: Superposition Memory Model Tests
+// : Superposition Memory Model Tests
 // Tests WeightedRef type, execution modes, and weighted GC
 
 fn main() -> i64 {
-    println("=== Superposition Memory Model Test ===");
+ println("=== Superposition Memory Model Test ===");
 
-    // Execution mode constants
-    let mode_lazy: i64 = 0;
-    let mode_speculative: i64 = 1;
-    let mode_checkpoint: i64 = 2;
-    let mode_pooled: i64 = 3;
+ // Execution mode constants
+ let mode_lazy: i64 = 0;
+ let mode_speculative: i64 = 1;
+ let mode_checkpoint: i64 = 2;
+ let mode_pooled: i64 = 3;
 
-    // WeightedRef state constants
-    let state_pending: i64 = 0;
-    let state_allocated: i64 = 1;
-    let state_collapsed: i64 = 2;
-    let state_freed: i64 = 3;
+ // WeightedRef state constants
+ let state_pending: i64 = 0;
+ let state_allocated: i64 = 1;
+ let state_collapsed: i64 = 2;
+ let state_freed: i64 = 3;
 
-    // Test 1: Registry initialization
-    println("Test 1: Registry init");
-    wref_registry_init();
-    let initial_count: i64 = wref_count();
-    if initial_count == 0 {
-        println("  PASS: Registry initialized empty");
-    } else {
-        println("  FAIL: Registry not empty");
-        return 1;
-    }
+ // Test 1: Registry initialization
+ println("Test 1: Registry init");
+ wref_registry_init();
+ let initial_count: i64 = wref_count();
+ if initial_count == 0 {
+ println(" PASS: Registry initialized empty");
+ } else {
+ println(" FAIL: Registry not empty");
+ return 1;
+ }
 
-    // Test 2: Set and get execution mode
-    println("Test 2: Execution mode");
-    wref_set_mode(mode_lazy);
-    let current_mode: i64 = wref_get_mode();
-    if current_mode == mode_lazy {
-        println("  PASS: Lazy mode set");
-    } else {
-        println("  FAIL: Wrong mode");
-        return 1;
-    }
+ // Test 2: Set and get execution mode
+ println("Test 2: Execution mode");
+ wref_set_mode(mode_lazy);
+ let current_mode: i64 = wref_get_mode();
+ if current_mode == mode_lazy {
+ println(" PASS: Lazy mode set");
+ } else {
+ println(" FAIL: Wrong mode");
+ return 1;
+ }
 
-    // Test 3: Set weight threshold
-    println("Test 3: Weight threshold");
-    wref_set_weight_threshold(0.5);
-    let threshold: f64 = wref_get_weight_threshold();
-    if threshold > 0.45 && threshold < 0.55 {
-        println("  PASS: Threshold set to 0.5");
-    } else {
-        println("  FAIL: Wrong threshold");
-        return 1;
-    }
+ // Test 3: Set weight threshold
+ println("Test 3: Weight threshold");
+ wref_set_weight_threshold(0.5);
+ let threshold: f64 = wref_get_weight_threshold();
+ if threshold > 0.45 && threshold < 0.55 {
+ println(" PASS: Threshold set to 0.5");
+ } else {
+ println(" FAIL: Wrong threshold");
+ return 1;
+ }
 
-    // Test 4: Create weighted reference
-    println("Test 4: Create WeightedRef");
-    let wref1: i64 = wref_new(1024, 0.8, 1);
-    if wref1 != 0 {
-        println("  PASS: Created WeightedRef");
-    } else {
-        println("  FAIL: Could not create WeightedRef");
-        return 1;
-    }
+ // Test 4: Create weighted reference
+ println("Test 4: Create WeightedRef");
+ let wref1: i64 = wref_new(1024, 0.8, 1);
+ if wref1 != 0 {
+ println(" PASS: Created WeightedRef");
+ } else {
+ println(" FAIL: Could not create WeightedRef");
+ return 1;
+ }
 
-    // Test 5: Get weight
-    println("Test 5: Get weight");
-    let w1: f64 = wref_weight(wref1);
-    if w1 > 0.75 && w1 < 0.85 {
-        println("  PASS: Weight is 0.8");
-    } else {
-        println("  FAIL: Wrong weight");
-        return 1;
-    }
+ // Test 5: Get weight
+ println("Test 5: Get weight");
+ let w1: f64 = wref_weight(wref1);
+ if w1 > 0.75 && w1 < 0.85 {
+ println(" PASS: Weight is 0.8");
+ } else {
+ println(" FAIL: Wrong weight");
+ return 1;
+ }
 
-    // Test 6: Check allocation (high weight > threshold)
-    println("Test 6: Check allocation");
-    let is_alloc: i64 = wref_is_allocated(wref1);
-    if is_alloc == 1 {
-        println("  PASS: High-weight ref allocated");
-    } else {
-        println("  FAIL: High-weight ref not allocated");
-        return 1;
-    }
+ // Test 6: Check allocation (high weight > threshold)
+ println("Test 6: Check allocation");
+ let is_alloc: i64 = wref_is_allocated(wref1);
+ if is_alloc == 1 {
+ println(" PASS: High-weight ref allocated");
+ } else {
+ println(" FAIL: High-weight ref not allocated");
+ return 1;
+ }
 
-    // Test 7: Check state
-    println("Test 7: Check state");
-    let s1: i64 = wref_state(wref1);
-    if s1 == state_allocated {
-        println("  PASS: State is ALLOCATED");
-    } else {
-        println("  FAIL: Wrong state");
-        return 1;
-    }
+ // Test 7: Check state
+ println("Test 7: Check state");
+ let s1: i64 = wref_state(wref1);
+ if s1 == state_allocated {
+ println(" PASS: State is ALLOCATED");
+ } else {
+ println(" FAIL: Wrong state");
+ return 1;
+ }
 
-    // Test 8: Get pointer
-    println("Test 8: Get pointer");
-    let ptr1: i64 = wref_ptr(wref1);
-    if ptr1 != 0 {
-        println("  PASS: Got valid pointer");
-    } else {
-        println("  FAIL: Null pointer");
-        return 1;
-    }
+ // Test 8: Get pointer
+ println("Test 8: Get pointer");
+ let ptr1: i64 = wref_ptr(wref1);
+ if ptr1 != 0 {
+ println(" PASS: Got valid pointer");
+ } else {
+ println(" FAIL: Null pointer");
+ return 1;
+ }
 
-    // Test 9: Set weight
-    println("Test 9: Set weight");
-    wref_set_weight(wref1, 0.9);
-    let w2: f64 = wref_weight(wref1);
-    if w2 > 0.85 && w2 < 0.95 {
-        println("  PASS: Weight updated to 0.9");
-    } else {
-        println("  FAIL: Weight not updated");
-        return 1;
-    }
+ // Test 9: Set weight
+ println("Test 9: Set weight");
+ wref_set_weight(wref1, 0.9);
+ let w2: f64 = wref_weight(wref1);
+ if w2 > 0.85 && w2 < 0.95 {
+ println(" PASS: Weight updated to 0.9");
+ } else {
+ println(" FAIL: Weight not updated");
+ return 1;
+ }
 
-    // Test 10: Reference counting - retain
-    println("Test 10: Retain");
-    wref_retain(wref1);
-    println("  PASS: Retained reference");
+ // Test 10: Reference counting - retain
+ println("Test 10: Retain");
+ wref_retain(wref1);
+ println(" PASS: Retained reference");
 
-    // Test 11: Reference counting - release
-    println("Test 11: Release");
-    wref_release(wref1);
-    println("  PASS: Released reference");
+ // Test 11: Reference counting - release
+ println("Test 11: Release");
+ wref_release(wref1);
+ println(" PASS: Released reference");
 
-    // Test 12: Create low-weight reference
-    println("Test 12: Low-weight ref");
-    let wref2: i64 = wref_new(512, 0.2, 2);
-    let is_alloc2: i64 = wref_is_allocated(wref2);
-    // In lazy mode with threshold 0.5, low-weight refs not allocated
-    if is_alloc2 == 0 {
-        println("  PASS: Low-weight ref not allocated");
-    } else {
-        println("  PASS: Ref allocated (mode-dependent)");
-    }
+ // Test 12: Create low-weight reference
+ println("Test 12: Low-weight ref");
+ let wref2: i64 = wref_new(512, 0.2, 2);
+ let is_alloc2: i64 = wref_is_allocated(wref2);
+ // In lazy mode with threshold 0.5, low-weight refs not allocated
+ if is_alloc2 == 0 {
+ println(" PASS: Low-weight ref not allocated");
+ } else {
+ println(" PASS: Ref allocated (mode-dependent)");
+ }
 
-    // Test 13: Count references
-    println("Test 13: Count refs");
-    let total: i64 = wref_count();
-    // In lazy mode, low-weight refs aren't created, so count should be 1
-    if total == 1 {
-        println("  PASS: 1 ref tracked (lazy mode)");
-    } else if total == 2 {
-        println("  PASS: 2 refs tracked");
-    } else {
-        println("  FAIL: Wrong ref count");
-        return 1;
-    }
+ // Test 13: Count references
+ println("Test 13: Count refs");
+ let total: i64 = wref_count();
+ // In lazy mode, low-weight refs aren't created, so count should be 1
+ if total == 1 {
+ println(" PASS: 1 ref tracked (lazy mode)");
+ } else if total == 2 {
+ println(" PASS: 2 refs tracked");
+ } else {
+ println(" FAIL: Wrong ref count");
+ return 1;
+ }
 
-    // Test 14: Bytes allocated
-    println("Test 14: Bytes allocated");
-    let bytes: i64 = wref_bytes_allocated();
-    if bytes > 0 {
-        println("  PASS: Bytes allocated tracked");
-    } else {
-        println("  PASS: No bytes (valid for lazy)");
-    }
+ // Test 14: Bytes allocated
+ println("Test 14: Bytes allocated");
+ let bytes: i64 = wref_bytes_allocated();
+ if bytes > 0 {
+ println(" PASS: Bytes allocated tracked");
+ } else {
+ println(" PASS: No bytes (valid for lazy)");
+ }
 
-    // Test 15: Collapse superposition
-    println("Test 15: Collapse");
-    wref_collapse(wref1);
-    let s2: i64 = wref_state(wref1);
-    if s2 == state_collapsed {
-        println("  PASS: Superposition collapsed");
-    } else {
-        println("  PASS: State unchanged (valid)");
-    }
+ // Test 15: Collapse superposition
+ println("Test 15: Collapse");
+ wref_collapse(wref1);
+ let s2: i64 = wref_state(wref1);
+ if s2 == state_collapsed {
+ println(" PASS: Superposition collapsed");
+ } else {
+ println(" PASS: State unchanged (valid)");
+ }
 
-    // Test 16: Lazy context creation
-    println("Test 16: Lazy context");
-    let lazy_ctx: i64 = lazy_context_new(0.5);
-    if lazy_ctx != 0 {
-        println("  PASS: Created lazy context");
-    } else {
-        println("  FAIL: Could not create context");
-        return 1;
-    }
+ // Test 16: Lazy context creation
+ println("Test 16: Lazy context");
+ let lazy_ctx: i64 = lazy_context_new(0.5);
+ if lazy_ctx != 0 {
+ println(" PASS: Created lazy context");
+ } else {
+ println(" FAIL: Could not create context");
+ return 1;
+ }
 
-    // Test 17: Add branches to lazy context
-    println("Test 17: Add branches");
-    let lb0: i64 = lazy_add_branch(lazy_ctx, 0.6);
-    let lb1: i64 = lazy_add_branch(lazy_ctx, 0.3);
-    let lb2: i64 = lazy_add_branch(lazy_ctx, 0.1);
-    let branch_count: i64 = lazy_branch_count(lazy_ctx);
-    if branch_count == 3 {
-        println("  PASS: 3 branches added");
-    } else {
-        println("  FAIL: Wrong branch count");
-        return 1;
-    }
+ // Test 17: Add branches to lazy context
+ println("Test 17: Add branches");
+ let lb0: i64 = lazy_add_branch(lazy_ctx, 0.6);
+ let lb1: i64 = lazy_add_branch(lazy_ctx, 0.3);
+ let lb2: i64 = lazy_add_branch(lazy_ctx, 0.1);
+ let branch_count: i64 = lazy_branch_count(lazy_ctx);
+ if branch_count == 3 {
+ println(" PASS: 3 branches added");
+ } else {
+ println(" FAIL: Wrong branch count");
+ return 1;
+ }
 
-    // Test 18: Dominant branch
-    println("Test 18: Dominant branch");
-    let dominant: i64 = lazy_dominant_branch(lazy_ctx);
-    if dominant == 0 {
-        println("  PASS: Branch 0 is dominant (0.6)");
-    } else {
-        println("  FAIL: Wrong dominant branch");
-        return 1;
-    }
+ // Test 18: Dominant branch
+ println("Test 18: Dominant branch");
+ let dominant: i64 = lazy_dominant_branch(lazy_ctx);
+ if dominant == 0 {
+ println(" PASS: Branch 0 is dominant (0.6)");
+ } else {
+ println(" FAIL: Wrong dominant branch");
+ return 1;
+ }
 
-    // Test 19: Should execute check
-    println("Test 19: Should execute");
-    let should_exec_0: i64 = lazy_should_execute(lazy_ctx, 0);
-    let should_exec_2: i64 = lazy_should_execute(lazy_ctx, 2);
-    // Branch 0 (0.6) > threshold (0.5), branch 2 (0.1) < threshold
-    if should_exec_0 == 1 && should_exec_2 == 0 {
-        println("  PASS: Correct execution decision");
-    } else {
-        println("  PASS: Mode-dependent execution");
-    }
+ // Test 19: Should execute check
+ println("Test 19: Should execute");
+ let should_exec_0: i64 = lazy_should_execute(lazy_ctx, 0);
+ let should_exec_2: i64 = lazy_should_execute(lazy_ctx, 2);
+ // Branch 0 (0.6) > threshold (0.5), branch 2 (0.1) < threshold
+ if should_exec_0 == 1 && should_exec_2 == 0 {
+ println(" PASS: Correct execution decision");
+ } else {
+ println(" PASS: Mode-dependent execution");
+ }
 
-    // Test 20: Mark executed
-    println("Test 20: Mark executed");
-    lazy_mark_executed(lazy_ctx, 0);
-    let executed: i64 = lazy_executed_count(lazy_ctx);
-    if executed == 1 {
-        println("  PASS: 1 branch executed");
-    } else {
-        println("  FAIL: Wrong executed count");
-        return 1;
-    }
+ // Test 20: Mark executed
+ println("Test 20: Mark executed");
+ lazy_mark_executed(lazy_ctx, 0);
+ let executed: i64 = lazy_executed_count(lazy_ctx);
+ if executed == 1 {
+ println(" PASS: 1 branch executed");
+ } else {
+ println(" FAIL: Wrong executed count");
+ return 1;
+ }
 
-    // Test 21: Speculative context
-    println("Test 21: Speculative context");
-    let spec_ctx: i64 = speculative_context_new(4096, 0.1);
-    if spec_ctx != 0 {
-        println("  PASS: Created speculative context");
-    } else {
-        println("  FAIL: Could not create context");
-        return 1;
-    }
+ // Test 21: Speculative context
+ println("Test 21: Speculative context");
+ let spec_ctx: i64 = speculative_context_new(4096, 0.1);
+ if spec_ctx != 0 {
+ println(" PASS: Created speculative context");
+ } else {
+ println(" FAIL: Could not create context");
+ return 1;
+ }
 
-    // Test 22: Add speculative branches
-    println("Test 22: Add speculative branches");
-    // speculative_add_branch(ctx, weight, result_size) - using sizeof(i64) = 8
-    let bid0: i64 = speculative_add_branch(spec_ctx, 0.5, 8);
-    let bid1: i64 = speculative_add_branch(spec_ctx, 0.3, 8);
-    let bid2: i64 = speculative_add_branch(spec_ctx, 0.2, 8);
-    if bid0 >= 0 && bid1 >= 0 && bid2 >= 0 {
-        println("  PASS: Added 3 speculative branches");
-    } else {
-        println("  FAIL: Could not add branches");
-        return 1;
-    }
+ // Test 22: Add speculative branches
+ println("Test 22: Add speculative branches");
+ // speculative_add_branch(ctx, weight, result_size) - using sizeof(i64) = 8
+ let bid0: i64 = speculative_add_branch(spec_ctx, 0.5, 8);
+ let bid1: i64 = speculative_add_branch(spec_ctx, 0.3, 8);
+ let bid2: i64 = speculative_add_branch(spec_ctx, 0.2, 8);
+ if bid0 >= 0 && bid1 >= 0 && bid2 >= 0 {
+ println(" PASS: Added 3 speculative branches");
+ } else {
+ println(" FAIL: Could not add branches");
+ return 1;
+ }
 
-    // Test 23: Set branch results
-    println("Test 23: Set results");
-    speculative_set_result(spec_ctx, 0, 100);
-    speculative_set_result(spec_ctx, 1, 200);
-    speculative_set_result(spec_ctx, 2, 300);
-    let r0: i64 = speculative_get_result(spec_ctx, 0);
-    if r0 == 100 {
-        println("  PASS: Result stored correctly");
-    } else {
-        println("  FAIL: Wrong result");
-        return 1;
-    }
+ // Test 23: Set branch results
+ println("Test 23: Set results");
+ speculative_set_result(spec_ctx, 0, 100);
+ speculative_set_result(spec_ctx, 1, 200);
+ speculative_set_result(spec_ctx, 2, 300);
+ let r0: i64 = speculative_get_result(spec_ctx, 0);
+ if r0 == 100 {
+ println(" PASS: Result stored correctly");
+ } else {
+ println(" FAIL: Wrong result");
+ return 1;
+ }
 
-    // Test 24: Weighted result
-    println("Test 24: Weighted result");
-    let weighted: f64 = speculative_weighted_result(spec_ctx);
-    // Expected: 100*0.5 + 200*0.3 + 300*0.2 = 50 + 60 + 60 = 170
-    if weighted > 160.0 && weighted < 180.0 {
-        println("  PASS: Weighted result ~170");
-    } else {
-        println("  PASS: Weighted result computed");
-    }
+ // Test 24: Weighted result
+ println("Test 24: Weighted result");
+ let weighted: f64 = speculative_weighted_result(spec_ctx);
+ // Expected: 100*0.5 + 200*0.3 + 300*0.2 = 50 + 60 + 60 = 170
+ if weighted > 160.0 && weighted < 180.0 {
+ println(" PASS: Weighted result ~170");
+ } else {
+ println(" PASS: Weighted result computed");
+ }
 
-    // Test 25: Speculative GC
-    println("Test 25: Speculative GC");
-    // GC uses context's min_weight (0.1), so branch 2 (0.2) won't be collected
-    let collected: i64 = speculative_gc(spec_ctx);
-    if collected >= 0 {
-        println("  PASS: GC ran successfully");
-    } else {
-        println("  FAIL: GC failed");
-        return 1;
-    }
+ // Test 25: Speculative GC
+ println("Test 25: Speculative GC");
+ // GC uses context's min_weight (0.1), so branch 2 (0.2) won't be collected
+ let collected: i64 = speculative_gc(spec_ctx);
+ if collected >= 0 {
+ println(" PASS: GC ran successfully");
+ } else {
+ println(" FAIL: GC failed");
+ return 1;
+ }
 
-    // Test 26: Speculative memory used
-    println("Test 26: Memory used");
-    let mem_used: i64 = speculative_memory_used(spec_ctx);
-    if mem_used >= 0 {
-        println("  PASS: Memory tracking works");
-    } else {
-        println("  FAIL: Invalid memory value");
-        return 1;
-    }
+ // Test 26: Speculative memory used
+ println("Test 26: Memory used");
+ let mem_used: i64 = speculative_memory_used(spec_ctx);
+ if mem_used >= 0 {
+ println(" PASS: Memory tracking works");
+ } else {
+ println(" FAIL: Invalid memory value");
+ return 1;
+ }
 
-    // Test 27: Checkpoint context
-    println("Test 27: Checkpoint context");
-    let ckpt_ctx: i64 = ckpt_context_new(8192);
-    if ckpt_ctx != 0 {
-        println("  PASS: Created checkpoint context");
-    } else {
-        println("  FAIL: Could not create context");
-        return 1;
-    }
+ // Test 27: Checkpoint context
+ println("Test 27: Checkpoint context");
+ let ckpt_ctx: i64 = ckpt_context_new(8192);
+ if ckpt_ctx != 0 {
+ println(" PASS: Created checkpoint context");
+ } else {
+ println(" FAIL: Could not create context");
+ return 1;
+ }
 
-    // Test 28: Save checkpoint
-    println("Test 28: Save checkpoint");
-    let ckpt1: i64 = ckpt_save(ckpt_ctx);
-    if ckpt1 >= 0 {
-        println("  PASS: Saved checkpoint");
-    } else {
-        println("  FAIL: Could not save checkpoint");
-        return 1;
-    }
+ // Test 28: Save checkpoint
+ println("Test 28: Save checkpoint");
+ let ckpt1: i64 = ckpt_save(ckpt_ctx);
+ if ckpt1 >= 0 {
+ println(" PASS: Saved checkpoint");
+ } else {
+ println(" FAIL: Could not save checkpoint");
+ return 1;
+ }
 
-    // Test 29: Checkpoint count
-    println("Test 29: Checkpoint count");
-    let ckpt_count: i64 = ckpt_count(ckpt_ctx);
-    if ckpt_count == 1 {
-        println("  PASS: 1 checkpoint saved");
-    } else {
-        println("  FAIL: Wrong checkpoint count");
-        return 1;
-    }
+ // Test 29: Checkpoint count
+ println("Test 29: Checkpoint count");
+ let ckpt_count: i64 = ckpt_count(ckpt_ctx);
+ if ckpt_count == 1 {
+ println(" PASS: 1 checkpoint saved");
+ } else {
+ println(" FAIL: Wrong checkpoint count");
+ return 1;
+ }
 
-    // Test 30: Branch start/end
-    println("Test 30: Branch start/end");
-    let branch_id: i64 = ckpt_branch_start(ckpt_ctx, ckpt1);
-    if branch_id >= 0 {
-        println("  PASS: Started branch");
-    } else {
-        println("  FAIL: Could not start branch");
-        return 1;
-    }
-    ckpt_branch_end(ckpt_ctx);
-    println("  PASS: Ended branch");
+ // Test 30: Branch start/end
+ println("Test 30: Branch start/end");
+ let branch_id: i64 = ckpt_branch_start(ckpt_ctx, ckpt1);
+ if branch_id >= 0 {
+ println(" PASS: Started branch");
+ } else {
+ println(" FAIL: Could not start branch");
+ return 1;
+ }
+ ckpt_branch_end(ckpt_ctx);
+ println(" PASS: Ended branch");
 
-    // Test 31: Restore checkpoint
-    println("Test 31: Restore checkpoint");
-    let restored: i64 = ckpt_restore(ckpt_ctx, ckpt1);
-    if restored == 1 {
-        println("  PASS: Checkpoint restored");
-    } else {
-        println("  PASS: Restore completed");
-    }
+ // Test 31: Restore checkpoint
+ println("Test 31: Restore checkpoint");
+ let restored: i64 = ckpt_restore(ckpt_ctx, ckpt1);
+ if restored == 1 {
+ println(" PASS: Checkpoint restored");
+ } else {
+ println(" PASS: Restore completed");
+ }
 
-    // Test 32: Weighted GC
-    println("Test 32: Weighted GC");
-    wref_gc(0.3);
-    let last_collected: i64 = wref_gc_last_collected();
-    // Should collect refs with weight < 0.3 (wref2 has weight 0.2)
-    if last_collected >= 0 {
-        println("  PASS: Weighted GC ran");
-    } else {
-        println("  FAIL: GC failed");
-        return 1;
-    }
+ // Test 32: Weighted GC
+ println("Test 32: Weighted GC");
+ wref_gc(0.3);
+ let last_collected: i64 = wref_gc_last_collected();
+ // Should collect refs with weight < 0.3 (wref2 has weight 0.2)
+ if last_collected >= 0 {
+ println(" PASS: Weighted GC ran");
+ } else {
+ println(" FAIL: GC failed");
+ return 1;
+ }
 
-    // Test 33: GC stats
-    println("Test 33: GC stats");
-    let gc_runs: i64 = wref_gc_total_runs();
-    let gc_total: i64 = wref_gc_total_collected();
-    if gc_runs >= 1 {
-        println("  PASS: GC stats tracked");
-    } else {
-        println("  FAIL: GC not tracked");
-        return 1;
-    }
+ // Test 33: GC stats
+ println("Test 33: GC stats");
+ let gc_runs: i64 = wref_gc_total_runs();
+ let gc_total: i64 = wref_gc_total_collected();
+ if gc_runs >= 1 {
+ println(" PASS: GC stats tracked");
+ } else {
+ println(" FAIL: GC not tracked");
+ return 1;
+ }
 
-    // Test 34: Cleanup - free contexts
-    println("Test 34: Cleanup");
-    lazy_context_free(lazy_ctx);
-    speculative_context_free(spec_ctx);
-    ckpt_context_free(ckpt_ctx);
-    println("  PASS: All contexts freed");
+ // Test 34: Cleanup - free contexts
+ println("Test 34: Cleanup");
+ lazy_context_free(lazy_ctx);
+ speculative_context_free(spec_ctx);
+ ckpt_context_free(ckpt_ctx);
+ println(" PASS: All contexts freed");
 
-    // Test 35: Release remaining refs
-    println("Test 35: Release refs");
-    wref_release(wref1);
-    // wref2 might be 0 in lazy mode, only release if valid
-    if wref2 != 0 {
-        wref_release(wref2);
-    }
-    println("  PASS: Refs released");
+ // Test 35: Release remaining refs
+ println("Test 35: Release refs");
+ wref_release(wref1);
+ // wref2 might be 0 in lazy mode, only release if valid
+ if wref2 != 0 {
+ wref_release(wref2);
+ }
+ println(" PASS: Refs released");
 
-    println("");
-    println("=== ALL 35 TESTS PASSED ===");
-    0
+ println("");
+ println("=== ALL 35 TESTS PASSED ===");
+ 0
 }

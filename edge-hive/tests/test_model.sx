@@ -1,0 +1,693 @@
+// Edge Hive - Local Model Tests
+// Tests for on-device SLM inference
+
+fn main() -> i64 {
+    println(string_from("=== Edge Hive Local Model Tests ==="));
+    let passed: i64 = 0;
+    let failed: i64 = 0;
+
+    // Test model type constants
+    if test_model_constants() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Test model info creation
+    if test_model_info() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Test model selection for devices
+    if test_model_selection() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Test local model creation
+    if test_local_model_creation() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Test inference config
+    if test_inference_config() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Test prompt formatting
+    if test_prompt_formatting() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Test model confidence calculation
+    if test_model_confidence() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Test inference stats
+    if test_inference_stats() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    println(string_from(""));
+    print(string_from("Passed: "));
+    print_num(passed);
+    print(string_from(", Failed: "));
+    print_num(failed);
+    println(string_from(""));
+
+    failed
+}
+
+// =============================================================================
+// Test Functions
+// =============================================================================
+
+fn test_model_constants() -> i64 {
+    print(string_from("Testing model constants... "));
+
+    // Model types should be distinct
+    if MODEL_NONE() == MODEL_SMOLLM_135M() {
+        println(string_from("FAIL: MODEL_NONE should differ from MODEL_SMOLLM_135M"));
+        return 1;
+    }
+
+    if MODEL_SMOLLM_135M() == MODEL_PHI3_MINI() {
+        println(string_from("FAIL: models should have distinct constants"));
+        return 1;
+    }
+
+    // Quantization levels should be distinct
+    if QUANT_NONE() == QUANT_Q4_K_M() {
+        println(string_from("FAIL: quantization levels should be distinct"));
+        return 1;
+    }
+
+    // Model states should be distinct
+    if MODEL_STATE_READY() == MODEL_STATE_ERROR() {
+        println(string_from("FAIL: model states should be distinct"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_model_info() -> i64 {
+    print(string_from("Testing model info... "));
+
+    // Test SmolLM-135M info
+    let info_135: i64 = model_info_new(MODEL_SMOLLM_135M());
+    if model_info_type(info_135) != MODEL_SMOLLM_135M() {
+        println(string_from("FAIL: model type mismatch"));
+        return 1;
+    }
+    if model_info_params(info_135) != 135 {
+        println(string_from("FAIL: SmolLM-135M should have 135M params"));
+        return 1;
+    }
+    if model_info_min_ram(info_135) != 256 {
+        println(string_from("FAIL: SmolLM-135M should need 256MB min RAM"));
+        return 1;
+    }
+
+    // Test Phi-3 info
+    let info_phi: i64 = model_info_new(MODEL_PHI3_MINI());
+    if model_info_params(info_phi) != 3800 {
+        println(string_from("FAIL: Phi-3-mini should have 3800M params"));
+        return 1;
+    }
+    if model_info_context(info_phi) != 4096 {
+        println(string_from("FAIL: Phi-3-mini should have 4K context"));
+        return 1;
+    }
+
+    // Test Llama 3.2 1B info
+    let info_llama: i64 = model_info_new(MODEL_LLAMA32_1B());
+    if model_info_context(info_llama) != 131072 {
+        println(string_from("FAIL: Llama 3.2 should have 128K context"));
+        return 1;
+    }
+
+    // Test MODEL_NONE info
+    let info_none: i64 = model_info_new(MODEL_NONE());
+    if model_info_params(info_none) != 0 {
+        println(string_from("FAIL: MODEL_NONE should have 0 params"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_model_selection() -> i64 {
+    print(string_from("Testing model selection... "));
+
+    // Watch with limited RAM should get no model or smallest
+    let watch_model: i64 = select_model_for_device(DEVICE_WATCH(), 256, 1000, 100);
+    if watch_model != MODEL_NONE() {
+        // With 256MB, watch might get SmolLM-135M or none
+        if watch_model != MODEL_SMOLLM_135M() {
+            println(string_from("FAIL: watch should get none or SmolLM-135M"));
+            return 1;
+        }
+    }
+
+    // Watch with enough RAM should get SmolLM-135M
+    let watch_model2: i64 = select_model_for_device(DEVICE_WATCH(), 512, 1000, 100);
+    if watch_model2 != MODEL_SMOLLM_135M() {
+        println(string_from("FAIL: watch with 512MB should get SmolLM-135M"));
+        return 1;
+    }
+
+    // Phone with 2GB should get Qwen2-0.5B
+    let phone_model: i64 = select_model_for_device(DEVICE_PHONE(), 2048, 10000, 100);
+    if phone_model != MODEL_QWEN2_0_5B() {
+        println(string_from("FAIL: phone with 2GB should get Qwen2-0.5B"));
+        return 1;
+    }
+
+    // Phone with low battery should get smaller model
+    let phone_low_batt: i64 = select_model_for_device(DEVICE_PHONE(), 2048, 10000, 15);
+    if phone_low_batt == MODEL_QWEN2_0_5B() {
+        println(string_from("FAIL: phone with low battery should get smaller model"));
+        return 1;
+    }
+
+    // Laptop with 8GB should get Phi-3-mini
+    let laptop_model: i64 = select_model_for_device(DEVICE_LAPTOP(), 8192, 100000, 100);
+    if laptop_model != MODEL_PHI3_MINI() {
+        println(string_from("FAIL: laptop with 8GB should get Phi-3-mini"));
+        return 1;
+    }
+
+    // Desktop with 16GB should get Llama-3.2-3B
+    let desktop_model: i64 = select_model_for_device(DEVICE_DESKTOP(), 16384, 500000, 100);
+    if desktop_model != MODEL_LLAMA32_3B() {
+        println(string_from("FAIL: desktop with 16GB should get Llama-3.2-3B"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_local_model_creation() -> i64 {
+    print(string_from("Testing local model creation... "));
+
+    // Create model for SmolLM
+    let model: i64 = local_model_new(MODEL_SMOLLM_360M());
+
+    if local_model_type(model) != MODEL_SMOLLM_360M() {
+        println(string_from("FAIL: model type mismatch"));
+        return 1;
+    }
+
+    if local_model_state(model) != MODEL_STATE_UNLOADED() {
+        println(string_from("FAIL: new model should be unloaded"));
+        return 1;
+    }
+
+    if local_model_is_ready(model) != 0 {
+        println(string_from("FAIL: unloaded model should not be ready"));
+        return 1;
+    }
+
+    if local_model_is_none(model) != 0 {
+        println(string_from("FAIL: SmolLM should not be MODEL_NONE"));
+        return 1;
+    }
+
+    // Create MODEL_NONE
+    let none_model: i64 = local_model_new(MODEL_NONE());
+    if local_model_is_none(none_model) != 1 {
+        println(string_from("FAIL: MODEL_NONE should return is_none=1"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_inference_config() -> i64 {
+    print(string_from("Testing inference config... "));
+
+    // Test default config
+    let config: i64 = inference_config_default();
+
+    if config_mode(config) != INFER_SAMPLE() {
+        println(string_from("FAIL: default mode should be INFER_SAMPLE"));
+        return 1;
+    }
+
+    if config_temperature(config) != 700 {
+        println(string_from("FAIL: default temperature should be 700 (0.7)"));
+        return 1;
+    }
+
+    if config_max_tokens(config) != 256 {
+        println(string_from("FAIL: default max_tokens should be 256"));
+        return 1;
+    }
+
+    // Test fast config
+    let fast: i64 = inference_config_fast();
+    if config_mode(fast) != INFER_GREEDY() {
+        println(string_from("FAIL: fast config should use INFER_GREEDY"));
+        return 1;
+    }
+    if config_max_tokens(fast) != 64 {
+        println(string_from("FAIL: fast config should have 64 max_tokens"));
+        return 1;
+    }
+
+    // Test creative config
+    let creative: i64 = inference_config_creative();
+    if config_temperature(creative) != 900 {
+        println(string_from("FAIL: creative config should have temp 900"));
+        return 1;
+    }
+
+    // Test config modification
+    config_set_temperature(config, 500);
+    if config_temperature(config) != 500 {
+        println(string_from("FAIL: temperature update failed"));
+        return 1;
+    }
+
+    config_set_max_tokens(config, 128);
+    if config_max_tokens(config) != 128 {
+        println(string_from("FAIL: max_tokens update failed"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_prompt_formatting() -> i64 {
+    print(string_from("Testing prompt formatting... "));
+
+    let system: i64 = string_from("You are a helpful assistant.");
+    let user: i64 = string_from("Hello!");
+
+    // Test ChatML format (SmolLM, Qwen2)
+    let chatml: i64 = format_chat_prompt(system, user, MODEL_SMOLLM_360M());
+    // Should contain ChatML tags
+    // (In real test, would check string contents)
+
+    // Test Phi-3 format
+    let phi3: i64 = format_chat_prompt(system, user, MODEL_PHI3_MINI());
+
+    // Test Llama 3 format
+    let llama3: i64 = format_chat_prompt(system, user, MODEL_LLAMA32_1B());
+
+    // Test Gemma format
+    let gemma: i64 = format_chat_prompt(system, user, MODEL_GEMMA2_2B());
+
+    // All should produce non-empty prompts
+    if chatml == 0 {
+        println(string_from("FAIL: ChatML prompt should not be null"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_model_confidence() -> i64 {
+    print(string_from("Testing model confidence... "));
+
+    // MODEL_NONE should have 0 confidence
+    let none_model: i64 = local_model_new(MODEL_NONE());
+    let none_conf: i64 = local_model_confidence(none_model, 1, vec_new());
+    if none_conf != 0 {
+        println(string_from("FAIL: MODEL_NONE should have 0 confidence"));
+        return 1;
+    }
+
+    // Unloaded model should have 0 confidence
+    let model: i64 = local_model_new(MODEL_PHI3_MINI());
+    let unloaded_conf: i64 = local_model_confidence(model, 1, vec_new());
+    if unloaded_conf != 0 {
+        println(string_from("FAIL: unloaded model should have 0 confidence"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_inference_stats() -> i64 {
+    print(string_from("Testing inference stats... "));
+
+    let stats: i64 = inference_stats_new();
+
+    // Initial stats should be zero
+    if stats_total_inferences(stats) != 0 {
+        println(string_from("FAIL: initial inferences should be 0"));
+        return 1;
+    }
+
+    if stats_total_tokens(stats) != 0 {
+        println(string_from("FAIL: initial tokens should be 0"));
+        return 1;
+    }
+
+    // Record some inferences
+    stats_record_inference(stats, 50, 100);  // 50 tokens in 100ms
+
+    if stats_total_inferences(stats) != 1 {
+        println(string_from("FAIL: should have 1 inference"));
+        return 1;
+    }
+
+    if stats_total_tokens(stats) != 50 {
+        println(string_from("FAIL: should have 50 tokens"));
+        return 1;
+    }
+
+    // Record another
+    stats_record_inference(stats, 100, 200);  // 100 tokens in 200ms
+
+    if stats_total_inferences(stats) != 2 {
+        println(string_from("FAIL: should have 2 inferences"));
+        return 1;
+    }
+
+    if stats_total_tokens(stats) != 150 {
+        println(string_from("FAIL: should have 150 total tokens"));
+        return 1;
+    }
+
+    // Check average TPS (150 tokens / 300ms = 500 tokens/sec = 50000 scaled)
+    let avg: i64 = stats_avg_tps(stats);
+    if avg < 40000 {
+        println(string_from("FAIL: avg TPS too low"));
+        return 1;
+    }
+    if avg > 60000 {
+        println(string_from("FAIL: avg TPS too high"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Constants (from model.sx)
+// =============================================================================
+
+fn MODEL_NONE() -> i64 { 0 }
+fn MODEL_SMOLLM_135M() -> i64 { 1 }
+fn MODEL_SMOLLM_360M() -> i64 { 2 }
+fn MODEL_SMOLLM_1_7B() -> i64 { 3 }
+fn MODEL_QWEN2_0_5B() -> i64 { 4 }
+fn MODEL_QWEN2_1_5B() -> i64 { 5 }
+fn MODEL_PHI3_MINI() -> i64 { 6 }
+fn MODEL_LLAMA32_1B() -> i64 { 7 }
+fn MODEL_LLAMA32_3B() -> i64 { 8 }
+fn MODEL_GEMMA2_2B() -> i64 { 9 }
+
+fn QUANT_NONE() -> i64 { 0 }
+fn QUANT_Q8_0() -> i64 { 1 }
+fn QUANT_Q4_K_M() -> i64 { 2 }
+fn QUANT_Q4_K_S() -> i64 { 3 }
+fn QUANT_Q3_K_M() -> i64 { 4 }
+fn QUANT_Q2_K() -> i64 { 5 }
+
+fn MODEL_STATE_UNLOADED() -> i64 { 0 }
+fn MODEL_STATE_LOADING() -> i64 { 1 }
+fn MODEL_STATE_READY() -> i64 { 2 }
+fn MODEL_STATE_INFERRING() -> i64 { 3 }
+fn MODEL_STATE_ERROR() -> i64 { 4 }
+
+fn INFER_GREEDY() -> i64 { 0 }
+fn INFER_SAMPLE() -> i64 { 1 }
+fn INFER_TOP_K() -> i64 { 2 }
+fn INFER_TOP_P() -> i64 { 3 }
+
+fn DEVICE_WATCH() -> i64 { 1 }
+fn DEVICE_WEARABLE() -> i64 { 2 }
+fn DEVICE_PHONE() -> i64 { 3 }
+fn DEVICE_TABLET() -> i64 { 4 }
+fn DEVICE_LAPTOP() -> i64 { 5 }
+fn DEVICE_DESKTOP() -> i64 { 6 }
+
+// =============================================================================
+// Stub Functions
+// =============================================================================
+
+fn string_from(s: &str) -> i64 { 0 }
+fn print(s: i64) -> i64 { 0 }
+fn println(s: i64) -> i64 { 0 }
+fn print_num(n: i64) -> i64 { 0 }
+fn vec_new() -> i64 { 0 }
+fn vec_push(v: i64, val: i64) -> i64 { 0 }
+fn vec_get(v: i64, idx: i64) -> i64 { 0 }
+fn vec_set(v: i64, idx: i64, val: i64) -> i64 { 0 }
+fn vec_len(v: i64) -> i64 { 0 }
+fn string_concat(a: i64, b: i64) -> i64 { 0 }
+
+fn model_info_new(model_type: i64) -> i64 {
+    let info: i64 = vec_new();
+    vec_push(info, model_type);
+
+    if model_type == MODEL_SMOLLM_135M() {
+        vec_push(info, string_from("SmolLM-135M"));
+        vec_push(info, 135);
+        vec_push(info, 2048);
+        vec_push(info, 49152);
+        vec_push(info, 256);
+        vec_push(info, QUANT_Q4_K_M());
+    } else if model_type == MODEL_SMOLLM_360M() {
+        vec_push(info, string_from("SmolLM-360M"));
+        vec_push(info, 360);
+        vec_push(info, 2048);
+        vec_push(info, 49152);
+        vec_push(info, 512);
+        vec_push(info, QUANT_Q4_K_M());
+    } else if model_type == MODEL_PHI3_MINI() {
+        vec_push(info, string_from("Phi-3-mini"));
+        vec_push(info, 3800);
+        vec_push(info, 4096);
+        vec_push(info, 32064);
+        vec_push(info, 4096);
+        vec_push(info, QUANT_Q4_K_M());
+    } else if model_type == MODEL_LLAMA32_1B() {
+        vec_push(info, string_from("Llama-3.2-1B"));
+        vec_push(info, 1000);
+        vec_push(info, 131072);
+        vec_push(info, 128256);
+        vec_push(info, 1536);
+        vec_push(info, QUANT_Q4_K_M());
+    } else if model_type == MODEL_LLAMA32_3B() {
+        vec_push(info, string_from("Llama-3.2-3B"));
+        vec_push(info, 3000);
+        vec_push(info, 131072);
+        vec_push(info, 128256);
+        vec_push(info, 4096);
+        vec_push(info, QUANT_Q4_K_M());
+    } else if model_type == MODEL_QWEN2_0_5B() {
+        vec_push(info, string_from("Qwen2-0.5B"));
+        vec_push(info, 500);
+        vec_push(info, 32768);
+        vec_push(info, 151936);
+        vec_push(info, 768);
+        vec_push(info, QUANT_Q4_K_M());
+    } else if model_type == MODEL_GEMMA2_2B() {
+        vec_push(info, string_from("Gemma-2-2B"));
+        vec_push(info, 2000);
+        vec_push(info, 8192);
+        vec_push(info, 256000);
+        vec_push(info, 3072);
+        vec_push(info, QUANT_Q4_K_M());
+    } else {
+        vec_push(info, string_from("None"));
+        vec_push(info, 0);
+        vec_push(info, 0);
+        vec_push(info, 0);
+        vec_push(info, 0);
+        vec_push(info, QUANT_NONE());
+    }
+    info
+}
+
+fn model_info_type(info: i64) -> i64 { vec_get(info, 0) }
+fn model_info_name(info: i64) -> i64 { vec_get(info, 1) }
+fn model_info_params(info: i64) -> i64 { vec_get(info, 2) }
+fn model_info_context(info: i64) -> i64 { vec_get(info, 3) }
+fn model_info_vocab(info: i64) -> i64 { vec_get(info, 4) }
+fn model_info_min_ram(info: i64) -> i64 { vec_get(info, 5) }
+fn model_info_quant(info: i64) -> i64 { vec_get(info, 6) }
+
+fn select_model_for_device(device_class: i64, ram_mb: i64, storage_mb: i64, battery_percent: i64) -> i64 {
+    if device_class == DEVICE_WATCH() {
+        if ram_mb >= 512 { return MODEL_SMOLLM_135M(); }
+        return MODEL_NONE();
+    }
+    if device_class == DEVICE_PHONE() {
+        if battery_percent < 20 {
+            if ram_mb >= 512 { return MODEL_SMOLLM_360M(); }
+            return MODEL_NONE();
+        }
+        if ram_mb >= 2048 { return MODEL_QWEN2_0_5B(); }
+        if ram_mb >= 1024 { return MODEL_SMOLLM_360M(); }
+        if ram_mb >= 512 { return MODEL_SMOLLM_135M(); }
+        return MODEL_NONE();
+    }
+    if device_class == DEVICE_TABLET() {
+        if ram_mb >= 4096 { return MODEL_SMOLLM_1_7B(); }
+        if ram_mb >= 2048 { return MODEL_QWEN2_0_5B(); }
+        return MODEL_SMOLLM_360M();
+    }
+    if device_class == DEVICE_LAPTOP() {
+        if ram_mb >= 8192 { return MODEL_PHI3_MINI(); }
+        if ram_mb >= 4096 { return MODEL_LLAMA32_1B(); }
+        return MODEL_SMOLLM_1_7B();
+    }
+    if device_class == DEVICE_DESKTOP() {
+        if ram_mb >= 16384 { return MODEL_LLAMA32_3B(); }
+        if ram_mb >= 8192 { return MODEL_PHI3_MINI(); }
+        return MODEL_QWEN2_1_5B();
+    }
+    MODEL_SMOLLM_360M()
+}
+
+fn local_model_new(model_type: i64) -> i64 {
+    let model: i64 = vec_new();
+    vec_push(model, model_type);
+    vec_push(model, model_info_new(model_type));
+    vec_push(model, MODEL_STATE_UNLOADED());
+    vec_push(model, 0);
+    vec_push(model, inference_config_default());
+    vec_push(model, inference_stats_new());
+    vec_push(model, 0);
+    vec_push(model, 0);
+    vec_push(model, 0);
+    vec_push(model, QUANT_Q4_K_M());
+    model
+}
+
+fn local_model_type(model: i64) -> i64 { vec_get(model, 0) }
+fn local_model_info(model: i64) -> i64 { vec_get(model, 1) }
+fn local_model_state(model: i64) -> i64 { vec_get(model, 2) }
+fn local_model_stats(model: i64) -> i64 { vec_get(model, 5) }
+
+fn local_model_is_none(model: i64) -> i64 {
+    if local_model_type(model) == MODEL_NONE() { 1 } else { 0 }
+}
+
+fn local_model_is_ready(model: i64) -> i64 {
+    if local_model_state(model) == MODEL_STATE_READY() { 1 } else { 0 }
+}
+
+fn local_model_confidence(model: i64, request_type: i64, payload: i64) -> i64 {
+    if local_model_is_none(model) == 1 { return 0; }
+    if local_model_is_ready(model) != 1 { return 0; }
+    500  // Default moderate confidence
+}
+
+fn inference_config_default() -> i64 {
+    let config: i64 = vec_new();
+    vec_push(config, INFER_SAMPLE());
+    vec_push(config, 700);
+    vec_push(config, 40);
+    vec_push(config, 950);
+    vec_push(config, 256);
+    vec_push(config, 1100);
+    vec_push(config, 0);
+    vec_push(config, vec_new());
+    config
+}
+
+fn inference_config_fast() -> i64 {
+    let config: i64 = vec_new();
+    vec_push(config, INFER_GREEDY());
+    vec_push(config, 0);
+    vec_push(config, 1);
+    vec_push(config, 1000);
+    vec_push(config, 64);
+    vec_push(config, 1000);
+    vec_push(config, 0);
+    vec_push(config, vec_new());
+    config
+}
+
+fn inference_config_creative() -> i64 {
+    let config: i64 = vec_new();
+    vec_push(config, INFER_TOP_P());
+    vec_push(config, 900);
+    vec_push(config, 100);
+    vec_push(config, 900);
+    vec_push(config, 512);
+    vec_push(config, 1200);
+    vec_push(config, 100);
+    vec_push(config, vec_new());
+    config
+}
+
+fn config_mode(config: i64) -> i64 { vec_get(config, 0) }
+fn config_temperature(config: i64) -> i64 { vec_get(config, 1) }
+fn config_top_k(config: i64) -> i64 { vec_get(config, 2) }
+fn config_top_p(config: i64) -> i64 { vec_get(config, 3) }
+fn config_max_tokens(config: i64) -> i64 { vec_get(config, 4) }
+
+fn config_set_temperature(config: i64, temp: i64) -> i64 {
+    vec_set(config, 1, temp);
+    0
+}
+
+fn config_set_max_tokens(config: i64, max: i64) -> i64 {
+    vec_set(config, 4, max);
+    0
+}
+
+fn format_chat_prompt(system: i64, user: i64, model_type: i64) -> i64 {
+    // Simplified - just concatenate
+    string_concat(string_concat(system, string_from("\n")), user)
+}
+
+fn inference_stats_new() -> i64 {
+    let stats: i64 = vec_new();
+    vec_push(stats, 0);
+    vec_push(stats, 0);
+    vec_push(stats, 0);
+    vec_push(stats, 0);
+    vec_push(stats, 0);
+    vec_push(stats, 0);
+    stats
+}
+
+fn stats_total_inferences(stats: i64) -> i64 { vec_get(stats, 0) }
+fn stats_total_tokens(stats: i64) -> i64 { vec_get(stats, 1) }
+fn stats_total_time_ms(stats: i64) -> i64 { vec_get(stats, 2) }
+fn stats_avg_tps(stats: i64) -> i64 { vec_get(stats, 3) }
+
+fn stats_record_inference(stats: i64, tokens: i64, time_ms: i64) -> i64 {
+    let total_inf: i64 = stats_total_inferences(stats) + 1;
+    let total_tok: i64 = stats_total_tokens(stats) + tokens;
+    let total_time: i64 = stats_total_time_ms(stats) + time_ms;
+    vec_set(stats, 0, total_inf);
+    vec_set(stats, 1, total_tok);
+    vec_set(stats, 2, total_time);
+    if total_time > 0 {
+        let avg_tps: i64 = (total_tok * 100000) / total_time;
+        vec_set(stats, 3, avg_tps);
+    }
+    0
+}

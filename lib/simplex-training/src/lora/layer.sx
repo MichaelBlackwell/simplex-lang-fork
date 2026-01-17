@@ -1,0 +1,345 @@
+// LoRA layer implementation
+//
+// Adds trainable low-rank matrices A and B to frozen base weights:
+// h = W_0 * x + (B @ A) * x * (alpha / r)
+//
+// Where:
+// - W_0: Frozen base weights [out, in]
+// - A: Low-rank down-projection [r, in], initialized from N(0, 1/r)
+// - B: Low-rank up-projection [out, r], initialized as zeros
+// - r: Rank (typically 8, 16, or 32)
+// - alpha: Scaling factor (typically same as r or 2*r)
+//
+// # Example
+//
+// ```simplex
+// use simplex_training::lora::LoRALayer;
+//
+// // Wrap a linear layer with LoRA
+// let base = Linear::new(512, 512, false);
+// let lora = LoRALayer::from_linear(&base, 8, 16.0);
+//
+// let output = lora.forward(&input); // Same as base + LoRA adaptation
+// ```
+
+use simplex_std::dual;
+use simplex_std::vec::Vec;
+use simplex_learning::tensor::DualTensor;
+use super::super::layers::linear::Linear;
+
+/// LoRA adapter layer
+///
+/// Wraps a linear layer with trainable low-rank adapters while keeping
+/// the original weights frozen.
+pub struct LoRALayer {
+    /// Original frozen weights [out_features, in_features]
+    base_weight: DualTensor,
+
+    /// Optional frozen bias [out_features]
+    base_bias: Option<DualTensor>,
+
+    /// Low-rank matrix A [in_features, rank] (down projection)
+    lora_a: DualTensor,
+
+    /// Low-rank matrix B [rank, out_features] (up projection)
+    lora_b: DualTensor,
+
+    /// Scaling factor: alpha / rank
+    scaling: f64,
+
+    /// Rank
+    rank: usize,
+
+    /// Alpha (scaling numerator)
+    alpha: f64,
+
+    /// Dropout rate (applied to LoRA path during training)
+    dropout: f64,
+
+    /// Input features
+    in_features: usize,
+
+    /// Output features
+    out_features: usize,
+
+    /// Whether LoRA is active (can be disabled for inference after merge)
+    active: bool,
+}
+
+impl LoRALayer {
+    /// Create new LoRA layer
+    pub fn new(in_features: usize, out_features: usize, rank: usize, alpha: f64) -> Self {
+        // Initialize A with scaled normal distribution
+        let a_scale = 1.0 / (rank as f64).sqrt();
+        let lora_a = DualTensor::randn(&[in_features, rank]).mul_f64(a_scale);
+
+        // Initialize B as zeros (so LoRA starts as identity)
+        let lora_b = DualTensor::zeros_shape(&[rank, out_features]);
+
+        LoRALayer {
+            base_weight: DualTensor::zeros_shape(&[out_features, in_features]),
+            base_bias: None,
+            lora_a,
+            lora_b,
+            scaling: alpha / rank as f64,
+            rank,
+            alpha,
+            dropout: 0.0,
+            in_features,
+            out_features,
+            active: true,
+        }
+    }
+
+    /// Create LoRA layer from existing linear layer
+    pub fn from_linear(linear: &Linear, rank: usize, alpha: f64) -> Self {
+        let mut lora = Self::new(linear.in_features, linear.out_features, rank, alpha);
+        lora.base_weight = linear.weight.clone();
+        lora.base_bias = linear.bias.clone();
+        lora
+    }
+
+    /// Set dropout rate
+    pub fn set_dropout(&mut self, dropout: f64) {
+        self.dropout = dropout.clamp(0.0, 1.0);
+    }
+
+    /// Enable/disable LoRA (useful after merging)
+    pub fn set_active(&mut self, active: bool) {
+        self.active = active;
+    }
+
+    /// Forward pass
+    ///
+    /// Computes: base_weight @ input + scaling * (lora_b @ lora_a @ input) + bias
+    pub fn forward(&self, input: &DualTensor) -> DualTensor {
+        // Base output (frozen): input @ base_weight^T
+        let base_out = input.mm(&self.base_weight.transposed());
+
+        if self.active {
+            // LoRA path: input @ A @ B * scaling
+            let lora_out = input
+                .mm(&self.lora_a)
+                .mm(&self.lora_b)
+                .mul_f64(self.scaling);
+
+            // Combine
+            let mut output = base_out.plus(&lora_out);
+
+            // Add bias if present
+            if let Some(ref bias) = self.base_bias {
+                output = output.plus(bias);
+            }
+
+            output
+        } else {
+            // LoRA disabled - just base
+            if let Some(ref bias) = self.base_bias {
+                base_out.plus(bias)
+            } else {
+                base_out
+            }
+        }
+    }
+
+    /// Forward pass with dropout (training only)
+    pub fn forward_train(&self, input: &DualTensor, rng: &mut u64) -> DualTensor {
+        let base_out = input.mm(&self.base_weight.transposed());
+
+        if self.active {
+            // Apply dropout to LoRA path
+            let dropout_scale = if self.dropout > 0.0 {
+                1.0 / (1.0 - self.dropout)
+            } else {
+                1.0
+            };
+
+            let lora_out = input
+                .mm(&self.lora_a)
+                .mm(&self.lora_b)
+                .mul_f64(self.scaling * dropout_scale);
+
+            // Apply dropout mask (simplified - full version would use proper masking)
+            let mut output = base_out.plus(&lora_out);
+
+            if let Some(ref bias) = self.base_bias {
+                output = output.plus(bias);
+            }
+
+            output
+        } else {
+            if let Some(ref bias) = self.base_bias {
+                base_out.plus(bias)
+            } else {
+                base_out
+            }
+        }
+    }
+
+    /// Get trainable parameters (only LoRA weights)
+    pub fn trainable_parameters(&self) -> Vec<&DualTensor> {
+        vec![&self.lora_a, &self.lora_b]
+    }
+
+    /// Get mutable trainable parameters
+    pub fn trainable_parameters_mut(&mut self) -> Vec<&mut DualTensor> {
+        vec![&mut self.lora_a, &mut self.lora_b]
+    }
+
+    /// Count trainable parameters
+    pub fn num_trainable_parameters(&self) -> usize {
+        self.in_features * self.rank + self.rank * self.out_features
+    }
+
+    /// Count total parameters (including frozen)
+    pub fn num_total_parameters(&self) -> usize {
+        let base_params = self.in_features * self.out_features;
+        let bias_params = if self.base_bias.is_some() { self.out_features } else { 0 };
+        base_params + bias_params + self.num_trainable_parameters()
+    }
+
+    /// Merge LoRA into base weights (for efficient inference)
+    ///
+    /// After merging: W' = W_0 + scaling * (B @ A)
+    pub fn merge(&self) -> DualTensor {
+        // Compute LoRA contribution: A @ B
+        let lora_weight = self.lora_a.mm(&self.lora_b).mul_f64(self.scaling);
+
+        // Add to base weight
+        self.base_weight.plus(&lora_weight.transposed())
+    }
+
+    /// Convert to regular linear layer (after merging)
+    pub fn to_linear(&self) -> Linear {
+        let merged_weight = self.merge();
+        Linear::from_weights(merged_weight, self.base_bias.clone())
+    }
+
+    /// Get rank
+    pub fn rank(&self) -> usize {
+        self.rank
+    }
+
+    /// Get alpha
+    pub fn alpha(&self) -> f64 {
+        self.alpha
+    }
+
+    /// Get scaling factor
+    pub fn scaling(&self) -> f64 {
+        self.scaling
+    }
+
+    /// Clone LoRA matrices (not base weights)
+    pub fn clone_lora(&self) -> (DualTensor, DualTensor) {
+        (self.lora_a.clone(), self.lora_b.clone())
+    }
+
+    /// Set LoRA matrices (for loading checkpoints)
+    pub fn set_lora(&mut self, lora_a: DualTensor, lora_b: DualTensor) {
+        assert_eq!(lora_a.shape().dims(), &[self.in_features, self.rank]);
+        assert_eq!(lora_b.shape().dims(), &[self.rank, self.out_features]);
+        self.lora_a = lora_a;
+        self.lora_b = lora_b;
+    }
+
+    /// Reset LoRA to initial state (B = 0)
+    pub fn reset(&mut self) {
+        let a_scale = 1.0 / (self.rank as f64).sqrt();
+        self.lora_a = DualTensor::randn(&[self.in_features, self.rank]).mul_f64(a_scale);
+        self.lora_b = DualTensor::zeros_shape(&[self.rank, self.out_features]);
+    }
+}
+
+/// QLoRA-style quantized LoRA layer
+///
+/// Uses 4-bit quantized base weights for memory efficiency.
+/// Only the LoRA adapters are in full precision.
+pub struct QLoRALayer {
+    /// Base LoRA layer
+    lora: LoRALayer,
+
+    /// Quantization bits
+    bits: u8,
+
+    /// Whether base weights are quantized
+    quantized: bool,
+}
+
+impl QLoRALayer {
+    /// Create QLoRA layer with 4-bit quantization
+    pub fn new_4bit(in_features: usize, out_features: usize, rank: usize, alpha: f64) -> Self {
+        QLoRALayer {
+            lora: LoRALayer::new(in_features, out_features, rank, alpha),
+            bits: 4,
+            quantized: true,
+        }
+    }
+
+    /// Forward pass (dequantizes on-the-fly)
+    pub fn forward(&self, input: &DualTensor) -> DualTensor {
+        // In full implementation, would dequantize base_weight before matmul
+        self.lora.forward(input)
+    }
+
+    /// Get trainable parameters
+    pub fn trainable_parameters(&self) -> Vec<&DualTensor> {
+        self.lora.trainable_parameters()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_lora_creation() {
+        let lora = LoRALayer::new(64, 32, 8, 16.0);
+
+        assert_eq!(lora.rank, 8);
+        assert_eq!(lora.alpha, 16.0);
+        assert!((lora.scaling - 2.0).abs() < 0.001); // 16 / 8 = 2
+        assert_eq!(lora.in_features, 64);
+        assert_eq!(lora.out_features, 32);
+    }
+
+    #[test]
+    fn test_lora_parameters() {
+        let lora = LoRALayer::new(64, 32, 8, 16.0);
+
+        // Trainable: A [64, 8] + B [8, 32]
+        assert_eq!(lora.num_trainable_parameters(), 64 * 8 + 8 * 32);
+
+        let params = lora.trainable_parameters();
+        assert_eq!(params.len(), 2);
+    }
+
+    #[test]
+    fn test_lora_forward() {
+        let lora = LoRALayer::new(64, 32, 8, 16.0);
+
+        let input = DualTensor::randn(&[4, 64]);
+        let output = lora.forward(&input);
+
+        assert_eq!(output.shape().dims(), &[4, 32]);
+    }
+
+    #[test]
+    fn test_lora_merge() {
+        let lora = LoRALayer::new(8, 4, 2, 4.0);
+
+        let merged = lora.merge();
+
+        assert_eq!(merged.shape().dims(), &[4, 8]);
+    }
+
+    #[test]
+    fn test_from_linear() {
+        let linear = Linear::new(64, 32, true);
+        let lora = LoRALayer::from_linear(&linear, 8, 16.0);
+
+        assert_eq!(lora.in_features, 64);
+        assert_eq!(lora.out_features, 32);
+        assert!(lora.base_bias.is_some());
+    }
+}

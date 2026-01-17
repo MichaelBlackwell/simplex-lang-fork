@@ -1,0 +1,666 @@
+// Nexus Protocol - Frame Tests
+//
+// Tests for frame encoding/decoding
+
+fn main() -> i64 {
+    print("=== Nexus Frame Tests ===\n\n");
+
+    var passed = 0;
+    var failed = 0;
+
+    // Construction tests
+    if test_frame_new() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_frame_new_sync() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_frame_new_special() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Accessor tests
+    if test_frame_accessors() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_frame_setters() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Encoding tests
+    if test_frame_encode_basic() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_frame_encode_with_payload() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_frame_encode_with_correlation() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_frame_encode_with_stream() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Decoding tests
+    if test_frame_decode_basic() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_frame_decode_with_payload() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_frame_decode_invalid() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Round-trip tests
+    if test_frame_roundtrip() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_frame_roundtrip_all_types() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Peek tests
+    if test_frame_peek() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Validation tests
+    if test_frame_validate() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Summary
+    print("\nPassed: ");
+    print_i64(passed);
+    print(" / ");
+    print_i64(passed + failed);
+    print("\n");
+
+    failed
+}
+
+// =============================================================================
+// Construction Tests
+// =============================================================================
+
+fn test_frame_new() -> i64 {
+    print("Testing frame_new... ");
+
+    let frame = frame_new(FRAME_SYNC(), FLAG_NONE());
+
+    if frame == 0 {
+        print("FAIL: frame is null\n");
+        return 1;
+    }
+
+    if frame_type(frame) != FRAME_SYNC() {
+        print("FAIL: wrong frame type\n");
+        return 1;
+    }
+
+    if frame_flags(frame) != FLAG_NONE() {
+        print("FAIL: wrong flags\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_frame_new_sync() -> i64 {
+    print("Testing frame_new_sync... ");
+
+    let frame = frame_new_sync(42);
+
+    if frame_type(frame) != FRAME_SYNC() {
+        print("FAIL: wrong frame type\n");
+        return 1;
+    }
+
+    if frame_tick(frame) != 42 {
+        print("FAIL: wrong tick\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_frame_new_special() -> i64 {
+    print("Testing special frame constructors... ");
+
+    let hello = frame_new_hello();
+    if frame_type(hello) != FRAME_HELLO() {
+        print("FAIL: HELLO frame wrong type\n");
+        return 1;
+    }
+
+    let welcome = frame_new_welcome();
+    if frame_type(welcome) != FRAME_WELCOME() {
+        print("FAIL: WELCOME frame wrong type\n");
+        return 1;
+    }
+
+    let catalog = frame_new_catalog();
+    if frame_type(catalog) != FRAME_CATALOG() {
+        print("FAIL: CATALOG frame wrong type\n");
+        return 1;
+    }
+
+    let baseline = frame_new_baseline();
+    if frame_type(baseline) != FRAME_BASELINE() {
+        print("FAIL: BASELINE frame wrong type\n");
+        return 1;
+    }
+
+    let checksum = frame_new_checksum(100);
+    if frame_type(checksum) != FRAME_CHECKSUM() {
+        print("FAIL: CHECKSUM frame wrong type\n");
+        return 1;
+    }
+    if frame_tick(checksum) != 100 {
+        print("FAIL: CHECKSUM frame wrong tick\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// Accessor Tests
+// =============================================================================
+
+fn test_frame_accessors() -> i64 {
+    print("Testing frame accessors... ");
+
+    let frame = frame_new(FRAME_SYNC(), FLAG_COMPRESSED());
+
+    // Test basic accessors
+    if frame_type(frame) != FRAME_SYNC() {
+        print("FAIL: frame_type\n");
+        return 1;
+    }
+
+    if frame_flags(frame) != FLAG_COMPRESSED() {
+        print("FAIL: frame_flags\n");
+        return 1;
+    }
+
+    if frame_tick(frame) != 0 {
+        print("FAIL: frame_tick initial\n");
+        return 1;
+    }
+
+    if frame_payload_length(frame) != 0 {
+        print("FAIL: frame_payload_length initial\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_frame_setters() -> i64 {
+    print("Testing frame setters... ");
+
+    let frame = frame_new(FRAME_SYNC(), FLAG_NONE());
+
+    // Test tick setter
+    frame_set_tick(frame, 999);
+    if frame_tick(frame) != 999 {
+        print("FAIL: frame_set_tick\n");
+        return 1;
+    }
+
+    // Test payload setter
+    let payload = vec_new();
+    vec_push(payload, 1);
+    vec_push(payload, 2);
+    vec_push(payload, 3);
+    frame_set_payload(frame, payload);
+
+    if frame_payload_length(frame) != 3 {
+        print("FAIL: frame_set_payload length\n");
+        return 1;
+    }
+
+    // Test correlation ID setter
+    frame_set_correlation_id(frame, 12345);
+    if frame_correlation_id(frame) != 12345 {
+        print("FAIL: frame_set_correlation_id\n");
+        return 1;
+    }
+    if frame_has_correlation(frame) != 1 {
+        print("FAIL: frame_has_correlation\n");
+        return 1;
+    }
+
+    // Test stream ID setter
+    frame_set_stream_id(frame, 67890);
+    if frame_stream_id(frame) != 67890 {
+        print("FAIL: frame_set_stream_id\n");
+        return 1;
+    }
+    if frame_has_stream(frame) != 1 {
+        print("FAIL: frame_has_stream\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// Encoding Tests
+// =============================================================================
+
+fn test_frame_encode_basic() -> i64 {
+    print("Testing basic frame encode... ");
+
+    let frame = frame_new_sync(0);
+    let encoded = frame_encode(frame);
+
+    // Minimum frame size is 8 bytes
+    if vec_len(encoded) < 8 {
+        print("FAIL: encoded too small\n");
+        return 1;
+    }
+
+    // Check magic bytes (0x53 = 83 = 'S', 0x58 = 88 = 'X')
+    if vec_get(encoded, 0) != 83 {
+        print("FAIL: magic byte 0 wrong\n");
+        return 1;
+    }
+    if vec_get(encoded, 1) != 88 {
+        print("FAIL: magic byte 1 wrong\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_frame_encode_with_payload() -> i64 {
+    print("Testing frame encode with payload... ");
+
+    let frame = frame_new_sync(42);
+
+    // Add payload
+    let payload = vec_new();
+    vec_push(payload, 10);
+    vec_push(payload, 20);
+    vec_push(payload, 30);
+    vec_push(payload, 40);
+    vec_push(payload, 50);
+    frame_set_payload(frame, payload);
+
+    let encoded = frame_encode(frame);
+
+    // Should be 8 (header) + 5 (payload) = 13 bytes
+    if vec_len(encoded) != 13 {
+        print("FAIL: wrong encoded length, expected 13, got ");
+        print_i64(vec_len(encoded));
+        print("\n");
+        return 1;
+    }
+
+    // Check payload length in header (bytes 4-5, big-endian)
+    let len_hi = vec_get(encoded, 4);
+    let len_lo = vec_get(encoded, 5);
+    let payload_len = (len_hi << 8) | len_lo;
+    if payload_len != 5 {
+        print("FAIL: wrong payload length in header\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_frame_encode_with_correlation() -> i64 {
+    print("Testing frame encode with correlation ID... ");
+
+    let frame = frame_new_sync(0);
+    frame_set_correlation_id(frame, 305419896);  // 0x12345678
+
+    let encoded = frame_encode(frame);
+
+    // Should be 8 (header) + 4 (correlation ID) = 12 bytes
+    if vec_len(encoded) != 12 {
+        print("FAIL: wrong encoded length, expected 12, got ");
+        print_i64(vec_len(encoded));
+        print("\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_frame_encode_with_stream() -> i64 {
+    print("Testing frame encode with stream ID... ");
+
+    let frame = frame_new_sync(0);
+    frame_set_stream_id(frame, 2882400001);  // 0xABCDEF01
+
+    let encoded = frame_encode(frame);
+
+    // Should be 8 (header) + 4 (stream ID) = 12 bytes
+    if vec_len(encoded) != 12 {
+        print("FAIL: wrong encoded length, expected 12, got ");
+        print_i64(vec_len(encoded));
+        print("\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// Decoding Tests
+// =============================================================================
+
+fn test_frame_decode_basic() -> i64 {
+    print("Testing basic frame decode... ");
+
+    // Create a minimal valid frame buffer
+    // Magic: 0x53 0x58, Flags: 0, Type: FRAME_SYNC (1)
+    // Length: 0, Tick: 42
+    let buffer = vec_new();
+    vec_push(buffer, 83);   // 'S'
+    vec_push(buffer, 88);   // 'X'
+    vec_push(buffer, 0);    // Flags
+    vec_push(buffer, FRAME_SYNC());  // Type
+    vec_push(buffer, 0);    // Length hi
+    vec_push(buffer, 0);    // Length lo
+    vec_push(buffer, 0);    // Tick hi
+    vec_push(buffer, 42);   // Tick lo
+
+    let frame = frame_decode(buffer);
+
+    if frame == 0 {
+        print("FAIL: decode returned null\n");
+        return 1;
+    }
+
+    if frame_type(frame) != FRAME_SYNC() {
+        print("FAIL: wrong frame type\n");
+        return 1;
+    }
+
+    if frame_tick(frame) != 42 {
+        print("FAIL: wrong tick\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_frame_decode_with_payload() -> i64 {
+    print("Testing frame decode with payload... ");
+
+    // Create a frame with payload
+    let buffer = vec_new();
+    vec_push(buffer, 83);   // 'S'
+    vec_push(buffer, 88);   // 'X'
+    vec_push(buffer, 0);    // Flags
+    vec_push(buffer, FRAME_SYNC());
+    vec_push(buffer, 0);    // Length hi
+    vec_push(buffer, 3);    // Length lo = 3 bytes
+    vec_push(buffer, 0);    // Tick hi
+    vec_push(buffer, 0);    // Tick lo
+    // Payload
+    vec_push(buffer, 100);
+    vec_push(buffer, 200);
+    vec_push(buffer, 255);
+
+    let frame = frame_decode(buffer);
+
+    if frame == 0 {
+        print("FAIL: decode returned null\n");
+        return 1;
+    }
+
+    if frame_payload_length(frame) != 3 {
+        print("FAIL: wrong payload length\n");
+        return 1;
+    }
+
+    let payload = frame_payload(frame);
+    if vec_get(payload, 0) != 100 {
+        print("FAIL: payload[0] wrong\n");
+        return 1;
+    }
+    if vec_get(payload, 1) != 200 {
+        print("FAIL: payload[1] wrong\n");
+        return 1;
+    }
+    if vec_get(payload, 2) != 255 {
+        print("FAIL: payload[2] wrong\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_frame_decode_invalid() -> i64 {
+    print("Testing invalid frame decode... ");
+
+    // Too short
+    let buffer1 = vec_new();
+    vec_push(buffer1, 83);
+    vec_push(buffer1, 88);
+    let frame1 = frame_decode(buffer1);
+    if frame1 != 0 {
+        print("FAIL: should reject too-short buffer\n");
+        return 1;
+    }
+
+    // Wrong magic
+    let buffer2 = vec_new();
+    vec_push(buffer2, 0);    // Wrong magic
+    vec_push(buffer2, 0);
+    vec_push(buffer2, 0);
+    vec_push(buffer2, FRAME_SYNC());
+    vec_push(buffer2, 0);
+    vec_push(buffer2, 0);
+    vec_push(buffer2, 0);
+    vec_push(buffer2, 0);
+    let frame2 = frame_decode(buffer2);
+    if frame2 != 0 {
+        print("FAIL: should reject wrong magic\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// Round-Trip Tests
+// =============================================================================
+
+fn test_frame_roundtrip() -> i64 {
+    print("Testing frame encode/decode round-trip... ");
+
+    // Create a frame with various fields
+    let original = frame_new_sync(12345);
+    frame_set_correlation_id(original, 999);
+    frame_set_stream_id(original, 888);
+
+    let payload = vec_new();
+    vec_push(payload, 1);
+    vec_push(payload, 2);
+    vec_push(payload, 3);
+    vec_push(payload, 4);
+    vec_push(payload, 5);
+    frame_set_payload(original, payload);
+
+    // Encode
+    let encoded = frame_encode(original);
+
+    // Decode
+    let decoded = frame_decode(encoded);
+
+    if decoded == 0 {
+        print("FAIL: decode returned null\n");
+        return 1;
+    }
+
+    // Verify all fields match
+    if frame_type(decoded) != frame_type(original) {
+        print("FAIL: type mismatch\n");
+        return 1;
+    }
+
+    if frame_tick(decoded) != 12345 {
+        print("FAIL: tick mismatch\n");
+        return 1;
+    }
+
+    if frame_correlation_id(decoded) != 999 {
+        print("FAIL: correlation ID mismatch\n");
+        return 1;
+    }
+
+    if frame_stream_id(decoded) != 888 {
+        print("FAIL: stream ID mismatch\n");
+        return 1;
+    }
+
+    if frame_payload_length(decoded) != 5 {
+        print("FAIL: payload length mismatch\n");
+        return 1;
+    }
+
+    let decoded_payload = frame_payload(decoded);
+    var i = 0;
+    while i < 5 {
+        if vec_get(decoded_payload, i) != vec_get(payload, i) {
+            print("FAIL: payload byte mismatch\n");
+            return 1;
+        }
+        i = i + 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_frame_roundtrip_all_types() -> i64 {
+    print("Testing round-trip for all frame types... ");
+
+    // Test each frame type
+    let types = vec_new();
+    vec_push(types, FRAME_SYNC());
+    vec_push(types, FRAME_HELLO());
+    vec_push(types, FRAME_WELCOME());
+    vec_push(types, FRAME_CATALOG());
+    vec_push(types, FRAME_BASELINE());
+    vec_push(types, FRAME_CHECKSUM());
+
+    var i = 0;
+    while i < vec_len(types) {
+        let ftype = vec_get(types, i);
+        let frame = frame_new(ftype, FLAG_NONE());
+        let encoded = frame_encode(frame);
+        let decoded = frame_decode(encoded);
+
+        if decoded == 0 {
+            print("FAIL: decode returned null for type ");
+            print_i64(ftype);
+            print("\n");
+            return 1;
+        }
+
+        if frame_type(decoded) != ftype {
+            print("FAIL: type mismatch for type ");
+            print_i64(ftype);
+            print("\n");
+            return 1;
+        }
+
+        i = i + 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// Peek Tests
+// =============================================================================
+
+fn test_frame_peek() -> i64 {
+    print("Testing frame peek functions... ");
+
+    // Create a valid frame buffer
+    let buffer = vec_new();
+    vec_push(buffer, 83);   // 'S'
+    vec_push(buffer, 88);   // 'X'
+    vec_push(buffer, FLAG_COMPRESSED());
+    vec_push(buffer, FRAME_CATALOG());
+    vec_push(buffer, 0);    // Length hi
+    vec_push(buffer, 100);  // Length lo
+    vec_push(buffer, 0);    // Tick hi
+    vec_push(buffer, 0);    // Tick lo
+
+    // Test peek type
+    let peeked_type = frame_peek_type(buffer);
+    if peeked_type != FRAME_CATALOG() {
+        print("FAIL: peek_type wrong\n");
+        return 1;
+    }
+
+    // Test peek length
+    let peeked_len = frame_peek_length(buffer);
+    if peeked_len != 100 {
+        print("FAIL: peek_length wrong\n");
+        return 1;
+    }
+
+    // Test peek on too-short buffer
+    let short_buf = vec_new();
+    vec_push(short_buf, 83);
+    vec_push(short_buf, 88);
+    if frame_peek_type(short_buf) != -1 {
+        print("FAIL: peek_type should return -1 for short buffer\n");
+        return 1;
+    }
+
+    // Test peek on invalid magic
+    let bad_magic = vec_new();
+    vec_push(bad_magic, 0);
+    vec_push(bad_magic, 0);
+    vec_push(bad_magic, 0);
+    vec_push(bad_magic, 0);
+    if frame_peek_type(bad_magic) != -1 {
+        print("FAIL: peek_type should return -1 for bad magic\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// Validation Tests
+// =============================================================================
+
+fn test_frame_validate() -> i64 {
+    print("Testing frame validation... ");
+
+    // Valid frame
+    let valid = frame_new_sync(0);
+    if frame_validate(valid) != ERR_NONE() {
+        print("FAIL: valid frame should pass validation\n");
+        return 1;
+    }
+
+    // Null frame
+    if frame_validate(0) != ERR_DECODE_ERROR() {
+        print("FAIL: null frame should fail validation\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}

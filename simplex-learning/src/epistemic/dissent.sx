@@ -1,0 +1,500 @@
+// TASK-014: Mandatory Dissent Windows
+//
+// The system must actively seek disconfirmation. Confirmation is the default;
+// dissent must be architecturally enforced.
+//
+// Scheduled dissent windows force the system to:
+// - Increase exploration (higher temperature)
+// - Challenge high-confidence beliefs
+// - Generate counterfactual scenarios
+// - Seek contradicting evidence
+
+use std::time::{Duration, Instant};
+
+/// Phase within a dissent window
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum DissentPhase {
+    /// Normal operation (between dissent windows)
+    Normal,
+
+    /// Entering dissent window (ramping up)
+    EnteringDissent,
+
+    /// Full dissent mode
+    ActiveDissent,
+
+    /// Exiting dissent window (ramping down)
+    ExitingDissent,
+}
+
+impl DissentPhase {
+    /// Is dissent active in this phase?
+    pub fn is_dissent_active(&self) -> bool {
+        matches!(self, DissentPhase::EnteringDissent | DissentPhase::ActiveDissent)
+    }
+
+    /// Should high-confidence beliefs be challenged?
+    pub fn should_challenge_beliefs(&self) -> bool {
+        matches!(self, DissentPhase::ActiveDissent)
+    }
+}
+
+/// Configuration for dissent windows
+#[derive(Clone)]
+pub struct DissentConfig {
+    /// Steps between dissent windows
+    pub dissent_period: u64,
+
+    /// Duration of each dissent window (in steps)
+    pub dissent_window: u64,
+
+    /// Temperature boost during dissent
+    pub dissent_heat: f64,
+
+    /// Minimum confidence to trigger challenge during dissent
+    pub challenge_threshold: f64,
+
+    /// Fraction of beliefs to challenge during each window
+    pub challenge_fraction: f64,
+
+    /// Enable time-based (wall clock) dissent windows
+    pub time_based: bool,
+
+    /// Time between dissent windows (if time-based)
+    pub dissent_interval: Duration,
+
+    /// Duration of dissent window (if time-based)
+    pub dissent_duration: Duration,
+
+    /// Ramp-up steps when entering dissent
+    pub ramp_up_steps: u64,
+
+    /// Ramp-down steps when exiting dissent
+    pub ramp_down_steps: u64,
+}
+
+impl DissentConfig {
+    /// Create with default parameters
+    pub fn new() -> Self {
+        DissentConfig {
+            dissent_period: 1000,
+            dissent_window: 100,
+            dissent_heat: 0.5,
+            challenge_threshold: 0.8,
+            challenge_fraction: 0.1,
+            time_based: false,
+            dissent_interval: Duration::from_secs(3600), // 1 hour
+            dissent_duration: Duration::from_secs(300),  // 5 minutes
+            ramp_up_steps: 10,
+            ramp_down_steps: 10,
+        }
+    }
+
+    /// Configure step-based dissent
+    pub fn step_based(period: u64, window: u64) -> Self {
+        let mut config = DissentConfig::new();
+        config.dissent_period = period;
+        config.dissent_window = window;
+        config.time_based = false;
+        config
+    }
+
+    /// Configure time-based dissent
+    pub fn time_based_config(interval: Duration, duration: Duration) -> Self {
+        let mut config = DissentConfig::new();
+        config.time_based = true;
+        config.dissent_interval = interval;
+        config.dissent_duration = duration;
+        config
+    }
+
+    /// Set temperature boost
+    pub fn with_heat(mut self, heat: f64) -> Self {
+        self.dissent_heat = heat.max(0.0);
+        self
+    }
+
+    /// Set challenge threshold
+    pub fn with_challenge_threshold(mut self, threshold: f64) -> Self {
+        self.challenge_threshold = threshold.max(0.0).min(1.0);
+        self
+    }
+
+    /// Set challenge fraction
+    pub fn with_challenge_fraction(mut self, fraction: f64) -> Self {
+        self.challenge_fraction = fraction.max(0.0).min(1.0);
+        self
+    }
+
+    /// Set ramp durations
+    pub fn with_ramps(mut self, up: u64, down: u64) -> Self {
+        self.ramp_up_steps = up;
+        self.ramp_down_steps = down;
+        self
+    }
+
+    /// Disable dissent entirely
+    pub fn disabled() -> Self {
+        let mut config = DissentConfig::new();
+        config.dissent_period = 0;  // Period of 0 disables dissent
+        config
+    }
+
+    /// Very frequent dissent (for testing)
+    pub fn aggressive() -> Self {
+        DissentConfig {
+            dissent_period: 100,
+            dissent_window: 20,
+            dissent_heat: 1.0,
+            challenge_threshold: 0.7,
+            challenge_fraction: 0.2,
+            time_based: false,
+            dissent_interval: Duration::from_secs(300),
+            dissent_duration: Duration::from_secs(60),
+            ramp_up_steps: 5,
+            ramp_down_steps: 5,
+        }
+    }
+
+    /// Conservative dissent (production default)
+    pub fn conservative() -> Self {
+        DissentConfig {
+            dissent_period: 5000,
+            dissent_window: 200,
+            dissent_heat: 0.3,
+            challenge_threshold: 0.9,
+            challenge_fraction: 0.05,
+            time_based: false,
+            dissent_interval: Duration::from_secs(7200),  // 2 hours
+            dissent_duration: Duration::from_secs(600),   // 10 minutes
+            ramp_up_steps: 20,
+            ramp_down_steps: 30,
+        }
+    }
+}
+
+impl Default for DissentConfig {
+    fn default() -> Self {
+        DissentConfig::new()
+    }
+}
+
+/// Manages dissent window timing and state
+#[derive(Clone)]
+pub struct DissentWindow {
+    /// Configuration
+    config: DissentConfig,
+
+    /// Current step (for step-based)
+    current_step: u64,
+
+    /// Start time (for time-based)
+    start_time: Instant,
+
+    /// Last dissent window start
+    last_dissent_start: Option<u64>,
+
+    /// Last dissent window start time
+    last_dissent_time: Option<Instant>,
+
+    /// Current phase
+    phase: DissentPhase,
+
+    /// Steps in current phase
+    steps_in_phase: u64,
+
+    /// Number of completed dissent windows
+    completed_windows: u64,
+
+    /// Beliefs challenged in current window
+    beliefs_challenged: u64,
+}
+
+impl DissentWindow {
+    /// Create a new dissent window manager
+    pub fn new(config: DissentConfig) -> Self {
+        DissentWindow {
+            config,
+            current_step: 0,
+            start_time: Instant::now(),
+            last_dissent_start: None,
+            last_dissent_time: None,
+            phase: DissentPhase::Normal,
+            steps_in_phase: 0,
+            completed_windows: 0,
+            beliefs_challenged: 0,
+        }
+    }
+
+    /// Create with default config
+    pub fn default_window() -> Self {
+        DissentWindow::new(DissentConfig::default())
+    }
+
+    /// Step the window manager (call each optimization step)
+    pub fn step(&mut self) {
+        self.current_step += 1;
+        self.steps_in_phase += 1;
+        self.update_phase();
+    }
+
+    /// Update phase based on step or time
+    fn update_phase(&mut self) {
+        if self.config.dissent_period == 0 {
+            // Dissent disabled
+            self.phase = DissentPhase::Normal;
+            return;
+        }
+
+        let in_window = if self.config.time_based {
+            self.is_in_time_window()
+        } else {
+            self.is_in_step_window()
+        };
+
+        let new_phase = if in_window {
+            // Check if we're entering, active, or exiting
+            let steps_into_window = self.steps_into_window();
+
+            if steps_into_window < self.config.ramp_up_steps {
+                DissentPhase::EnteringDissent
+            } else if steps_into_window >= self.window_length() - self.config.ramp_down_steps {
+                DissentPhase::ExitingDissent
+            } else {
+                DissentPhase::ActiveDissent
+            }
+        } else {
+            DissentPhase::Normal
+        };
+
+        // Track window transitions
+        if new_phase != self.phase {
+            self.steps_in_phase = 0;
+
+            // Record new window start
+            if new_phase == DissentPhase::EnteringDissent && self.phase == DissentPhase::Normal {
+                self.last_dissent_start = Some(self.current_step);
+                self.last_dissent_time = Some(Instant::now());
+                self.beliefs_challenged = 0;
+            }
+
+            // Record window completion
+            if new_phase == DissentPhase::Normal && self.phase == DissentPhase::ExitingDissent {
+                self.completed_windows += 1;
+            }
+        }
+
+        self.phase = new_phase;
+    }
+
+    /// Check if in step-based window
+    fn is_in_step_window(&self) -> bool {
+        if self.config.dissent_period == 0 {
+            return false;
+        }
+        let phase = self.current_step % self.config.dissent_period;
+        phase < self.config.dissent_window
+    }
+
+    /// Check if in time-based window
+    fn is_in_time_window(&self) -> bool {
+        let elapsed = self.start_time.elapsed();
+        let interval_secs = self.config.dissent_interval.as_secs_f64();
+        let duration_secs = self.config.dissent_duration.as_secs_f64();
+
+        if interval_secs <= 0.0 {
+            return false;
+        }
+
+        let time_in_period = elapsed.as_secs_f64() % interval_secs;
+        time_in_period < duration_secs
+    }
+
+    /// Get steps into current window
+    fn steps_into_window(&self) -> u64 {
+        if self.config.dissent_period == 0 {
+            return 0;
+        }
+        self.current_step % self.config.dissent_period
+    }
+
+    /// Get window length
+    fn window_length(&self) -> u64 {
+        self.config.dissent_window
+    }
+
+    /// Get current phase
+    pub fn phase(&self) -> DissentPhase {
+        self.phase
+    }
+
+    /// Is dissent currently active?
+    pub fn is_active(&self) -> bool {
+        self.phase.is_dissent_active()
+    }
+
+    /// Should beliefs be challenged now?
+    pub fn should_challenge(&self) -> bool {
+        self.phase.should_challenge_beliefs()
+    }
+
+    /// Get current heat multiplier (0 to 1)
+    pub fn heat_multiplier(&self) -> f64 {
+        match self.phase {
+            DissentPhase::Normal => 0.0,
+            DissentPhase::EnteringDissent => {
+                // Ramp up
+                let progress = self.steps_in_phase as f64 / self.config.ramp_up_steps as f64;
+                progress.min(1.0)
+            }
+            DissentPhase::ActiveDissent => 1.0,
+            DissentPhase::ExitingDissent => {
+                // Ramp down
+                let progress = self.steps_in_phase as f64 / self.config.ramp_down_steps as f64;
+                (1.0 - progress).max(0.0)
+            }
+        }
+    }
+
+    /// Get current dissent heat
+    pub fn current_heat(&self) -> f64 {
+        self.config.dissent_heat * self.heat_multiplier()
+    }
+
+    /// Record that a belief was challenged
+    pub fn record_challenge(&mut self) {
+        self.beliefs_challenged += 1;
+    }
+
+    /// Get number of beliefs to challenge (based on total beliefs)
+    pub fn beliefs_to_challenge(&self, total_beliefs: usize) -> usize {
+        if !self.should_challenge() {
+            return 0;
+        }
+        ((total_beliefs as f64) * self.config.challenge_fraction).ceil() as usize
+    }
+
+    /// Get confidence threshold for challenging
+    pub fn challenge_threshold(&self) -> f64 {
+        self.config.challenge_threshold
+    }
+
+    /// Get statistics
+    pub fn stats(&self) -> DissentStats {
+        DissentStats {
+            current_phase: self.phase,
+            completed_windows: self.completed_windows,
+            beliefs_challenged_this_window: self.beliefs_challenged,
+            steps_until_next_window: self.steps_until_next(),
+            current_heat: self.current_heat(),
+        }
+    }
+
+    /// Steps until next dissent window
+    fn steps_until_next(&self) -> u64 {
+        if self.config.dissent_period == 0 {
+            return u64::MAX;
+        }
+
+        let phase = self.current_step % self.config.dissent_period;
+        if phase < self.config.dissent_window {
+            // Currently in window
+            0
+        } else {
+            // Time until next window
+            self.config.dissent_period - phase
+        }
+    }
+
+    /// Get a summary string
+    pub fn summary(&self) -> String {
+        format!(
+            "Dissent: {:?} | Heat: {:.2} | Windows completed: {} | Challenges: {}",
+            self.phase,
+            self.current_heat(),
+            self.completed_windows,
+            self.beliefs_challenged
+        )
+    }
+}
+
+/// Statistics about dissent windows
+pub struct DissentStats {
+    /// Current phase
+    pub current_phase: DissentPhase,
+
+    /// Number of completed dissent windows
+    pub completed_windows: u64,
+
+    /// Beliefs challenged in current window
+    pub beliefs_challenged_this_window: u64,
+
+    /// Steps until next dissent window
+    pub steps_until_next_window: u64,
+
+    /// Current heat level
+    pub current_heat: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dissent_window_cycle() {
+        let config = DissentConfig::step_based(100, 20);
+        let mut window = DissentWindow::new(config);
+
+        // Should start in normal phase
+        assert_eq!(window.phase(), DissentPhase::Normal);
+
+        // Advance to dissent window
+        for _ in 0..5 {
+            window.step();
+        }
+
+        // Should be in entering phase (within ramp_up_steps)
+        assert_eq!(window.phase(), DissentPhase::EnteringDissent);
+
+        // Advance through ramp-up
+        for _ in 0..10 {
+            window.step();
+        }
+
+        // Should be in active dissent
+        assert_eq!(window.phase(), DissentPhase::ActiveDissent);
+        assert!(window.should_challenge());
+    }
+
+    #[test]
+    fn test_heat_ramping() {
+        let config = DissentConfig::step_based(100, 20)
+            .with_ramps(5, 5)
+            .with_heat(1.0);
+        let mut window = DissentWindow::new(config);
+
+        // Start: no heat
+        assert_eq!(window.current_heat(), 0.0);
+
+        // Step into window start
+        window.step();
+        window.step();
+
+        // Should have partial heat (ramping up)
+        let heat = window.current_heat();
+        assert!(heat > 0.0 && heat < 1.0);
+    }
+
+    #[test]
+    fn test_disabled_dissent() {
+        let config = DissentConfig::disabled();
+        let mut window = DissentWindow::new(config);
+
+        // Should always be in normal phase
+        for _ in 0..200 {
+            window.step();
+            assert_eq!(window.phase(), DissentPhase::Normal);
+            assert_eq!(window.current_heat(), 0.0);
+        }
+    }
+}

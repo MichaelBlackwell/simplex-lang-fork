@@ -1,0 +1,406 @@
+// TASK-015: Source Registry and Credibility
+//
+// Defines the hierarchy of authoritative sources and their credibility scores.
+//
+// Source Hierarchy (highest to lowest):
+// 1. Specifications (ECMA, ISO, W3C, RFC) - 0.95-1.0
+// 2. Official Documentation - 0.85-0.95
+// 3. Peer-Reviewed Academic Papers - 0.80-0.90
+// 4. Technical References (cppreference, MDN) - 0.75-0.85
+// 5. Community-Validated (high-vote SO) - 0.60-0.75
+// 6. Unknown/Unvalidated - 0.0-0.5
+
+use simplex_std::vec::Vec;
+use simplex_std::string::String;
+use simplex_std::collections::HashMap;
+
+/// Type of source
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SourceType {
+    /// Official language/protocol specification
+    /// Examples: ECMA-262, ISO C++, RFC 2616, W3C HTML5
+    Specification,
+
+    /// Official documentation from language/framework creators
+    /// Examples: docs.python.org, doc.rust-lang.org, developer.mozilla.org
+    OfficialDocumentation,
+
+    /// Peer-reviewed academic paper
+    /// Examples: ACM, IEEE, arxiv (with peer review)
+    AcademicPaper,
+
+    /// High-quality technical reference
+    /// Examples: cppreference.com, PostgreSQL docs
+    TechnicalReference,
+
+    /// Community-validated content (e.g., high-vote StackOverflow)
+    CommunityValidated,
+
+    /// Known source with medium reliability
+    KnownMedium,
+
+    /// Unknown or unvalidated source
+    Unknown,
+}
+
+impl SourceType {
+    /// Base credibility score for this source type
+    pub fn base_credibility(&self) -> f64 {
+        match self {
+            SourceType::Specification => 0.98,
+            SourceType::OfficialDocumentation => 0.92,
+            SourceType::AcademicPaper => 0.85,
+            SourceType::TechnicalReference => 0.80,
+            SourceType::CommunityValidated => 0.65,
+            SourceType::KnownMedium => 0.50,
+            SourceType::Unknown => 0.30,
+        }
+    }
+
+    /// Credibility range for this source type
+    pub fn credibility_range(&self) -> (f64, f64) {
+        match self {
+            SourceType::Specification => (0.95, 1.0),
+            SourceType::OfficialDocumentation => (0.85, 0.95),
+            SourceType::AcademicPaper => (0.80, 0.90),
+            SourceType::TechnicalReference => (0.75, 0.85),
+            SourceType::CommunityValidated => (0.60, 0.75),
+            SourceType::KnownMedium => (0.40, 0.60),
+            SourceType::Unknown => (0.0, 0.40),
+        }
+    }
+
+    /// Description of this source type
+    pub fn description(&self) -> &'static str {
+        match self {
+            SourceType::Specification =>
+                "Official language or protocol specification",
+            SourceType::OfficialDocumentation =>
+                "Official documentation from creators",
+            SourceType::AcademicPaper =>
+                "Peer-reviewed academic publication",
+            SourceType::TechnicalReference =>
+                "High-quality technical reference",
+            SourceType::CommunityValidated =>
+                "Community-validated content",
+            SourceType::KnownMedium =>
+                "Known source with medium reliability",
+            SourceType::Unknown =>
+                "Unknown or unvalidated source",
+        }
+    }
+}
+
+/// Credibility assessment for a specific source
+#[derive(Clone)]
+pub struct SourceCredibility {
+    /// Domain of the source
+    pub domain: String,
+
+    /// Type of source
+    pub source_type: SourceType,
+
+    /// Base credibility score
+    pub base_score: f64,
+
+    /// Adjustments based on specific factors
+    pub adjustments: Vec<CredibilityAdjustment>,
+
+    /// Final credibility score
+    pub final_score: f64,
+
+    /// Notes about this source
+    pub notes: Option<String>,
+}
+
+impl SourceCredibility {
+    /// Create new credibility assessment
+    pub fn new(domain: &str, source_type: SourceType) -> Self {
+        let base_score = source_type.base_credibility();
+        SourceCredibility {
+            domain: domain.to_string(),
+            source_type,
+            base_score,
+            adjustments: Vec::new(),
+            final_score: base_score,
+            notes: None,
+        }
+    }
+
+    /// Add an adjustment
+    pub fn add_adjustment(&mut self, adjustment: CredibilityAdjustment) {
+        self.final_score = (self.final_score + adjustment.amount)
+            .max(0.0)
+            .min(1.0);
+        self.adjustments.push(adjustment);
+    }
+
+    /// Is this a trustworthy source?
+    pub fn is_trustworthy(&self) -> bool {
+        self.final_score >= 0.7
+    }
+
+    /// Is this an authoritative source?
+    pub fn is_authoritative(&self) -> bool {
+        matches!(
+            self.source_type,
+            SourceType::Specification | SourceType::OfficialDocumentation
+        )
+    }
+}
+
+/// An adjustment to credibility score
+#[derive(Clone)]
+pub struct CredibilityAdjustment {
+    /// Reason for adjustment
+    pub reason: String,
+
+    /// Amount of adjustment (-1.0 to 1.0)
+    pub amount: f64,
+}
+
+/// Registry of known sources and their credibility
+pub struct SourceRegistry {
+    /// Domain-specific credibility overrides
+    domain_credibility: HashMap<String, SourceCredibility>,
+
+    /// Pattern-based rules
+    patterns: Vec<CredibilityPattern>,
+}
+
+impl SourceRegistry {
+    /// Create empty registry
+    pub fn new() -> Self {
+        SourceRegistry {
+            domain_credibility: HashMap::new(),
+            patterns: Vec::new(),
+        }
+    }
+
+    /// Create registry with default entries
+    pub fn default() -> Self {
+        let mut registry = SourceRegistry::new();
+        registry.populate_defaults();
+        registry
+    }
+
+    /// Populate with default source credibilities
+    fn populate_defaults(&mut self) {
+        // Language Specifications
+        self.register_domain("ecma-international.org", SourceType::Specification, None);
+        self.register_domain("w3.org", SourceType::Specification, None);
+        self.register_domain("ietf.org", SourceType::Specification, None);
+        self.register_domain("iso.org", SourceType::Specification, None);
+        self.register_domain("unicode.org", SourceType::Specification, None);
+
+        // Official Documentation
+        self.register_domain("docs.python.org", SourceType::OfficialDocumentation, None);
+        self.register_domain("doc.rust-lang.org", SourceType::OfficialDocumentation, None);
+        self.register_domain("golang.org", SourceType::OfficialDocumentation, None);
+        self.register_domain("pkg.go.dev", SourceType::OfficialDocumentation, None);
+        self.register_domain("docs.oracle.com", SourceType::OfficialDocumentation, None);
+        self.register_domain("docs.microsoft.com", SourceType::OfficialDocumentation, None);
+        self.register_domain("learn.microsoft.com", SourceType::OfficialDocumentation, None);
+        self.register_domain("developer.mozilla.org", SourceType::OfficialDocumentation, None);
+        self.register_domain("developer.apple.com", SourceType::OfficialDocumentation, None);
+        self.register_domain("kotlinlang.org", SourceType::OfficialDocumentation, None);
+        self.register_domain("typescriptlang.org", SourceType::OfficialDocumentation, None);
+        self.register_domain("ruby-doc.org", SourceType::OfficialDocumentation, None);
+        self.register_domain("php.net", SourceType::OfficialDocumentation, None);
+        self.register_domain("nodejs.org", SourceType::OfficialDocumentation, None);
+        self.register_domain("postgresql.org", SourceType::OfficialDocumentation, None);
+        self.register_domain("mysql.com", SourceType::OfficialDocumentation, None);
+        self.register_domain("redis.io", SourceType::OfficialDocumentation, None);
+        self.register_domain("kafka.apache.org", SourceType::OfficialDocumentation, None);
+        self.register_domain("spark.apache.org", SourceType::OfficialDocumentation, None);
+
+        // Academic
+        self.register_domain("arxiv.org", SourceType::AcademicPaper, None);
+        self.register_domain("acm.org", SourceType::AcademicPaper, None);
+        self.register_domain("ieee.org", SourceType::AcademicPaper, None);
+        self.register_domain("springer.com", SourceType::AcademicPaper, None);
+        self.register_domain("nature.com", SourceType::AcademicPaper, None);
+        self.register_domain("sciencedirect.com", SourceType::AcademicPaper, None);
+
+        // Technical References
+        self.register_domain("cppreference.com", SourceType::TechnicalReference, None);
+        self.register_domain("cplusplus.com", SourceType::TechnicalReference,
+            Some("Less authoritative than cppreference"));
+        self.register_domain("man7.org", SourceType::TechnicalReference, None);
+        self.register_domain("linux.die.net", SourceType::TechnicalReference, None);
+
+        // Community (with caveats)
+        self.register_domain("stackoverflow.com", SourceType::CommunityValidated,
+            Some("Credibility varies by vote count"));
+        self.register_domain("github.com", SourceType::CommunityValidated,
+            Some("Official repos have higher credibility"));
+
+        // Medium reliability
+        self.register_domain("tutorialspoint.com", SourceType::KnownMedium,
+            Some("Basic tutorials, sometimes outdated"));
+        self.register_domain("digitalocean.com", SourceType::TechnicalReference,
+            Some("Good tutorials, community-reviewed"));
+        self.register_domain("realpython.com", SourceType::TechnicalReference,
+            Some("High-quality Python tutorials"));
+        self.register_domain("baeldung.com", SourceType::TechnicalReference,
+            Some("High-quality Java/Spring tutorials"));
+
+        // Low reliability (explicit warnings)
+        self.register_domain_with_adjustment(
+            "w3schools.com",
+            SourceType::KnownMedium,
+            CredibilityAdjustment {
+                reason: "Known for outdated/incorrect content".to_string(),
+                amount: -0.2,
+            }
+        );
+        self.register_domain_with_adjustment(
+            "geeksforgeeks.org",
+            SourceType::KnownMedium,
+            CredibilityAdjustment {
+                reason: "Quality varies significantly".to_string(),
+                amount: -0.1,
+            }
+        );
+    }
+
+    /// Register a domain with credibility
+    pub fn register_domain(&mut self, domain: &str, source_type: SourceType, notes: Option<&str>) {
+        let mut cred = SourceCredibility::new(domain, source_type);
+        cred.notes = notes.map(|s| s.to_string());
+        self.domain_credibility.insert(domain.to_string(), cred);
+    }
+
+    /// Register domain with adjustment
+    pub fn register_domain_with_adjustment(
+        &mut self,
+        domain: &str,
+        source_type: SourceType,
+        adjustment: CredibilityAdjustment
+    ) {
+        let mut cred = SourceCredibility::new(domain, source_type);
+        cred.add_adjustment(adjustment);
+        self.domain_credibility.insert(domain.to_string(), cred);
+    }
+
+    /// Get credibility for a URL
+    pub fn get_credibility(&self, url: &str) -> SourceCredibility {
+        // Extract domain from URL
+        let domain = extract_domain(url);
+
+        // Check exact match
+        if let Some(cred) = self.domain_credibility.get(&domain) {
+            return cred.clone();
+        }
+
+        // Check parent domains
+        let parts: Vec<&str> = domain.split('.').collect();
+        for i in 1..parts.len() {
+            let parent = parts[i..].join(".");
+            if let Some(cred) = self.domain_credibility.get(&parent) {
+                return cred.clone();
+            }
+        }
+
+        // Check patterns
+        for pattern in &self.patterns {
+            if pattern.matches(url) {
+                return pattern.credibility.clone();
+            }
+        }
+
+        // Unknown source
+        SourceCredibility::new(&domain, SourceType::Unknown)
+    }
+
+    /// Get all registered domains
+    pub fn registered_domains(&self) -> Vec<&str> {
+        self.domain_credibility.keys().map(|s| s.as_str()).collect()
+    }
+
+    /// Get domains by type
+    pub fn domains_by_type(&self, source_type: SourceType) -> Vec<&str> {
+        self.domain_credibility
+            .iter()
+            .filter(|(_, cred)| cred.source_type == source_type)
+            .map(|(domain, _)| domain.as_str())
+            .collect()
+    }
+}
+
+impl Default for SourceRegistry {
+    fn default() -> Self {
+        SourceRegistry::default()
+    }
+}
+
+/// Pattern-based credibility rule
+struct CredibilityPattern {
+    /// Pattern to match (regex-like)
+    pattern: String,
+
+    /// Credibility to assign
+    credibility: SourceCredibility,
+}
+
+impl CredibilityPattern {
+    fn matches(&self, url: &str) -> bool {
+        // Simple substring matching for now
+        url.contains(&self.pattern)
+    }
+}
+
+/// Extract domain from URL
+fn extract_domain(url: &str) -> String {
+    let url = url.trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_start_matches("www.");
+
+    if let Some(slash_pos) = url.find('/') {
+        url[..slash_pos].to_string()
+    } else {
+        url.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_source_type_credibility() {
+        assert!(SourceType::Specification.base_credibility() > 0.95);
+        assert!(SourceType::OfficialDocumentation.base_credibility() > 0.85);
+        assert!(SourceType::Unknown.base_credibility() < 0.5);
+    }
+
+    #[test]
+    fn test_registry_lookup() {
+        let registry = SourceRegistry::default();
+
+        let python_cred = registry.get_credibility("https://docs.python.org/3/library/os.html");
+        assert_eq!(python_cred.source_type, SourceType::OfficialDocumentation);
+        assert!(python_cred.final_score > 0.9);
+
+        let unknown_cred = registry.get_credibility("https://randomsite.com/article");
+        assert_eq!(unknown_cred.source_type, SourceType::Unknown);
+        assert!(unknown_cred.final_score < 0.5);
+    }
+
+    #[test]
+    fn test_extract_domain() {
+        assert_eq!(extract_domain("https://docs.python.org/3/"), "docs.python.org");
+        assert_eq!(extract_domain("http://www.example.com/page"), "example.com");
+        assert_eq!(extract_domain("https://sub.domain.org/path/to/page"), "sub.domain.org");
+    }
+
+    #[test]
+    fn test_w3schools_penalty() {
+        let registry = SourceRegistry::default();
+        let cred = registry.get_credibility("https://www.w3schools.com/js/");
+
+        // Should have penalty applied
+        assert!(cred.final_score < SourceType::KnownMedium.base_credibility());
+        assert!(cred.adjustments.len() > 0);
+    }
+}

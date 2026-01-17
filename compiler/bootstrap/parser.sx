@@ -69,6 +69,7 @@ enum TokenKind {
     LtLt,
     GtGt,
     KwBreak,
+    KwLoop,
     KwContinue,
     Question,
     KwTrait,
@@ -92,7 +93,9 @@ enum TokenKind {
     // Mutable binding
     KwVar,
     // Spawn expression
-    KwSpawn
+    KwSpawn,
+    // Where clause
+    KwWhere
 }
 
 // AST node tags - using i64 since stage1 doesn't have proper enums for everything
@@ -145,17 +148,45 @@ fn EXPR_ARRAY() -> i64 { 21 }    // [a, b, c] - array literal
 fn EXPR_FLOAT() -> i64 { 22 }    // floating point literal
 fn EXPR_CLOSURE() -> i64 { 23 }  // (params) => expr - closure/lambda
 fn EXPR_INFER() -> i64 { 24 }    // infer(prompt) - AI inference
+fn EXPR_TUPLE() -> i64 { 25 }    // (a, b, c) - tuple literal
+fn EXPR_LOOP() -> i64 { 26 }     // loop { ... break value } - infinite loop with break
+fn EXPR_INDEX() -> i64 { 27 }    // expr[index] - array/tuple indexing
+fn EXPR_WHILE_LET() -> i64 { 28 } // while let Pattern = expr { body } - pattern-matching loop
+fn EXPR_BREAK() -> i64 { 29 }    // break [value] - break from loop
+fn EXPR_STRUCT_PAT() -> i64 { 30 } // TypeName { field1, field2: binding, .. } - struct pattern
+fn EXPR_OR_PAT() -> i64 { 31 }   // Pattern1 | Pattern2 - or pattern
+fn EXPR_CAST() -> i64 { 32 }     // expr as Type - type cast
+fn EXPR_METHOD() -> i64 { 33 }   // method reference - Type::method
+fn EXPR_STRUCT() -> i64 { 34 }   // struct expression marker
+
+// Belief guard expressions (TASK-013-A)
+fn EXPR_CONFIDENCE() -> i64 { 35 }    // confidence(belief_id)
+fn EXPR_DERIVATIVE() -> i64 { 36 }    // expr.derivative
+fn EXPR_BELIEF_GUARD() -> i64 { 37 }  // belief_expr cmp value
+fn EXPR_BELIEF_AND() -> i64 { 38 }    // guard && guard
+fn EXPR_BELIEF_OR() -> i64 { 39 }     // guard || guard
 
 // Parser state - we pass this to all functions
 fn parser_new(tokens: i64) -> i64 {
-    // Allocate parser: tokens(0), pos(1), len(2), errors(3)
-    let parser: i64 = malloc(32);
+    // Allocate parser: tokens(0), pos(1), len(2), errors(3), pending_gt(4)
+    let parser: i64 = malloc(40);
     store_ptr(parser, 0, tokens);
     store_i64(parser, 1, 0);
     let len: i64 = vec_len(tokens);
     store_i64(parser, 2, len);
     store_i64(parser, 3, 0);
+    store_i64(parser, 4, 0);  // pending_gt count for handling >> in nested generics
     parser
+}
+
+// Get/set pending_gt count for handling >> in nested generics
+fn parser_pending_gt(parser: i64) -> i64 {
+    load_i64(parser, 4)
+}
+
+fn parser_set_pending_gt(parser: i64, count: i64) -> i64 {
+    store_i64(parser, 4, count);
+    0
 }
 
 fn parser_error_count(parser: i64) -> i64 {
@@ -437,6 +468,35 @@ fn ast_while(cond: i64, body: i64) -> i64 {
     node
 }
 
+// Expr: While-let (pattern-matching loop)
+// Layout: tag(0), pattern(1), scrutinee(2), body(3)
+fn ast_while_let(pattern: i64, scrutinee: i64, body: i64) -> i64 {
+    let node: i64 = malloc(32);
+    store_i64(node, 0, EXPR_WHILE_LET());
+    store_ptr(node, 1, pattern);
+    store_ptr(node, 2, scrutinee);
+    store_ptr(node, 3, body);
+    node
+}
+
+// Expr: Loop (infinite loop with break value)
+// Layout: tag(0), body(1)
+fn ast_loop(body: i64) -> i64 {
+    let node: i64 = malloc(16);
+    store_i64(node, 0, EXPR_LOOP());
+    store_ptr(node, 1, body);
+    node
+}
+
+// Expr: Break with value (for loop expressions)
+// Layout: tag(0), value(1) - value is 0 if no value
+fn ast_break_value(value: i64) -> i64 {
+    let node: i64 = malloc(16);
+    store_i64(node, 0, EXPR_BREAK());
+    store_ptr(node, 1, value);
+    node
+}
+
 // Expr: For (range-based)
 // Layout: tag(0), var_name(1), start(2), end(3), body(4)
 fn ast_for(var_name: i64, start: i64, end: i64, body: i64) -> i64 {
@@ -570,6 +630,17 @@ fn ast_use(path: i64) -> i64 {
     let node: i64 = malloc(16);
     store_i64(node, 0, TAG_USE());
     store_ptr(node, 1, path);
+    node
+}
+
+// Extended use statement with nested imports and glob support
+// Layout: tag(0), path(1), imports(2), is_glob(3)
+fn ast_use_ext(path: i64, imports: i64, is_glob: i64) -> i64 {
+    let node: i64 = malloc(32);
+    store_i64(node, 0, TAG_USE());
+    store_ptr(node, 1, path);
+    store_ptr(node, 2, imports);
+    store_i64(node, 3, is_glob);
     node
 }
 
@@ -745,6 +816,56 @@ fn ast_infer(prompt: i64) -> i64 {
     let node: i64 = malloc(16);
     store_i64(node, 0, EXPR_INFER());
     store_ptr(node, 1, prompt);
+    node
+}
+
+// Expr: Tuple literal (a, b, c)
+// Layout: tag(0), elements(1)
+fn ast_tuple(elements: i64) -> i64 {
+    let node: i64 = malloc(16);
+    store_i64(node, 0, EXPR_TUPLE());
+    store_ptr(node, 1, elements);
+    node
+}
+
+// Pattern: Struct pattern - TypeName { field1, field2: binding, .. }
+// Layout: tag(0), type_name(1), fields(2), has_rest(3)
+// fields is a vec of (field_name, binding) pairs
+fn ast_struct_pattern(type_name: i64, fields: i64, has_rest: i64) -> i64 {
+    let node: i64 = malloc(32);
+    store_i64(node, 0, EXPR_STRUCT_PAT());
+    store_ptr(node, 1, type_name);
+    store_ptr(node, 2, fields);
+    store_i64(node, 3, has_rest);
+    node
+}
+
+// Pattern: Or pattern - Pattern1 | Pattern2 | ...
+// Layout: tag(0), alternatives(1)
+// alternatives is a vec of pattern nodes
+fn ast_or_pattern(alternatives: i64) -> i64 {
+    let node: i64 = malloc(16);
+    store_i64(node, 0, EXPR_OR_PAT());
+    store_ptr(node, 1, alternatives);
+    node
+}
+
+// Expr: Loop - infinite loop with break value
+// Layout: tag(0), body(1)
+fn ast_loop(body: i64) -> i64 {
+    let node: i64 = malloc(16);
+    store_i64(node, 0, EXPR_LOOP());
+    store_ptr(node, 1, body);
+    node
+}
+
+// Expr: Index - array/tuple indexing expr[index]
+// Layout: tag(0), base(1), index(2)
+fn ast_index(base: i64, index: i64) -> i64 {
+    let node: i64 = malloc(24);
+    store_i64(node, 0, EXPR_INDEX());
+    store_ptr(node, 1, base);
+    store_ptr(node, 2, index);
     node
 }
 
@@ -1152,11 +1273,39 @@ fn parse_primary(parser: i64) -> i64 {
             return ast_closure(params, body);
         }
 
-        // Not a closure - parenthesized expression
+        // Not a closure - parenthesized expression or tuple
         parser_advance(parser);  // consume (
-        let expr: i64 = parse_expr(parser);
+
+        // Check for empty tuple ()
+        if parser_check(parser, TokenKind::RParen) {
+            parser_advance(parser);
+            let empty_elems: i64 = vec_new();
+            return ast_tuple(empty_elems);
+        }
+
+        let first_expr: i64 = parse_expr(parser);
+
+        // Check for comma - if present, it's a tuple
+        if parser_check(parser, TokenKind::Comma) {
+            let elements: i64 = vec_new();
+            vec_push(elements, first_expr);
+
+            while parser_match(parser, TokenKind::Comma) {
+                // Handle trailing comma
+                if parser_check(parser, TokenKind::RParen) {
+                    break;
+                }
+                let elem: i64 = parse_expr(parser);
+                vec_push(elements, elem);
+            }
+
+            parser_expect(parser, TokenKind::RParen);
+            return ast_tuple(elements);
+        }
+
+        // Single expression in parentheses - just grouping
         parser_expect(parser, TokenKind::RParen);
-        return expr;
+        return first_expr;
     }
 
     // If expression
@@ -1167,6 +1316,30 @@ fn parse_primary(parser: i64) -> i64 {
     // While expression
     if parser_check(parser, TokenKind::KwWhile) {
         return parse_while(parser);
+    }
+
+    // Loop expression: loop { body }
+    if parser_check(parser, TokenKind::KwLoop) {
+        parser_advance(parser);
+        let body: i64 = parse_block(parser);
+        return ast_loop(body);
+    }
+
+    // Break expression with optional value: break [expr]
+    if parser_check(parser, TokenKind::KwBreak) {
+        parser_advance(parser);
+        // Check if there's a value to break with
+        if parser_check(parser, TokenKind::LBrace) == false {
+            if parser_check(parser, TokenKind::RBrace) == false {
+                if parser_check(parser, TokenKind::Semi) == false {
+                    if parser_at_end(parser) == false {
+                        let value: i64 = parse_expr(parser);
+                        return ast_break_value(value);
+                    }
+                }
+            }
+        }
+        return ast_break_value(0);
     }
 
     // For expression
@@ -1204,6 +1377,39 @@ fn parse_postfix(parser: i64) -> i64 {
             } else {
                 let name_tok: i64 = parser_expect(parser, TokenKind::Ident);
                 let name: i64 = token_text(name_tok);
+
+                // Check for turbofish on method: .method::<T>()
+                let method_type_args: i64 = 0;
+                if parser_check(parser, TokenKind::DoubleColon) {
+                    parser_advance(parser);
+                    if parser_check(parser, TokenKind::Lt) {
+                        parser_advance(parser);
+                        method_type_args = vec_new();
+                        // Parse type arguments
+                        while true {
+                            if parser_check(parser, TokenKind::Gt) {
+                                parser_advance(parser);
+                                break;
+                            }
+                            let ty_arg: i64 = parse_type(parser);
+                            vec_push(method_type_args, ty_arg);
+                            if parser_match(parser, TokenKind::Comma) == false {
+                                if parser_check(parser, TokenKind::Gt) == false {
+                                    break;
+                                }
+                            }
+                        }
+                        // Encode type args in name: method_i64_String
+                        if vec_len(method_type_args) > 0 {
+                            let j: i64 = 0;
+                            while j < vec_len(method_type_args) {
+                                name = string_concat(name, "_");
+                                name = string_concat(name, vec_get(method_type_args, j));
+                                j = j + 1;
+                            }
+                        }
+                    }
+                }
 
                 // Check if this is a method call (followed by '(')
                 if parser_check(parser, TokenKind::LParen) {
@@ -1444,8 +1650,19 @@ fn parse_block(parser: i64) -> i64 {
         } else {
         if parser_check(parser, TokenKind::KwBreak) {
             parser_advance(parser);
+            // Check if there's a value to break with
+            var break_value: i64 = 0;
+            if parser_check(parser, TokenKind::LBrace) == false {
+                if parser_check(parser, TokenKind::RBrace) == false {
+                    if parser_check(parser, TokenKind::Semi) == false {
+                        if parser_at_end(parser) == false {
+                            break_value = parse_expr(parser);
+                        }
+                    }
+                }
+            }
             parser_match(parser, TokenKind::Semi);  // Semicolon optional
-            let stmt: i64 = ast_break();
+            let stmt: i64 = ast_expr_stmt(ast_break_value(break_value));
             vec_push(stmts, stmt);
         } else {
         if parser_check(parser, TokenKind::KwContinue) {
@@ -1525,9 +1742,199 @@ fn parse_var(parser: i64) -> i64 {
     ast_let(name, ty, init_expr)
 }
 
-// Parse if expression
+// Parse single pattern (without or-alternatives)
+fn parse_pattern_single(parser: i64) -> i64 {
+    // Check for wildcard pattern: _
+    if parser_match(parser, TokenKind::Underscore) {
+        return 0;  // 0 indicates wildcard
+    }
+
+    // Check for tuple pattern: (p1, p2, ...)
+    if parser_check(parser, TokenKind::LParen) {
+        parser_advance(parser);  // consume (
+
+        // Empty tuple pattern ()
+        if parser_check(parser, TokenKind::RParen) {
+            parser_advance(parser);
+            let empty_elems: i64 = vec_new();
+            return ast_tuple(empty_elems);
+        }
+
+        let elements: i64 = vec_new();
+        let first_pat: i64 = parse_pattern(parser);
+        vec_push(elements, first_pat);
+
+        while parser_match(parser, TokenKind::Comma) {
+            // Handle trailing comma
+            if parser_check(parser, TokenKind::RParen) {
+                break;
+            }
+            let elem_pat: i64 = parse_pattern(parser);
+            vec_push(elements, elem_pat);
+        }
+
+        parser_expect(parser, TokenKind::RParen);
+        return ast_tuple(elements);
+    }
+
+    // Parse identifier (could be enum variant, struct, or binding)
+    if parser_check(parser, TokenKind::Ident) {
+        let name_tok: i64 = parser_advance(parser);
+        let name: i64 = token_text(name_tok);
+
+        // Check for :: path separator (enum variant: EnumName::Variant)
+        if parser_match(parser, TokenKind::DoubleColon) {
+            let variant_tok: i64 = parser_expect(parser, TokenKind::Ident);
+            let variant: i64 = token_text(variant_tok);
+
+            // Build segments vector for path [EnumName, Variant]
+            let segments: i64 = vec_new();
+            vec_push(segments, name);
+            vec_push(segments, variant);
+
+            // Check for (bindings...) - enum variant with payload
+            if parser_match(parser, TokenKind::LParen) {
+                let args: i64 = vec_new();
+                while true {
+                    if parser_check(parser, TokenKind::RParen) {
+                        parser_advance(parser);
+                        // Create call-like node for enum pattern: EnumName::Variant(bindings)
+                        let path: i64 = ast_path(segments);
+                        return ast_call(path, args);
+                    }
+                    vec_push(args, parse_pattern(parser));
+                    if parser_check(parser, TokenKind::Comma) {
+                        parser_advance(parser);
+                    }
+                }
+            }
+
+            // Plain path without parens: EnumName::Variant
+            return ast_path(segments);
+        }
+
+        // Check for struct pattern: TypeName { field1, field2: binding, .. }
+        if parser_check(parser, TokenKind::LBrace) {
+            parser_advance(parser);  // consume {
+            let fields: i64 = vec_new();
+            let has_rest: i64 = 0;
+
+            while parser_check(parser, TokenKind::RBrace) == false {
+                // Check for .. (rest pattern)
+                if parser_match(parser, TokenKind::DotDot) {
+                    has_rest = 1;
+                    break;
+                }
+
+                // Parse field pattern: field_name or field_name: binding
+                let field_tok: i64 = parser_expect(parser, TokenKind::Ident);
+                let field_name: i64 = token_text(field_tok);
+                let binding: i64 = field_name;  // Default: shorthand field binding
+
+                // Check for : binding
+                if parser_match(parser, TokenKind::Colon) {
+                    binding = parse_pattern(parser);
+                }
+
+                // Create field entry: (field_name, binding)
+                let field_entry: i64 = malloc(16);
+                store_ptr(field_entry, 0, field_name);
+                store_ptr(field_entry, 1, binding);
+                vec_push(fields, field_entry);
+
+                if parser_check(parser, TokenKind::Comma) {
+                    parser_advance(parser);
+                } else {
+                    break;
+                }
+            }
+            parser_expect(parser, TokenKind::RBrace);
+
+            // Create struct pattern node: EXPR_STRUCT_PAT(type_name, fields, has_rest)
+            return ast_struct_pattern(name, fields, has_rest);
+        }
+
+        // Check for (bindings...) after simple name (Some, Ok, etc.)
+        if parser_match(parser, TokenKind::LParen) {
+            let args: i64 = vec_new();
+            while true {
+                if parser_check(parser, TokenKind::RParen) {
+                    parser_advance(parser);
+                    // Create call node to represent enum variant with payload: Some(x)
+                    let callee: i64 = ast_ident(name);
+                    return ast_call(callee, args);
+                }
+                vec_push(args, parse_pattern(parser));
+                if parser_check(parser, TokenKind::Comma) {
+                    parser_advance(parser);
+                }
+            }
+        }
+
+        // Simple identifier - either enum variant without payload (None) or binding
+        return ast_ident(name);
+    }
+
+    // Fallback - parse as expression (handles literals, etc.)
+    parse_expr(parser)
+}
+
+// Parse pattern for if-let and match expressions
+// Returns an expression node (path/call for enum variants, ident for bindings, tuple, 0 for wildcard)
+// Supports or-patterns: Pattern1 | Pattern2 | ...
+fn parse_pattern(parser: i64) -> i64 {
+    let first: i64 = parse_pattern_single(parser);
+
+    // Check for or-pattern: Pattern | Pattern | ...
+    if parser_check(parser, TokenKind::Pipe) {
+        let alternatives: i64 = vec_new();
+        vec_push(alternatives, first);
+
+        while parser_match(parser, TokenKind::Pipe) {
+            let alt: i64 = parse_pattern_single(parser);
+            vec_push(alternatives, alt);
+        }
+
+        return ast_or_pattern(alternatives);
+    }
+
+    first
+}
+
+// Parse if expression (including if-let)
 fn parse_if(parser: i64) -> i64 {
     parser_expect(parser, TokenKind::KwIf);
+
+    // Check for if-let: if let Pattern = scrutinee { then } else { else }
+    if parser_match(parser, TokenKind::KwLet) {
+        // Parse pattern
+        let pattern: i64 = parse_pattern(parser);
+        parser_expect(parser, TokenKind::Eq);
+        let scrutinee: i64 = parse_expr(parser);
+        let then_block: i64 = parse_block(parser);
+
+        // Parse optional else
+        let else_block: i64 = 0;
+        if parser_match(parser, TokenKind::KwElse) {
+            if parser_check(parser, TokenKind::KwIf) {
+                else_block = parse_if(parser);
+            } else {
+                else_block = parse_block(parser);
+            }
+        } else {
+            // Default else returns unit (0)
+            else_block = ast_block(vec_new(), ast_int(0));
+        }
+
+        // Desugar to match expression:
+        // match scrutinee { pattern => then_block, _ => else_block }
+        let arms: i64 = vec_new();
+        vec_push(arms, ast_match_arm(pattern, 0, then_block));
+        vec_push(arms, ast_match_arm(0, 0, else_block));  // 0 pattern = wildcard
+        return ast_match(scrutinee, arms);
+    }
+
+    // Regular if expression
     let cond: i64 = parse_expr(parser);
     let then_block: i64 = parse_block(parser);
     let else_block: i64 = 0;
@@ -1544,9 +1951,20 @@ fn parse_if(parser: i64) -> i64 {
     ast_if(cond, then_block, else_block)
 }
 
-// Parse while expression
+// Parse while expression (including while-let)
 fn parse_while(parser: i64) -> i64 {
     parser_expect(parser, TokenKind::KwWhile);
+
+    // Check for while-let: while let Pattern = scrutinee { body }
+    if parser_match(parser, TokenKind::KwLet) {
+        let pattern: i64 = parse_pattern(parser);
+        parser_expect(parser, TokenKind::Eq);
+        let scrutinee: i64 = parse_expr(parser);
+        let body: i64 = parse_block(parser);
+        return ast_while_let(pattern, scrutinee, body);
+    }
+
+    // Regular while expression
     let cond: i64 = parse_expr(parser);
     let body: i64 = parse_block(parser);
     ast_while(cond, body)
@@ -1588,8 +2006,8 @@ fn parse_match(parser: i64) -> i64 {
             // Wildcard pattern - use null to indicate wildcard
             pattern = 0;
         } else {
-            // Parse as expression (will handle paths and identifiers)
-            pattern = parse_expr(parser);
+            // Parse pattern (handles paths, identifiers, and bindings)
+            pattern = parse_pattern(parser);
         }
 
         // Parse optional guard: if condition
@@ -1660,8 +2078,48 @@ fn parse_return(parser: i64) -> i64 {
     ast_return(expr)
 }
 
-// Parse type: handles simple idents, Self, Self::AssocType, and dyn Trait
+// Parse type: handles simple idents, Self, Self::AssocType, tuples, and dyn Trait
 fn parse_type(parser: i64) -> i64 {
+    // Check for tuple type: (T1, T2, ...)
+    if parser_check(parser, TokenKind::LParen) {
+        parser_advance(parser);  // consume (
+
+        // Empty tuple type ()
+        if parser_check(parser, TokenKind::RParen) {
+            parser_advance(parser);
+            return string_from("()");
+        }
+
+        let type_elems: i64 = vec_new();
+        let first_ty: i64 = parse_type(parser);
+        vec_push(type_elems, first_ty);
+
+        while parser_match(parser, TokenKind::Comma) {
+            // Handle trailing comma
+            if parser_check(parser, TokenKind::RParen) {
+                break;
+            }
+            let elem_ty: i64 = parse_type(parser);
+            vec_push(type_elems, elem_ty);
+        }
+
+        parser_expect(parser, TokenKind::RParen);
+
+        // Build tuple type string: (T1, T2, ...)
+        let result: i64 = string_from("(");
+        let n: i64 = vec_len(type_elems);
+        let i: i64 = 0;
+        while i < n {
+            if i > 0 {
+                result = string_concat(result, string_from(", "));
+            }
+            result = string_concat(result, vec_get(type_elems, i));
+            i = i + 1;
+        }
+        result = string_concat(result, string_from(")"));
+        return result;
+    }
+
     // Check for dyn keyword (dynamic trait object)
     if parser_check(parser, TokenKind::KwDyn) {
         parser_advance(parser);  // consume 'dyn'
@@ -1703,7 +2161,26 @@ fn parse_type(parser: i64) -> i64 {
             vec_push(type_args, arg);
         }
 
-        parser_expect(parser, TokenKind::Gt);
+        // Handle > or >> (for nested generics like Option<Option<i64>>)
+        // Check if we have a pending > from a previous >>
+        let pending: i64 = parser_pending_gt(parser);
+        if pending > 0 {
+            // Use the pending > instead of consuming a token
+            parser_set_pending_gt(parser, pending - 1);
+        } else {
+            // Need to consume a > token
+            if parser_check(parser, TokenKind::Gt) {
+                parser_advance(parser);
+            } else {
+                if parser_check(parser, TokenKind::GtGt) {
+                    // >> token - consume it but save one > for the outer generic
+                    parser_advance(parser);
+                    parser_set_pending_gt(parser, parser_pending_gt(parser) + 1);
+                } else {
+                    parser_add_error(parser, string_from("expected '>' in type"));
+                }
+            }
+        }
 
         // Build type string: Name<Arg1, Arg2, ...>
         let result: i64 = string_concat(type_name, string_from("<"));
@@ -1925,16 +2402,79 @@ fn parse_fn(parser: i64, is_async: i64) -> i64 {
         ret_ty = parse_type(parser);
     }
 
+    // Parse optional where clause: where T: Trait, U: OtherTrait + Another
+    if parser_match(parser, TokenKind::KwWhere) {
+        // Parse where clause constraints and merge into type_params
+        while true {
+            if parser_check(parser, TokenKind::LBrace) {
+                break;  // Body starts
+            }
+            if parser_check(parser, TokenKind::Ident) {
+                let constraint_tok: i64 = parser_advance(parser);
+                let constraint_name: i64 = token_text(constraint_tok);
+
+                if parser_match(parser, TokenKind::Colon) {
+                    // Parse trait bounds
+                    if parser_check(parser, TokenKind::Ident) {
+                        let bound_tok: i64 = parser_advance(parser);
+                        let bound_str: i64 = string_concat(constraint_name, ":");
+                        bound_str = string_concat(bound_str, token_text(bound_tok));
+
+                        // Handle + for multiple bounds
+                        while parser_match(parser, TokenKind::Plus) {
+                            if parser_check(parser, TokenKind::Ident) {
+                                let extra: i64 = parser_advance(parser);
+                                bound_str = string_concat(bound_str, "+");
+                                bound_str = string_concat(bound_str, token_text(extra));
+                            }
+                        }
+
+                        // Add or update type parameter with this constraint
+                        vec_push(type_params, bound_str);
+                    }
+                }
+
+                // Skip comma between constraints
+                parser_match(parser, TokenKind::Comma);
+            } else {
+                break;
+            }
+        }
+    }
+
     let body: i64 = parse_block(parser);
     ast_fn_def(name, type_params, params, ret_ty, body, is_async)
 }
 
-// Parse enum definition
+// Parse enum definition with optional type parameters
+// enum Option<T> { None, Some(T) }
 fn parse_enum(parser: i64) -> i64 {
     parser_expect(parser, TokenKind::KwEnum);
     let name_tok: i64 = parser_expect(parser, TokenKind::Ident);
     let name: i64 = token_text(name_tok);
 
+    // Parse optional type parameters <T, U, ...>
+    let type_params: i64 = vec_new();
+    if parser_match(parser, TokenKind::Lt) {
+        while true {
+            if parser_check(parser, TokenKind::Gt) {
+                parser_advance(parser);
+                return parse_enum_body(parser, name, type_params);
+            }
+            let tp_tok: i64 = parser_expect(parser, TokenKind::Ident);
+            let tp_name: i64 = token_text(tp_tok);
+            vec_push(type_params, tp_name);
+            if parser_check(parser, TokenKind::Comma) {
+                parser_advance(parser);
+            }
+        }
+    }
+
+    parse_enum_body(parser, name, type_params)
+}
+
+// Parse enum body after name and type params
+fn parse_enum_body(parser: i64, name: i64, type_params: i64) -> i64 {
     let variants: i64 = vec_new();
     parser_expect(parser, TokenKind::LBrace);
 
@@ -1946,6 +2486,13 @@ fn parse_enum(parser: i64) -> i64 {
 
         let var_tok: i64 = parser_expect(parser, TokenKind::Ident);
         let var_name: i64 = token_text(var_tok);
+
+        // Check for variant payload: Some(T)
+        if parser_match(parser, TokenKind::LParen) {
+            // Parse payload types (skip them, not stored)
+            parse_enum_payload(parser);
+        }
+
         vec_push(variants, var_name);
 
         // Optional comma
@@ -1953,6 +2500,19 @@ fn parse_enum(parser: i64) -> i64 {
     }
 
     ast_enum_def(name, variants)
+}
+
+// Parse enum variant payload types: (T), (T, E)
+fn parse_enum_payload(parser: i64) -> i64 {
+    while true {
+        if parser_check(parser, TokenKind::RParen) {
+            parser_advance(parser);
+            return 0;
+        }
+        parse_type(parser);
+        parser_match(parser, TokenKind::Comma);
+    }
+    0
 }
 
 // Parse struct definition with optional type parameters
@@ -2134,22 +2694,51 @@ fn parse_mod(parser: i64) -> i64 {
 }
 
 // Parse use statement: use name::item;
+// Also supports:
+//   use name::*;           (glob import)
+//   use name::{A, B, C};   (nested imports)
 fn parse_use(parser: i64) -> i64 {
     parser_expect(parser, TokenKind::KwUse);
     let path: i64 = vec_new();
+    let imports: i64 = vec_new();  // For nested imports {A, B}
+    let is_glob: i64 = 0;
 
     // Parse first segment
     let name_tok: i64 = parser_expect(parser, TokenKind::Ident);
     vec_push(path, token_text(name_tok));
 
-    // Parse remaining segments (::name)
+    // Parse remaining segments (::name or ::* or ::{...})
     while parser_match(parser, TokenKind::DoubleColon) {
+        // Check for glob: use path::*
+        if parser_match(parser, TokenKind::Star) {
+            is_glob = 1;
+            break;
+        }
+
+        // Check for nested imports: use path::{A, B, C}
+        if parser_check(parser, TokenKind::LBrace) {
+            parser_advance(parser);  // consume {
+            while parser_check(parser, TokenKind::RBrace) == false {
+                let import_tok: i64 = parser_expect(parser, TokenKind::Ident);
+                vec_push(imports, token_text(import_tok));
+                if parser_check(parser, TokenKind::Comma) {
+                    parser_advance(parser);
+                } else {
+                    break;
+                }
+            }
+            parser_expect(parser, TokenKind::RBrace);
+            break;
+        }
+
+        // Regular segment
         let seg_tok: i64 = parser_expect(parser, TokenKind::Ident);
         vec_push(path, token_text(seg_tok));
     }
 
     parser_expect(parser, TokenKind::Semi);
-    ast_use(path)
+    // Create use node with path, imports list (for nested), and glob flag
+    ast_use_ext(path, imports, is_glob)
 }
 
 // Parse type alias: type Name = Type;
@@ -2226,12 +2815,20 @@ fn parse_actor(parser: i64) -> i64 {
                 parser_advance(parser);
                 ret_type = parse_type(parser);
             }
+            // Parse optional belief guard: @ confidence(id) < 0.5 (TASK-013-A)
+            let belief_guard: i64 = 0;
+            if parser_check(parser, TokenKind::At) {
+                parser_advance(parser);  // consume '@'
+                belief_guard = parse_belief_guard(parser);
+            }
             let body: i64 = parse_block(parser);
-            let handler: i64 = malloc(32);
+            // Handler: msg_name(0), params(1), ret_type(2), body(3), belief_guard(4)
+            let handler: i64 = malloc(40);
             store_ptr(handler, 0, msg_name);
             store_ptr(handler, 1, params);
             store_ptr(handler, 2, ret_type);
             store_ptr(handler, 3, body);
+            store_ptr(handler, 4, belief_guard);  // 0 if no guard
             vec_push(handlers, handler);
         } else {
             parser_add_error(parser, string_from("Unexpected token in actor"));
@@ -2297,12 +2894,20 @@ fn parse_specialist(parser: i64) -> i64 {
                 parser_advance(parser);
                 ret_type = parse_type(parser);
             }
+            // Parse optional belief guard: @ confidence(id) < 0.5 (TASK-013-A)
+            let belief_guard: i64 = 0;
+            if parser_check(parser, TokenKind::At) {
+                parser_advance(parser);  // consume '@'
+                belief_guard = parse_belief_guard(parser);
+            }
             let body: i64 = parse_block(parser);
-            let handler: i64 = malloc(32);
+            // Handler: msg_name(0), params(1), ret_type(2), body(3), belief_guard(4)
+            let handler: i64 = malloc(40);
             store_ptr(handler, 0, msg_name);
             store_ptr(handler, 1, params);
             store_ptr(handler, 2, ret_type);
             store_ptr(handler, 3, body);
+            store_ptr(handler, 4, belief_guard);  // 0 if no guard
             vec_push(handlers, handler);
         } else {
             // Config property: name: value (string or number)
@@ -2567,6 +3172,179 @@ fn parse_item(parser: i64) -> i64 {
 
     // Unknown item
     0
+}
+
+// ========================================
+// Belief Guard Parsing (TASK-013-A)
+// ========================================
+
+// Parse belief guard: confidence(id) < 0.5 && confidence(id).derivative < -0.1
+fn parse_belief_guard(parser: i64) -> i64 {
+    return parse_belief_or(parser);
+}
+
+// Parse OR expression in belief guards
+fn parse_belief_or(parser: i64) -> i64 {
+    let left: i64 = parse_belief_and(parser);
+
+    while parser_check(parser, TokenKind::PipePipe) {
+        parser_advance(parser);
+        let right: i64 = parse_belief_and(parser);
+        let node: i64 = malloc(24);
+        store_i64(node, 0, EXPR_BELIEF_OR());
+        store_ptr(node, 1, left);
+        store_ptr(node, 2, right);
+        left = node;
+    }
+
+    return left;
+}
+
+// Parse AND expression in belief guards
+fn parse_belief_and(parser: i64) -> i64 {
+    let left: i64 = parse_belief_comparison(parser);
+
+    while parser_check(parser, TokenKind::AmpAmp) {
+        parser_advance(parser);
+        let right: i64 = parse_belief_comparison(parser);
+        let node: i64 = malloc(24);
+        store_i64(node, 0, EXPR_BELIEF_AND());
+        store_ptr(node, 1, left);
+        store_ptr(node, 2, right);
+        left = node;
+    }
+
+    return left;
+}
+
+// Parse comparison in belief guards
+fn parse_belief_comparison(parser: i64) -> i64 {
+    let left: i64 = parse_belief_primary(parser);
+
+    // Check for comparison operator
+    if parser_check(parser, TokenKind::Lt) {
+        let op: i64 = OP_LT();
+        parser_advance(parser);
+        let right: i64 = parse_expr(parser);
+        let node: i64 = malloc(32);
+        store_i64(node, 0, EXPR_BELIEF_GUARD());
+        store_ptr(node, 1, left);
+        store_i64(node, 2, op);
+        store_ptr(node, 3, right);
+        return node;
+    }
+    if parser_check(parser, TokenKind::Le) {
+        let op: i64 = OP_LE();
+        parser_advance(parser);
+        let right: i64 = parse_expr(parser);
+        let node: i64 = malloc(32);
+        store_i64(node, 0, EXPR_BELIEF_GUARD());
+        store_ptr(node, 1, left);
+        store_i64(node, 2, op);
+        store_ptr(node, 3, right);
+        return node;
+    }
+    if parser_check(parser, TokenKind::Gt) {
+        let op: i64 = OP_GT();
+        parser_advance(parser);
+        let right: i64 = parse_expr(parser);
+        let node: i64 = malloc(32);
+        store_i64(node, 0, EXPR_BELIEF_GUARD());
+        store_ptr(node, 1, left);
+        store_i64(node, 2, op);
+        store_ptr(node, 3, right);
+        return node;
+    }
+    if parser_check(parser, TokenKind::Ge) {
+        let op: i64 = OP_GE();
+        parser_advance(parser);
+        let right: i64 = parse_expr(parser);
+        let node: i64 = malloc(32);
+        store_i64(node, 0, EXPR_BELIEF_GUARD());
+        store_ptr(node, 1, left);
+        store_i64(node, 2, op);
+        store_ptr(node, 3, right);
+        return node;
+    }
+    if parser_check(parser, TokenKind::EqEq) {
+        let op: i64 = OP_EQ();
+        parser_advance(parser);
+        let right: i64 = parse_expr(parser);
+        let node: i64 = malloc(32);
+        store_i64(node, 0, EXPR_BELIEF_GUARD());
+        store_ptr(node, 1, left);
+        store_i64(node, 2, op);
+        store_ptr(node, 3, right);
+        return node;
+    }
+    if parser_check(parser, TokenKind::Ne) {
+        let op: i64 = OP_NE();
+        parser_advance(parser);
+        let right: i64 = parse_expr(parser);
+        let node: i64 = malloc(32);
+        store_i64(node, 0, EXPR_BELIEF_GUARD());
+        store_ptr(node, 1, left);
+        store_i64(node, 2, op);
+        store_ptr(node, 3, right);
+        return node;
+    }
+
+    return left;
+}
+
+// Parse primary belief expression: confidence(id) or confidence(id).derivative
+fn parse_belief_primary(parser: i64) -> i64 {
+    // confidence(belief_id)
+    if parser_check(parser, TokenKind::KwConfidence) {
+        parser_advance(parser);
+        parser_expect(parser, TokenKind::LParen);
+        let belief_id: i64 = parse_expr(parser);
+        parser_expect(parser, TokenKind::RParen);
+
+        let node: i64 = malloc(16);
+        store_i64(node, 0, EXPR_CONFIDENCE());
+        store_ptr(node, 1, belief_id);
+
+        // Check for .derivative
+        if parser_check(parser, TokenKind::Dot) {
+            parser_advance(parser);
+            if parser_check(parser, TokenKind::KwDerivative) {
+                parser_advance(parser);
+                let der_node: i64 = malloc(16);
+                store_i64(der_node, 0, EXPR_DERIVATIVE());
+                store_ptr(der_node, 1, node);
+                return der_node;
+            } else {
+                parser_add_error(parser, string_from("Expected 'derivative' after '.'"));
+                return node;
+            }
+        }
+
+        return node;
+    }
+
+    // Parenthesized expression
+    if parser_check(parser, TokenKind::LParen) {
+        parser_advance(parser);
+        let expr: i64 = parse_belief_guard(parser);
+        parser_expect(parser, TokenKind::RParen);
+        return expr;
+    }
+
+    // Negation: !guard
+    if parser_check(parser, TokenKind::Bang) {
+        parser_advance(parser);
+        let inner: i64 = parse_belief_primary(parser);
+        // Represent as BELIEF_AND with negation (we'll use unary not in codegen)
+        let node: i64 = malloc(16);
+        store_i64(node, 0, EXPR_UNARY());
+        store_i64(node, 1, OP_NOT());
+        store_ptr(node, 2, inner);
+        return node;
+    }
+
+    parser_add_error(parser, string_from("Expected belief guard expression (confidence(...))"));
+    return 0;
 }
 
 // Parse result: items(0), error_count(1)

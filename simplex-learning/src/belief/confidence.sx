@@ -1,0 +1,468 @@
+// TASK-014: Calibrated Confidence
+//
+// Raw confidence scores are meaningless without calibration.
+// A system that says "90% confident" should be right 90% of the time.
+//
+// This module provides confidence that tracks its own calibration,
+// adjusts for historical accuracy, and admits uncertainty.
+
+use simplex_std::dual::dual;
+
+/// Record of a prediction and its outcome for calibration tracking
+#[derive(Clone)]
+pub struct PredictionOutcome {
+    /// The confidence level at prediction time
+    pub predicted_confidence: f64,
+
+    /// Whether the prediction was correct (true = correct, false = incorrect)
+    pub was_correct: bool,
+
+    /// Timestamp of the prediction (epoch ms)
+    pub timestamp: u64,
+}
+
+/// Historical calibration record
+#[derive(Clone)]
+pub struct CalibrationRecord {
+    /// All recorded predictions
+    outcomes: Vec<PredictionOutcome>,
+
+    /// Running sum of (predicted - actual)^2 for Brier score
+    brier_sum: f64,
+
+    /// Running count for Brier score
+    brier_count: u64,
+
+    /// Binned statistics for ECE computation
+    /// Index 0 = [0.0, 0.1), Index 1 = [0.1, 0.2), ..., Index 9 = [0.9, 1.0]
+    bin_correct: [u64; 10],
+    bin_total: [u64; 10],
+    bin_confidence_sum: [f64; 10],
+
+    /// Maximum history to retain
+    max_history: usize,
+}
+
+impl CalibrationRecord {
+    /// Create a new calibration record
+    pub fn new() -> Self {
+        CalibrationRecord {
+            outcomes: Vec::new(),
+            brier_sum: 0.0,
+            brier_count: 0,
+            bin_correct: [0; 10],
+            bin_total: [0; 10],
+            bin_confidence_sum: [0.0; 10],
+            max_history: 10000,
+        }
+    }
+
+    /// Create with custom max history
+    pub fn with_max_history(max_history: usize) -> Self {
+        let mut record = CalibrationRecord::new();
+        record.max_history = max_history;
+        record
+    }
+
+    /// Record a prediction outcome
+    pub fn record(&mut self, predicted: f64, actual: bool) {
+        // Clamp confidence to [0, 1]
+        let predicted = predicted.max(0.0).min(1.0);
+
+        // Add to history
+        let outcome = PredictionOutcome {
+            predicted_confidence: predicted,
+            was_correct: actual,
+            timestamp: current_timestamp(),
+        };
+
+        self.outcomes.push(outcome);
+
+        // Trim history if needed
+        while self.outcomes.len() > self.max_history {
+            self.outcomes.remove(0);
+        }
+
+        // Update Brier score components
+        let actual_val = if actual { 1.0 } else { 0.0 };
+        let error = predicted - actual_val;
+        self.brier_sum += error * error;
+        self.brier_count += 1;
+
+        // Update bin statistics
+        let bin = self.get_bin(predicted);
+        self.bin_total[bin] += 1;
+        self.bin_confidence_sum[bin] += predicted;
+        if actual {
+            self.bin_correct[bin] += 1;
+        }
+    }
+
+    /// Get the bin index for a confidence value
+    fn get_bin(&self, confidence: f64) -> usize {
+        let bin = (confidence * 10.0) as usize;
+        bin.min(9)
+    }
+
+    /// Compute Expected Calibration Error (ECE)
+    /// Lower is better. Target: < 0.05
+    pub fn compute_ece(&self) -> f64 {
+        let total_samples: u64 = self.bin_total.iter().sum();
+        if total_samples == 0 {
+            return 0.5;  // Maximum uncertainty when no data
+        }
+
+        let mut ece = 0.0;
+        for i in 0..10 {
+            if self.bin_total[i] > 0 {
+                let avg_confidence = self.bin_confidence_sum[i] / self.bin_total[i] as f64;
+                let accuracy = self.bin_correct[i] as f64 / self.bin_total[i] as f64;
+                let weight = self.bin_total[i] as f64 / total_samples as f64;
+                ece += weight * (accuracy - avg_confidence).abs();
+            }
+        }
+
+        ece
+    }
+
+    /// Compute Maximum Calibration Error (MCE)
+    pub fn compute_mce(&self) -> f64 {
+        let mut mce = 0.0;
+        for i in 0..10 {
+            if self.bin_total[i] > 0 {
+                let avg_confidence = self.bin_confidence_sum[i] / self.bin_total[i] as f64;
+                let accuracy = self.bin_correct[i] as f64 / self.bin_total[i] as f64;
+                let error = (accuracy - avg_confidence).abs();
+                mce = mce.max(error);
+            }
+        }
+        mce
+    }
+
+    /// Compute Brier Score
+    /// Lower is better. Range: [0, 1]
+    pub fn compute_brier(&self) -> f64 {
+        if self.brier_count == 0 {
+            return 0.25;  // Expected score for random guessing
+        }
+        self.brier_sum / self.brier_count as f64
+    }
+
+    /// Get total number of recorded predictions
+    pub fn sample_size(&self) -> u64 {
+        self.brier_count
+    }
+
+    /// Get accuracy for a specific confidence bin
+    pub fn bin_accuracy(&self, bin: usize) -> Option<f64> {
+        let bin = bin.min(9);
+        if self.bin_total[bin] > 0 {
+            Some(self.bin_correct[bin] as f64 / self.bin_total[bin] as f64)
+        } else {
+            None
+        }
+    }
+
+    /// Get overconfidence for a specific bin (positive = overconfident)
+    pub fn bin_overconfidence(&self, bin: usize) -> Option<f64> {
+        let bin = bin.min(9);
+        if self.bin_total[bin] > 0 {
+            let avg_confidence = self.bin_confidence_sum[bin] / self.bin_total[bin] as f64;
+            let accuracy = self.bin_correct[bin] as f64 / self.bin_total[bin] as f64;
+            Some(avg_confidence - accuracy)
+        } else {
+            None
+        }
+    }
+
+    /// Reset all statistics
+    pub fn reset(&mut self) {
+        self.outcomes.clear();
+        self.brier_sum = 0.0;
+        self.brier_count = 0;
+        self.bin_correct = [0; 10];
+        self.bin_total = [0; 10];
+        self.bin_confidence_sum = [0.0; 10];
+    }
+}
+
+impl Default for CalibrationRecord {
+    fn default() -> Self {
+        CalibrationRecord::new()
+    }
+}
+
+/// Confidence with calibration metadata
+///
+/// Unlike raw confidence scores, CalibratedConfidence:
+/// - Uses dual numbers for gradient flow
+/// - Tracks uncertainty bounds (credible intervals)
+/// - Records historical calibration error
+/// - Adjusts confidence based on past performance
+#[derive(Clone)]
+pub struct CalibratedConfidence {
+    /// Point estimate as dual number (for gradient flow)
+    pub value: dual,
+
+    /// Lower bound of credible interval
+    pub lower_bound: f64,
+
+    /// Upper bound of credible interval
+    pub upper_bound: f64,
+
+    /// Number of predictions that contributed to calibration
+    pub sample_size: u64,
+
+    /// Historical Expected Calibration Error for this belief
+    pub historical_ece: f64,
+
+    /// Is this confidence based on sufficient evidence?
+    /// (sample_size > threshold)
+    pub is_well_calibrated: bool,
+}
+
+impl CalibratedConfidence {
+    /// Create a new calibrated confidence
+    pub fn new(value: f64) -> Self {
+        let clamped = value.max(0.0).min(1.0);
+        CalibratedConfidence {
+            value: dual::constant(clamped),
+            lower_bound: clamped,
+            upper_bound: clamped,
+            sample_size: 0,
+            historical_ece: 0.5,  // Maximum uncertainty initially
+            is_well_calibrated: false,
+        }
+    }
+
+    /// Create confidence that admits uncertainty
+    pub fn uncertain(estimate: f64, uncertainty: f64) -> Self {
+        let estimate = estimate.max(0.0).min(1.0);
+        let uncertainty = uncertainty.max(0.0);
+        CalibratedConfidence {
+            value: dual::variable(estimate),  // Variable for gradient tracking
+            lower_bound: (estimate - uncertainty).max(0.0),
+            upper_bound: (estimate + uncertainty).min(1.0),
+            sample_size: 0,
+            historical_ece: 0.5,  // Maximum uncertainty initially
+            is_well_calibrated: false,
+        }
+    }
+
+    /// Create from a prior belief with specified uncertainty
+    pub fn from_prior(estimate: f64, prior_strength: f64) -> Self {
+        // Higher prior strength = narrower bounds
+        let uncertainty = 0.5 / (1.0 + prior_strength);
+        CalibratedConfidence::uncertain(estimate, uncertainty)
+    }
+
+    /// Create from observed data
+    pub fn from_observations(successes: u64, total: u64) -> Self {
+        if total == 0 {
+            return CalibratedConfidence::uncertain(0.5, 0.5);
+        }
+
+        let estimate = successes as f64 / total as f64;
+
+        // Wilson score interval for uncertainty bounds
+        let z = 1.96;  // 95% confidence
+        let n = total as f64;
+        let p = estimate;
+
+        let denominator = 1.0 + z * z / n;
+        let center = (p + z * z / (2.0 * n)) / denominator;
+        let margin = z * (p * (1.0 - p) / n + z * z / (4.0 * n * n)).sqrt() / denominator;
+
+        CalibratedConfidence {
+            value: dual::constant(estimate),
+            lower_bound: (center - margin).max(0.0),
+            upper_bound: (center + margin).min(1.0),
+            sample_size: total,
+            historical_ece: 0.1,  // Assume reasonable calibration for observed data
+            is_well_calibrated: total >= 30,  // Rule of thumb
+        }
+    }
+
+    /// Update confidence based on a new prediction outcome
+    pub fn record_outcome(&mut self, predicted: f64, actual: bool) {
+        self.sample_size += 1;
+
+        // Update ECE using running average
+        let error = (predicted - if actual { 1.0 } else { 0.0 }).abs();
+        let n = self.sample_size as f64;
+        self.historical_ece = (self.historical_ece * (n - 1.0) + error) / n;
+
+        // Update calibration status
+        self.is_well_calibrated = self.sample_size >= 30 && self.historical_ece < 0.1;
+
+        // Shrink uncertainty bounds as we get more data
+        let shrink_factor = 1.0 / (1.0 + (self.sample_size as f64).sqrt() * 0.1);
+        let center = self.value.val;
+        self.lower_bound = center - (center - self.lower_bound) * shrink_factor;
+        self.upper_bound = center + (self.upper_bound - center) * shrink_factor;
+    }
+
+    /// Get calibration-adjusted confidence
+    /// Shrinks confidence toward 0.5 based on calibration error
+    pub fn adjusted(&self) -> f64 {
+        let shrinkage = self.historical_ece;
+        self.value.val * (1.0 - shrinkage) + 0.5 * shrinkage
+    }
+
+    /// Get calibration-adjusted confidence as dual (for gradient flow)
+    pub fn adjusted_dual(&self) -> dual {
+        let shrinkage = dual::constant(self.historical_ece);
+        self.value * (dual::constant(1.0) - shrinkage) + dual::constant(0.5) * shrinkage
+    }
+
+    /// Get the raw value (without calibration adjustment)
+    pub fn raw(&self) -> f64 {
+        self.value.val
+    }
+
+    /// Get uncertainty (width of credible interval)
+    pub fn uncertainty(&self) -> f64 {
+        self.upper_bound - self.lower_bound
+    }
+
+    /// Is this confidence reliable?
+    pub fn is_reliable(&self) -> bool {
+        self.is_well_calibrated && self.uncertainty() < 0.3
+    }
+
+    /// Blend with another confidence using weighted average
+    pub fn blend(&self, other: &CalibratedConfidence, self_weight: f64) -> CalibratedConfidence {
+        let self_weight = self_weight.max(0.0).min(1.0);
+        let other_weight = 1.0 - self_weight;
+
+        let new_value = self.value.val * self_weight + other.value.val * other_weight;
+        let new_lower = self.lower_bound * self_weight + other.lower_bound * other_weight;
+        let new_upper = self.upper_bound * self_weight + other.upper_bound * other_weight;
+        let new_ece = self.historical_ece * self_weight + other.historical_ece * other_weight;
+
+        CalibratedConfidence {
+            value: dual::constant(new_value),
+            lower_bound: new_lower,
+            upper_bound: new_upper,
+            sample_size: self.sample_size + other.sample_size,
+            historical_ece: new_ece,
+            is_well_calibrated: self.is_well_calibrated && other.is_well_calibrated,
+        }
+    }
+
+    /// Apply a Bayesian update given new evidence
+    pub fn bayesian_update(&mut self, likelihood_ratio: f64) {
+        // Update using Bayes' theorem
+        // posterior = prior * likelihood / evidence
+        // For binary: P(H|E) = P(H) * LR / (P(H) * LR + (1 - P(H)))
+
+        let prior = self.value.val;
+        let lr = likelihood_ratio.max(0.001);  // Avoid division by zero
+
+        let numerator = prior * lr;
+        let denominator = prior * lr + (1.0 - prior);
+        let posterior = numerator / denominator;
+
+        self.value = dual::constant(posterior.max(0.0).min(1.0));
+
+        // Widen bounds slightly due to update uncertainty
+        let center = posterior;
+        let current_width = self.upper_bound - self.lower_bound;
+        self.lower_bound = (center - current_width * 0.6).max(0.0);
+        self.upper_bound = (center + current_width * 0.6).min(1.0);
+    }
+
+    /// Decay confidence over time (epistemic rent)
+    /// Beliefs that don't pay predictive rent should decay
+    pub fn decay(&mut self, decay_rate: f64) {
+        let decay = decay_rate.max(0.0).min(1.0);
+
+        // Shrink toward 0.5 (maximum uncertainty)
+        let current = self.value.val;
+        let new_value = current * (1.0 - decay) + 0.5 * decay;
+        self.value = dual::constant(new_value);
+
+        // Widen bounds
+        let current_width = self.upper_bound - self.lower_bound;
+        let new_width = current_width + decay * (1.0 - current_width);
+        let center = new_value;
+        self.lower_bound = (center - new_width / 2.0).max(0.0);
+        self.upper_bound = (center + new_width / 2.0).min(1.0);
+    }
+
+    /// Format as string with uncertainty
+    pub fn to_string(&self) -> String {
+        format!(
+            "{:.2} [{:.2}, {:.2}] (ECE: {:.3}, n={})",
+            self.value.val, self.lower_bound, self.upper_bound,
+            self.historical_ece, self.sample_size
+        )
+    }
+}
+
+impl Default for CalibratedConfidence {
+    fn default() -> Self {
+        CalibratedConfidence::uncertain(0.5, 0.5)  // Maximum uncertainty
+    }
+}
+
+// Helper function
+fn current_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_calibration_record() {
+        let mut record = CalibrationRecord::new();
+
+        // Perfectly calibrated: 70% confidence, correct 70% of time
+        for _ in 0..70 {
+            record.record(0.7, true);
+        }
+        for _ in 0..30 {
+            record.record(0.7, false);
+        }
+
+        let ece = record.compute_ece();
+        assert!(ece < 0.05, "ECE should be low for calibrated predictions");
+    }
+
+    #[test]
+    fn test_overconfident_detection() {
+        let mut record = CalibrationRecord::new();
+
+        // Overconfident: 90% confidence, only correct 60% of time
+        for _ in 0..60 {
+            record.record(0.9, true);
+        }
+        for _ in 0..40 {
+            record.record(0.9, false);
+        }
+
+        let ece = record.compute_ece();
+        assert!(ece > 0.2, "ECE should be high for overconfident predictions");
+    }
+
+    #[test]
+    fn test_calibrated_confidence_decay() {
+        let mut conf = CalibratedConfidence::new(0.9);
+
+        // Decay should move toward 0.5
+        conf.decay(0.1);
+        assert!(conf.value.val < 0.9);
+        assert!(conf.value.val > 0.5);
+
+        // Multiple decays should converge to 0.5
+        for _ in 0..100 {
+            conf.decay(0.1);
+        }
+        assert!((conf.value.val - 0.5).abs() < 0.01);
+    }
+}

@@ -1,0 +1,357 @@
+// TASK-014: Belief Timestamps
+//
+// Temporal metadata for belief lifecycle management.
+// Tracks when beliefs are created, updated, validated, and should expire.
+
+use std::time::{Duration, Instant};
+
+/// Timestamps for belief lifecycle
+#[derive(Clone)]
+pub struct BeliefTimestamps {
+    /// When this belief was first created
+    pub created_at: Instant,
+
+    /// When this belief was last modified
+    pub last_modified: Instant,
+
+    /// When this belief was last validated against observations
+    pub last_validated: Option<Instant>,
+
+    /// When this belief was last used in a decision
+    pub last_used: Option<Instant>,
+
+    /// When this belief should be reviewed (if ever)
+    pub review_due: Option<Instant>,
+
+    /// When this belief expires (if ever)
+    pub expires_at: Option<Instant>,
+
+    /// Number of times this belief has been modified
+    pub modification_count: u64,
+
+    /// Number of times this belief has been used
+    pub usage_count: u64,
+
+    /// Number of times this belief has been validated
+    pub validation_count: u64,
+}
+
+impl BeliefTimestamps {
+    /// Create timestamps for a new belief
+    pub fn new() -> Self {
+        let now = Instant::now();
+        BeliefTimestamps {
+            created_at: now,
+            last_modified: now,
+            last_validated: None,
+            last_used: None,
+            review_due: None,
+            expires_at: None,
+            modification_count: 0,
+            usage_count: 0,
+            validation_count: 0,
+        }
+    }
+
+    /// Set expiration time
+    pub fn expires_in(mut self, duration: Duration) -> Self {
+        self.expires_at = Some(self.created_at + duration);
+        self
+    }
+
+    /// Set review due time
+    pub fn review_in(mut self, duration: Duration) -> Self {
+        self.review_due = Some(Instant::now() + duration);
+        self
+    }
+
+    /// Record a modification
+    pub fn record_modification(&mut self) {
+        self.last_modified = Instant::now();
+        self.modification_count += 1;
+    }
+
+    /// Record usage
+    pub fn record_usage(&mut self) {
+        self.last_used = Some(Instant::now());
+        self.usage_count += 1;
+    }
+
+    /// Record validation
+    pub fn record_validation(&mut self) {
+        self.last_validated = Some(Instant::now());
+        self.validation_count += 1;
+    }
+
+    /// Check if belief has expired
+    pub fn is_expired(&self) -> bool {
+        if let Some(expires_at) = self.expires_at {
+            Instant::now() > expires_at
+        } else {
+            false
+        }
+    }
+
+    /// Check if review is due
+    pub fn review_is_due(&self) -> bool {
+        if let Some(review_due) = self.review_due {
+            Instant::now() > review_due
+        } else {
+            false
+        }
+    }
+
+    /// Get age of the belief
+    pub fn age(&self) -> Duration {
+        self.created_at.elapsed()
+    }
+
+    /// Get time since last modification
+    pub fn time_since_modification(&self) -> Duration {
+        self.last_modified.elapsed()
+    }
+
+    /// Get time since last validation
+    pub fn time_since_validation(&self) -> Option<Duration> {
+        self.last_validated.map(|t| t.elapsed())
+    }
+
+    /// Get time since last use
+    pub fn time_since_use(&self) -> Option<Duration> {
+        self.last_used.map(|t| t.elapsed())
+    }
+
+    /// Check if belief is stale (not used or validated in a while)
+    pub fn is_stale(&self, staleness_threshold: Duration) -> bool {
+        let since_validation = self.time_since_validation()
+            .unwrap_or(self.age());
+        let since_use = self.time_since_use()
+            .unwrap_or(self.age());
+
+        // Stale if both validation and use are old
+        since_validation > staleness_threshold && since_use > staleness_threshold
+    }
+
+    /// Check if belief is actively used
+    pub fn is_active(&self, active_threshold: Duration) -> bool {
+        self.time_since_use()
+            .map(|d| d < active_threshold)
+            .unwrap_or(false)
+    }
+
+    /// Compute a staleness score (0.0 = fresh, 1.0 = very stale)
+    pub fn staleness_score(&self, max_age: Duration) -> f64 {
+        let age_secs = self.age().as_secs_f64();
+        let max_secs = max_age.as_secs_f64();
+
+        if max_secs == 0.0 {
+            return 0.0;
+        }
+
+        // Use sigmoid-like function for smooth transition
+        let ratio = age_secs / max_secs;
+        let staleness = 1.0 - 1.0 / (1.0 + ratio);
+
+        staleness.max(0.0).min(1.0)
+    }
+
+    /// Get usage rate (uses per hour)
+    pub fn usage_rate(&self) -> f64 {
+        let hours = self.age().as_secs_f64() / 3600.0;
+        if hours == 0.0 {
+            0.0
+        } else {
+            self.usage_count as f64 / hours
+        }
+    }
+
+    /// Get validation rate (validations per hour)
+    pub fn validation_rate(&self) -> f64 {
+        let hours = self.age().as_secs_f64() / 3600.0;
+        if hours == 0.0 {
+            0.0
+        } else {
+            self.validation_count as f64 / hours
+        }
+    }
+
+    /// Extend expiration time
+    pub fn extend_expiration(&mut self, duration: Duration) {
+        if let Some(ref mut expires_at) = self.expires_at {
+            *expires_at = *expires_at + duration;
+        } else {
+            self.expires_at = Some(Instant::now() + duration);
+        }
+    }
+
+    /// Schedule next review
+    pub fn schedule_review(&mut self, duration: Duration) {
+        self.review_due = Some(Instant::now() + duration);
+    }
+
+    /// Get time remaining until expiration
+    pub fn time_until_expiration(&self) -> Option<Duration> {
+        self.expires_at.and_then(|expires| {
+            let now = Instant::now();
+            if now < expires {
+                Some(expires - now)
+            } else {
+                None  // Already expired
+            }
+        })
+    }
+
+    /// Get time remaining until review
+    pub fn time_until_review(&self) -> Option<Duration> {
+        self.review_due.and_then(|review| {
+            let now = Instant::now();
+            if now < review {
+                Some(review - now)
+            } else {
+                None  // Review already due
+            }
+        })
+    }
+
+    /// Format as summary string
+    pub fn summary(&self) -> String {
+        let mut parts = vec![
+            format!("age: {:?}", self.age()),
+            format!("modified: {}x", self.modification_count),
+            format!("used: {}x", self.usage_count),
+        ];
+
+        if self.is_expired() {
+            parts.push("EXPIRED".to_string());
+        } else if let Some(remaining) = self.time_until_expiration() {
+            parts.push(format!("expires in: {:?}", remaining));
+        }
+
+        if self.review_is_due() {
+            parts.push("REVIEW DUE".to_string());
+        }
+
+        parts.join(", ")
+    }
+}
+
+impl Default for BeliefTimestamps {
+    fn default() -> Self {
+        BeliefTimestamps::new()
+    }
+}
+
+/// Builder for timestamps with common patterns
+pub struct TimestampBuilder {
+    timestamps: BeliefTimestamps,
+}
+
+impl TimestampBuilder {
+    /// Start building timestamps
+    pub fn new() -> Self {
+        TimestampBuilder {
+            timestamps: BeliefTimestamps::new(),
+        }
+    }
+
+    /// Set expiration
+    pub fn expires_in(mut self, duration: Duration) -> Self {
+        self.timestamps.expires_at = Some(Instant::now() + duration);
+        self
+    }
+
+    /// Set review schedule
+    pub fn review_in(mut self, duration: Duration) -> Self {
+        self.timestamps.review_due = Some(Instant::now() + duration);
+        self
+    }
+
+    /// Mark as already validated
+    pub fn validated(mut self) -> Self {
+        self.timestamps.last_validated = Some(Instant::now());
+        self.timestamps.validation_count = 1;
+        self
+    }
+
+    /// Build the timestamps
+    pub fn build(self) -> BeliefTimestamps {
+        self.timestamps
+    }
+}
+
+/// Common timestamp patterns
+pub mod patterns {
+    use super::*;
+
+    /// Timestamps for a transient belief (expires in 1 hour)
+    pub fn transient() -> BeliefTimestamps {
+        TimestampBuilder::new()
+            .expires_in(Duration::from_secs(3600))
+            .build()
+    }
+
+    /// Timestamps for a short-lived belief (expires in 24 hours)
+    pub fn short_lived() -> BeliefTimestamps {
+        TimestampBuilder::new()
+            .expires_in(Duration::from_secs(24 * 3600))
+            .review_in(Duration::from_secs(12 * 3600))
+            .build()
+    }
+
+    /// Timestamps for a long-lived belief (expires in 30 days)
+    pub fn long_lived() -> BeliefTimestamps {
+        TimestampBuilder::new()
+            .expires_in(Duration::from_secs(30 * 24 * 3600))
+            .review_in(Duration::from_secs(7 * 24 * 3600))
+            .build()
+    }
+
+    /// Timestamps for a permanent belief (no expiration)
+    pub fn permanent() -> BeliefTimestamps {
+        BeliefTimestamps::new()
+    }
+
+    /// Timestamps for a belief that needs frequent review
+    pub fn needs_review(review_interval: Duration) -> BeliefTimestamps {
+        TimestampBuilder::new()
+            .review_in(review_interval)
+            .build()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_expiration() {
+        let mut ts = BeliefTimestamps::new();
+        assert!(!ts.is_expired());
+
+        ts.expires_at = Some(Instant::now() - Duration::from_secs(1));
+        assert!(ts.is_expired());
+    }
+
+    #[test]
+    fn test_staleness_score() {
+        let ts = BeliefTimestamps::new();
+        let max_age = Duration::from_secs(3600);
+
+        // Fresh belief should have low staleness
+        let score = ts.staleness_score(max_age);
+        assert!(score < 0.1);
+    }
+
+    #[test]
+    fn test_usage_tracking() {
+        let mut ts = BeliefTimestamps::new();
+        assert_eq!(ts.usage_count, 0);
+
+        ts.record_usage();
+        ts.record_usage();
+        ts.record_usage();
+
+        assert_eq!(ts.usage_count, 3);
+        assert!(ts.last_used.is_some());
+    }
+}

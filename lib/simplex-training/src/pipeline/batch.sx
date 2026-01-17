@@ -1,0 +1,330 @@
+// Batch training for multiple specialists
+//
+// Trains multiple specialists in sequence or parallel.
+
+use simplex_std::vec::Vec;
+use simplex_std::string::String;
+use simplex_std::collections::HashMap;
+use super::super::SpecialistDomain;
+use super::specialist::{SpecialistPipeline, PipelineConfig, TrainedSpecialist, PipelineResult};
+
+/// Batch training configuration
+#[derive(Clone)]
+pub struct BatchConfig {
+    /// Domains to train
+    pub domains: Vec<SpecialistDomain>,
+
+    /// Base output directory
+    pub output_dir: String,
+
+    /// Samples per domain
+    pub samples_per_domain: usize,
+
+    /// Validation samples per domain
+    pub val_samples: usize,
+
+    /// Whether to run sequentially (true) or note
+    pub sequential: bool,
+}
+
+impl BatchConfig {
+    /// Create with default domains
+    pub fn default_domains() -> Self {
+        BatchConfig {
+            domains: vec![
+                SpecialistDomain::Document,
+                SpecialistDomain::Code,
+                SpecialistDomain::Classification,
+                SpecialistDomain::Reasoning,
+            ],
+            output_dir: "specialists".to_string(),
+            samples_per_domain: 5000,
+            val_samples: 500,
+            sequential: true,
+        }
+    }
+
+    /// Add domain
+    pub fn add_domain(mut self, domain: SpecialistDomain) -> Self {
+        self.domains.push(domain);
+        self
+    }
+
+    /// Set sample counts
+    pub fn with_samples(mut self, train: usize, val: usize) -> Self {
+        self.samples_per_domain = train;
+        self.val_samples = val;
+        self
+    }
+}
+
+/// Result of batch training
+#[derive(Clone)]
+pub struct BatchResult {
+    /// Results per domain
+    pub results: Vec<(SpecialistDomain, TrainedSpecialist)>,
+
+    /// Failed domains (if any)
+    pub failures: Vec<(SpecialistDomain, String)>,
+
+    /// Total training time
+    pub total_time: f64,
+
+    /// Summary statistics
+    pub stats: BatchStats,
+}
+
+/// Batch training statistics
+#[derive(Clone)]
+pub struct BatchStats {
+    /// Number of specialists trained
+    pub trained: usize,
+
+    /// Number of failures
+    pub failed: usize,
+
+    /// Average final loss
+    pub avg_final_loss: f64,
+
+    /// Average best validation loss
+    pub avg_best_loss: f64,
+
+    /// Total steps across all training
+    pub total_steps: usize,
+}
+
+/// Batch trainer for multiple specialists
+pub struct BatchTrainer {
+    /// Configuration
+    config: BatchConfig,
+
+    /// Individual pipelines
+    pipelines: HashMap<String, SpecialistPipeline>,
+
+    /// Results collected so far
+    results: Vec<(SpecialistDomain, TrainedSpecialist)>,
+
+    /// Failures
+    failures: Vec<(SpecialistDomain, String)>,
+}
+
+impl BatchTrainer {
+    /// Create new batch trainer
+    pub fn new(config: BatchConfig) -> Self {
+        BatchTrainer {
+            config,
+            pipelines: HashMap::new(),
+            results: Vec::new(),
+            failures: Vec::new(),
+        }
+    }
+
+    /// Train all specialists
+    pub fn train_all(&mut self) -> BatchResult {
+        let start_time = std::time::Instant::now();
+
+        for domain in &self.config.domains.clone() {
+            let domain_name = domain.name();
+
+            // Create pipeline for this domain
+            let pipeline_config = PipelineConfig::for_domain(domain.clone())
+                .with_samples(self.config.samples_per_domain, self.config.val_samples)
+                .with_output(&format!("{}/{}", self.config.output_dir, domain_name));
+
+            let mut pipeline = SpecialistPipeline::new(pipeline_config);
+
+            // Train
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                pipeline.train()
+            })) {
+                Ok(result) => {
+                    self.results.push((domain.clone(), result.specialist));
+                }
+                Err(_) => {
+                    self.failures.push((domain.clone(), "Training failed".to_string()));
+                }
+            }
+        }
+
+        let total_time = start_time.elapsed().as_secs_f64();
+
+        // Compute statistics
+        let stats = self.compute_stats();
+
+        BatchResult {
+            results: self.results.clone(),
+            failures: self.failures.clone(),
+            total_time,
+            stats,
+        }
+    }
+
+    /// Train a single domain
+    pub fn train_one(&mut self, domain: &SpecialistDomain) -> Option<TrainedSpecialist> {
+        let pipeline_config = PipelineConfig::for_domain(domain.clone())
+            .with_samples(self.config.samples_per_domain, self.config.val_samples);
+
+        let mut pipeline = SpecialistPipeline::new(pipeline_config);
+        let result = pipeline.train();
+
+        self.results.push((domain.clone(), result.specialist.clone()));
+        Some(result.specialist)
+    }
+
+    /// Compute batch statistics
+    fn compute_stats(&self) -> BatchStats {
+        let trained = self.results.len();
+        let failed = self.failures.len();
+
+        let avg_final_loss = if trained > 0 {
+            self.results.iter().map(|(_, s)| s.final_loss).sum::<f64>() / trained as f64
+        } else {
+            0.0
+        };
+
+        let avg_best_loss = if trained > 0 {
+            self.results.iter().map(|(_, s)| s.best_val_loss).sum::<f64>() / trained as f64
+        } else {
+            0.0
+        };
+
+        let total_steps: usize = self.results.iter().map(|(_, s)| s.steps).sum();
+
+        BatchStats {
+            trained,
+            failed,
+            avg_final_loss,
+            avg_best_loss,
+            total_steps,
+        }
+    }
+
+    /// Get results
+    pub fn results(&self) -> &[(SpecialistDomain, TrainedSpecialist)] {
+        &self.results
+    }
+
+    /// Get failures
+    pub fn failures(&self) -> &[(SpecialistDomain, String)] {
+        &self.failures
+    }
+
+    /// Reset trainer
+    pub fn reset(&mut self) {
+        self.pipelines.clear();
+        self.results.clear();
+        self.failures.clear();
+    }
+}
+
+/// Catalog of specialist definitions (matching specialists_catalog.yaml)
+pub struct SpecialistCatalog {
+    /// Categories of specialists
+    categories: Vec<SpecialistCategory>,
+}
+
+/// Category of specialists
+pub struct SpecialistCategory {
+    /// Category name
+    pub name: String,
+
+    /// Specialists in this category
+    pub specialists: Vec<SpecialistDefinition>,
+}
+
+/// Definition of a specialist
+#[derive(Clone)]
+pub struct SpecialistDefinition {
+    /// Unique ID
+    pub id: String,
+
+    /// Display name
+    pub name: String,
+
+    /// Domain
+    pub domain: SpecialistDomain,
+
+    /// Description
+    pub description: String,
+
+    /// Recommended LoRA config
+    pub lora_config: String,
+}
+
+impl SpecialistCatalog {
+    /// Create catalog with standard specialists
+    pub fn standard() -> Self {
+        SpecialistCatalog {
+            categories: vec![
+                SpecialistCategory {
+                    name: "document".to_string(),
+                    specialists: vec![
+                        SpecialistDefinition {
+                            id: "doc_extraction".to_string(),
+                            name: "Document Extraction".to_string(),
+                            domain: SpecialistDomain::Document,
+                            description: "Extract structured data from documents".to_string(),
+                            lora_config: "standard".to_string(),
+                        },
+                    ],
+                },
+                SpecialistCategory {
+                    name: "code".to_string(),
+                    specialists: vec![
+                        SpecialistDefinition {
+                            id: "code_gen".to_string(),
+                            name: "Code Generation".to_string(),
+                            domain: SpecialistDomain::Code,
+                            description: "Generate code from specifications".to_string(),
+                            lora_config: "complex".to_string(),
+                        },
+                    ],
+                },
+                SpecialistCategory {
+                    name: "reasoning".to_string(),
+                    specialists: vec![
+                        SpecialistDefinition {
+                            id: "reasoning".to_string(),
+                            name: "Logical Reasoning".to_string(),
+                            domain: SpecialistDomain::Reasoning,
+                            description: "Logical and mathematical reasoning".to_string(),
+                            lora_config: "standard".to_string(),
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    /// Get all specialist definitions
+    pub fn all_specialists(&self) -> Vec<SpecialistDefinition> {
+        self.categories.iter()
+            .flat_map(|c| c.specialists.iter().cloned())
+            .collect()
+    }
+
+    /// Get specialists by category
+    pub fn by_category(&self, name: &str) -> Option<&SpecialistCategory> {
+        self.categories.iter().find(|c| c.name == name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_batch_config() {
+        let config = BatchConfig::default_domains();
+
+        assert_eq!(config.domains.len(), 4);
+    }
+
+    #[test]
+    fn test_catalog() {
+        let catalog = SpecialistCatalog::standard();
+        let all = catalog.all_specialists();
+
+        assert!(!all.is_empty());
+    }
+}

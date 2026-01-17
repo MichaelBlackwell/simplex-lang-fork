@@ -1,0 +1,733 @@
+// TASK-014: Grounded Belief
+//
+// The main type bringing together all epistemic metadata.
+// A grounded belief is not just a confidence score - it's a structured object
+// with provenance, evidence, falsification conditions, calibration, and scope.
+//
+// Core principle: Every belief must be grounded to something outside the
+// belief graph. Coherence is necessary but not sufficient for truth.
+
+use std::time::{Duration, Instant};
+use simplex_std::dual::dual;
+
+use super::provenance::{BeliefProvenance, BeliefId, InferenceRule};
+use super::evidence::{EvidenceLink, EvidenceSet, FalsificationCondition, FalsificationAction, Observation};
+use super::confidence::{CalibratedConfidence, CalibrationRecord};
+use super::scope::{BeliefScope, Context, ScopeViolation, Domain};
+use super::timestamps::BeliefTimestamps;
+
+/// A grounded belief with full epistemic metadata
+///
+/// Unlike simple confidence scores, GroundedBelief tracks:
+/// - Where the belief came from (provenance)
+/// - What observations support it (evidence)
+/// - What would invalidate it (falsifiers)
+/// - How accurate its predictions have been (calibration)
+/// - Where it applies (scope)
+/// - Its temporal lifecycle (timestamps)
+#[derive(Clone)]
+pub struct GroundedBelief<T: Clone> {
+    /// Unique identifier for this belief
+    pub id: BeliefId,
+
+    /// The claim itself
+    pub claim: T,
+
+    /// Where this belief came from
+    pub provenance: BeliefProvenance,
+
+    /// What observations support it
+    pub evidence: Vec<EvidenceLink>,
+
+    /// What would change or invalidate it
+    pub falsifiers: Vec<FalsificationCondition>,
+
+    /// Calibrated confidence with uncertainty bounds
+    pub confidence: CalibratedConfidence,
+
+    /// Domain boundaries where this belief applies
+    pub scope: BeliefScope,
+
+    /// Temporal metadata
+    pub timestamps: BeliefTimestamps,
+
+    /// Predictive track record
+    pub calibration: CalibrationRecord,
+
+    /// Is this belief currently active?
+    pub active: bool,
+
+    /// Tags for categorization
+    pub tags: Vec<String>,
+}
+
+impl<T: Clone> GroundedBelief<T> {
+    // =========================================================================
+    // Constructors
+    // =========================================================================
+
+    /// Create a new grounded belief
+    pub fn new(id: &str, claim: T, provenance: BeliefProvenance, confidence: f64) -> Self {
+        GroundedBelief {
+            id: id.to_string(),
+            claim,
+            provenance,
+            evidence: Vec::new(),
+            falsifiers: Vec::new(),
+            confidence: CalibratedConfidence::new(confidence),
+            scope: BeliefScope::universal(),
+            timestamps: BeliefTimestamps::new(),
+            calibration: CalibrationRecord::new(),
+            active: true,
+            tags: Vec::new(),
+        }
+    }
+
+    /// Create an observed belief (highest trust)
+    pub fn observed(id: &str, claim: T, source: &str, confidence: f64) -> Self {
+        GroundedBelief::new(
+            id,
+            claim,
+            BeliefProvenance::observed(source),
+            confidence,
+        )
+    }
+
+    /// Create an inferred belief
+    pub fn inferred(
+        id: &str,
+        claim: T,
+        premises: Vec<BeliefId>,
+        rule: InferenceRule,
+        confidence: f64,
+    ) -> Self {
+        GroundedBelief::new(
+            id,
+            claim,
+            BeliefProvenance::inferred(premises, rule, "Derived via inference"),
+            confidence,
+        )
+    }
+
+    /// Create an authoritative belief (from trusted source)
+    pub fn authoritative(id: &str, claim: T, authority: &str, trust_level: f64) -> Self {
+        GroundedBelief::new(
+            id,
+            claim,
+            BeliefProvenance::authoritative(authority, trust_level),
+            trust_level,
+        )
+    }
+
+    /// Create a learned belief (from training)
+    pub fn learned(
+        id: &str,
+        claim: T,
+        training_hash: &str,
+        model_version: &str,
+        validation_score: f64,
+    ) -> Self {
+        GroundedBelief::new(
+            id,
+            claim,
+            BeliefProvenance::learned(training_hash, model_version, validation_score),
+            validation_score,
+        )
+    }
+
+    /// Create a prior belief (assumed without evidence)
+    pub fn prior(id: &str, claim: T, justification: &str, confidence: f64) -> Self {
+        GroundedBelief::new(
+            id,
+            claim,
+            BeliefProvenance::prior(justification),
+            confidence * 0.5,  // Priors get reduced confidence
+        )
+    }
+
+    // =========================================================================
+    // Builder Methods
+    // =========================================================================
+
+    /// Add evidence
+    pub fn with_evidence(mut self, evidence: EvidenceLink) -> Self {
+        self.evidence.push(evidence);
+        self
+    }
+
+    /// Add multiple pieces of evidence
+    pub fn with_evidence_list(mut self, evidence: Vec<EvidenceLink>) -> Self {
+        self.evidence.extend(evidence);
+        self
+    }
+
+    /// Add a falsification condition
+    pub fn with_falsifier(mut self, falsifier: FalsificationCondition) -> Self {
+        self.falsifiers.push(falsifier);
+        self
+    }
+
+    /// Add expiration-based falsification
+    pub fn expires_in(mut self, duration: Duration) -> Self {
+        self.falsifiers.push(FalsificationCondition::expires_in(duration));
+        self.timestamps = self.timestamps.expires_in(duration);
+        self
+    }
+
+    /// Set scope
+    pub fn with_scope(mut self, scope: BeliefScope) -> Self {
+        self.scope = scope;
+        self
+    }
+
+    /// Restrict to a specific domain
+    pub fn in_domain(mut self, domain: Domain) -> Self {
+        self.scope = BeliefScope::domain(domain);
+        self
+    }
+
+    /// Set initial calibration record
+    pub fn with_calibration(mut self, calibration: CalibrationRecord) -> Self {
+        self.calibration = calibration;
+        self
+    }
+
+    /// Add a tag
+    pub fn with_tag(mut self, tag: &str) -> Self {
+        self.tags.push(tag.to_string());
+        self
+    }
+
+    /// Set uncertainty bounds on confidence
+    pub fn with_uncertainty(mut self, uncertainty: f64) -> Self {
+        self.confidence = CalibratedConfidence::uncertain(
+            self.confidence.value.val,
+            uncertainty,
+        );
+        self
+    }
+
+    // =========================================================================
+    // Evidence Management
+    // =========================================================================
+
+    /// Add new evidence
+    pub fn add_evidence(&mut self, evidence: EvidenceLink) {
+        self.evidence.push(evidence);
+        self.timestamps.record_modification();
+        self.update_confidence_from_evidence();
+    }
+
+    /// Add supporting observation
+    pub fn add_support(&mut self, observation: Observation, strength: f64) {
+        let link = EvidenceLink::supporting(observation, strength);
+        self.add_evidence(link);
+    }
+
+    /// Add contradicting observation
+    pub fn add_contradiction(&mut self, observation: Observation, strength: f64) {
+        let link = EvidenceLink::contradicting(observation, strength);
+        self.add_evidence(link);
+    }
+
+    /// Update confidence based on current evidence
+    fn update_confidence_from_evidence(&mut self) {
+        let mut evidence_set = EvidenceSet::new();
+        for e in &self.evidence {
+            evidence_set.add(e.clone());
+        }
+
+        let net_support = evidence_set.net_support();
+        let evidence_count = evidence_set.count();
+
+        if evidence_count > 0 {
+            // Bayesian-style update based on net support
+            let likelihood_ratio = (1.0 + net_support).max(0.1);
+            self.confidence.bayesian_update(likelihood_ratio);
+        }
+    }
+
+    /// Get valid evidence
+    pub fn valid_evidence(&self) -> impl Iterator<Item = &EvidenceLink> {
+        self.evidence.iter().filter(|e| e.is_valid())
+    }
+
+    /// Count supporting evidence
+    pub fn supporting_evidence_count(&self) -> usize {
+        self.valid_evidence().filter(|e| e.is_supporting()).count()
+    }
+
+    /// Count contradicting evidence
+    pub fn contradicting_evidence_count(&self) -> usize {
+        self.valid_evidence().filter(|e| e.is_contradicting()).count()
+    }
+
+    /// Prune old/invalid evidence
+    pub fn prune_evidence(&mut self) {
+        self.evidence.retain(|e| e.is_valid());
+    }
+
+    // =========================================================================
+    // Confidence & Calibration
+    // =========================================================================
+
+    /// Get the raw confidence value
+    pub fn confidence_value(&self) -> f64 {
+        self.confidence.value.val
+    }
+
+    /// Get calibration-adjusted confidence
+    pub fn adjusted_confidence(&self) -> f64 {
+        self.confidence.adjusted()
+    }
+
+    /// Get confidence as dual (for gradient flow)
+    pub fn confidence_dual(&self) -> dual {
+        self.confidence.value
+    }
+
+    /// Get adjusted confidence as dual
+    pub fn adjusted_confidence_dual(&self) -> dual {
+        self.confidence.adjusted_dual()
+    }
+
+    /// Record a prediction outcome for calibration
+    pub fn record_prediction(&mut self, predicted: f64, was_correct: bool) {
+        self.calibration.record(predicted, was_correct);
+        self.confidence.record_outcome(predicted, was_correct);
+        self.timestamps.record_validation();
+    }
+
+    /// Get Expected Calibration Error
+    pub fn ece(&self) -> f64 {
+        self.calibration.compute_ece()
+    }
+
+    /// Is this belief well-calibrated?
+    pub fn is_well_calibrated(&self) -> bool {
+        self.confidence.is_well_calibrated
+    }
+
+    /// Apply confidence decay (epistemic rent)
+    pub fn decay_confidence(&mut self, rate: f64) {
+        self.confidence.decay(rate);
+        self.timestamps.record_modification();
+    }
+
+    // =========================================================================
+    // Falsification
+    // =========================================================================
+
+    /// Check all falsification conditions
+    pub fn check_falsifiers(&mut self) -> Vec<&FalsificationCondition> {
+        let now = Instant::now();
+        let created = self.timestamps.created_at;
+
+        let mut triggered = Vec::new();
+
+        for falsifier in &mut self.falsifiers {
+            falsifier.mark_checked();
+
+            // Check expiry-based falsifiers
+            if falsifier.check_expiry(created) {
+                falsifier.trigger();
+            }
+
+            if falsifier.triggered {
+                triggered.push(&*falsifier);
+            }
+        }
+
+        // Return references to triggered falsifiers
+        self.falsifiers.iter()
+            .filter(|f| f.triggered)
+            .collect()
+    }
+
+    /// Apply triggered falsification actions
+    pub fn apply_falsifications(&mut self) {
+        for falsifier in &self.falsifiers {
+            if falsifier.triggered {
+                match &falsifier.action {
+                    FalsificationAction::ReduceConfidence { amount } => {
+                        let new_val = (self.confidence.value.val - amount).max(0.0);
+                        self.confidence.value = dual::constant(new_val);
+                    }
+                    FalsificationAction::SetConfidence { value } => {
+                        self.confidence.value = dual::constant(*value);
+                    }
+                    FalsificationAction::ScaleConfidence { factor } => {
+                        let new_val = self.confidence.value.val * factor;
+                        self.confidence.value = dual::constant(new_val.max(0.0).min(1.0));
+                    }
+                    FalsificationAction::Invalidate => {
+                        self.active = false;
+                    }
+                    FalsificationAction::MarkForReview { .. } => {
+                        self.timestamps.schedule_review(Duration::from_secs(0));
+                    }
+                    FalsificationAction::Reevaluate => {
+                        // Reset confidence to reflect uncertainty
+                        self.confidence = CalibratedConfidence::uncertain(0.5, 0.3);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Reset triggered flags
+        for falsifier in &mut self.falsifiers {
+            falsifier.reset();
+        }
+
+        self.timestamps.record_modification();
+    }
+
+    /// Check if belief has been falsified (any active falsifiers)
+    pub fn is_falsified(&self) -> bool {
+        self.falsifiers.iter().any(|f| f.triggered)
+    }
+
+    // =========================================================================
+    // Scope & Applicability
+    // =========================================================================
+
+    /// Check if belief applies in given context
+    pub fn applies_in(&self, context: &Context) -> bool {
+        self.active && self.scope.applies(context)
+    }
+
+    /// Assert belief applies, returning error if not
+    pub fn assert_applicable(&self, context: &Context) -> Result<(), ScopeViolation> {
+        if !self.active {
+            return Err(ScopeViolation::new(
+                &self.scope,
+                context,
+                "Belief is not active",
+            ));
+        }
+        self.scope.assert_applicable(context)
+    }
+
+    /// Use belief in a context (records usage, checks scope)
+    pub fn use_in(&mut self, context: &Context) -> Result<&T, ScopeViolation> {
+        self.assert_applicable(context)?;
+        self.timestamps.record_usage();
+        Ok(&self.claim)
+    }
+
+    // =========================================================================
+    // Lifecycle Management
+    // =========================================================================
+
+    /// Check if belief is still valid
+    pub fn is_valid(&self) -> bool {
+        self.active && !self.timestamps.is_expired() && !self.is_falsified()
+    }
+
+    /// Check if belief needs review
+    pub fn needs_review(&self) -> bool {
+        self.timestamps.review_is_due() ||
+        self.ece() > 0.15 ||  // Poor calibration
+        self.contradicting_evidence_count() > self.supporting_evidence_count()
+    }
+
+    /// Check if belief is stale
+    pub fn is_stale(&self, threshold: Duration) -> bool {
+        self.timestamps.is_stale(threshold)
+    }
+
+    /// Deactivate belief
+    pub fn deactivate(&mut self) {
+        self.active = false;
+        self.timestamps.record_modification();
+    }
+
+    /// Reactivate belief
+    pub fn reactivate(&mut self) {
+        self.active = true;
+        self.timestamps.record_modification();
+    }
+
+    // =========================================================================
+    // Transformation & Combination
+    // =========================================================================
+
+    /// Create a negation of this belief
+    pub fn negate(&self) -> GroundedBelief<T> {
+        let mut negated = self.clone();
+        negated.id = format!("not_{}", self.id);
+        negated.confidence.value = dual::constant(1.0 - self.confidence.value.val);
+
+        // Swap bounds
+        let old_lower = negated.confidence.lower_bound;
+        negated.confidence.lower_bound = 1.0 - negated.confidence.upper_bound;
+        negated.confidence.upper_bound = 1.0 - old_lower;
+
+        negated
+    }
+
+    /// Create version with modified confidence
+    pub fn with_confidence(&self, new_confidence: dual) -> GroundedBelief<T> {
+        let mut modified = self.clone();
+        modified.confidence.value = new_confidence;
+        modified.timestamps.record_modification();
+        modified
+    }
+
+    /// Blend with another belief about the same claim
+    pub fn blend_with(&self, other: &GroundedBelief<T>, self_weight: f64) -> GroundedBelief<T> {
+        let mut blended = self.clone();
+        blended.confidence = self.confidence.blend(&other.confidence, self_weight);
+
+        // Combine evidence
+        blended.evidence.extend(other.evidence.clone());
+
+        // Combine falsifiers (deduplicate by condition description)
+        for f in &other.falsifiers {
+            if !blended.falsifiers.iter().any(|bf| bf.condition == f.condition) {
+                blended.falsifiers.push(f.clone());
+            }
+        }
+
+        blended.timestamps.record_modification();
+        blended
+    }
+
+    // =========================================================================
+    // Strength & Trust Metrics
+    // =========================================================================
+
+    /// Compute overall belief strength
+    /// Combines confidence, calibration, evidence, and provenance trust
+    pub fn strength(&self) -> dual {
+        let base_confidence = self.confidence.adjusted_dual();
+
+        // Evidence factor
+        let supporting = self.supporting_evidence_count() as f64;
+        let contradicting = self.contradicting_evidence_count() as f64;
+        let evidence_factor = if supporting + contradicting > 0.0 {
+            (supporting + 1.0) / (supporting + contradicting + 2.0)
+        } else {
+            0.5
+        };
+
+        // Provenance trust
+        let provenance_trust = self.provenance.trust_weight();
+
+        // Calibration factor (well-calibrated beliefs are more trustworthy)
+        let calibration_factor = 1.0 - self.ece();
+
+        // Combine factors
+        base_confidence *
+            dual::constant(evidence_factor) *
+            dual::constant(provenance_trust) *
+            dual::constant(calibration_factor)
+    }
+
+    /// Get a summary of this belief's epistemic status
+    pub fn epistemic_summary(&self) -> String {
+        format!(
+            "Belief '{}': conf={:.2} (adj={:.2}), ECE={:.3}, evidence={}/{}+/{}-, provenance={}",
+            self.id,
+            self.confidence_value(),
+            self.adjusted_confidence(),
+            self.ece(),
+            self.evidence.len(),
+            self.supporting_evidence_count(),
+            self.contradicting_evidence_count(),
+            self.provenance.describe()
+        )
+    }
+}
+
+// =========================================================================
+// Trait Implementations
+// =========================================================================
+
+impl<T: Clone + Default> Default for GroundedBelief<T> {
+    fn default() -> Self {
+        GroundedBelief::new(
+            "default",
+            T::default(),
+            BeliefProvenance::prior("Default belief"),
+            0.5,
+        )
+    }
+}
+
+// =========================================================================
+// Helper Types
+// =========================================================================
+
+/// Result of checking a belief's validity
+pub struct BeliefCheckResult {
+    /// Is the belief valid?
+    pub valid: bool,
+
+    /// Triggered falsifiers
+    pub triggered_falsifiers: Vec<String>,
+
+    /// Warning messages
+    pub warnings: Vec<String>,
+
+    /// Suggested actions
+    pub suggestions: Vec<String>,
+}
+
+impl BeliefCheckResult {
+    /// Create a passing result
+    pub fn pass() -> Self {
+        BeliefCheckResult {
+            valid: true,
+            triggered_falsifiers: Vec::new(),
+            warnings: Vec::new(),
+            suggestions: Vec::new(),
+        }
+    }
+
+    /// Create a failing result
+    pub fn fail(reason: &str) -> Self {
+        BeliefCheckResult {
+            valid: false,
+            triggered_falsifiers: vec![reason.to_string()],
+            warnings: Vec::new(),
+            suggestions: Vec::new(),
+        }
+    }
+
+    /// Add a warning
+    pub fn with_warning(mut self, warning: &str) -> Self {
+        self.warnings.push(warning.to_string());
+        self
+    }
+
+    /// Add a suggestion
+    pub fn with_suggestion(mut self, suggestion: &str) -> Self {
+        self.suggestions.push(suggestion.to_string());
+        self
+    }
+}
+
+/// Perform comprehensive check on a belief
+pub fn check_belief<T: Clone>(belief: &GroundedBelief<T>) -> BeliefCheckResult {
+    let mut result = BeliefCheckResult::pass();
+
+    // Check if active
+    if !belief.active {
+        return BeliefCheckResult::fail("Belief is not active");
+    }
+
+    // Check expiration
+    if belief.timestamps.is_expired() {
+        return BeliefCheckResult::fail("Belief has expired");
+    }
+
+    // Check for high contradicting evidence
+    if belief.contradicting_evidence_count() > belief.supporting_evidence_count() {
+        result = result.with_warning("More contradicting than supporting evidence");
+    }
+
+    // Check calibration
+    if belief.ece() > 0.2 {
+        result = result.with_warning(&format!("Poor calibration (ECE={:.3})", belief.ece()));
+        result = result.with_suggestion("Consider recalibrating or gathering more data");
+    }
+
+    // Check for staleness
+    if belief.timestamps.is_stale(Duration::from_secs(7 * 24 * 3600)) {
+        result = result.with_warning("Belief is stale (not used or validated recently)");
+        result = result.with_suggestion("Review and validate this belief");
+    }
+
+    // Check confidence vs evidence mismatch
+    if belief.confidence_value() > 0.8 && belief.evidence.is_empty() {
+        result = result.with_warning("High confidence with no evidence");
+        result = result.with_suggestion("Add supporting evidence or reduce confidence");
+    }
+
+    // Check if review is due
+    if belief.timestamps.review_is_due() {
+        result = result.with_warning("Belief review is due");
+    }
+
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::scope::domains;
+
+    #[test]
+    fn test_grounded_belief_creation() {
+        let belief: GroundedBelief<String> = GroundedBelief::observed(
+            "test_belief",
+            "The sky is blue".to_string(),
+            "visual_sensor",
+            0.95,
+        );
+
+        assert_eq!(belief.id, "test_belief");
+        assert!(belief.confidence_value() > 0.9);
+        assert!(belief.provenance.is_observed());
+    }
+
+    #[test]
+    fn test_evidence_affects_confidence() {
+        let mut belief: GroundedBelief<String> = GroundedBelief::observed(
+            "test",
+            "Test claim".to_string(),
+            "sensor",
+            0.5,
+        );
+
+        let initial_conf = belief.confidence_value();
+
+        // Add supporting evidence
+        belief.add_support(
+            Observation::new("obs1", "Supporting observation", "sensor"),
+            0.8,
+        );
+
+        // Confidence should increase
+        assert!(belief.confidence_value() > initial_conf);
+    }
+
+    #[test]
+    fn test_scope_restriction() {
+        let belief: GroundedBelief<String> = GroundedBelief::observed(
+            "medical_belief",
+            "Patient has condition X".to_string(),
+            "diagnosis_system",
+            0.85,
+        ).in_domain(domains::medical());
+
+        let medical_context = Context::new(domains::medical(), "doctor1");
+        let general_context = Context::new(domains::general(), "user1");
+
+        assert!(belief.applies_in(&medical_context));
+        assert!(!belief.applies_in(&general_context));
+    }
+
+    #[test]
+    fn test_calibration_tracking() {
+        let mut belief: GroundedBelief<String> = GroundedBelief::observed(
+            "test",
+            "Test".to_string(),
+            "sensor",
+            0.7,
+        );
+
+        // Record some predictions
+        for _ in 0..70 {
+            belief.record_prediction(0.7, true);
+        }
+        for _ in 0..30 {
+            belief.record_prediction(0.7, false);
+        }
+
+        // Should be well calibrated (ECE < 0.05)
+        assert!(belief.ece() < 0.1);
+    }
+}

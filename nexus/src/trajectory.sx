@@ -1,0 +1,864 @@
+// ============================================================================
+// Trajectory Module - Delta History and Derivative Calculation
+// ============================================================================
+// Part of Phase 11: Dual Number Inference
+//
+// This module implements trajectory tracking for beliefs, maintaining delta
+// history buffers to calculate derivatives for dual number reconstruction.
+// It enables prediction of future values based on observed change patterns.
+// ============================================================================
+
+// Note: dual.sx is concatenated before this file by the build system
+
+// ============================================================================
+// Trajectory Configuration
+// ============================================================================
+
+// Default history buffer size (number of deltas to track)
+fn TRAJECTORY_DEFAULT_HISTORY_SIZE() -> i64 { 16 }
+
+// Minimum samples needed for derivative calculation
+fn TRAJECTORY_MIN_SAMPLES() -> i64 { 2 }
+
+// Default smoothing factor for exponential moving average (0-1000, scaled by 1000)
+// 200 = 0.2 (20% weight to new values)
+fn TRAJECTORY_DEFAULT_SMOOTHING() -> i64 { 200 }
+
+// Maximum time gap (ms) between samples before resetting trajectory
+fn TRAJECTORY_MAX_GAP_MS() -> i64 { 60000 }  // 1 minute
+
+// Derivative calculation modes
+fn TRAJECTORY_DERIV_SIMPLE() -> i64 { 0 }      // Simple finite difference
+fn TRAJECTORY_DERIV_EMA() -> i64 { 1 }         // Exponential moving average
+fn TRAJECTORY_DERIV_WEIGHTED() -> i64 { 2 }    // Time-weighted average
+fn TRAJECTORY_DERIV_REGRESSION() -> i64 { 3 }  // Linear regression
+
+// ============================================================================
+// Delta Entry Structure
+// ============================================================================
+// Each delta entry records a change observation
+//
+// Layout (48 bytes):
+//   offset 0:  timestamp (i64) - when the change was observed
+//   offset 8:  old_value (i64) - value before change
+//   offset 16: new_value (i64) - value after change
+//   offset 24: delta (i64) - new_value - old_value
+//   offset 32: dt_ms (i64) - time since previous sample
+//   offset 40: rate (i64) - delta / dt_ms * 1000 (scaled per second)
+
+fn DELTA_ENTRY_SIZE() -> i64 { 48 }
+
+fn DELTA_OFFSET_TIMESTAMP() -> i64 { 0 }
+fn DELTA_OFFSET_OLD_VALUE() -> i64 { 8 }
+fn DELTA_OFFSET_NEW_VALUE() -> i64 { 16 }
+fn DELTA_OFFSET_DELTA() -> i64 { 24 }
+fn DELTA_OFFSET_DT_MS() -> i64 { 32 }
+fn DELTA_OFFSET_RATE() -> i64 { 40 }
+
+// Create a delta entry
+fn delta_entry_new(timestamp: i64, old_value: i64, new_value: i64, dt_ms: i64) -> i64 {
+    let e = alloc(DELTA_ENTRY_SIZE());
+    store64(e + DELTA_OFFSET_TIMESTAMP(), timestamp);
+    store64(e + DELTA_OFFSET_OLD_VALUE(), old_value);
+    store64(e + DELTA_OFFSET_NEW_VALUE(), new_value);
+
+    let delta = new_value - old_value;
+    store64(e + DELTA_OFFSET_DELTA(), delta);
+    store64(e + DELTA_OFFSET_DT_MS(), dt_ms);
+
+    // Calculate rate (change per second, scaled by DUAL_SCALE)
+    let rate = 0;
+    if dt_ms > 0 {
+        // rate = (delta * 1000 * DUAL_SCALE) / dt_ms
+        rate = (delta * 1000 * DUAL_SCALE()) / dt_ms;
+    }
+    store64(e + DELTA_OFFSET_RATE(), rate);
+
+    e
+}
+
+fn delta_entry_free(e: i64) {
+    // Memory would be freed here in a real implementation
+}
+
+// Delta entry accessors
+fn delta_timestamp(e: i64) -> i64 { load64(e + DELTA_OFFSET_TIMESTAMP()) }
+fn delta_old_value(e: i64) -> i64 { load64(e + DELTA_OFFSET_OLD_VALUE()) }
+fn delta_new_value(e: i64) -> i64 { load64(e + DELTA_OFFSET_NEW_VALUE()) }
+fn delta_delta(e: i64) -> i64 { load64(e + DELTA_OFFSET_DELTA()) }
+fn delta_dt_ms(e: i64) -> i64 { load64(e + DELTA_OFFSET_DT_MS()) }
+fn delta_rate(e: i64) -> i64 { load64(e + DELTA_OFFSET_RATE()) }
+
+// ============================================================================
+// Trajectory Structure
+// ============================================================================
+// Maintains history of changes for a single belief/value
+//
+// Layout (128 bytes):
+//   offset 0:  belief_id (i64) - identifier for the tracked belief
+//   offset 8:  history (i64) - pointer to circular buffer of delta entries
+//   offset 16: history_size (i64) - capacity of history buffer
+//   offset 24: count (i64) - number of entries in buffer
+//   offset 32: head (i64) - index of newest entry
+//   offset 40: tail (i64) - index of oldest entry
+//   offset 48: current_value (i64) - most recent observed value
+//   offset 56: last_update (i64) - timestamp of last update
+//   offset 64: derivative (i64) - current calculated derivative (scaled)
+//   offset 72: deriv_mode (i64) - derivative calculation mode
+//   offset 80: smoothing (i64) - EMA smoothing factor (0-1000)
+//   offset 88: sum_delta (i64) - running sum of deltas (for averaging)
+//   offset 96: sum_dt (i64) - running sum of time intervals
+//   offset 104: sum_weighted_rate (i64) - weighted rate sum (for regression)
+//   offset 112: total_samples (i64) - total samples ever recorded
+//   offset 120: flags (i64) - trajectory flags
+
+fn TRAJECTORY_SIZE() -> i64 { 128 }
+
+fn TRAJ_OFFSET_BELIEF_ID() -> i64 { 0 }
+fn TRAJ_OFFSET_HISTORY() -> i64 { 8 }
+fn TRAJ_OFFSET_HISTORY_SIZE() -> i64 { 16 }
+fn TRAJ_OFFSET_COUNT() -> i64 { 24 }
+fn TRAJ_OFFSET_HEAD() -> i64 { 32 }
+fn TRAJ_OFFSET_TAIL() -> i64 { 40 }
+fn TRAJ_OFFSET_CURRENT_VALUE() -> i64 { 48 }
+fn TRAJ_OFFSET_LAST_UPDATE() -> i64 { 56 }
+fn TRAJ_OFFSET_DERIVATIVE() -> i64 { 64 }
+fn TRAJ_OFFSET_DERIV_MODE() -> i64 { 72 }
+fn TRAJ_OFFSET_SMOOTHING() -> i64 { 80 }
+fn TRAJ_OFFSET_SUM_DELTA() -> i64 { 88 }
+fn TRAJ_OFFSET_SUM_DT() -> i64 { 96 }
+fn TRAJ_OFFSET_SUM_WEIGHTED_RATE() -> i64 { 104 }
+fn TRAJ_OFFSET_TOTAL_SAMPLES() -> i64 { 112 }
+fn TRAJ_OFFSET_FLAGS() -> i64 { 120 }
+
+// Trajectory flags
+fn TRAJ_FLAG_ENABLED() -> i64 { 1 }
+fn TRAJ_FLAG_STABLE() -> i64 { 2 }       // Derivative is stable
+fn TRAJ_FLAG_INCREASING() -> i64 { 4 }   // Trend is increasing
+fn TRAJ_FLAG_DECREASING() -> i64 { 8 }   // Trend is decreasing
+fn TRAJ_FLAG_SATURATED() -> i64 { 16 }   // History buffer is full
+
+// ============================================================================
+// Trajectory Creation and Destruction
+// ============================================================================
+
+fn trajectory_new(belief_id: i64) -> i64 {
+    trajectory_new_with_size(belief_id, TRAJECTORY_DEFAULT_HISTORY_SIZE())
+}
+
+fn trajectory_new_with_size(belief_id: i64, history_size: i64) -> i64 {
+    let t = alloc(TRAJECTORY_SIZE());
+
+    store64(t + TRAJ_OFFSET_BELIEF_ID(), belief_id);
+
+    // Allocate history buffer (array of pointers to delta entries)
+    let history = alloc(history_size * 8);
+    store64(t + TRAJ_OFFSET_HISTORY(), history);
+    store64(t + TRAJ_OFFSET_HISTORY_SIZE(), history_size);
+
+    // Initialize circular buffer indices
+    store64(t + TRAJ_OFFSET_COUNT(), 0);
+    store64(t + TRAJ_OFFSET_HEAD(), 0);
+    store64(t + TRAJ_OFFSET_TAIL(), 0);
+
+    // Initialize state
+    store64(t + TRAJ_OFFSET_CURRENT_VALUE(), 0);
+    store64(t + TRAJ_OFFSET_LAST_UPDATE(), 0);
+    store64(t + TRAJ_OFFSET_DERIVATIVE(), 0);
+    store64(t + TRAJ_OFFSET_DERIV_MODE(), TRAJECTORY_DERIV_EMA());
+    store64(t + TRAJ_OFFSET_SMOOTHING(), TRAJECTORY_DEFAULT_SMOOTHING());
+
+    // Initialize running sums
+    store64(t + TRAJ_OFFSET_SUM_DELTA(), 0);
+    store64(t + TRAJ_OFFSET_SUM_DT(), 0);
+    store64(t + TRAJ_OFFSET_SUM_WEIGHTED_RATE(), 0);
+    store64(t + TRAJ_OFFSET_TOTAL_SAMPLES(), 0);
+
+    store64(t + TRAJ_OFFSET_FLAGS(), TRAJ_FLAG_ENABLED());
+
+    t
+}
+
+fn trajectory_free(t: i64) {
+    // Free all delta entries
+    let history = load64(t + TRAJ_OFFSET_HISTORY());
+    let count = load64(t + TRAJ_OFFSET_COUNT());
+    let history_size = load64(t + TRAJ_OFFSET_HISTORY_SIZE());
+    let tail = load64(t + TRAJ_OFFSET_TAIL());
+
+    let i = 0;
+    while i < count {
+        let idx = (tail + i) % history_size;
+        let entry = load64(history + idx * 8);
+        if entry != 0 {
+            delta_entry_free(entry);
+        }
+        i = i + 1;
+    }
+
+    // Free history buffer and trajectory
+}
+
+// ============================================================================
+// Trajectory Accessors
+// ============================================================================
+
+fn trajectory_belief_id(t: i64) -> i64 { load64(t + TRAJ_OFFSET_BELIEF_ID()) }
+fn trajectory_count(t: i64) -> i64 { load64(t + TRAJ_OFFSET_COUNT()) }
+fn trajectory_current_value(t: i64) -> i64 { load64(t + TRAJ_OFFSET_CURRENT_VALUE()) }
+fn trajectory_last_update(t: i64) -> i64 { load64(t + TRAJ_OFFSET_LAST_UPDATE()) }
+fn trajectory_derivative(t: i64) -> i64 { load64(t + TRAJ_OFFSET_DERIVATIVE()) }
+fn trajectory_deriv_mode(t: i64) -> i64 { load64(t + TRAJ_OFFSET_DERIV_MODE()) }
+fn trajectory_smoothing(t: i64) -> i64 { load64(t + TRAJ_OFFSET_SMOOTHING()) }
+fn trajectory_total_samples(t: i64) -> i64 { load64(t + TRAJ_OFFSET_TOTAL_SAMPLES()) }
+fn trajectory_flags(t: i64) -> i64 { load64(t + TRAJ_OFFSET_FLAGS()) }
+
+fn trajectory_set_deriv_mode(t: i64, mode: i64) {
+    store64(t + TRAJ_OFFSET_DERIV_MODE(), mode);
+}
+
+fn trajectory_set_smoothing(t: i64, smoothing: i64) {
+    store64(t + TRAJ_OFFSET_SMOOTHING(), smoothing);
+}
+
+fn trajectory_is_enabled(t: i64) -> i64 {
+    (trajectory_flags(t) & TRAJ_FLAG_ENABLED()) != 0
+}
+
+fn trajectory_is_stable(t: i64) -> i64 {
+    (trajectory_flags(t) & TRAJ_FLAG_STABLE()) != 0
+}
+
+fn trajectory_is_increasing(t: i64) -> i64 {
+    (trajectory_flags(t) & TRAJ_FLAG_INCREASING()) != 0
+}
+
+fn trajectory_is_decreasing(t: i64) -> i64 {
+    (trajectory_flags(t) & TRAJ_FLAG_DECREASING()) != 0
+}
+
+fn trajectory_is_saturated(t: i64) -> i64 {
+    (trajectory_flags(t) & TRAJ_FLAG_SATURATED()) != 0
+}
+
+// ============================================================================
+// Trajectory Update Operations
+// ============================================================================
+
+// Record a new value observation
+fn trajectory_observe(t: i64, new_value: i64, timestamp: i64) -> i64 {
+    let flags = trajectory_flags(t);
+    if (flags & TRAJ_FLAG_ENABLED()) == 0 {
+        return 0;  // Tracking disabled
+    }
+
+    let last_update = trajectory_last_update(t);
+    let current_value = trajectory_current_value(t);
+    let count = trajectory_count(t);
+
+    // Calculate time delta
+    let dt_ms = 0;
+    if last_update > 0 {
+        dt_ms = timestamp - last_update;
+
+        // Check for gap too large - reset trajectory
+        if dt_ms > TRAJECTORY_MAX_GAP_MS() {
+            trajectory_reset(t);
+            // Start fresh with this value
+            store64(t + TRAJ_OFFSET_CURRENT_VALUE(), new_value);
+            store64(t + TRAJ_OFFSET_LAST_UPDATE(), timestamp);
+            return 1;
+        }
+    }
+
+    // Only record delta if we have a previous value
+    if count > 0 || last_update > 0 {
+        // Create delta entry
+        let entry = delta_entry_new(timestamp, current_value, new_value, dt_ms);
+
+        // Add to circular buffer
+        trajectory_add_entry(t, entry);
+
+        // Update running sums
+        let sum_delta = load64(t + TRAJ_OFFSET_SUM_DELTA());
+        let sum_dt = load64(t + TRAJ_OFFSET_SUM_DT());
+        store64(t + TRAJ_OFFSET_SUM_DELTA(), sum_delta + (new_value - current_value));
+        store64(t + TRAJ_OFFSET_SUM_DT(), sum_dt + dt_ms);
+
+        // Recalculate derivative
+        trajectory_recalculate_derivative(t);
+    }
+
+    // Update current state
+    store64(t + TRAJ_OFFSET_CURRENT_VALUE(), new_value);
+    store64(t + TRAJ_OFFSET_LAST_UPDATE(), timestamp);
+
+    let total = trajectory_total_samples(t);
+    store64(t + TRAJ_OFFSET_TOTAL_SAMPLES(), total + 1);
+
+    1
+}
+
+// Add entry to circular buffer
+fn trajectory_add_entry(t: i64, entry: i64) {
+    let history = load64(t + TRAJ_OFFSET_HISTORY());
+    let history_size = load64(t + TRAJ_OFFSET_HISTORY_SIZE());
+    let count = load64(t + TRAJ_OFFSET_COUNT());
+    let head = load64(t + TRAJ_OFFSET_HEAD());
+    let tail = load64(t + TRAJ_OFFSET_TAIL());
+
+    let flags = trajectory_flags(t);
+
+    if count < history_size {
+        // Buffer not full, just add
+        store64(history + head * 8, entry);
+        store64(t + TRAJ_OFFSET_HEAD(), (head + 1) % history_size);
+        store64(t + TRAJ_OFFSET_COUNT(), count + 1);
+
+        if count + 1 == history_size {
+            flags = flags | TRAJ_FLAG_SATURATED();
+            store64(t + TRAJ_OFFSET_FLAGS(), flags);
+        }
+    } else {
+        // Buffer full, overwrite oldest
+        let old_entry = load64(history + tail * 8);
+        if old_entry != 0 {
+            // Subtract old entry from running sums
+            let old_delta = delta_delta(old_entry);
+            let old_dt = delta_dt_ms(old_entry);
+            let sum_delta = load64(t + TRAJ_OFFSET_SUM_DELTA());
+            let sum_dt = load64(t + TRAJ_OFFSET_SUM_DT());
+            store64(t + TRAJ_OFFSET_SUM_DELTA(), sum_delta - old_delta);
+            store64(t + TRAJ_OFFSET_SUM_DT(), sum_dt - old_dt);
+
+            delta_entry_free(old_entry);
+        }
+
+        store64(history + tail * 8, entry);
+        store64(t + TRAJ_OFFSET_TAIL(), (tail + 1) % history_size);
+        store64(t + TRAJ_OFFSET_HEAD(), (head + 1) % history_size);
+    }
+}
+
+// Reset trajectory to initial state
+fn trajectory_reset(t: i64) {
+    // Free existing entries
+    let history = load64(t + TRAJ_OFFSET_HISTORY());
+    let count = load64(t + TRAJ_OFFSET_COUNT());
+    let history_size = load64(t + TRAJ_OFFSET_HISTORY_SIZE());
+    let tail = load64(t + TRAJ_OFFSET_TAIL());
+
+    let i = 0;
+    while i < count {
+        let idx = (tail + i) % history_size;
+        let entry = load64(history + idx * 8);
+        if entry != 0 {
+            delta_entry_free(entry);
+            store64(history + idx * 8, 0);
+        }
+        i = i + 1;
+    }
+
+    // Reset state
+    store64(t + TRAJ_OFFSET_COUNT(), 0);
+    store64(t + TRAJ_OFFSET_HEAD(), 0);
+    store64(t + TRAJ_OFFSET_TAIL(), 0);
+    store64(t + TRAJ_OFFSET_DERIVATIVE(), 0);
+    store64(t + TRAJ_OFFSET_SUM_DELTA(), 0);
+    store64(t + TRAJ_OFFSET_SUM_DT(), 0);
+    store64(t + TRAJ_OFFSET_SUM_WEIGHTED_RATE(), 0);
+
+    // Clear trend flags but keep enabled
+    let flags = trajectory_flags(t);
+    flags = flags & TRAJ_FLAG_ENABLED();
+    store64(t + TRAJ_OFFSET_FLAGS(), flags);
+}
+
+// ============================================================================
+// Derivative Calculation
+// ============================================================================
+
+fn trajectory_recalculate_derivative(t: i64) {
+    let count = trajectory_count(t);
+    if count < TRAJECTORY_MIN_SAMPLES() {
+        store64(t + TRAJ_OFFSET_DERIVATIVE(), 0);
+        return;
+    }
+
+    let mode = trajectory_deriv_mode(t);
+    let derivative = 0;
+
+    if mode == TRAJECTORY_DERIV_SIMPLE() {
+        derivative = trajectory_calc_simple_derivative(t);
+    } else if mode == TRAJECTORY_DERIV_EMA() {
+        derivative = trajectory_calc_ema_derivative(t);
+    } else if mode == TRAJECTORY_DERIV_WEIGHTED() {
+        derivative = trajectory_calc_weighted_derivative(t);
+    } else if mode == TRAJECTORY_DERIV_REGRESSION() {
+        derivative = trajectory_calc_regression_derivative(t);
+    }
+
+    store64(t + TRAJ_OFFSET_DERIVATIVE(), derivative);
+
+    // Update trend flags
+    trajectory_update_trend_flags(t, derivative);
+}
+
+// Simple finite difference: (newest - oldest) / total_time
+fn trajectory_calc_simple_derivative(t: i64) -> i64 {
+    let sum_delta = load64(t + TRAJ_OFFSET_SUM_DELTA());
+    let sum_dt = load64(t + TRAJ_OFFSET_SUM_DT());
+
+    if sum_dt == 0 {
+        return 0;
+    }
+
+    // Return rate per second, scaled by DUAL_SCALE
+    (sum_delta * 1000 * DUAL_SCALE()) / sum_dt
+}
+
+// Exponential moving average of rates
+fn trajectory_calc_ema_derivative(t: i64) -> i64 {
+    let history = load64(t + TRAJ_OFFSET_HISTORY());
+    let history_size = load64(t + TRAJ_OFFSET_HISTORY_SIZE());
+    let count = load64(t + TRAJ_OFFSET_COUNT());
+    let tail = load64(t + TRAJ_OFFSET_TAIL());
+    let smoothing = trajectory_smoothing(t);
+
+    let ema = 0;
+    let first = 1;
+
+    let i = 0;
+    while i < count {
+        let idx = (tail + i) % history_size;
+        let entry = load64(history + idx * 8);
+        if entry != 0 {
+            let rate = delta_rate(entry);
+
+            if first == 1 {
+                ema = rate;
+                first = 0;
+            } else {
+                // EMA = alpha * new_value + (1 - alpha) * old_ema
+                // With alpha = smoothing / 1000
+                ema = (smoothing * rate + (1000 - smoothing) * ema) / 1000;
+            }
+        }
+        i = i + 1;
+    }
+
+    ema
+}
+
+// Time-weighted average (more recent samples have more weight)
+fn trajectory_calc_weighted_derivative(t: i64) -> i64 {
+    let history = load64(t + TRAJ_OFFSET_HISTORY());
+    let history_size = load64(t + TRAJ_OFFSET_HISTORY_SIZE());
+    let count = load64(t + TRAJ_OFFSET_COUNT());
+    let tail = load64(t + TRAJ_OFFSET_TAIL());
+
+    let weighted_sum = 0;
+    let weight_total = 0;
+
+    let i = 0;
+    while i < count {
+        let idx = (tail + i) % history_size;
+        let entry = load64(history + idx * 8);
+        if entry != 0 {
+            let rate = delta_rate(entry);
+            // Weight increases linearly with recency
+            let weight = i + 1;
+            weighted_sum = weighted_sum + rate * weight;
+            weight_total = weight_total + weight;
+        }
+        i = i + 1;
+    }
+
+    if weight_total == 0 {
+        return 0;
+    }
+
+    weighted_sum / weight_total
+}
+
+// Linear regression to fit a line through the samples
+fn trajectory_calc_regression_derivative(t: i64) -> i64 {
+    let history = load64(t + TRAJ_OFFSET_HISTORY());
+    let history_size = load64(t + TRAJ_OFFSET_HISTORY_SIZE());
+    let count = load64(t + TRAJ_OFFSET_COUNT());
+    let tail = load64(t + TRAJ_OFFSET_TAIL());
+
+    if count < 2 {
+        return 0;
+    }
+
+    // Use simplified linear regression: slope = Σ(xi - x̄)(yi - ȳ) / Σ(xi - x̄)²
+    // Where x is time offset, y is value
+
+    // First pass: calculate means
+    let sum_t = 0;
+    let sum_v = 0;
+    let base_time = 0;
+
+    let i = 0;
+    while i < count {
+        let idx = (tail + i) % history_size;
+        let entry = load64(history + idx * 8);
+        if entry != 0 {
+            let ts = delta_timestamp(entry);
+            let val = delta_new_value(entry);
+
+            if i == 0 {
+                base_time = ts;
+            }
+
+            sum_t = sum_t + (ts - base_time);
+            sum_v = sum_v + val;
+        }
+        i = i + 1;
+    }
+
+    let mean_t = sum_t / count;
+    let mean_v = sum_v / count;
+
+    // Second pass: calculate slope
+    let numerator = 0;
+    let denominator = 0;
+
+    i = 0;
+    while i < count {
+        let idx = (tail + i) % history_size;
+        let entry = load64(history + idx * 8);
+        if entry != 0 {
+            let ts = delta_timestamp(entry) - base_time;
+            let val = delta_new_value(entry);
+
+            let dt = ts - mean_t;
+            let dv = val - mean_v;
+
+            numerator = numerator + dt * dv;
+            denominator = denominator + dt * dt;
+        }
+        i = i + 1;
+    }
+
+    if denominator == 0 {
+        return 0;
+    }
+
+    // Slope is in units/ms, convert to units/second scaled by DUAL_SCALE
+    (numerator * 1000 * DUAL_SCALE()) / denominator
+}
+
+// Update trend flags based on derivative
+fn trajectory_update_trend_flags(t: i64, derivative: i64) {
+    let flags = trajectory_flags(t);
+
+    // Clear trend flags
+    flags = flags & (0 - 1 - TRAJ_FLAG_STABLE() - TRAJ_FLAG_INCREASING() - TRAJ_FLAG_DECREASING());
+
+    // Threshold for "stable" (derivative near zero)
+    let stability_threshold = DUAL_SCALE() / 100;  // 1% of scale
+
+    if derivative > stability_threshold {
+        flags = flags | TRAJ_FLAG_INCREASING();
+    } else if derivative < 0 - stability_threshold {
+        flags = flags | TRAJ_FLAG_DECREASING();
+    } else {
+        flags = flags | TRAJ_FLAG_STABLE();
+    }
+
+    store64(t + TRAJ_OFFSET_FLAGS(), flags);
+}
+
+// ============================================================================
+// Dual Number Reconstruction
+// ============================================================================
+
+// Create a dual number from the current trajectory state
+fn trajectory_to_dual(t: i64) -> i64 {
+    let value = trajectory_current_value(t);
+    let derivative = trajectory_derivative(t);
+    let ref_time = trajectory_last_update(t);
+
+    dual_new(value, derivative, ref_time)
+}
+
+// Create a dual number with value scaled to fixed-point
+fn trajectory_to_dual_scaled(t: i64) -> i64 {
+    let value = trajectory_current_value(t) * DUAL_SCALE();
+    let derivative = trajectory_derivative(t);
+    let ref_time = trajectory_last_update(t);
+
+    dual_new(value, derivative, ref_time)
+}
+
+// Predict value at a future time
+// Returns unscaled value (same units as trajectory_observe)
+fn trajectory_predict(t: i64, future_time: i64) -> i64 {
+    let value = trajectory_current_value(t);
+    let derivative = trajectory_derivative(t);  // scaled per second
+    let ref_time = trajectory_last_update(t);
+    let dt_ms = future_time - ref_time;
+
+    // derivative is units per second * DUAL_SCALE
+    // change = derivative * (dt_ms / 1000) / DUAL_SCALE
+    //        = (derivative * dt_ms) / (1000 * DUAL_SCALE)
+    let change = (derivative * dt_ms) / (1000 * DUAL_SCALE());
+    value + change
+}
+
+// Predict when a target value will be reached
+// target_value should be in same units as trajectory values (unscaled)
+fn trajectory_predict_when(t: i64, target_value: i64) -> i64 {
+    let value = trajectory_current_value(t);
+    let derivative = trajectory_derivative(t);  // scaled per second
+    let current_time = trajectory_last_update(t);
+
+    if derivative == 0 {
+        // Constant - never reaches unless already there
+        if value == target_value { current_time } else { 0 - 1 }
+    } else {
+        let diff = target_value - value;
+
+        // Check direction
+        if (diff > 0 && derivative < 0) || (diff < 0 && derivative > 0) {
+            0 - 1  // Moving away from target
+        } else {
+            // Time to reach = diff / (derivative / DUAL_SCALE)
+            // dt_ms = (diff * DUAL_SCALE * 1000) / derivative
+            let dt_ms = (diff * DUAL_SCALE() * 1000) / derivative;
+            if dt_ms < 0 { dt_ms = 0 - dt_ms; }
+            current_time + dt_ms
+        }
+    }
+}
+
+// ============================================================================
+// Trajectory Statistics
+// ============================================================================
+
+// Get the rate of change in the most recent sample
+fn trajectory_latest_rate(t: i64) -> i64 {
+    let history = load64(t + TRAJ_OFFSET_HISTORY());
+    let history_size = load64(t + TRAJ_OFFSET_HISTORY_SIZE());
+    let count = load64(t + TRAJ_OFFSET_COUNT());
+    let head = load64(t + TRAJ_OFFSET_HEAD());
+
+    if count == 0 {
+        return 0;
+    }
+
+    // Head points to next insert position, so latest is head - 1
+    let latest_idx = (head + history_size - 1) % history_size;
+    let entry = load64(history + latest_idx * 8);
+
+    if entry == 0 {
+        return 0;
+    }
+
+    delta_rate(entry)
+}
+
+// Get average rate across all samples
+fn trajectory_average_rate(t: i64) -> i64 {
+    let sum_dt = load64(t + TRAJ_OFFSET_SUM_DT());
+    if sum_dt == 0 {
+        return 0;
+    }
+
+    let sum_delta = load64(t + TRAJ_OFFSET_SUM_DELTA());
+    (sum_delta * 1000 * DUAL_SCALE()) / sum_dt
+}
+
+// Get variance in rates (measure of stability)
+fn trajectory_rate_variance(t: i64) -> i64 {
+    let history = load64(t + TRAJ_OFFSET_HISTORY());
+    let history_size = load64(t + TRAJ_OFFSET_HISTORY_SIZE());
+    let count = load64(t + TRAJ_OFFSET_COUNT());
+    let tail = load64(t + TRAJ_OFFSET_TAIL());
+
+    if count < 2 {
+        return 0;
+    }
+
+    // Calculate mean rate
+    let sum_rate = 0;
+    let i = 0;
+    while i < count {
+        let idx = (tail + i) % history_size;
+        let entry = load64(history + idx * 8);
+        if entry != 0 {
+            sum_rate = sum_rate + delta_rate(entry);
+        }
+        i = i + 1;
+    }
+    let mean_rate = sum_rate / count;
+
+    // Calculate variance
+    let sum_sq_diff = 0;
+    i = 0;
+    while i < count {
+        let idx = (tail + i) % history_size;
+        let entry = load64(history + idx * 8);
+        if entry != 0 {
+            let diff = delta_rate(entry) - mean_rate;
+            sum_sq_diff = sum_sq_diff + diff * diff / DUAL_SCALE();  // Scale down to avoid overflow
+        }
+        i = i + 1;
+    }
+
+    sum_sq_diff / count
+}
+
+// Get time span covered by the history buffer
+fn trajectory_time_span(t: i64) -> i64 {
+    load64(t + TRAJ_OFFSET_SUM_DT())
+}
+
+// Get a delta entry by index (0 = oldest)
+fn trajectory_get_entry(t: i64, index: i64) -> i64 {
+    let count = load64(t + TRAJ_OFFSET_COUNT());
+    if index < 0 || index >= count {
+        return 0;
+    }
+
+    let history = load64(t + TRAJ_OFFSET_HISTORY());
+    let history_size = load64(t + TRAJ_OFFSET_HISTORY_SIZE());
+    let tail = load64(t + TRAJ_OFFSET_TAIL());
+
+    let idx = (tail + index) % history_size;
+    load64(history + idx * 8)
+}
+
+// ============================================================================
+// Trajectory Manager (for multiple trajectories)
+// ============================================================================
+// Manages trajectories for multiple beliefs
+//
+// Layout (40 bytes):
+//   offset 0:  trajectories (i64) - vector of trajectory pointers
+//   offset 8:  index (i64) - hash map from belief_id to trajectory index
+//   offset 16: count (i64) - number of trajectories
+//   offset 24: default_history_size (i64) - default buffer size for new trajectories
+//   offset 32: default_deriv_mode (i64) - default derivative mode
+
+fn TRAJ_MANAGER_SIZE() -> i64 { 40 }
+
+fn TRAJM_OFFSET_TRAJECTORIES() -> i64 { 0 }
+fn TRAJM_OFFSET_INDEX() -> i64 { 8 }
+fn TRAJM_OFFSET_COUNT() -> i64 { 16 }
+fn TRAJM_OFFSET_DEFAULT_HISTORY() -> i64 { 24 }
+fn TRAJM_OFFSET_DEFAULT_MODE() -> i64 { 32 }
+
+fn trajectory_manager_new() -> i64 {
+    let m = alloc(TRAJ_MANAGER_SIZE());
+
+    let trajectories = vec_new();
+    let index = vec_new();  // Simple linear search for now
+
+    store64(m + TRAJM_OFFSET_TRAJECTORIES(), trajectories);
+    store64(m + TRAJM_OFFSET_INDEX(), index);
+    store64(m + TRAJM_OFFSET_COUNT(), 0);
+    store64(m + TRAJM_OFFSET_DEFAULT_HISTORY(), TRAJECTORY_DEFAULT_HISTORY_SIZE());
+    store64(m + TRAJM_OFFSET_DEFAULT_MODE(), TRAJECTORY_DERIV_EMA());
+
+    m
+}
+
+fn trajectory_manager_free(m: i64) {
+    let trajectories = load64(m + TRAJM_OFFSET_TRAJECTORIES());
+    let count = load64(m + TRAJM_OFFSET_COUNT());
+
+    let i = 0;
+    while i < count {
+        let t = vec_get(trajectories, i);
+        if t != 0 {
+            trajectory_free(t);
+        }
+        i = i + 1;
+    }
+
+    vec_free(trajectories);
+    vec_free(load64(m + TRAJM_OFFSET_INDEX()));
+}
+
+fn trajectory_manager_count(m: i64) -> i64 {
+    load64(m + TRAJM_OFFSET_COUNT())
+}
+
+// Get or create trajectory for a belief
+fn trajectory_manager_get(m: i64, belief_id: i64) -> i64 {
+    // Search for existing trajectory
+    let trajectories = load64(m + TRAJM_OFFSET_TRAJECTORIES());
+    let count = load64(m + TRAJM_OFFSET_COUNT());
+
+    let i = 0;
+    while i < count {
+        let t = vec_get(trajectories, i);
+        if t != 0 && trajectory_belief_id(t) == belief_id {
+            return t;
+        }
+        i = i + 1;
+    }
+
+    // Create new trajectory
+    let history_size = load64(m + TRAJM_OFFSET_DEFAULT_HISTORY());
+    let deriv_mode = load64(m + TRAJM_OFFSET_DEFAULT_MODE());
+
+    let t = trajectory_new_with_size(belief_id, history_size);
+    trajectory_set_deriv_mode(t, deriv_mode);
+
+    vec_push(trajectories, t);
+    store64(m + TRAJM_OFFSET_COUNT(), count + 1);
+
+    t
+}
+
+// Observe a value for a belief (get or create trajectory)
+fn trajectory_manager_observe(m: i64, belief_id: i64, value: i64, timestamp: i64) -> i64 {
+    let t = trajectory_manager_get(m, belief_id);
+    trajectory_observe(t, value, timestamp)
+}
+
+// Get dual number for a belief
+fn trajectory_manager_get_dual(m: i64, belief_id: i64) -> i64 {
+    let t = trajectory_manager_get(m, belief_id);
+    trajectory_to_dual(t)
+}
+
+// Predict value for a belief at a future time
+fn trajectory_manager_predict(m: i64, belief_id: i64, future_time: i64) -> i64 {
+    let t = trajectory_manager_get(m, belief_id);
+    trajectory_predict(t, future_time)
+}
+
+// Remove trajectory for a belief
+fn trajectory_manager_remove(m: i64, belief_id: i64) {
+    let trajectories = load64(m + TRAJM_OFFSET_TRAJECTORIES());
+    let count = load64(m + TRAJM_OFFSET_COUNT());
+
+    let i = 0;
+    while i < count {
+        let t = vec_get(trajectories, i);
+        if t != 0 && trajectory_belief_id(t) == belief_id {
+            trajectory_free(t);
+
+            // Move last element to this position
+            if i < count - 1 {
+                let last = vec_get(trajectories, count - 1);
+                vec_set(trajectories, i, last);
+            }
+            vec_set(trajectories, count - 1, 0);
+            store64(m + TRAJM_OFFSET_COUNT(), count - 1);
+            return;
+        }
+        i = i + 1;
+    }
+}
+
+// Set defaults for new trajectories
+fn trajectory_manager_set_defaults(m: i64, history_size: i64, deriv_mode: i64) {
+    store64(m + TRAJM_OFFSET_DEFAULT_HISTORY(), history_size);
+    store64(m + TRAJM_OFFSET_DEFAULT_MODE(), deriv_mode);
+}

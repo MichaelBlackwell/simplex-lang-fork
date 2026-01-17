@@ -1,63 +1,63 @@
 // Test for infer() outside specialist context
-// This tests the "default model" code path in stage0.py
-// Added as part of BUG-001 fix
+// Tests the "default model" code path
+// Rewritten to use supported syntax
 
 fn test_infer_in_function() -> i64 {
-    println("Testing infer() in regular function...");
+ println(" Testing infer() in regular function...");
 
-    // This should work - infer() outside specialist uses "default" model
-    let response = infer("What is 2 + 2?");
+ // This should work - infer() outside specialist uses "default" model
+ let response: i64 = infer("What is 2 + 2?");
 
-    if response != 0 {
-        print("Response: ");
-        print_string(response);
-        println("");
-        println("PASS: infer() works outside specialist");
-        return 1;
-    } else {
-        println("FAIL: infer() returned null");
-        return 0;
-    }
+ if response != 0 {
+ print(" Response received, length: ");
+ print_i64(string_len(response));
+ println("");
+ println(" PASS: infer() works outside specialist");
+ 1
+ } else {
+ println(" FAIL: infer() returned null");
+ 0
+ }
 }
 
 fn test_infer_with_concat() -> i64 {
-    println("Testing infer() with string concatenation...");
+ println(" Testing infer() with string concatenation...");
 
-    let prompt = string_concat("Explain ", "briefly");
-    let response = infer(prompt);
+ let prompt: i64 = string_concat("Explain ", "briefly");
+ let response: i64 = infer(prompt);
 
-    if response != 0 {
-        println("PASS: infer() works with dynamic prompt");
-        return 1;
-    } else {
-        println("FAIL: infer() with concat returned null");
-        return 0;
-    }
+ if response != 0 {
+ println(" PASS: infer() works with dynamic prompt");
+ 1
+ } else {
+ println(" FAIL: infer() with concat returned null");
+ 0
+ }
 }
 
 fn main() -> i64 {
-    println("=== Testing infer() Outside Specialist Context ===");
-    println("");
+ println("=== Testing infer() Outside Specialist Context ===");
+ println("");
 
-    let passed = 0;
-    let total = 2;
+ var passed: i64 = 0;
+ let total: i64 = 2;
 
-    passed = passed + test_infer_in_function();
-    println("");
-    passed = passed + test_infer_with_concat();
+ passed = passed + test_infer_in_function();
+ println("");
+ passed = passed + test_infer_with_concat();
 
-    println("");
-    print("Results: ");
-    print_i64(passed);
-    print("/");
-    print_i64(total);
-    println(" tests passed");
+ println("");
+ print("Results: ");
+ print_i64(passed);
+ print("/");
+ print_i64(total);
+ println(" tests passed");
 
-    if passed == total {
-        println("=== ALL TESTS PASSED ===");
-        0
-    } else {
-        println("=== SOME TESTS FAILED ===");
-        1
-    }
+ if passed == total {
+ println("=== ALL TESTS PASSED ===");
+ 0
+ } else {
+ println("=== SOME TESTS FAILED ===");
+ 1
+ }
 }

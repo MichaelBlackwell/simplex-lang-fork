@@ -1,0 +1,377 @@
+// simplex-training::compress::pruning - Pruning Pipeline
+//
+// Implements model pruning strategies:
+// - Magnitude pruning (remove small weights)
+// - Gradient-based pruning (sensitivity analysis)
+// - Structured pruning (remove entire channels/heads)
+// - Movement pruning (track weight changes)
+
+use simplex_std::dual::dual;
+use simplex_std::{Clone, Default, Vec};
+use crate::schedules::LearnablePruning;
+
+/// Pruning method selection
+#[derive(Clone, Copy)]
+pub enum PruningMethod {
+    /// Remove weights below magnitude threshold
+    Magnitude,
+    /// Use gradient information for importance
+    GradientBased,
+    /// Remove entire structures (channels, heads)
+    Structured,
+    /// Track weight movement over training
+    Movement,
+}
+
+/// Configuration for pruning
+#[derive(Clone)]
+pub struct PruningConfig {
+    /// Pruning method to use
+    pub method: PruningMethod,
+    /// Target sparsity (0.0 to 1.0)
+    pub target_sparsity: f64,
+    /// Steps over which to reach target
+    pub warmup_steps: u64,
+    /// Fine-tune steps after pruning
+    pub finetune_steps: u64,
+    /// Magnitude threshold for reactivation
+    pub regrow_threshold: f64,
+    /// Weight for gradient importance
+    pub gradient_weight: f64,
+    /// Block size for structured pruning
+    pub block_size: usize,
+}
+
+impl PruningConfig {
+    pub fn new(method: PruningMethod, target_sparsity: f64) -> PruningConfig {
+        PruningConfig {
+            method,
+            target_sparsity,
+            warmup_steps: 1000,
+            finetune_steps: 500,
+            regrow_threshold: 1e-4,
+            gradient_weight: 0.1,
+            block_size: 64,
+        }
+    }
+
+    pub fn magnitude(target: f64) -> PruningConfig {
+        PruningConfig::new(PruningMethod::Magnitude, target)
+    }
+
+    pub fn gradient_based(target: f64) -> PruningConfig {
+        var config = PruningConfig::new(PruningMethod::GradientBased, target);
+        config.gradient_weight = 1.0;
+        config
+    }
+
+    pub fn structured(target: f64, block_size: usize) -> PruningConfig {
+        var config = PruningConfig::new(PruningMethod::Structured, target);
+        config.block_size = block_size;
+        config
+    }
+}
+
+impl Default for PruningConfig {
+    fn default() -> PruningConfig {
+        PruningConfig::magnitude(0.5)
+    }
+}
+
+/// Result of pruning operation
+#[derive(Clone)]
+pub struct PruningResult {
+    /// Achieved sparsity
+    pub actual_sparsity: f64,
+    /// Number of weights pruned
+    pub weights_pruned: u64,
+    /// Total weights
+    pub total_weights: u64,
+    /// Memory saved (bytes)
+    pub memory_saved: u64,
+    /// Accuracy before pruning
+    pub accuracy_before: f64,
+    /// Accuracy after pruning
+    pub accuracy_after: f64,
+}
+
+impl PruningResult {
+    pub fn new() -> PruningResult {
+        PruningResult {
+            actual_sparsity: 0.0,
+            weights_pruned: 0,
+            total_weights: 0,
+            memory_saved: 0,
+            accuracy_before: 0.0,
+            accuracy_after: 0.0,
+        }
+    }
+}
+
+impl Default for PruningResult {
+    fn default() -> PruningResult {
+        PruningResult::new()
+    }
+}
+
+/// Pruning pipeline
+pub struct PruningPipeline {
+    /// Configuration
+    pub config: PruningConfig,
+    /// Learnable schedule
+    pub schedule: LearnablePruning,
+    /// Current step
+    pub step: u64,
+    /// Current mask (1 = keep, 0 = prune)
+    mask: Vec<f64>,
+    /// Importance scores
+    scores: Vec<f64>,
+    /// Weight history for movement pruning
+    weight_history: Vec<Vec<f64>>,
+}
+
+impl PruningPipeline {
+    /// Create new pruning pipeline
+    pub fn new(config: PruningConfig) -> PruningPipeline {
+        var schedule = LearnablePruning::new();
+        schedule.final_sparsity = dual::variable(config.target_sparsity);
+        schedule.magnitude_weight = dual::variable(1.0 - config.gradient_weight);
+        schedule.gradient_weight = dual::variable(config.gradient_weight);
+
+        PruningPipeline {
+            config,
+            schedule,
+            step: 0,
+            mask: Vec::new(),
+            scores: Vec::new(),
+            weight_history: Vec::new(),
+        }
+    }
+
+    /// Compute importance scores based on method
+    pub fn compute_scores(&mut self, weights: &[dual], gradients: &[f64]) {
+        self.scores = Vec::new();
+
+        match self.config.method {
+            PruningMethod::Magnitude => {
+                for w in weights {
+                    self.scores.push(w.val.abs());
+                }
+            }
+            PruningMethod::GradientBased => {
+                for i in 0..weights.len() {
+                    let mag = weights[i].val.abs();
+                    let grad = if i < gradients.len() { gradients[i].abs() } else { 0.0 };
+                    let score = (1.0 - self.config.gradient_weight) * mag +
+                               self.config.gradient_weight * grad;
+                    self.scores.push(score);
+                }
+            }
+            PruningMethod::Movement => {
+                // Track how much weights have moved
+                var current_weights = Vec::new();
+                for w in weights {
+                    current_weights.push(w.val);
+                }
+
+                if self.weight_history.len() > 0 {
+                    let prev = &self.weight_history[self.weight_history.len() - 1];
+                    for i in 0..weights.len() {
+                        let prev_val = if i < prev.len() { prev[i] } else { 0.0 };
+                        let movement = (weights[i].val - prev_val).abs();
+                        self.scores.push(movement);
+                    }
+                } else {
+                    // First iteration, use magnitude
+                    for w in weights {
+                        self.scores.push(w.val.abs());
+                    }
+                }
+
+                self.weight_history.push(current_weights);
+                // Keep only last few iterations
+                if self.weight_history.len() > 10 {
+                    self.weight_history.remove(0);
+                }
+            }
+            PruningMethod::Structured => {
+                // Compute block-wise importance
+                let block_size = self.config.block_size;
+                var block_idx = 0;
+                var block_sum = 0.0;
+                var block_count = 0;
+
+                for i in 0..weights.len() {
+                    block_sum = block_sum + weights[i].val.abs();
+                    block_count = block_count + 1;
+
+                    if block_count >= block_size || i == weights.len() - 1 {
+                        // Assign block importance to all weights in block
+                        let block_score = block_sum / (block_count as f64);
+                        for _ in 0..block_count {
+                            self.scores.push(block_score);
+                        }
+                        block_sum = 0.0;
+                        block_count = 0;
+                        block_idx = block_idx + 1;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Compute pruning mask
+    pub fn compute_mask(&mut self, weights: &[dual], gradients: &[f64]) {
+        // Update scores
+        self.compute_scores(weights, gradients);
+
+        // Get target sparsity at current step
+        let step_dual = dual::constant(self.step as f64);
+        let target_sparsity = self.schedule.target_sparsity(step_dual).val;
+
+        // Find threshold
+        var sorted_scores = self.scores.clone();
+        bubble_sort(&mut sorted_scores);
+
+        let threshold_idx = ((target_sparsity * (sorted_scores.len() as f64)) as usize)
+            .min(sorted_scores.len().saturating_sub(1));
+        let threshold = sorted_scores[threshold_idx];
+
+        // Compute mask
+        self.mask = Vec::new();
+        for s in self.scores.iter() {
+            if *s > threshold {
+                self.mask.push(1.0);  // Keep
+            } else {
+                self.mask.push(0.0);  // Prune
+            }
+        }
+    }
+
+    /// Apply mask to weights
+    pub fn apply_mask(&self, weights: &[dual]) -> Vec<dual> {
+        var pruned = Vec::new();
+        for i in 0..weights.len() {
+            let m = if i < self.mask.len() { self.mask[i] } else { 1.0 };
+            pruned.push(weights[i] * dual::constant(m));
+        }
+        pruned
+    }
+
+    /// Prune single step
+    pub fn prune_step(&mut self, weights: &[dual], gradients: &[f64]) -> Vec<dual> {
+        self.compute_mask(weights, gradients);
+        self.step = self.step + 1;
+        self.apply_mask(weights)
+    }
+
+    /// Check if should regrow pruned weights
+    pub fn check_regrow(&mut self, gradients: &[f64]) -> Vec<usize> {
+        var regrow_indices = Vec::new();
+
+        for i in 0..self.mask.len() {
+            // If weight is pruned but has high gradient, consider regrowing
+            if self.mask[i] == 0.0 {
+                let grad = if i < gradients.len() { gradients[i].abs() } else { 0.0 };
+                if grad > self.config.regrow_threshold {
+                    regrow_indices.push(i);
+                }
+            }
+        }
+
+        regrow_indices
+    }
+
+    /// Regrow specific weights
+    pub fn regrow(&mut self, indices: &[usize]) {
+        for idx in indices {
+            if *idx < self.mask.len() {
+                self.mask[*idx] = 1.0;
+            }
+        }
+    }
+
+    /// Get current achieved sparsity
+    pub fn current_sparsity(&self) -> f64 {
+        if self.mask.len() == 0 {
+            return 0.0;
+        }
+        var pruned_count = 0.0;
+        for m in self.mask.iter() {
+            if *m == 0.0 {
+                pruned_count = pruned_count + 1.0;
+            }
+        }
+        pruned_count / (self.mask.len() as f64)
+    }
+
+    /// Get pruning result
+    pub fn result(&self) -> PruningResult {
+        var result = PruningResult::new();
+        result.total_weights = self.mask.len() as u64;
+        result.actual_sparsity = self.current_sparsity();
+        result.weights_pruned = (result.actual_sparsity * result.total_weights as f64) as u64;
+        result.memory_saved = result.weights_pruned * 4;  // FP32 bytes
+        result
+    }
+
+    /// Full pruning pipeline
+    pub fn prune<F>(
+        &mut self,
+        weights: &[dual],
+        gradients: &[f64],
+        mut eval_fn: F,
+    ) -> (Vec<dual>, PruningResult)
+    where
+        F: FnMut(&[dual]) -> f64,
+    {
+        var result = PruningResult::new();
+        result.total_weights = weights.len() as u64;
+
+        // Evaluate before
+        result.accuracy_before = eval_fn(weights);
+
+        // Progressive pruning over warmup steps
+        var current = weights.to_vec();
+        for _ in 0..self.config.warmup_steps {
+            current = self.prune_step(&current, gradients);
+        }
+
+        // Evaluate after
+        result.accuracy_after = eval_fn(&current);
+        result.actual_sparsity = self.current_sparsity();
+        result.weights_pruned = (result.actual_sparsity * result.total_weights as f64) as u64;
+        result.memory_saved = result.weights_pruned * 4;
+
+        (current, result)
+    }
+}
+
+impl Default for PruningPipeline {
+    fn default() -> PruningPipeline {
+        PruningPipeline::new(PruningConfig::default())
+    }
+}
+
+// Helper: simple bubble sort
+fn bubble_sort(arr: &mut Vec<f64>) {
+    let n = arr.len();
+    for i in 0..n {
+        for j in 0..(n - i - 1) {
+            if arr[j] > arr[j + 1] {
+                let tmp = arr[j];
+                arr[j] = arr[j + 1];
+                arr[j + 1] = tmp;
+            }
+        }
+    }
+}
+
+// Helper: convert dual slice to vec
+fn to_vec(weights: &[dual]) -> Vec<dual> {
+    var v = Vec::new();
+    for w in weights {
+        v.push(*w);
+    }
+    v
+}

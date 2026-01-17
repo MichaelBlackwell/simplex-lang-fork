@@ -129,7 +129,7 @@ Booleans are type `Bool` and can only be `true` or `false`.
 
 ```simplex
 let letter: Char = 'A'
-let emoji: Char = '🚀'
+let special: Char = '*'
 ```
 
 Characters are single Unicode code points, enclosed in single quotes.

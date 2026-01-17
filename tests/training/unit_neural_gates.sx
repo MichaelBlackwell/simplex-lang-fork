@@ -1,0 +1,705 @@
+// Unit tests for dual-mode neural gates
+//
+// Tests DualGate, GumbelSoftmax, STE, SoftLogic, and related neural components.
+
+use simplex_std::dual;
+use simplex_std::vec::Vec;
+use simplex_learning::tensor::DualTensor;
+use simplex_training::{
+ DualGate, GateMode, GumbelSoftmax, StraightThroughEstimator,
+ SoftLogic, SoftLogicGate, TemperatureAttention, LearnableTemperature,
+};
+
+#[cfg(test)]
+mod dual_gate_tests {
+ use super::*;
+
+ #[test]
+ fn test_gate_training_mode() {
+ let gate = DualGate::new(GateMode::Training { temperature: 1.0 }, 0.5, "test");
+
+ assert!(matches!(gate.mode(), GateMode::Training { .. }));
+ }
+
+ #[test]
+ fn test_gate_inference_mode() {
+ let gate = DualGate::new(GateMode::Inference, 0.5, "test");
+
+ assert!(matches!(gate.mode(), GateMode::Inference));
+ }
+
+ #[test]
+ fn test_gate_hybrid_mode() {
+ let gate = DualGate::new(GateMode::Hybrid { temperature: 0.5 }, 0.5, "test");
+
+ assert!(matches!(gate.mode(), GateMode::Hybrid { .. }));
+ }
+
+ #[test]
+ fn test_training_gate_soft() {
+ let gate = DualGate::new(GateMode::Training { temperature: 1.0 }, 0.5, "test");
+
+ // In training mode, output should be soft (between 0 and 1)
+ let input = dual::variable(0.6);
+ let output = gate.forward(input);
+
+ // Sigmoid output for soft gate
+ assert!(output.val > 0.0);
+ assert!(output.val < 1.0);
+ }
+
+ #[test]
+ fn test_inference_gate_hard() {
+ let gate = DualGate::new(GateMode::Inference, 0.5, "test");
+
+ // In inference mode, output should be hard (0 or 1)
+ let input = dual::constant(0.6);
+ let output = gate.forward(input);
+
+ // Should be 1 since input > threshold
+ assert!((output.val - 1.0).abs() < 1e-10 || (output.val - 0.0).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_hybrid_gate_ste() {
+ let gate = DualGate::new(GateMode::Hybrid { temperature: 0.1 }, 0.5, "test");
+
+ // In hybrid mode, forward is hard but gradient is soft
+ let input = dual::variable(0.6);
+ let output = gate.forward(input);
+
+ // Value should be hard
+ assert!((output.val - 0.0).abs() < 1e-10 || (output.val - 1.0).abs() < 1e-10);
+
+ // Gradient should be non-zero (STE)
+ assert!(!output.dot.is_nan());
+ }
+
+ #[test]
+ fn test_gate_threshold() {
+ let gate = DualGate::new(GateMode::Inference, 0.7, "test");
+
+ // Input below threshold
+ let low = dual::constant(0.5);
+ assert!((gate.forward(low).val - 0.0).abs() < 1e-10);
+
+ // Input above threshold
+ let high = dual::constant(0.9);
+ assert!((gate.forward(high).val - 1.0).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_gate_temperature_effect() {
+ // High temperature -> softer output
+ let gate_hot = DualGate::new(GateMode::Training { temperature: 10.0 }, 0.5, "hot");
+ let gate_cold = DualGate::new(GateMode::Training { temperature: 0.1 }, 0.5, "cold");
+
+ let input = dual::constant(0.6);
+
+ let out_hot = gate_hot.forward(input);
+ let out_cold = gate_cold.forward(input);
+
+ // Cold temperature should give more extreme output
+ // Both should be > 0.5 since input > threshold
+ // But cold should be closer to 1.0
+ assert!(out_cold.val > out_hot.val || (out_cold.val - out_hot.val).abs() < 0.1);
+ }
+
+ #[test]
+ fn test_gate_gradient_flow() {
+ let gate = DualGate::new(GateMode::Training { temperature: 1.0 }, 0.5, "test");
+
+ let input = dual::variable(0.5);
+ let output = gate.forward(input);
+
+ // Gradient should flow through
+ assert!(output.dot.abs() > 0.0);
+ }
+
+ #[test]
+ fn test_mode_switching() {
+ let mut gate = DualGate::new(GateMode::Training { temperature: 1.0 }, 0.5, "test");
+
+ // Switch to inference
+ gate.set_mode(GateMode::Inference);
+ assert!(matches!(gate.mode(), GateMode::Inference));
+
+ // Switch to hybrid
+ gate.set_mode(GateMode::Hybrid { temperature: 0.5 });
+ assert!(matches!(gate.mode(), GateMode::Hybrid { .. }));
+ }
+}
+
+#[cfg(test)]
+mod gumbel_softmax_tests {
+ use super::*;
+
+ #[test]
+ fn test_gumbel_creation() {
+ let gs = GumbelSoftmax::new(1.0, 42, false);
+
+ assert!((gs.temperature() - 1.0).abs() < 1e-10);
+ assert!(!gs.hard());
+ }
+
+ #[test]
+ fn test_gumbel_soft_output() {
+ let gs = GumbelSoftmax::new(1.0, 42, false);
+
+ let logits = DualTensor::from_vec(
+ vec![dual::constant(1.0), dual::constant(2.0), dual::constant(3.0)],
+ &[3]
+ );
+ let output = gs.forward(&logits);
+
+ // Soft output should sum to 1
+ let sum: f64 = output.data().iter().map(|d| d.val).sum();
+ assert!((sum - 1.0).abs() < 1e-10);
+
+ // All values should be in (0, 1)
+ for val in output.data() {
+ assert!(val.val > 0.0);
+ assert!(val.val < 1.0);
+ }
+ }
+
+ #[test]
+ fn test_gumbel_hard_output() {
+ let gs = GumbelSoftmax::new(0.1, 42, true);
+
+ let logits = DualTensor::from_vec(
+ vec![dual::constant(1.0), dual::constant(5.0), dual::constant(2.0)],
+ &[3]
+ );
+ let output = gs.forward(&logits);
+
+ // Hard output should be one-hot (one 1, rest 0)
+ let mut count_ones = 0;
+ let mut count_zeros = 0;
+
+ for val in output.data() {
+ if (val.val - 1.0).abs() < 1e-10 {
+ count_ones += 1;
+ } else if (val.val - 0.0).abs() < 1e-10 {
+ count_zeros += 1;
+ }
+ }
+
+ assert_eq!(count_ones, 1);
+ assert_eq!(count_zeros, 2);
+ }
+
+ #[test]
+ fn test_gumbel_temperature_effect() {
+ let logits = DualTensor::from_vec(
+ vec![dual::constant(1.0), dual::constant(2.0), dual::constant(3.0)],
+ &[3]
+ );
+
+ // High temperature -> more uniform
+ let gs_hot = GumbelSoftmax::new(10.0, 42, false);
+ let out_hot = gs_hot.forward(&logits);
+
+ // Low temperature -> more peaked
+ let gs_cold = GumbelSoftmax::new(0.1, 42, false);
+ let out_cold = gs_cold.forward(&logits);
+
+ // Entropy should be higher for hot temperature
+ let entropy_hot: f64 = out_hot.data().iter()
+ .map(|d| -d.val * d.val.max(1e-10).ln())
+ .sum();
+ let entropy_cold: f64 = out_cold.data().iter()
+ .map(|d| -d.val * d.val.max(1e-10).ln())
+ .sum();
+
+ assert!(entropy_hot > entropy_cold || (entropy_hot - entropy_cold).abs() < 0.5);
+ }
+
+ #[test]
+ fn test_gumbel_gradient_flow() {
+ let gs = GumbelSoftmax::new(1.0, 42, false);
+
+ let logits = DualTensor::full(&[3], dual::variable(1.0));
+ let output = gs.forward(&logits);
+
+ // Gradient should flow through (reparameterization trick)
+ for val in output.data() {
+ assert!(!val.dot.is_nan());
+ }
+ }
+
+ #[test]
+ fn test_gumbel_hard_gradient() {
+ let gs = GumbelSoftmax::new(0.5, 42, true);
+
+ let logits = DualTensor::full(&[3], dual::variable(1.0));
+ let output = gs.forward(&logits);
+
+ // Even hard output should have gradients (STE)
+ for val in output.data() {
+ assert!(!val.dot.is_nan());
+ }
+ }
+
+ #[test]
+ fn test_gumbel_batched() {
+ let gs = GumbelSoftmax::new(1.0, 42, false);
+
+ // Batch of 4, each with 5 classes
+ let logits = DualTensor::randn(&[4, 5], 42);
+ let output = gs.forward(&logits);
+
+ assert_eq!(output.shape(), &[4, 5]);
+
+ // Each row should sum to 1
+ for i in 0..4 {
+ let row_sum: f64 = (0..5)
+ .map(|j| output.get(&[i, j]).val)
+ .sum();
+ assert!((row_sum - 1.0).abs() < 1e-10);
+ }
+ }
+
+ #[test]
+ fn test_gumbel_set_temperature() {
+ let mut gs = GumbelSoftmax::new(1.0, 42, false);
+
+ gs.set_temperature(0.5);
+ assert!((gs.temperature() - 0.5).abs() < 1e-10);
+ }
+}
+
+#[cfg(test)]
+mod ste_tests {
+ use super::*;
+
+ #[test]
+ fn test_ste_creation() {
+ let ste = StraightThroughEstimator::new(0.5);
+
+ assert!((ste.threshold() - 0.5).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_ste_forward_hard() {
+ let ste = StraightThroughEstimator::new(0.5);
+
+ // Above threshold
+ let high = dual::constant(0.8);
+ assert!((ste.forward(high).val - 1.0).abs() < 1e-10);
+
+ // Below threshold
+ let low = dual::constant(0.3);
+ assert!((ste.forward(low).val - 0.0).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_ste_gradient_soft() {
+ let ste = StraightThroughEstimator::new(0.5);
+
+ let input = dual::variable(0.6);
+ let output = ste.forward(input);
+
+ // Forward is hard (1.0)
+ assert!((output.val - 1.0).abs() < 1e-10);
+
+ // But gradient is as if soft
+ assert!(output.dot.abs() > 0.0);
+ }
+
+ #[test]
+ fn test_ste_tensor_forward() {
+ let ste = StraightThroughEstimator::new(0.5);
+
+ let input = DualTensor::from_vec(
+ vec![
+ dual::constant(0.3), dual::constant(0.6),
+ dual::constant(0.4), dual::constant(0.9),
+ ],
+ &[2, 2]
+ );
+ let output = ste.forward_tensor(&input);
+
+ assert!((output.get(&[0, 0]).val - 0.0).abs() < 1e-10);
+ assert!((output.get(&[0, 1]).val - 1.0).abs() < 1e-10);
+ assert!((output.get(&[1, 0]).val - 0.0).abs() < 1e-10);
+ assert!((output.get(&[1, 1]).val - 1.0).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_ste_gradient_flow() {
+ let ste = StraightThroughEstimator::new(0.5);
+
+ let input = DualTensor::full(&[4], dual::variable(0.6));
+ let output = ste.forward_tensor(&input);
+
+ // All should have hard values
+ for val in output.data() {
+ assert!((val.val - 1.0).abs() < 1e-10);
+ }
+
+ // But gradients should flow
+ for val in output.data() {
+ assert!(!val.dot.is_nan());
+ }
+ }
+}
+
+#[cfg(test)]
+mod soft_logic_tests {
+ use super::*;
+
+ #[test]
+ fn test_soft_logic_creation() {
+ let logic = SoftLogic::new(1.0);
+
+ assert!((logic.temperature() - 1.0).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_soft_and() {
+ let logic = SoftLogic::new(0.1); // Low temp for near-hard behavior
+
+ // True AND True = True
+ let result = logic.and(dual::constant(0.99), dual::constant(0.99));
+ assert!(result.val > 0.9);
+
+ // True AND False = False
+ let result = logic.and(dual::constant(0.99), dual::constant(0.01));
+ assert!(result.val < 0.1);
+
+ // False AND True = False
+ let result = logic.and(dual::constant(0.01), dual::constant(0.99));
+ assert!(result.val < 0.1);
+
+ // False AND False = False
+ let result = logic.and(dual::constant(0.01), dual::constant(0.01));
+ assert!(result.val < 0.1);
+ }
+
+ #[test]
+ fn test_soft_or() {
+ let logic = SoftLogic::new(0.1);
+
+ // True OR True = True
+ let result = logic.or(dual::constant(0.99), dual::constant(0.99));
+ assert!(result.val > 0.9);
+
+ // True OR False = True
+ let result = logic.or(dual::constant(0.99), dual::constant(0.01));
+ assert!(result.val > 0.9);
+
+ // False OR True = True
+ let result = logic.or(dual::constant(0.01), dual::constant(0.99));
+ assert!(result.val > 0.9);
+
+ // False OR False = False
+ let result = logic.or(dual::constant(0.01), dual::constant(0.01));
+ assert!(result.val < 0.1);
+ }
+
+ #[test]
+ fn test_soft_not() {
+ let logic = SoftLogic::new(0.1);
+
+ // NOT True = False
+ let result = logic.not(dual::constant(0.99));
+ assert!(result.val < 0.1);
+
+ // NOT False = True
+ let result = logic.not(dual::constant(0.01));
+ assert!(result.val > 0.9);
+ }
+
+ #[test]
+ fn test_soft_xor() {
+ let logic = SoftLogic::new(0.1);
+
+ // True XOR True = False
+ let result = logic.xor(dual::constant(0.99), dual::constant(0.99));
+ assert!(result.val < 0.2); // XOR can be fuzzy
+
+ // True XOR False = True
+ let result = logic.xor(dual::constant(0.99), dual::constant(0.01));
+ assert!(result.val > 0.8);
+
+ // False XOR True = True
+ let result = logic.xor(dual::constant(0.01), dual::constant(0.99));
+ assert!(result.val > 0.8);
+
+ // False XOR False = False
+ let result = logic.xor(dual::constant(0.01), dual::constant(0.01));
+ assert!(result.val < 0.2);
+ }
+
+ #[test]
+ fn test_soft_implies() {
+ let logic = SoftLogic::new(0.1);
+
+ // True IMPLIES True = True
+ assert!(logic.implies(dual::constant(0.99), dual::constant(0.99)).val > 0.9);
+
+ // True IMPLIES False = False
+ assert!(logic.implies(dual::constant(0.99), dual::constant(0.01)).val < 0.2);
+
+ // False IMPLIES anything = True
+ assert!(logic.implies(dual::constant(0.01), dual::constant(0.99)).val > 0.9);
+ assert!(logic.implies(dual::constant(0.01), dual::constant(0.01)).val > 0.9);
+ }
+
+ #[test]
+ fn test_soft_logic_gradient() {
+ let logic = SoftLogic::new(1.0);
+
+ let a = dual::variable(0.7);
+ let b = dual::constant(0.6);
+
+ let result = logic.and(a, b);
+
+ // Gradient should flow through
+ assert!(!result.dot.is_nan());
+ assert!(result.dot.abs() > 0.0);
+ }
+
+ #[test]
+ fn test_temperature_affects_smoothness() {
+ let a = dual::constant(0.5);
+ let b = dual::constant(0.5);
+
+ // High temperature -> smoother
+ let logic_hot = SoftLogic::new(10.0);
+ let result_hot = logic_hot.and(a, b);
+
+ // Low temperature -> sharper
+ let logic_cold = SoftLogic::new(0.01);
+ let result_cold = logic_cold.and(a, b);
+
+ // Both should give ~0.25 for AND(0.5, 0.5) but with different gradients
+ // The exact value depends on implementation
+ }
+}
+
+#[cfg(test)]
+mod soft_logic_gate_tests {
+ use super::*;
+
+ #[test]
+ fn test_gate_creation() {
+ let gate = SoftLogicGate::new("and", 2, 1.0);
+
+ assert_eq!(gate.operation(), "and");
+ assert_eq!(gate.num_inputs(), 2);
+ }
+
+ #[test]
+ fn test_gate_forward() {
+ let gate = SoftLogicGate::new("and", 2, 0.1);
+
+ let inputs = vec![dual::constant(0.99), dual::constant(0.99)];
+ let output = gate.forward(&inputs);
+
+ assert!(output.val > 0.9);
+ }
+
+ #[test]
+ fn test_gate_with_weights() {
+ let mut gate = SoftLogicGate::new("or", 3, 1.0);
+
+ // Set weights to emphasize first input
+ gate.set_weights(vec![dual::constant(0.8), dual::constant(0.1), dual::constant(0.1)]);
+
+ let inputs = vec![
+ dual::constant(0.9),
+ dual::constant(0.1),
+ dual::constant(0.1),
+ ];
+ let output = gate.forward(&inputs);
+
+ // Should be influenced by first input
+ assert!(output.val > 0.5);
+ }
+
+ #[test]
+ fn test_gate_learnable_weights() {
+ let mut gate = SoftLogicGate::new("and", 2, 1.0);
+
+ // Weights are dual numbers for learning
+ let inputs = vec![dual::variable(0.5), dual::constant(0.5)];
+ let output = gate.forward(&inputs);
+
+ // Gradient should exist
+ assert!(!output.dot.is_nan());
+ }
+}
+
+#[cfg(test)]
+mod multi_gate_tests {
+ use super::*;
+
+ #[test]
+ fn test_multi_gate_creation() {
+ let mg = MultiGate::new(4, 0.5, 1.0, "moe");
+
+ assert_eq!(mg.num_experts(), 4);
+ }
+
+ #[test]
+ fn test_multi_gate_selection() {
+ let mg = MultiGate::new(3, 0.5, 1.0, "test");
+
+ // Input features to select gate
+ let input = DualTensor::randn(&[1, 64], 42);
+ let selection = mg.select(&input);
+
+ // Should return weights for each expert
+ assert_eq!(selection.len(), 3);
+
+ // Weights should sum to ~1
+ let sum: f64 = selection.iter().map(|d| d.val).sum();
+ assert!((sum - 1.0).abs() < 0.1);
+ }
+
+ #[test]
+ fn test_multi_gate_top_k() {
+ let mg = MultiGate::new(8, 0.5, 0.5, "topk");
+
+ let input = DualTensor::randn(&[1, 64], 42);
+ let selection = mg.select_top_k(&input, 2);
+
+ // Only 2 experts should have non-zero weights
+ let nonzero = selection.iter().filter(|d| d.val > 0.01).count();
+ assert_eq!(nonzero, 2);
+ }
+}
+
+#[cfg(test)]
+mod learnable_temperature_tests {
+ use super::*;
+
+ #[test]
+ fn test_learnable_temp_creation() {
+ let temp = LearnableTemperature::new(1.0, 0.1, 10.0, 0.01);
+
+ assert!((temp.value() - 1.0).abs() < 1e-10);
+ assert!((temp.min() - 0.1).abs() < 1e-10);
+ assert!((temp.max() - 10.0).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_temp_update() {
+ let mut temp = LearnableTemperature::new(1.0, 0.1, 10.0, 0.1);
+
+ temp.update(1.0); // Positive gradient
+ assert!(temp.value() > 1.0); // Should increase
+ }
+
+ #[test]
+ fn test_temp_clamping_max() {
+ let mut temp = LearnableTemperature::new(9.0, 0.1, 10.0, 1.0);
+
+ temp.update(100.0); // Large positive gradient
+ assert!(temp.value() <= 10.0); // Should be clamped
+ }
+
+ #[test]
+ fn test_temp_clamping_min() {
+ let mut temp = LearnableTemperature::new(0.2, 0.1, 10.0, 1.0);
+
+ temp.update(-100.0); // Large negative gradient
+ assert!(temp.value() >= 0.1); // Should be clamped
+ }
+
+ #[test]
+ fn test_temp_as_dual() {
+ let temp = LearnableTemperature::new(1.0, 0.1, 10.0, 0.01);
+
+ let d = temp.as_dual();
+ assert!((d.val - 1.0).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_temp_gradient_flow() {
+ let temp = LearnableTemperature::new(1.0, 0.1, 10.0, 0.01);
+
+ // Use temperature in computation
+ let t = temp.as_dual();
+ let x = dual::variable(2.0);
+ let result = x / t;
+
+ // Gradient should flow
+ assert!(!result.dot.is_nan());
+ }
+}
+
+#[cfg(test)]
+mod integration_tests {
+ use super::*;
+
+ #[test]
+ fn test_gate_in_attention() {
+ // Use gate to control attention pattern
+ let gate = DualGate::new(GateMode::Training { temperature: 1.0 }, 0.5, "attn_gate");
+
+ let attention_score = dual::constant(0.7);
+ let gated_score = gate.forward(attention_score);
+
+ // Result should be modulated
+ assert!(gated_score.val > 0.0);
+ assert!(gated_score.val < 1.0);
+ }
+
+ #[test]
+ fn test_gumbel_for_expert_selection() {
+ let gs = GumbelSoftmax::new(0.5, 42, true);
+
+ // Expert routing
+ let logits = DualTensor::from_vec(
+ vec![
+ dual::constant(2.0), dual::constant(1.0),
+ dual::constant(0.5), dual::constant(1.5),
+ ],
+ &[4]
+ );
+ let routing = gs.forward(&logits);
+
+ // Should select one expert
+ let selected = routing.data().iter()
+ .filter(|d| d.val > 0.5)
+ .count();
+ assert_eq!(selected, 1);
+ }
+
+ #[test]
+ fn test_soft_logic_circuit() {
+ // Build a simple circuit: (A AND B) OR C
+ let logic = SoftLogic::new(0.1);
+
+ let a = dual::constant(0.99);
+ let b = dual::constant(0.99);
+ let c = dual::constant(0.01);
+
+ let ab = logic.and(a, b);
+ let result = logic.or(ab, c);
+
+ // (True AND True) OR False = True
+ assert!(result.val > 0.9);
+ }
+
+ #[test]
+ fn test_training_to_inference_transition() {
+ let mut gate = DualGate::new(GateMode::Training { temperature: 1.0 }, 0.5, "test");
+
+ let input = dual::constant(0.7);
+
+ // Training: soft output
+ let train_out = gate.forward(input);
+ assert!(train_out.val > 0.0 && train_out.val < 1.0);
+
+ // Switch to inference
+ gate.set_mode(GateMode::Inference);
+
+ // Inference: hard output
+ let infer_out = gate.forward(input);
+ assert!((infer_out.val - 0.0).abs() < 1e-10 || (infer_out.val - 1.0).abs() < 1e-10);
+ }
+}

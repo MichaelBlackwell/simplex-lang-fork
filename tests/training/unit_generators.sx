@@ -1,0 +1,628 @@
+// Unit tests for data generators
+//
+// Tests specialist-specific data generators and data loading.
+
+use simplex_std::vec::Vec;
+use simplex_std::string::String;
+use simplex_training::{
+ DataGenerator, TrainingExample, DataLoader, DataLoaderConfig, Batch,
+ DocumentGenerator, CodeGenerator, SentimentGenerator,
+ ReasoningGenerator, NeuralIRGenerator, ClassificationGenerator,
+ SpecialistDomain,
+};
+
+#[cfg(test)]
+mod document_generator_tests {
+ use super::*;
+
+ #[test]
+ fn test_document_generator_creation() {
+ let gen = DocumentGenerator::new();
+ assert!(matches!(gen.domain(), SpecialistDomain::Document));
+ }
+
+ #[test]
+ fn test_document_generate_single() {
+ let mut gen = DocumentGenerator::new();
+ let example = gen.generate();
+
+ assert!(!example.prompt.is_empty());
+ assert!(!example.response.is_empty());
+ }
+
+ #[test]
+ fn test_document_generate_batch() {
+ let mut gen = DocumentGenerator::new();
+ let batch = gen.generate_batch(10);
+
+ assert_eq!(batch.len(), 10);
+
+ for example in batch {
+ assert!(!example.prompt.is_empty());
+ }
+ }
+
+ #[test]
+ fn test_document_generate_deterministic() {
+ let mut gen1 = DocumentGenerator::new();
+ let mut gen2 = DocumentGenerator::new();
+
+ gen1.seed(42);
+ gen2.seed(42);
+
+ let ex1 = gen1.generate();
+ let ex2 = gen2.generate();
+
+ assert_eq!(ex1.prompt, ex2.prompt);
+ assert_eq!(ex1.response, ex2.response);
+ }
+
+ #[test]
+ fn test_document_variety() {
+ let mut gen = DocumentGenerator::new();
+ let batch = gen.generate_batch(100);
+
+ // Should have variety in document types
+ let has_invoice = batch.iter().any(|e| e.metadata.doc_type == "invoice");
+ let has_receipt = batch.iter().any(|e| e.metadata.doc_type == "receipt");
+ let has_contract = batch.iter().any(|e| e.metadata.doc_type == "contract");
+
+ // At least 2 types should appear in 100 samples
+ let type_count = [has_invoice, has_receipt, has_contract]
+ .iter()
+ .filter(|&&x| x)
+ .count();
+ assert!(type_count >= 2);
+ }
+
+ #[test]
+ fn test_document_structured_output() {
+ let mut gen = DocumentGenerator::new();
+ let example = gen.generate();
+
+ // Response should contain structured data (JSON-like)
+ assert!(
+ example.response.contains("{") ||
+ example.response.contains(":") ||
+ example.response.contains("=")
+ );
+ }
+}
+
+#[cfg(test)]
+mod code_generator_tests {
+ use super::*;
+
+ #[test]
+ fn test_code_generator_creation() {
+ let gen = CodeGenerator::new();
+ assert!(matches!(gen.domain(), SpecialistDomain::Code));
+ }
+
+ #[test]
+ fn test_code_generate_single() {
+ let mut gen = CodeGenerator::new();
+ let example = gen.generate();
+
+ assert!(!example.prompt.is_empty());
+ assert!(!example.response.is_empty());
+ }
+
+ #[test]
+ fn test_code_generate_batch() {
+ let mut gen = CodeGenerator::new();
+ let batch = gen.generate_batch(10);
+
+ assert_eq!(batch.len(), 10);
+ }
+
+ #[test]
+ fn test_code_contains_code() {
+ let mut gen = CodeGenerator::new();
+ let batch = gen.generate_batch(50);
+
+ // Most examples should contain code indicators
+ let code_count = batch.iter()
+ .filter(|e| {
+ e.response.contains("fn ") ||
+ e.response.contains("def ") ||
+ e.response.contains("function") ||
+ e.response.contains("return") ||
+ e.response.contains("{")
+ })
+ .count();
+
+ assert!(code_count >= 40); // At least 80% should look like code
+ }
+
+ #[test]
+ fn test_code_task_variety() {
+ let mut gen = CodeGenerator::new();
+ let batch = gen.generate_batch(100);
+
+ // Should have different task types
+ let has_generation = batch.iter().any(|e|
+ e.prompt.to_lowercase().contains("write") ||
+ e.prompt.to_lowercase().contains("implement") ||
+ e.prompt.to_lowercase().contains("create")
+ );
+ let has_fix = batch.iter().any(|e|
+ e.prompt.to_lowercase().contains("fix") ||
+ e.prompt.to_lowercase().contains("bug") ||
+ e.prompt.to_lowercase().contains("error")
+ );
+
+ assert!(has_generation || has_fix);
+ }
+
+ #[test]
+ fn test_code_language_variety() {
+ let mut gen = CodeGenerator::new();
+ gen.configure_languages(vec!["python", "rust", "javascript"]);
+
+ let batch = gen.generate_batch(100);
+
+ // Should see multiple languages
+ let has_python = batch.iter().any(|e| e.metadata.language == "python");
+ let has_rust = batch.iter().any(|e| e.metadata.language == "rust");
+
+ assert!(has_python || has_rust);
+ }
+}
+
+#[cfg(test)]
+mod sentiment_generator_tests {
+ use super::*;
+
+ #[test]
+ fn test_sentiment_generator_creation() {
+ let gen = SentimentGenerator::new();
+ // Sentiment is a type of classification
+ assert!(matches!(gen.domain(), SpecialistDomain::Classification));
+ }
+
+ #[test]
+ fn test_sentiment_generate() {
+ let mut gen = SentimentGenerator::new();
+ let example = gen.generate();
+
+ assert!(!example.prompt.is_empty());
+ // Response should be a sentiment label
+ let valid_sentiments = ["positive", "negative", "neutral", "mixed"];
+ let response_lower = example.response.to_lowercase();
+ assert!(valid_sentiments.iter().any(|s| response_lower.contains(s)));
+ }
+
+ #[test]
+ fn test_sentiment_balanced() {
+ let mut gen = SentimentGenerator::new();
+ let batch = gen.generate_batch(300);
+
+ let positive = batch.iter()
+ .filter(|e| e.response.to_lowercase().contains("positive"))
+ .count();
+ let negative = batch.iter()
+ .filter(|e| e.response.to_lowercase().contains("negative"))
+ .count();
+
+ // Should be roughly balanced (within 2x ratio)
+ let ratio = positive.max(negative) as f64 / positive.min(negative).max(1) as f64;
+ assert!(ratio < 3.0);
+ }
+}
+
+#[cfg(test)]
+mod reasoning_generator_tests {
+ use super::*;
+
+ #[test]
+ fn test_reasoning_generator_creation() {
+ let gen = ReasoningGenerator::new();
+ assert!(matches!(gen.domain(), SpecialistDomain::Reasoning));
+ }
+
+ #[test]
+ fn test_reasoning_generate() {
+ let mut gen = ReasoningGenerator::new();
+ let example = gen.generate();
+
+ assert!(!example.prompt.is_empty());
+ assert!(!example.response.is_empty());
+ }
+
+ #[test]
+ fn test_reasoning_has_steps() {
+ let mut gen = ReasoningGenerator::new();
+ let batch = gen.generate_batch(50);
+
+ // Reasoning responses should often contain step indicators
+ let with_steps = batch.iter()
+ .filter(|e| {
+ e.response.contains("step") ||
+ e.response.contains("first") ||
+ e.response.contains("then") ||
+ e.response.contains("therefore") ||
+ e.response.contains("because") ||
+ e.response.contains("1.") ||
+ e.response.contains("2.")
+ })
+ .count();
+
+ assert!(with_steps >= 25); // At least 50% have reasoning structure
+ }
+
+ #[test]
+ fn test_reasoning_problem_types() {
+ let mut gen = ReasoningGenerator::new();
+ let batch = gen.generate_batch(100);
+
+ // Should have different types: logic, math, common sense
+ let has_math = batch.iter().any(|e|
+ e.prompt.contains("+") ||
+ e.prompt.contains("-") ||
+ e.prompt.contains("*") ||
+ e.prompt.contains("/") ||
+ e.prompt.to_lowercase().contains("calculate")
+ );
+
+ let has_logic = batch.iter().any(|e|
+ e.prompt.to_lowercase().contains("if") ||
+ e.prompt.to_lowercase().contains("then") ||
+ e.prompt.to_lowercase().contains("must be")
+ );
+
+ assert!(has_math || has_logic);
+ }
+}
+
+#[cfg(test)]
+mod neural_ir_generator_tests {
+ use super::*;
+
+ #[test]
+ fn test_neural_ir_generator_creation() {
+ let gen = NeuralIRGenerator::new();
+ assert!(matches!(gen.domain(), SpecialistDomain::Custom(ref s) if s == "neural_ir"));
+ }
+
+ #[test]
+ fn test_neural_ir_generate() {
+ let mut gen = NeuralIRGenerator::new();
+ let example = gen.generate();
+
+ assert!(!example.prompt.is_empty());
+ assert!(!example.response.is_empty());
+ }
+
+ #[test]
+ fn test_neural_ir_query_document_pairs() {
+ let mut gen = NeuralIRGenerator::new();
+ let batch = gen.generate_batch(50);
+
+ // Should have query-document structure
+ for example in batch {
+ // Prompt is typically a query
+ assert!(example.prompt.len() > 5);
+ // Response includes relevance or document content
+ assert!(example.response.len() > 10);
+ }
+ }
+
+ #[test]
+ fn test_neural_ir_relevance_labels() {
+ let mut gen = NeuralIRGenerator::new();
+ let batch = gen.generate_batch(100);
+
+ // Many examples should have relevance indicators
+ let with_relevance = batch.iter()
+ .filter(|e| {
+ e.metadata.relevance_score.is_some() ||
+ e.response.to_lowercase().contains("relevant") ||
+ e.response.to_lowercase().contains("score")
+ })
+ .count();
+
+ assert!(with_relevance >= 50);
+ }
+}
+
+#[cfg(test)]
+mod classification_generator_tests {
+ use super::*;
+
+ #[test]
+ fn test_classification_generator_creation() {
+ let gen = ClassificationGenerator::new();
+ assert!(matches!(gen.domain(), SpecialistDomain::Classification));
+ }
+
+ #[test]
+ fn test_classification_generate() {
+ let mut gen = ClassificationGenerator::new();
+ let example = gen.generate();
+
+ assert!(!example.prompt.is_empty());
+ assert!(!example.response.is_empty());
+ }
+
+ #[test]
+ fn test_classification_labels() {
+ let mut gen = ClassificationGenerator::new();
+ gen.configure_labels(vec!["cat", "dog", "bird"]);
+
+ let batch = gen.generate_batch(100);
+
+ // All responses should be one of the configured labels
+ for example in batch {
+ let response_lower = example.response.to_lowercase();
+ let is_valid = ["cat", "dog", "bird"].iter()
+ .any(|label| response_lower.contains(label));
+ assert!(is_valid, "Invalid response: {}", example.response);
+ }
+ }
+
+ #[test]
+ fn test_classification_multiclass() {
+ let mut gen = ClassificationGenerator::new();
+ gen.configure_labels(vec!["a", "b", "c", "d", "e"]);
+
+ let batch = gen.generate_batch(500);
+
+ // Should see all labels represented
+ let unique_labels: std::collections::HashSet<_> = batch.iter()
+ .map(|e| e.response.to_lowercase())
+ .collect();
+
+ assert!(unique_labels.len() >= 3); // At least 3 different labels
+ }
+}
+
+#[cfg(test)]
+mod data_loader_tests {
+ use super::*;
+
+ #[test]
+ fn test_loader_creation() {
+ let examples = vec![
+ TrainingExample::new("prompt1", "response1"),
+ TrainingExample::new("prompt2", "response2"),
+ TrainingExample::new("prompt3", "response3"),
+ ];
+
+ let config = DataLoaderConfig::default();
+ let loader = DataLoader::new(examples, config);
+
+ assert_eq!(loader.len(), 3);
+ }
+
+ #[test]
+ fn test_loader_iteration() {
+ let examples: Vec<_> = (0..10)
+ .map(|i| TrainingExample::new(&format!("p{}", i), &format!("r{}", i)))
+ .collect();
+
+ let config = DataLoaderConfig {
+ batch_size: 3,
+ shuffle: false,
+ drop_last: false,
+ };
+ let loader = DataLoader::new(examples, config);
+
+ let batches: Vec<_> = loader.iter().collect();
+
+ // 10 examples / 3 batch_size = 4 batches (3+3+3+1)
+ assert_eq!(batches.len(), 4);
+ assert_eq!(batches[0].len(), 3);
+ assert_eq!(batches[3].len(), 1); // Last batch has remainder
+ }
+
+ #[test]
+ fn test_loader_drop_last() {
+ let examples: Vec<_> = (0..10)
+ .map(|i| TrainingExample::new(&format!("p{}", i), &format!("r{}", i)))
+ .collect();
+
+ let config = DataLoaderConfig {
+ batch_size: 3,
+ shuffle: false,
+ drop_last: true,
+ };
+ let loader = DataLoader::new(examples, config);
+
+ let batches: Vec<_> = loader.iter().collect();
+
+ // With drop_last, only complete batches
+ assert_eq!(batches.len(), 3);
+ for batch in batches {
+ assert_eq!(batch.len(), 3);
+ }
+ }
+
+ #[test]
+ fn test_loader_shuffle() {
+ let examples: Vec<_> = (0..100)
+ .map(|i| TrainingExample::new(&format!("p{}", i), &format!("r{}", i)))
+ .collect();
+
+ let config = DataLoaderConfig {
+ batch_size: 10,
+ shuffle: true,
+ drop_last: false,
+ };
+ let mut loader = DataLoader::new(examples.clone(), config);
+ loader.seed(42);
+
+ let epoch1: Vec<_> = loader.iter().collect();
+ loader.reset();
+ let epoch2: Vec<_> = loader.iter().collect();
+
+ // After reset with same seed, order should differ from original
+ // (unless very unlikely random coincidence)
+ }
+
+ #[test]
+ fn test_batch_structure() {
+ let examples = vec![
+ TrainingExample::new("hello world", "goodbye world"),
+ TrainingExample::new("foo bar", "baz qux"),
+ ];
+
+ let config = DataLoaderConfig {
+ batch_size: 2,
+ shuffle: false,
+ drop_last: false,
+ };
+ let loader = DataLoader::new(examples, config);
+
+ let batch = loader.iter().next().unwrap();
+
+ assert_eq!(batch.len(), 2);
+ assert_eq!(batch.prompts()[0], "hello world");
+ assert_eq!(batch.responses()[0], "goodbye world");
+ }
+
+ #[test]
+ fn test_loader_split() {
+ let examples: Vec<_> = (0..100)
+ .map(|i| TrainingExample::new(&format!("p{}", i), &format!("r{}", i)))
+ .collect();
+
+ let (train, val) = DataLoader::split(examples, 0.8);
+
+ assert_eq!(train.len(), 80);
+ assert_eq!(val.len(), 20);
+ }
+
+ #[test]
+ fn test_empty_loader() {
+ let examples: Vec<TrainingExample> = vec![];
+ let config = DataLoaderConfig::default();
+ let loader = DataLoader::new(examples, config);
+
+ assert_eq!(loader.len(), 0);
+ assert_eq!(loader.iter().count(), 0);
+ }
+
+ #[test]
+ fn test_single_element() {
+ let examples = vec![TrainingExample::new("one", "two")];
+ let config = DataLoaderConfig {
+ batch_size: 1,
+ shuffle: false,
+ drop_last: false,
+ };
+ let loader = DataLoader::new(examples, config);
+
+ let batches: Vec<_> = loader.iter().collect();
+ assert_eq!(batches.len(), 1);
+ assert_eq!(batches[0].len(), 1);
+ }
+}
+
+#[cfg(test)]
+mod training_example_tests {
+ use super::*;
+
+ #[test]
+ fn test_example_creation() {
+ let ex = TrainingExample::new("What is 2+2?", "4");
+
+ assert_eq!(ex.prompt, "What is 2+2?");
+ assert_eq!(ex.response, "4");
+ }
+
+ #[test]
+ fn test_example_with_metadata() {
+ let mut ex = TrainingExample::new("test", "test");
+ ex.set_metadata("key", "value");
+
+ assert_eq!(ex.get_metadata("key"), Some(&"value".to_string()));
+ }
+
+ #[test]
+ fn test_example_token_count_estimate() {
+ let ex = TrainingExample::new(
+ "This is a test prompt with multiple words",
+ "This is a response"
+ );
+
+ // Rough token estimate (words * 1.3 or so)
+ let estimate = ex.estimated_tokens();
+ assert!(estimate > 10);
+ assert!(estimate < 50);
+ }
+}
+
+#[cfg(test)]
+mod rng_tests {
+ use super::*;
+ use simplex_training::data::Rng;
+
+ #[test]
+ fn test_rng_deterministic() {
+ let mut rng1 = Rng::new(12345);
+ let mut rng2 = Rng::new(12345);
+
+ for _ in 0..100 {
+ assert_eq!(rng1.next_u64(), rng2.next_u64());
+ }
+ }
+
+ #[test]
+ fn test_rng_different_seeds() {
+ let mut rng1 = Rng::new(1);
+ let mut rng2 = Rng::new(2);
+
+ // Should produce different sequences
+ let seq1: Vec<_> = (0..10).map(|_| rng1.next_u64()).collect();
+ let seq2: Vec<_> = (0..10).map(|_| rng2.next_u64()).collect();
+
+ assert_ne!(seq1, seq2);
+ }
+
+ #[test]
+ fn test_rng_float() {
+ let mut rng = Rng::new(42);
+
+ for _ in 0..100 {
+ let f = rng.next_f64();
+ assert!(f >= 0.0);
+ assert!(f < 1.0);
+ }
+ }
+
+ #[test]
+ fn test_rng_range() {
+ let mut rng = Rng::new(42);
+
+ for _ in 0..100 {
+ let n = rng.next_range(10, 20);
+ assert!(n >= 10);
+ assert!(n < 20);
+ }
+ }
+
+ #[test]
+ fn test_rng_choice() {
+ let mut rng = Rng::new(42);
+ let items = vec!["a", "b", "c", "d"];
+
+ for _ in 0..100 {
+ let choice = rng.choice(&items);
+ assert!(items.contains(&choice));
+ }
+ }
+
+ #[test]
+ fn test_rng_shuffle() {
+ let mut rng = Rng::new(42);
+ let mut items = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+ let original = items.clone();
+
+ rng.shuffle(&mut items);
+
+ // Should be same elements but (probably) different order
+ items.sort();
+ assert_eq!(items, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+ }
+}

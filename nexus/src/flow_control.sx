@@ -1,0 +1,811 @@
+// Nexus Protocol - Flow Control
+//
+// This module provides flow control mechanisms including windowing,
+// backpressure, and rate limiting for reliable data transfer.
+
+// ============================================================================
+// Flow Control Strategies
+// ============================================================================
+
+fn FLOW_STRATEGY_WINDOW() -> i64 { 0 }      // Sliding window
+fn FLOW_STRATEGY_CREDIT() -> i64 { 1 }      // Credit-based
+fn FLOW_STRATEGY_RATE() -> i64 { 2 }        // Rate-based
+fn FLOW_STRATEGY_ADAPTIVE() -> i64 { 3 }    // Adaptive/dynamic
+
+// Backpressure signals
+fn BACKPRESSURE_NONE() -> i64 { 0 }
+fn BACKPRESSURE_SLOW() -> i64 { 1 }         // Slow down
+fn BACKPRESSURE_PAUSE() -> i64 { 2 }        // Pause sending
+fn BACKPRESSURE_DROP() -> i64 { 3 }         // Start dropping
+
+// ============================================================================
+// Sliding Window
+// ============================================================================
+
+// Window state for a single direction (send or receive)
+fn WINDOW_OFFSET_SIZE() -> i64 { 0 }           // Total window size
+fn WINDOW_OFFSET_AVAILABLE() -> i64 { 8 }      // Currently available
+fn WINDOW_OFFSET_INITIAL() -> i64 { 16 }       // Initial window size
+fn WINDOW_OFFSET_MIN() -> i64 { 24 }           // Minimum window
+fn WINDOW_OFFSET_MAX() -> i64 { 32 }           // Maximum window
+fn WINDOW_OFFSET_PENDING() -> i64 { 40 }       // Pending bytes (unacked)
+fn WINDOW_OFFSET_THRESHOLD() -> i64 { 48 }     // Auto-update threshold
+fn WINDOW_OFFSET_LAST_UPDATE() -> i64 { 56 }   // Last update time
+fn WINDOW_SIZE() -> i64 { 64 }
+
+fn flow_window_new(initial_size: i64) -> i64 {
+    let w = alloc(WINDOW_SIZE());
+
+    store64(w + WINDOW_OFFSET_SIZE(), initial_size);
+    store64(w + WINDOW_OFFSET_AVAILABLE(), initial_size);
+    store64(w + WINDOW_OFFSET_INITIAL(), initial_size);
+    store64(w + WINDOW_OFFSET_MIN(), 16384);           // 16KB min
+    store64(w + WINDOW_OFFSET_MAX(), 16777216);        // 16MB max
+    store64(w + WINDOW_OFFSET_PENDING(), 0);
+    store64(w + WINDOW_OFFSET_THRESHOLD(), initial_size / 2);
+    store64(w + WINDOW_OFFSET_LAST_UPDATE(), 0);
+
+    w
+}
+
+fn flow_window_size(w: i64) -> i64 { load64(w + WINDOW_OFFSET_SIZE()) }
+fn flow_window_available(w: i64) -> i64 { load64(w + WINDOW_OFFSET_AVAILABLE()) }
+fn flow_window_initial(w: i64) -> i64 { load64(w + WINDOW_OFFSET_INITIAL()) }
+fn flow_window_min(w: i64) -> i64 { load64(w + WINDOW_OFFSET_MIN()) }
+fn flow_window_max(w: i64) -> i64 { load64(w + WINDOW_OFFSET_MAX()) }
+fn flow_window_pending(w: i64) -> i64 { load64(w + WINDOW_OFFSET_PENDING()) }
+fn flow_window_threshold(w: i64) -> i64 { load64(w + WINDOW_OFFSET_THRESHOLD()) }
+fn flow_window_last_update(w: i64) -> i64 { load64(w + WINDOW_OFFSET_LAST_UPDATE()) }
+
+fn flow_window_set_size(w: i64, v: i64) { store64(w + WINDOW_OFFSET_SIZE(), v); }
+fn flow_window_set_available(w: i64, v: i64) { store64(w + WINDOW_OFFSET_AVAILABLE(), v); }
+fn flow_window_set_min(w: i64, v: i64) { store64(w + WINDOW_OFFSET_MIN(), v); }
+fn flow_window_set_max(w: i64, v: i64) { store64(w + WINDOW_OFFSET_MAX(), v); }
+fn flow_window_set_pending(w: i64, v: i64) { store64(w + WINDOW_OFFSET_PENDING(), v); }
+fn flow_window_set_threshold(w: i64, v: i64) { store64(w + WINDOW_OFFSET_THRESHOLD(), v); }
+fn flow_window_set_last_update(w: i64, now: i64) { store64(w + WINDOW_OFFSET_LAST_UPDATE(), now); }
+
+// Consume window space (sending data)
+fn flow_window_consume(w: i64, amount: i64) -> i64 {
+    let available = flow_window_available(w);
+    if amount > available {
+        return 0;  // Not enough window
+    }
+
+    flow_window_set_available(w, available - amount);
+
+    let pending = flow_window_pending(w);
+    flow_window_set_pending(w, pending + amount);
+
+    1
+}
+
+// Release window space (receiving ack)
+fn flow_window_release(w: i64, amount: i64) -> i64 {
+    let pending = flow_window_pending(w);
+    if amount > pending {
+        amount = pending;
+    }
+
+    flow_window_set_pending(w, pending - amount);
+
+    // Don't automatically restore available - that's done by window update
+    1
+}
+
+// Update window (increment available space)
+fn flow_window_update(w: i64, increment: i64, now: i64) -> i64 {
+    let available = flow_window_available(w);
+    let max_window = flow_window_max(w);
+
+    let new_available = available + increment;
+    if new_available > max_window {
+        new_available = max_window;
+    }
+
+    flow_window_set_available(w, new_available);
+    flow_window_set_last_update(w, now);
+
+    new_available
+}
+
+// Check if window update should be sent
+fn flow_window_needs_update(w: i64) -> i64 {
+    let available = flow_window_available(w);
+    let threshold = flow_window_threshold(w);
+
+    available < threshold
+}
+
+// Calculate window update amount
+fn flow_window_update_amount(w: i64) -> i64 {
+    let size = flow_window_size(w);
+    let available = flow_window_available(w);
+
+    size - available
+}
+
+// Reset window to initial state
+fn flow_window_reset(w: i64) {
+    let initial = flow_window_initial(w);
+    flow_window_set_size(w, initial);
+    flow_window_set_available(w, initial);
+    flow_window_set_pending(w, 0);
+}
+
+fn flow_window_free(w: i64) {
+    // Dealloc marker
+}
+
+// ============================================================================
+// Credit-Based Flow Control
+// ============================================================================
+
+fn CREDIT_OFFSET_CREDITS() -> i64 { 0 }
+fn CREDIT_OFFSET_MAX_CREDITS() -> i64 { 8 }
+fn CREDIT_OFFSET_PENDING_GRANT() -> i64 { 16 }
+fn CREDIT_OFFSET_LAST_GRANT() -> i64 { 24 }
+fn CREDIT_OFFSET_GRANT_THRESHOLD() -> i64 { 32 }
+fn CREDIT_SIZE() -> i64 { 40 }
+
+fn flow_credit_new(initial_credits: i64) -> i64 {
+    let c = alloc(CREDIT_SIZE());
+
+    store64(c + CREDIT_OFFSET_CREDITS(), initial_credits);
+    store64(c + CREDIT_OFFSET_MAX_CREDITS(), initial_credits * 2);
+    store64(c + CREDIT_OFFSET_PENDING_GRANT(), 0);
+    store64(c + CREDIT_OFFSET_LAST_GRANT(), 0);
+    store64(c + CREDIT_OFFSET_GRANT_THRESHOLD(), initial_credits / 4);
+
+    c
+}
+
+fn flow_credit_credits(c: i64) -> i64 { load64(c + CREDIT_OFFSET_CREDITS()) }
+fn flow_credit_max_credits(c: i64) -> i64 { load64(c + CREDIT_OFFSET_MAX_CREDITS()) }
+fn flow_credit_pending_grant(c: i64) -> i64 { load64(c + CREDIT_OFFSET_PENDING_GRANT()) }
+fn flow_credit_last_grant(c: i64) -> i64 { load64(c + CREDIT_OFFSET_LAST_GRANT()) }
+fn flow_credit_grant_threshold(c: i64) -> i64 { load64(c + CREDIT_OFFSET_GRANT_THRESHOLD()) }
+
+fn flow_credit_set_credits(c: i64, v: i64) { store64(c + CREDIT_OFFSET_CREDITS(), v); }
+fn flow_credit_set_max_credits(c: i64, v: i64) { store64(c + CREDIT_OFFSET_MAX_CREDITS(), v); }
+fn flow_credit_set_pending_grant(c: i64, v: i64) { store64(c + CREDIT_OFFSET_PENDING_GRANT(), v); }
+fn flow_credit_set_last_grant(c: i64, now: i64) { store64(c + CREDIT_OFFSET_LAST_GRANT(), now); }
+fn flow_credit_set_grant_threshold(c: i64, v: i64) { store64(c + CREDIT_OFFSET_GRANT_THRESHOLD(), v); }
+
+// Use credits (for sending)
+fn flow_credit_use(c: i64, amount: i64) -> i64 {
+    let credits = flow_credit_credits(c);
+    if amount > credits {
+        return 0;
+    }
+
+    flow_credit_set_credits(c, credits - amount);
+    1
+}
+
+// Grant credits (from receiver)
+fn flow_credit_grant(c: i64, amount: i64, now: i64) -> i64 {
+    let credits = flow_credit_credits(c);
+    let max_credits = flow_credit_max_credits(c);
+
+    let new_credits = credits + amount;
+    if new_credits > max_credits {
+        new_credits = max_credits;
+    }
+
+    flow_credit_set_credits(c, new_credits);
+    flow_credit_set_last_grant(c, now);
+
+    new_credits
+}
+
+// Check if more credits should be requested
+fn flow_credit_needs_request(c: i64) -> i64 {
+    let credits = flow_credit_credits(c);
+    let threshold = flow_credit_grant_threshold(c);
+
+    credits < threshold
+}
+
+// Request amount to ask for
+fn flow_credit_request_amount(c: i64) -> i64 {
+    let max_credits = flow_credit_max_credits(c);
+    let credits = flow_credit_credits(c);
+
+    max_credits - credits
+}
+
+fn flow_credit_free(c: i64) {
+    // Dealloc marker
+}
+
+// ============================================================================
+// Rate Limiter (Token Bucket)
+// ============================================================================
+
+fn RATE_LIMIT_OFFSET_TOKENS() -> i64 { 0 }
+fn RATE_LIMIT_OFFSET_CAPACITY() -> i64 { 8 }
+fn RATE_LIMIT_OFFSET_RATE() -> i64 { 16 }        // Tokens per second
+fn RATE_LIMIT_OFFSET_LAST_REFILL() -> i64 { 24 }
+fn RATE_LIMIT_OFFSET_BURST() -> i64 { 32 }       // Max burst size
+fn RATE_LIMIT_SIZE() -> i64 { 40 }
+
+fn rate_limiter_new(rate: i64, burst: i64) -> i64 {
+    let r = alloc(RATE_LIMIT_SIZE());
+
+    store64(r + RATE_LIMIT_OFFSET_TOKENS(), burst);
+    store64(r + RATE_LIMIT_OFFSET_CAPACITY(), burst);
+    store64(r + RATE_LIMIT_OFFSET_RATE(), rate);
+    store64(r + RATE_LIMIT_OFFSET_LAST_REFILL(), 0);
+    store64(r + RATE_LIMIT_OFFSET_BURST(), burst);
+
+    r
+}
+
+fn rate_limiter_tokens(r: i64) -> i64 { load64(r + RATE_LIMIT_OFFSET_TOKENS()) }
+fn rate_limiter_capacity(r: i64) -> i64 { load64(r + RATE_LIMIT_OFFSET_CAPACITY()) }
+fn rate_limiter_rate(r: i64) -> i64 { load64(r + RATE_LIMIT_OFFSET_RATE()) }
+fn rate_limiter_last_refill(r: i64) -> i64 { load64(r + RATE_LIMIT_OFFSET_LAST_REFILL()) }
+fn rate_limiter_burst(r: i64) -> i64 { load64(r + RATE_LIMIT_OFFSET_BURST()) }
+
+fn rate_limiter_set_tokens(r: i64, v: i64) { store64(r + RATE_LIMIT_OFFSET_TOKENS(), v); }
+fn rate_limiter_set_rate(r: i64, v: i64) { store64(r + RATE_LIMIT_OFFSET_RATE(), v); }
+fn rate_limiter_set_last_refill(r: i64, now: i64) { store64(r + RATE_LIMIT_OFFSET_LAST_REFILL(), now); }
+
+// Refill tokens based on time elapsed
+fn rate_limiter_refill(r: i64, now: i64) {
+    let last_refill = rate_limiter_last_refill(r);
+    if last_refill == 0 {
+        rate_limiter_set_last_refill(r, now);
+        return;
+    }
+
+    let elapsed_ms = now - last_refill;
+    if elapsed_ms <= 0 {
+        return;
+    }
+
+    let rate = rate_limiter_rate(r);
+    let capacity = rate_limiter_capacity(r);
+    let tokens = rate_limiter_tokens(r);
+
+    // Add tokens: (rate * elapsed_ms) / 1000
+    let new_tokens = tokens + (rate * elapsed_ms) / 1000;
+    if new_tokens > capacity {
+        new_tokens = capacity;
+    }
+
+    rate_limiter_set_tokens(r, new_tokens);
+    rate_limiter_set_last_refill(r, now);
+}
+
+// Try to consume tokens
+fn rate_limiter_try_acquire(r: i64, amount: i64, now: i64) -> i64 {
+    rate_limiter_refill(r, now);
+
+    let tokens = rate_limiter_tokens(r);
+    if amount > tokens {
+        return 0;
+    }
+
+    rate_limiter_set_tokens(r, tokens - amount);
+    1
+}
+
+// Check if tokens are available without consuming
+fn rate_limiter_check(r: i64, amount: i64, now: i64) -> i64 {
+    rate_limiter_refill(r, now);
+    rate_limiter_tokens(r) >= amount
+}
+
+// Calculate wait time until tokens available
+fn rate_limiter_wait_time(r: i64, amount: i64, now: i64) -> i64 {
+    rate_limiter_refill(r, now);
+
+    let tokens = rate_limiter_tokens(r);
+    if amount <= tokens {
+        return 0;
+    }
+
+    let needed = amount - tokens;
+    let rate = rate_limiter_rate(r);
+
+    if rate <= 0 {
+        return 0 - 1;  // Infinite wait
+    }
+
+    // Wait time in ms: (needed * 1000) / rate
+    (needed * 1000) / rate
+}
+
+fn rate_limiter_free(r: i64) {
+    // Dealloc marker
+}
+
+// ============================================================================
+// Adaptive Flow Controller
+// ============================================================================
+
+// Congestion states
+fn CONGESTION_SLOW_START() -> i64 { 0 }
+fn CONGESTION_AVOIDANCE() -> i64 { 1 }
+fn CONGESTION_RECOVERY() -> i64 { 2 }
+
+fn ADAPTIVE_OFFSET_WINDOW() -> i64 { 0 }           // Current window
+fn ADAPTIVE_OFFSET_SSTHRESH() -> i64 { 8 }         // Slow start threshold
+fn ADAPTIVE_OFFSET_STATE() -> i64 { 16 }           // Congestion state
+fn ADAPTIVE_OFFSET_CWND() -> i64 { 24 }            // Congestion window
+fn ADAPTIVE_OFFSET_RECOVERY_POINT() -> i64 { 32 }  // Recovery point
+fn ADAPTIVE_OFFSET_RTT_MIN() -> i64 { 40 }         // Minimum RTT observed
+fn ADAPTIVE_OFFSET_RTT_SMOOTHED() -> i64 { 48 }    // Smoothed RTT
+fn ADAPTIVE_OFFSET_RTT_VAR() -> i64 { 56 }         // RTT variance
+fn ADAPTIVE_OFFSET_BYTES_ACKED() -> i64 { 64 }     // Bytes acked in round
+fn ADAPTIVE_OFFSET_PACKETS_LOST() -> i64 { 72 }    // Packets lost
+fn ADAPTIVE_OFFSET_LAST_UPDATE() -> i64 { 80 }
+fn ADAPTIVE_SIZE() -> i64 { 88 }
+
+fn adaptive_flow_new(initial_window: i64) -> i64 {
+    let a = alloc(ADAPTIVE_SIZE());
+
+    store64(a + ADAPTIVE_OFFSET_WINDOW(), initial_window);
+    store64(a + ADAPTIVE_OFFSET_SSTHRESH(), 9223372036854775807);  // Max i64
+    store64(a + ADAPTIVE_OFFSET_STATE(), CONGESTION_SLOW_START());
+    store64(a + ADAPTIVE_OFFSET_CWND(), initial_window);
+    store64(a + ADAPTIVE_OFFSET_RECOVERY_POINT(), 0);
+    store64(a + ADAPTIVE_OFFSET_RTT_MIN(), 9223372036854775807);  // Max i64
+    store64(a + ADAPTIVE_OFFSET_RTT_SMOOTHED(), 0);
+    store64(a + ADAPTIVE_OFFSET_RTT_VAR(), 0);
+    store64(a + ADAPTIVE_OFFSET_BYTES_ACKED(), 0);
+    store64(a + ADAPTIVE_OFFSET_PACKETS_LOST(), 0);
+    store64(a + ADAPTIVE_OFFSET_LAST_UPDATE(), 0);
+
+    a
+}
+
+fn adaptive_flow_window(a: i64) -> i64 { load64(a + ADAPTIVE_OFFSET_WINDOW()) }
+fn adaptive_flow_ssthresh(a: i64) -> i64 { load64(a + ADAPTIVE_OFFSET_SSTHRESH()) }
+fn adaptive_flow_state(a: i64) -> i64 { load64(a + ADAPTIVE_OFFSET_STATE()) }
+fn adaptive_flow_cwnd(a: i64) -> i64 { load64(a + ADAPTIVE_OFFSET_CWND()) }
+fn adaptive_flow_recovery_point(a: i64) -> i64 { load64(a + ADAPTIVE_OFFSET_RECOVERY_POINT()) }
+fn adaptive_flow_rtt_min(a: i64) -> i64 { load64(a + ADAPTIVE_OFFSET_RTT_MIN()) }
+fn adaptive_flow_rtt_smoothed(a: i64) -> i64 { load64(a + ADAPTIVE_OFFSET_RTT_SMOOTHED()) }
+fn adaptive_flow_rtt_var(a: i64) -> i64 { load64(a + ADAPTIVE_OFFSET_RTT_VAR()) }
+fn adaptive_flow_bytes_acked(a: i64) -> i64 { load64(a + ADAPTIVE_OFFSET_BYTES_ACKED()) }
+fn adaptive_flow_packets_lost(a: i64) -> i64 { load64(a + ADAPTIVE_OFFSET_PACKETS_LOST()) }
+
+fn adaptive_flow_set_window(a: i64, v: i64) { store64(a + ADAPTIVE_OFFSET_WINDOW(), v); }
+fn adaptive_flow_set_ssthresh(a: i64, v: i64) { store64(a + ADAPTIVE_OFFSET_SSTHRESH(), v); }
+fn adaptive_flow_set_state(a: i64, v: i64) { store64(a + ADAPTIVE_OFFSET_STATE(), v); }
+fn adaptive_flow_set_cwnd(a: i64, v: i64) { store64(a + ADAPTIVE_OFFSET_CWND(), v); }
+fn adaptive_flow_set_recovery_point(a: i64, v: i64) { store64(a + ADAPTIVE_OFFSET_RECOVERY_POINT(), v); }
+fn adaptive_flow_set_rtt_min(a: i64, v: i64) { store64(a + ADAPTIVE_OFFSET_RTT_MIN(), v); }
+fn adaptive_flow_set_rtt_smoothed(a: i64, v: i64) { store64(a + ADAPTIVE_OFFSET_RTT_SMOOTHED(), v); }
+fn adaptive_flow_set_rtt_var(a: i64, v: i64) { store64(a + ADAPTIVE_OFFSET_RTT_VAR(), v); }
+fn adaptive_flow_set_bytes_acked(a: i64, v: i64) { store64(a + ADAPTIVE_OFFSET_BYTES_ACKED(), v); }
+fn adaptive_flow_set_packets_lost(a: i64, v: i64) { store64(a + ADAPTIVE_OFFSET_PACKETS_LOST(), v); }
+fn adaptive_flow_set_last_update(a: i64, now: i64) { store64(a + ADAPTIVE_OFFSET_LAST_UPDATE(), now); }
+
+// Update RTT estimate
+fn adaptive_flow_update_rtt(a: i64, rtt: i64) {
+    // Update minimum RTT
+    let rtt_min = adaptive_flow_rtt_min(a);
+    if rtt < rtt_min {
+        adaptive_flow_set_rtt_min(a, rtt);
+    }
+
+    let smoothed = adaptive_flow_rtt_smoothed(a);
+    let rtt_var = adaptive_flow_rtt_var(a);
+
+    if smoothed == 0 {
+        // First sample
+        adaptive_flow_set_rtt_smoothed(a, rtt);
+        adaptive_flow_set_rtt_var(a, rtt / 2);
+    } else {
+        // EWMA update (RFC 6298 style)
+        // rtt_var = (1 - 1/4) * rtt_var + 1/4 * |smoothed - rtt|
+        let diff = smoothed - rtt;
+        if diff < 0 {
+            diff = 0 - diff;
+        }
+        rtt_var = (3 * rtt_var + diff) / 4;
+
+        // smoothed = (1 - 1/8) * smoothed + 1/8 * rtt
+        smoothed = (7 * smoothed + rtt) / 8;
+
+        adaptive_flow_set_rtt_smoothed(a, smoothed);
+        adaptive_flow_set_rtt_var(a, rtt_var);
+    }
+}
+
+// On successful ACK
+fn adaptive_flow_on_ack(a: i64, bytes: i64, now: i64) {
+    let state = adaptive_flow_state(a);
+    let cwnd = adaptive_flow_cwnd(a);
+    let ssthresh = adaptive_flow_ssthresh(a);
+
+    if state == CONGESTION_SLOW_START() {
+        // Exponential growth
+        cwnd = cwnd + bytes;
+
+        if cwnd >= ssthresh {
+            adaptive_flow_set_state(a, CONGESTION_AVOIDANCE());
+        }
+    } else if state == CONGESTION_AVOIDANCE() {
+        // Linear growth (approximately)
+        let acked = adaptive_flow_bytes_acked(a);
+        acked = acked + bytes;
+
+        if acked >= cwnd {
+            cwnd = cwnd + 1460;  // Add ~1 MSS
+            acked = 0;
+        }
+
+        adaptive_flow_set_bytes_acked(a, acked);
+    } else if state == CONGESTION_RECOVERY() {
+        // Don't grow during recovery
+    }
+
+    adaptive_flow_set_cwnd(a, cwnd);
+    adaptive_flow_set_window(a, cwnd);
+    adaptive_flow_set_last_update(a, now);
+}
+
+// On packet loss
+fn adaptive_flow_on_loss(a: i64, seq: i64, now: i64) {
+    let state = adaptive_flow_state(a);
+    let cwnd = adaptive_flow_cwnd(a);
+
+    // Record loss
+    let lost = adaptive_flow_packets_lost(a);
+    adaptive_flow_set_packets_lost(a, lost + 1);
+
+    if state != CONGESTION_RECOVERY() {
+        // Enter recovery
+        adaptive_flow_set_state(a, CONGESTION_RECOVERY());
+        adaptive_flow_set_recovery_point(a, seq);
+
+        // Reduce window (multiplicative decrease)
+        let ssthresh = cwnd / 2;
+        if ssthresh < 2 * 1460 {
+            ssthresh = 2 * 1460;  // Min 2 MSS
+        }
+        adaptive_flow_set_ssthresh(a, ssthresh);
+        adaptive_flow_set_cwnd(a, ssthresh);
+        adaptive_flow_set_window(a, ssthresh);
+    }
+
+    adaptive_flow_set_last_update(a, now);
+}
+
+// Recovery complete
+fn adaptive_flow_recovery_complete(a: i64, now: i64) {
+    adaptive_flow_set_state(a, CONGESTION_AVOIDANCE());
+    adaptive_flow_set_last_update(a, now);
+}
+
+// Get current available window
+fn adaptive_flow_available(a: i64) -> i64 {
+    adaptive_flow_window(a)
+}
+
+fn adaptive_flow_free(a: i64) {
+    // Dealloc marker
+}
+
+// ============================================================================
+// Backpressure Monitor
+// ============================================================================
+
+fn BACKPRESSURE_OFFSET_QUEUE_SIZE() -> i64 { 0 }
+fn BACKPRESSURE_OFFSET_QUEUE_LIMIT() -> i64 { 8 }
+fn BACKPRESSURE_OFFSET_SLOW_THRESHOLD() -> i64 { 16 }
+fn BACKPRESSURE_OFFSET_PAUSE_THRESHOLD() -> i64 { 24 }
+fn BACKPRESSURE_OFFSET_CURRENT_SIGNAL() -> i64 { 32 }
+fn BACKPRESSURE_OFFSET_BYTES_DROPPED() -> i64 { 40 }
+fn BACKPRESSURE_OFFSET_LAST_SIGNAL() -> i64 { 48 }
+fn BACKPRESSURE_SIZE() -> i64 { 56 }
+
+fn backpressure_monitor_new(queue_limit: i64) -> i64 {
+    let b = alloc(BACKPRESSURE_SIZE());
+
+    store64(b + BACKPRESSURE_OFFSET_QUEUE_SIZE(), 0);
+    store64(b + BACKPRESSURE_OFFSET_QUEUE_LIMIT(), queue_limit);
+    store64(b + BACKPRESSURE_OFFSET_SLOW_THRESHOLD(), queue_limit / 2);
+    store64(b + BACKPRESSURE_OFFSET_PAUSE_THRESHOLD(), (queue_limit * 3) / 4);
+    store64(b + BACKPRESSURE_OFFSET_CURRENT_SIGNAL(), BACKPRESSURE_NONE());
+    store64(b + BACKPRESSURE_OFFSET_BYTES_DROPPED(), 0);
+    store64(b + BACKPRESSURE_OFFSET_LAST_SIGNAL(), 0);
+
+    b
+}
+
+fn backpressure_queue_size(b: i64) -> i64 { load64(b + BACKPRESSURE_OFFSET_QUEUE_SIZE()) }
+fn backpressure_queue_limit(b: i64) -> i64 { load64(b + BACKPRESSURE_OFFSET_QUEUE_LIMIT()) }
+fn backpressure_slow_threshold(b: i64) -> i64 { load64(b + BACKPRESSURE_OFFSET_SLOW_THRESHOLD()) }
+fn backpressure_pause_threshold(b: i64) -> i64 { load64(b + BACKPRESSURE_OFFSET_PAUSE_THRESHOLD()) }
+fn backpressure_current_signal(b: i64) -> i64 { load64(b + BACKPRESSURE_OFFSET_CURRENT_SIGNAL()) }
+fn backpressure_bytes_dropped(b: i64) -> i64 { load64(b + BACKPRESSURE_OFFSET_BYTES_DROPPED()) }
+
+fn backpressure_set_queue_size(b: i64, v: i64) { store64(b + BACKPRESSURE_OFFSET_QUEUE_SIZE(), v); }
+fn backpressure_set_slow_threshold(b: i64, v: i64) { store64(b + BACKPRESSURE_OFFSET_SLOW_THRESHOLD(), v); }
+fn backpressure_set_pause_threshold(b: i64, v: i64) { store64(b + BACKPRESSURE_OFFSET_PAUSE_THRESHOLD(), v); }
+fn backpressure_set_current_signal(b: i64, v: i64) { store64(b + BACKPRESSURE_OFFSET_CURRENT_SIGNAL(), v); }
+fn backpressure_set_bytes_dropped(b: i64, v: i64) { store64(b + BACKPRESSURE_OFFSET_BYTES_DROPPED(), v); }
+fn backpressure_set_last_signal(b: i64, now: i64) { store64(b + BACKPRESSURE_OFFSET_LAST_SIGNAL(), now); }
+
+// Update queue size and compute signal
+fn backpressure_update(b: i64, queue_size: i64, now: i64) -> i64 {
+    backpressure_set_queue_size(b, queue_size);
+
+    let limit = backpressure_queue_limit(b);
+    let slow = backpressure_slow_threshold(b);
+    let pause = backpressure_pause_threshold(b);
+
+    let signal = BACKPRESSURE_NONE();
+
+    if queue_size >= limit {
+        signal = BACKPRESSURE_DROP();
+    } else if queue_size >= pause {
+        signal = BACKPRESSURE_PAUSE();
+    } else if queue_size >= slow {
+        signal = BACKPRESSURE_SLOW();
+    }
+
+    backpressure_set_current_signal(b, signal);
+    backpressure_set_last_signal(b, now);
+
+    signal
+}
+
+// Record dropped bytes
+fn backpressure_record_drop(b: i64, bytes: i64) {
+    let dropped = backpressure_bytes_dropped(b);
+    backpressure_set_bytes_dropped(b, dropped + bytes);
+}
+
+// Check if can accept more
+fn backpressure_can_accept(b: i64) -> i64 {
+    backpressure_current_signal(b) != BACKPRESSURE_DROP()
+}
+
+// Check if should slow down
+fn backpressure_should_slow(b: i64) -> i64 {
+    let signal = backpressure_current_signal(b);
+    signal == BACKPRESSURE_SLOW() || signal == BACKPRESSURE_PAUSE()
+}
+
+// Get utilization percentage (0-100)
+fn backpressure_utilization(b: i64) -> i64 {
+    let size = backpressure_queue_size(b);
+    let limit = backpressure_queue_limit(b);
+
+    if limit == 0 {
+        return 0;
+    }
+
+    (size * 100) / limit
+}
+
+fn backpressure_monitor_free(b: i64) {
+    // Dealloc marker
+}
+
+// ============================================================================
+// Combined Flow Controller
+// ============================================================================
+
+fn FLOW_CTRL_OFFSET_STRATEGY() -> i64 { 0 }
+fn FLOW_CTRL_OFFSET_SEND_WINDOW() -> i64 { 8 }
+fn FLOW_CTRL_OFFSET_RECV_WINDOW() -> i64 { 16 }
+fn FLOW_CTRL_OFFSET_RATE_LIMITER() -> i64 { 24 }
+fn FLOW_CTRL_OFFSET_ADAPTIVE() -> i64 { 32 }
+fn FLOW_CTRL_OFFSET_BACKPRESSURE() -> i64 { 40 }
+fn FLOW_CTRL_OFFSET_ENABLED() -> i64 { 48 }
+fn FLOW_CTRL_SIZE() -> i64 { 56 }
+
+fn nex_flow_ctrl_new(strategy: i64, initial_window: i64) -> i64 {
+    let fc = alloc(FLOW_CTRL_SIZE());
+
+    store64(fc + FLOW_CTRL_OFFSET_STRATEGY(), strategy);
+    store64(fc + FLOW_CTRL_OFFSET_SEND_WINDOW(), flow_window_new(initial_window));
+    store64(fc + FLOW_CTRL_OFFSET_RECV_WINDOW(), flow_window_new(initial_window));
+    store64(fc + FLOW_CTRL_OFFSET_RATE_LIMITER(), 0);
+    store64(fc + FLOW_CTRL_OFFSET_ADAPTIVE(), 0);
+    store64(fc + FLOW_CTRL_OFFSET_BACKPRESSURE(), backpressure_monitor_new(initial_window * 4));
+    store64(fc + FLOW_CTRL_OFFSET_ENABLED(), 1);
+
+    // Create strategy-specific components
+    if strategy == FLOW_STRATEGY_RATE() {
+        store64(fc + FLOW_CTRL_OFFSET_RATE_LIMITER(), rate_limiter_new(initial_window, initial_window));
+    } else if strategy == FLOW_STRATEGY_ADAPTIVE() {
+        store64(fc + FLOW_CTRL_OFFSET_ADAPTIVE(), adaptive_flow_new(initial_window));
+    }
+
+    fc
+}
+
+fn nex_flow_ctrl_strategy(fc: i64) -> i64 { load64(fc + FLOW_CTRL_OFFSET_STRATEGY()) }
+fn nex_flow_ctrl_send_window(fc: i64) -> i64 { load64(fc + FLOW_CTRL_OFFSET_SEND_WINDOW()) }
+fn nex_flow_ctrl_recv_window(fc: i64) -> i64 { load64(fc + FLOW_CTRL_OFFSET_RECV_WINDOW()) }
+fn nex_flow_ctrl_rate_limiter(fc: i64) -> i64 { load64(fc + FLOW_CTRL_OFFSET_RATE_LIMITER()) }
+fn nex_flow_ctrl_adaptive(fc: i64) -> i64 { load64(fc + FLOW_CTRL_OFFSET_ADAPTIVE()) }
+fn nex_flow_ctrl_backpressure(fc: i64) -> i64 { load64(fc + FLOW_CTRL_OFFSET_BACKPRESSURE()) }
+fn nex_flow_ctrl_enabled(fc: i64) -> i64 { load64(fc + FLOW_CTRL_OFFSET_ENABLED()) }
+
+fn nex_flow_ctrl_set_enabled(fc: i64, v: i64) { store64(fc + FLOW_CTRL_OFFSET_ENABLED(), v); }
+
+// Try to send bytes
+fn nex_flow_ctrl_can_send(fc: i64, bytes: i64, now: i64) -> i64 {
+    if nex_flow_ctrl_enabled(fc) == 0 {
+        return 1;  // Flow control disabled
+    }
+
+    let strategy = nex_flow_ctrl_strategy(fc);
+    let send_window = nex_flow_ctrl_send_window(fc);
+
+    if strategy == FLOW_STRATEGY_WINDOW() {
+        return flow_window_available(send_window) >= bytes;
+    } else if strategy == FLOW_STRATEGY_RATE() {
+        let rl = nex_flow_ctrl_rate_limiter(fc);
+        return rate_limiter_check(rl, bytes, now);
+    } else if strategy == FLOW_STRATEGY_ADAPTIVE() {
+        let adaptive = nex_flow_ctrl_adaptive(fc);
+        return adaptive_flow_available(adaptive) >= bytes;
+    }
+
+    flow_window_available(send_window) >= bytes
+}
+
+// Consume send quota
+fn nex_flow_ctrl_consume_send(fc: i64, bytes: i64, now: i64) -> i64 {
+    if nex_flow_ctrl_enabled(fc) == 0 {
+        return 1;
+    }
+
+    let strategy = nex_flow_ctrl_strategy(fc);
+    let send_window = nex_flow_ctrl_send_window(fc);
+
+    if strategy == FLOW_STRATEGY_RATE() {
+        let rl = nex_flow_ctrl_rate_limiter(fc);
+        return rate_limiter_try_acquire(rl, bytes, now);
+    }
+
+    flow_window_consume(send_window, bytes)
+}
+
+// Release send quota (on ACK)
+fn nex_flow_ctrl_release_send(fc: i64, bytes: i64, rtt: i64, now: i64) {
+    if nex_flow_ctrl_enabled(fc) == 0 {
+        return;
+    }
+
+    let send_window = nex_flow_ctrl_send_window(fc);
+    flow_window_release(send_window, bytes);
+
+    let strategy = nex_flow_ctrl_strategy(fc);
+    if strategy == FLOW_STRATEGY_ADAPTIVE() {
+        let adaptive = nex_flow_ctrl_adaptive(fc);
+        adaptive_flow_update_rtt(adaptive, rtt);
+        adaptive_flow_on_ack(adaptive, bytes, now);
+    }
+}
+
+// Consume receive quota
+fn nex_flow_ctrl_consume_recv(fc: i64, bytes: i64) -> i64 {
+    if nex_flow_ctrl_enabled(fc) == 0 {
+        return 1;
+    }
+
+    let recv_window = nex_flow_ctrl_recv_window(fc);
+    let available = flow_window_available(recv_window);
+
+    if bytes > available {
+        return 0;
+    }
+
+    flow_window_set_available(recv_window, available - bytes);
+    1
+}
+
+// Update receive window (send window update to peer)
+fn nex_flow_ctrl_update_recv(fc: i64, bytes: i64, now: i64) -> i64 {
+    if nex_flow_ctrl_enabled(fc) == 0 {
+        return 0;
+    }
+
+    let recv_window = nex_flow_ctrl_recv_window(fc);
+    flow_window_update(recv_window, bytes, now)
+}
+
+// Check if window update needed
+fn nex_flow_ctrl_needs_window_update(fc: i64) -> i64 {
+    if nex_flow_ctrl_enabled(fc) == 0 {
+        return 0;
+    }
+
+    let recv_window = nex_flow_ctrl_recv_window(fc);
+    flow_window_needs_update(recv_window)
+}
+
+// Get window update amount
+fn nex_flow_ctrl_window_update_amount(fc: i64) -> i64 {
+    let recv_window = nex_flow_ctrl_recv_window(fc);
+    flow_window_update_amount(recv_window)
+}
+
+// Update backpressure
+fn nex_flow_ctrl_update_backpressure(fc: i64, queue_size: i64, now: i64) -> i64 {
+    let bp = nex_flow_ctrl_backpressure(fc);
+    backpressure_update(bp, queue_size, now)
+}
+
+// Get backpressure signal
+fn nex_flow_ctrl_backpressure_signal(fc: i64) -> i64 {
+    let bp = nex_flow_ctrl_backpressure(fc);
+    backpressure_current_signal(bp)
+}
+
+// On packet loss (for adaptive)
+fn nex_flow_ctrl_on_loss(fc: i64, seq: i64, now: i64) {
+    let strategy = nex_flow_ctrl_strategy(fc);
+    if strategy == FLOW_STRATEGY_ADAPTIVE() {
+        let adaptive = nex_flow_ctrl_adaptive(fc);
+        adaptive_flow_on_loss(adaptive, seq, now);
+    }
+}
+
+// Get available send window
+fn nex_flow_ctrl_send_available(fc: i64) -> i64 {
+    if nex_flow_ctrl_enabled(fc) == 0 {
+        return 9223372036854775807;  // Unlimited (max i64)
+    }
+
+    let strategy = nex_flow_ctrl_strategy(fc);
+
+    if strategy == FLOW_STRATEGY_ADAPTIVE() {
+        let adaptive = nex_flow_ctrl_adaptive(fc);
+        return adaptive_flow_available(adaptive);
+    }
+
+    let send_window = nex_flow_ctrl_send_window(fc);
+    flow_window_available(send_window)
+}
+
+// Get available receive window
+fn nex_flow_ctrl_recv_available(fc: i64) -> i64 {
+    if nex_flow_ctrl_enabled(fc) == 0 {
+        return 9223372036854775807;  // Unlimited (max i64)
+    }
+
+    let recv_window = nex_flow_ctrl_recv_window(fc);
+    flow_window_available(recv_window)
+}
+
+fn nex_flow_ctrl_free(fc: i64) {
+    let send_window = nex_flow_ctrl_send_window(fc);
+    if send_window != 0 {
+        flow_window_free(send_window);
+    }
+
+    let recv_window = nex_flow_ctrl_recv_window(fc);
+    if recv_window != 0 {
+        flow_window_free(recv_window);
+    }
+
+    let rl = nex_flow_ctrl_rate_limiter(fc);
+    if rl != 0 {
+        rate_limiter_free(rl);
+    }
+
+    let adaptive = nex_flow_ctrl_adaptive(fc);
+    if adaptive != 0 {
+        adaptive_flow_free(adaptive);
+    }
+
+    let bp = nex_flow_ctrl_backpressure(fc);
+    if bp != 0 {
+        backpressure_monitor_free(bp);
+    }
+
+    // Dealloc marker
+}

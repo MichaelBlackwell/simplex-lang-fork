@@ -1,0 +1,850 @@
+// Edge Hive - Local Model Integration
+// Provides on-device inference using small language models optimized for edge devices
+//
+// Recommended models by device class:
+// - Watch/Wearable: SmolLM-135M (cloud delegation preferred)
+// - Phone: SmolLM-360M or Qwen2-0.5B
+// - Tablet: SmolLM-1.7B or Phi-3-mini
+// - Laptop: Llama-3.2-1B or Phi-3-mini
+// - Desktop: Llama-3.2-3B or Qwen2-1.5B
+//
+// All models use GGUF format for efficient loading and quantization support.
+
+// ============================================================================
+// Model Constants
+// ============================================================================
+
+// Model types - edge-optimized open source models
+fn MODEL_NONE() -> i64 { 0 }           // No local model (cloud only)
+fn MODEL_SMOLLM_135M() -> i64 { 1 }    // HuggingFace SmolLM 135M - watches
+fn MODEL_SMOLLM_360M() -> i64 { 2 }    // HuggingFace SmolLM 360M - phones
+fn MODEL_SMOLLM_1_7B() -> i64 { 3 }    // HuggingFace SmolLM 1.7B - tablets
+fn MODEL_QWEN2_0_5B() -> i64 { 4 }     // Alibaba Qwen2 0.5B - phones
+fn MODEL_QWEN2_1_5B() -> i64 { 5 }     // Alibaba Qwen2 1.5B - desktops
+fn MODEL_PHI3_MINI() -> i64 { 6 }      // Microsoft Phi-3 mini 3.8B - laptops
+fn MODEL_LLAMA32_1B() -> i64 { 7 }     // Meta Llama 3.2 1B - tablets/laptops
+fn MODEL_LLAMA32_3B() -> i64 { 8 }     // Meta Llama 3.2 3B - desktops
+fn MODEL_GEMMA2_2B() -> i64 { 9 }      // Google Gemma 2 2B - tablets
+
+// Quantization levels
+fn QUANT_NONE() -> i64 { 0 }           // Full precision (FP16)
+fn QUANT_Q8_0() -> i64 { 1 }           // 8-bit quantization
+fn QUANT_Q4_K_M() -> i64 { 2 }         // 4-bit K-quant medium (recommended)
+fn QUANT_Q4_K_S() -> i64 { 3 }         // 4-bit K-quant small
+fn QUANT_Q3_K_M() -> i64 { 4 }         // 3-bit K-quant medium (aggressive)
+fn QUANT_Q2_K() -> i64 { 5 }           // 2-bit K-quant (very aggressive)
+
+// Model states
+fn MODEL_STATE_UNLOADED() -> i64 { 0 }
+fn MODEL_STATE_LOADING() -> i64 { 1 }
+fn MODEL_STATE_READY() -> i64 { 2 }
+fn MODEL_STATE_INFERRING() -> i64 { 3 }
+fn MODEL_STATE_ERROR() -> i64 { 4 }
+
+// Inference modes
+fn INFER_GREEDY() -> i64 { 0 }         // Greedy decoding (fastest)
+fn INFER_SAMPLE() -> i64 { 1 }         // Sampling with temperature
+fn INFER_TOP_K() -> i64 { 2 }          // Top-k sampling
+fn INFER_TOP_P() -> i64 { 3 }          // Nucleus (top-p) sampling
+
+// ============================================================================
+// Model Metadata
+// ============================================================================
+
+// Model info structure:
+// Slot 0: model_type (i64)
+// Slot 1: name (string handle)
+// Slot 2: parameter_count (millions)
+// Slot 3: context_length
+// Slot 4: vocab_size
+// Slot 5: min_ram_mb (minimum RAM required)
+// Slot 6: recommended_quant
+
+fn model_info_new(model_type: i64) -> i64 {
+    let info: i64 = vec_new();
+    vec_push(info, model_type);
+
+    if model_type == MODEL_SMOLLM_135M() {
+        vec_push(info, string_from("SmolLM-135M"));
+        vec_push(info, 135);      // 135M params
+        vec_push(info, 2048);     // context
+        vec_push(info, 49152);    // vocab
+        vec_push(info, 256);      // min 256MB RAM
+        vec_push(info, QUANT_Q4_K_M());
+    } else if model_type == MODEL_SMOLLM_360M() {
+        vec_push(info, string_from("SmolLM-360M"));
+        vec_push(info, 360);
+        vec_push(info, 2048);
+        vec_push(info, 49152);
+        vec_push(info, 512);      // min 512MB RAM
+        vec_push(info, QUANT_Q4_K_M());
+    } else if model_type == MODEL_SMOLLM_1_7B() {
+        vec_push(info, string_from("SmolLM-1.7B"));
+        vec_push(info, 1700);
+        vec_push(info, 2048);
+        vec_push(info, 49152);
+        vec_push(info, 2048);     // min 2GB RAM
+        vec_push(info, QUANT_Q4_K_M());
+    } else if model_type == MODEL_QWEN2_0_5B() {
+        vec_push(info, string_from("Qwen2-0.5B"));
+        vec_push(info, 500);
+        vec_push(info, 32768);    // 32K context!
+        vec_push(info, 151936);
+        vec_push(info, 768);
+        vec_push(info, QUANT_Q4_K_M());
+    } else if model_type == MODEL_QWEN2_1_5B() {
+        vec_push(info, string_from("Qwen2-1.5B"));
+        vec_push(info, 1500);
+        vec_push(info, 32768);
+        vec_push(info, 151936);
+        vec_push(info, 2048);
+        vec_push(info, QUANT_Q4_K_M());
+    } else if model_type == MODEL_PHI3_MINI() {
+        vec_push(info, string_from("Phi-3-mini-4k"));
+        vec_push(info, 3800);
+        vec_push(info, 4096);
+        vec_push(info, 32064);
+        vec_push(info, 4096);
+        vec_push(info, QUANT_Q4_K_M());
+    } else if model_type == MODEL_LLAMA32_1B() {
+        vec_push(info, string_from("Llama-3.2-1B"));
+        vec_push(info, 1000);
+        vec_push(info, 131072);   // 128K context
+        vec_push(info, 128256);
+        vec_push(info, 1536);
+        vec_push(info, QUANT_Q4_K_M());
+    } else if model_type == MODEL_LLAMA32_3B() {
+        vec_push(info, string_from("Llama-3.2-3B"));
+        vec_push(info, 3000);
+        vec_push(info, 131072);
+        vec_push(info, 128256);
+        vec_push(info, 4096);
+        vec_push(info, QUANT_Q4_K_M());
+    } else if model_type == MODEL_GEMMA2_2B() {
+        vec_push(info, string_from("Gemma-2-2B"));
+        vec_push(info, 2000);
+        vec_push(info, 8192);
+        vec_push(info, 256000);
+        vec_push(info, 3072);
+        vec_push(info, QUANT_Q4_K_M());
+    } else {
+        // MODEL_NONE
+        vec_push(info, string_from("None"));
+        vec_push(info, 0);
+        vec_push(info, 0);
+        vec_push(info, 0);
+        vec_push(info, 0);
+        vec_push(info, QUANT_NONE());
+    }
+
+    info
+}
+
+fn model_info_type(info: i64) -> i64 { vec_get(info, 0) }
+fn model_info_name(info: i64) -> i64 { vec_get(info, 1) }
+fn model_info_params(info: i64) -> i64 { vec_get(info, 2) }
+fn model_info_context(info: i64) -> i64 { vec_get(info, 3) }
+fn model_info_vocab(info: i64) -> i64 { vec_get(info, 4) }
+fn model_info_min_ram(info: i64) -> i64 { vec_get(info, 5) }
+fn model_info_quant(info: i64) -> i64 { vec_get(info, 6) }
+
+// ============================================================================
+// Model Selection
+// ============================================================================
+
+// Select best model for device capabilities
+// device_class: DEVICE_WATCH through DEVICE_DESKTOP
+// ram_mb: available RAM in MB
+// storage_mb: available storage in MB
+// battery_percent: current battery level
+// Returns: model_type constant
+fn select_model_for_device(device_class: i64, ram_mb: i64, storage_mb: i64, battery_percent: i64) -> i64 {
+    // Watch/Wearable: cloud only or smallest model if possible
+    if device_class == DEVICE_WATCH() {
+        if ram_mb >= 512 {
+            return MODEL_SMOLLM_135M();
+        }
+        return MODEL_NONE();
+    }
+
+    // Wearable: same as watch
+    if device_class == DEVICE_WEARABLE() {
+        if ram_mb >= 512 {
+            return MODEL_SMOLLM_135M();
+        }
+        return MODEL_NONE();
+    }
+
+    // Phone: balance between capability and battery
+    if device_class == DEVICE_PHONE() {
+        // Low battery - use smallest model
+        if battery_percent < 20 {
+            if ram_mb >= 512 {
+                return MODEL_SMOLLM_360M();
+            }
+            return MODEL_NONE();
+        }
+
+        // Normal operation
+        if ram_mb >= 2048 {
+            return MODEL_QWEN2_0_5B();  // Good quality, 32K context
+        }
+        if ram_mb >= 1024 {
+            return MODEL_SMOLLM_360M();
+        }
+        if ram_mb >= 512 {
+            return MODEL_SMOLLM_135M();
+        }
+        return MODEL_NONE();
+    }
+
+    // Tablet: more capable
+    if device_class == DEVICE_TABLET() {
+        if battery_percent < 15 {
+            return MODEL_SMOLLM_360M();
+        }
+
+        if ram_mb >= 4096 {
+            return MODEL_SMOLLM_1_7B();  // Full SmolLM
+        }
+        if ram_mb >= 2048 {
+            return MODEL_QWEN2_0_5B();
+        }
+        if ram_mb >= 1024 {
+            return MODEL_SMOLLM_360M();
+        }
+        return MODEL_SMOLLM_135M();
+    }
+
+    // Laptop: good balance of power and efficiency
+    if device_class == DEVICE_LAPTOP() {
+        if battery_percent < 10 {
+            return MODEL_SMOLLM_1_7B();
+        }
+
+        if ram_mb >= 8192 {
+            return MODEL_PHI3_MINI();    // Best quality for laptops
+        }
+        if ram_mb >= 4096 {
+            return MODEL_LLAMA32_1B();
+        }
+        if ram_mb >= 2048 {
+            return MODEL_SMOLLM_1_7B();
+        }
+        return MODEL_QWEN2_0_5B();
+    }
+
+    // Desktop: maximum capability
+    if device_class == DEVICE_DESKTOP() {
+        if ram_mb >= 16384 {
+            return MODEL_LLAMA32_3B();   // Best quality
+        }
+        if ram_mb >= 8192 {
+            return MODEL_PHI3_MINI();
+        }
+        if ram_mb >= 4096 {
+            return MODEL_QWEN2_1_5B();
+        }
+        return MODEL_SMOLLM_1_7B();
+    }
+
+    // Unknown device - conservative choice
+    MODEL_SMOLLM_360M()
+}
+
+// Device class constants (from device.sx)
+fn DEVICE_WATCH() -> i64 { 1 }
+fn DEVICE_WEARABLE() -> i64 { 2 }
+fn DEVICE_PHONE() -> i64 { 3 }
+fn DEVICE_TABLET() -> i64 { 4 }
+fn DEVICE_LAPTOP() -> i64 { 5 }
+fn DEVICE_DESKTOP() -> i64 { 6 }
+
+// ============================================================================
+// Local Model Instance
+// ============================================================================
+
+// LocalModel structure:
+// Slot 0: model_type
+// Slot 1: model_info
+// Slot 2: state
+// Slot 3: model_handle (opaque handle to loaded model)
+// Slot 4: config (inference config)
+// Slot 5: stats (inference statistics)
+// Slot 6: cache (KV cache handle)
+// Slot 7: last_inference_time
+// Slot 8: total_tokens_generated
+// Slot 9: quantization_level
+
+fn local_model_new(model_type: i64) -> i64 {
+    let model: i64 = vec_new();
+    vec_push(model, model_type);
+    vec_push(model, model_info_new(model_type));
+    vec_push(model, MODEL_STATE_UNLOADED());
+    vec_push(model, 0);  // model_handle (null until loaded)
+    vec_push(model, inference_config_default());
+    vec_push(model, inference_stats_new());
+    vec_push(model, 0);  // cache handle
+    vec_push(model, 0);  // last inference time
+    vec_push(model, 0);  // total tokens
+    vec_push(model, QUANT_Q4_K_M());  // default quantization
+    model
+}
+
+fn local_model_type(model: i64) -> i64 { vec_get(model, 0) }
+fn local_model_info(model: i64) -> i64 { vec_get(model, 1) }
+fn local_model_state(model: i64) -> i64 { vec_get(model, 2) }
+fn local_model_handle(model: i64) -> i64 { vec_get(model, 3) }
+fn local_model_config(model: i64) -> i64 { vec_get(model, 4) }
+fn local_model_stats(model: i64) -> i64 { vec_get(model, 5) }
+fn local_model_cache(model: i64) -> i64 { vec_get(model, 6) }
+fn local_model_last_time(model: i64) -> i64 { vec_get(model, 7) }
+fn local_model_total_tokens(model: i64) -> i64 { vec_get(model, 8) }
+fn local_model_quant(model: i64) -> i64 { vec_get(model, 9) }
+
+fn local_model_set_state(model: i64, state: i64) -> i64 {
+    vec_set(model, 2, state);
+    0
+}
+
+fn local_model_set_handle(model: i64, handle: i64) -> i64 {
+    vec_set(model, 3, handle);
+    0
+}
+
+fn local_model_set_cache(model: i64, cache: i64) -> i64 {
+    vec_set(model, 6, cache);
+    0
+}
+
+fn local_model_is_ready(model: i64) -> i64 {
+    if local_model_state(model) == MODEL_STATE_READY() { 1 } else { 0 }
+}
+
+fn local_model_is_none(model: i64) -> i64 {
+    if local_model_type(model) == MODEL_NONE() { 1 } else { 0 }
+}
+
+// ============================================================================
+// Inference Configuration
+// ============================================================================
+
+// InferenceConfig structure:
+// Slot 0: mode (INFER_GREEDY, etc.)
+// Slot 1: temperature (scaled by 1000, e.g., 700 = 0.7)
+// Slot 2: top_k
+// Slot 3: top_p (scaled by 1000)
+// Slot 4: max_tokens
+// Slot 5: repetition_penalty (scaled by 1000)
+// Slot 6: presence_penalty (scaled by 1000)
+// Slot 7: stop_sequences (vec of strings)
+
+fn inference_config_default() -> i64 {
+    let config: i64 = vec_new();
+    vec_push(config, INFER_SAMPLE());  // mode
+    vec_push(config, 700);             // temperature 0.7
+    vec_push(config, 40);              // top_k
+    vec_push(config, 950);             // top_p 0.95
+    vec_push(config, 256);             // max_tokens
+    vec_push(config, 1100);            // repetition_penalty 1.1
+    vec_push(config, 0);               // presence_penalty 0.0
+    vec_push(config, vec_new());       // stop sequences
+    config
+}
+
+fn inference_config_fast() -> i64 {
+    let config: i64 = vec_new();
+    vec_push(config, INFER_GREEDY());  // greedy for speed
+    vec_push(config, 0);               // no temperature
+    vec_push(config, 1);               // top_k=1
+    vec_push(config, 1000);            // top_p=1.0
+    vec_push(config, 64);              // shorter max_tokens
+    vec_push(config, 1000);            // no repetition penalty
+    vec_push(config, 0);
+    vec_push(config, vec_new());
+    config
+}
+
+fn inference_config_creative() -> i64 {
+    let config: i64 = vec_new();
+    vec_push(config, INFER_TOP_P());
+    vec_push(config, 900);             // temperature 0.9
+    vec_push(config, 100);             // top_k=100
+    vec_push(config, 900);             // top_p=0.9
+    vec_push(config, 512);             // longer responses
+    vec_push(config, 1200);            // stronger repetition penalty
+    vec_push(config, 100);             // slight presence penalty
+    vec_push(config, vec_new());
+    config
+}
+
+fn config_mode(config: i64) -> i64 { vec_get(config, 0) }
+fn config_temperature(config: i64) -> i64 { vec_get(config, 1) }
+fn config_top_k(config: i64) -> i64 { vec_get(config, 2) }
+fn config_top_p(config: i64) -> i64 { vec_get(config, 3) }
+fn config_max_tokens(config: i64) -> i64 { vec_get(config, 4) }
+fn config_repetition_penalty(config: i64) -> i64 { vec_get(config, 5) }
+fn config_presence_penalty(config: i64) -> i64 { vec_get(config, 6) }
+fn config_stop_sequences(config: i64) -> i64 { vec_get(config, 7) }
+
+fn config_set_temperature(config: i64, temp: i64) -> i64 {
+    vec_set(config, 1, temp);
+    0
+}
+
+fn config_set_max_tokens(config: i64, max: i64) -> i64 {
+    vec_set(config, 4, max);
+    0
+}
+
+// ============================================================================
+// Inference Statistics
+// ============================================================================
+
+// Stats structure:
+// Slot 0: total_inferences
+// Slot 1: total_tokens_generated
+// Slot 2: total_time_ms
+// Slot 3: avg_tokens_per_second (scaled by 100)
+// Slot 4: cache_hits
+// Slot 5: cache_misses
+
+fn inference_stats_new() -> i64 {
+    let stats: i64 = vec_new();
+    vec_push(stats, 0);  // total inferences
+    vec_push(stats, 0);  // total tokens
+    vec_push(stats, 0);  // total time ms
+    vec_push(stats, 0);  // avg tokens/sec
+    vec_push(stats, 0);  // cache hits
+    vec_push(stats, 0);  // cache misses
+    stats
+}
+
+fn stats_total_inferences(stats: i64) -> i64 { vec_get(stats, 0) }
+fn stats_total_tokens(stats: i64) -> i64 { vec_get(stats, 1) }
+fn stats_total_time_ms(stats: i64) -> i64 { vec_get(stats, 2) }
+fn stats_avg_tps(stats: i64) -> i64 { vec_get(stats, 3) }
+fn stats_cache_hits(stats: i64) -> i64 { vec_get(stats, 4) }
+fn stats_cache_misses(stats: i64) -> i64 { vec_get(stats, 5) }
+
+fn stats_record_inference(stats: i64, tokens: i64, time_ms: i64) -> i64 {
+    let total_inf: i64 = stats_total_inferences(stats) + 1;
+    let total_tok: i64 = stats_total_tokens(stats) + tokens;
+    let total_time: i64 = stats_total_time_ms(stats) + time_ms;
+
+    vec_set(stats, 0, total_inf);
+    vec_set(stats, 1, total_tok);
+    vec_set(stats, 2, total_time);
+
+    // Update average tokens per second (scaled by 100)
+    if total_time > 0 {
+        let avg_tps: i64 = (total_tok * 100000) / total_time;
+        vec_set(stats, 3, avg_tps);
+    }
+
+    0
+}
+
+// ============================================================================
+// Model Loading and Inference
+// ============================================================================
+
+// Load model from disk
+// Returns: 1 on success, 0 on failure
+fn local_model_load(model: i64) -> i64 {
+    if local_model_is_none(model) == 1 {
+        return 0;  // No model to load
+    }
+
+    let model_type: i64 = local_model_type(model);
+    let quant: i64 = local_model_quant(model);
+
+    local_model_set_state(model, MODEL_STATE_LOADING());
+
+    // Get model path based on type
+    let model_path: i64 = get_model_path(model_type, quant);
+    if model_path == 0 {
+        local_model_set_state(model, MODEL_STATE_ERROR());
+        return 0;
+    }
+
+    // Check if model file exists
+    if file_exists(model_path) != 1 {
+        // Model not downloaded - trigger download or fail
+        local_model_set_state(model, MODEL_STATE_ERROR());
+        return 0;
+    }
+
+    // Load model using llama.cpp backend
+    let handle: i64 = llm_load_model(model_path, quant);
+    if handle == 0 {
+        local_model_set_state(model, MODEL_STATE_ERROR());
+        return 0;
+    }
+
+    // Initialize KV cache
+    let info: i64 = local_model_info(model);
+    let context_len: i64 = model_info_context(info);
+    let cache: i64 = llm_create_cache(handle, context_len);
+
+    local_model_set_handle(model, handle);
+    local_model_set_cache(model, cache);
+    local_model_set_state(model, MODEL_STATE_READY());
+
+    1
+}
+
+// Unload model to free memory
+fn local_model_unload(model: i64) -> i64 {
+    let handle: i64 = local_model_handle(model);
+    if handle != 0 {
+        let cache: i64 = local_model_cache(model);
+        if cache != 0 {
+            llm_free_cache(cache);
+            local_model_set_cache(model, 0);
+        }
+        llm_unload_model(handle);
+        local_model_set_handle(model, 0);
+    }
+    local_model_set_state(model, MODEL_STATE_UNLOADED());
+    0
+}
+
+// Generate response from prompt
+// Returns: response string handle, or 0 on failure
+fn local_model_generate(model: i64, prompt: i64) -> i64 {
+    if local_model_is_ready(model) != 1 {
+        return 0;
+    }
+
+    let handle: i64 = local_model_handle(model);
+    let config: i64 = local_model_config(model);
+    let cache: i64 = local_model_cache(model);
+
+    local_model_set_state(model, MODEL_STATE_INFERRING());
+    let start_time: i64 = time_now();
+
+    // Tokenize prompt
+    let tokens: i64 = llm_tokenize(handle, prompt);
+
+    // Run inference
+    let output_tokens: i64 = llm_generate(
+        handle,
+        tokens,
+        cache,
+        config_max_tokens(config),
+        config_temperature(config),
+        config_top_k(config),
+        config_top_p(config),
+        config_repetition_penalty(config)
+    );
+
+    // Decode output tokens to string
+    let response: i64 = llm_detokenize(handle, output_tokens);
+
+    let end_time: i64 = time_now();
+    let elapsed_ms: i64 = end_time - start_time;
+    let num_tokens: i64 = vec_len(output_tokens);
+
+    // Update stats
+    let stats: i64 = local_model_stats(model);
+    stats_record_inference(stats, num_tokens, elapsed_ms);
+
+    // Update model state
+    vec_set(model, 7, end_time);  // last_inference_time
+    let total: i64 = local_model_total_tokens(model) + num_tokens;
+    vec_set(model, 8, total);
+
+    local_model_set_state(model, MODEL_STATE_READY());
+
+    response
+}
+
+// Generate with custom config
+fn local_model_generate_with_config(model: i64, prompt: i64, config: i64) -> i64 {
+    // Temporarily swap config
+    let orig_config: i64 = local_model_config(model);
+    vec_set(model, 4, config);
+
+    let response: i64 = local_model_generate(model, prompt);
+
+    // Restore original config
+    vec_set(model, 4, orig_config);
+
+    response
+}
+
+// ============================================================================
+// Model Paths
+// ============================================================================
+
+fn get_model_path(model_type: i64, quant: i64) -> i64 {
+    let base: i64 = get_models_directory();
+    let quant_suffix: i64 = get_quant_suffix(quant);
+
+    if model_type == MODEL_SMOLLM_135M() {
+        return string_concat(base, string_concat(string_from("smollm-135m"), quant_suffix));
+    }
+    if model_type == MODEL_SMOLLM_360M() {
+        return string_concat(base, string_concat(string_from("smollm-360m"), quant_suffix));
+    }
+    if model_type == MODEL_SMOLLM_1_7B() {
+        return string_concat(base, string_concat(string_from("smollm-1.7b"), quant_suffix));
+    }
+    if model_type == MODEL_QWEN2_0_5B() {
+        return string_concat(base, string_concat(string_from("qwen2-0.5b"), quant_suffix));
+    }
+    if model_type == MODEL_QWEN2_1_5B() {
+        return string_concat(base, string_concat(string_from("qwen2-1.5b"), quant_suffix));
+    }
+    if model_type == MODEL_PHI3_MINI() {
+        return string_concat(base, string_concat(string_from("phi-3-mini"), quant_suffix));
+    }
+    if model_type == MODEL_LLAMA32_1B() {
+        return string_concat(base, string_concat(string_from("llama-3.2-1b"), quant_suffix));
+    }
+    if model_type == MODEL_LLAMA32_3B() {
+        return string_concat(base, string_concat(string_from("llama-3.2-3b"), quant_suffix));
+    }
+    if model_type == MODEL_GEMMA2_2B() {
+        return string_concat(base, string_concat(string_from("gemma-2-2b"), quant_suffix));
+    }
+
+    0
+}
+
+fn get_quant_suffix(quant: i64) -> i64 {
+    if quant == QUANT_NONE() { return string_from("-f16.gguf"); }
+    if quant == QUANT_Q8_0() { return string_from("-q8_0.gguf"); }
+    if quant == QUANT_Q4_K_M() { return string_from("-q4_k_m.gguf"); }
+    if quant == QUANT_Q4_K_S() { return string_from("-q4_k_s.gguf"); }
+    if quant == QUANT_Q3_K_M() { return string_from("-q3_k_m.gguf"); }
+    if quant == QUANT_Q2_K() { return string_from("-q2_k.gguf"); }
+    string_from(".gguf")
+}
+
+fn get_models_directory() -> i64 {
+    // Platform-specific model storage
+    // macOS: ~/Library/Application Support/EdgeHive/models/
+    // Linux: ~/.local/share/edgehive/models/
+    // Windows: %APPDATA%\EdgeHive\models\
+    let platform: i64 = detect_platform();
+
+    if platform == PLATFORM_MACOS() {
+        return string_from("~/Library/Application Support/EdgeHive/models/");
+    }
+    if platform == PLATFORM_LINUX() {
+        return string_from("~/.local/share/edgehive/models/");
+    }
+    if platform == PLATFORM_WINDOWS() {
+        return string_from("%APPDATA%\\EdgeHive\\models\\");
+    }
+
+    string_from("./models/")
+}
+
+// ============================================================================
+// Prompt Templates
+// ============================================================================
+
+// Format prompt for chat completion
+fn format_chat_prompt(system_prompt: i64, user_message: i64, model_type: i64) -> i64 {
+    // Different models use different prompt formats
+
+    if model_type == MODEL_SMOLLM_135M() || model_type == MODEL_SMOLLM_360M() || model_type == MODEL_SMOLLM_1_7B() {
+        // SmolLM uses ChatML format
+        return format_chatml(system_prompt, user_message);
+    }
+
+    if model_type == MODEL_QWEN2_0_5B() || model_type == MODEL_QWEN2_1_5B() {
+        // Qwen2 uses ChatML format
+        return format_chatml(system_prompt, user_message);
+    }
+
+    if model_type == MODEL_PHI3_MINI() {
+        // Phi-3 uses its own format
+        return format_phi3(system_prompt, user_message);
+    }
+
+    if model_type == MODEL_LLAMA32_1B() || model_type == MODEL_LLAMA32_3B() {
+        // Llama 3.2 uses Llama 3 format
+        return format_llama3(system_prompt, user_message);
+    }
+
+    if model_type == MODEL_GEMMA2_2B() {
+        // Gemma uses simple format
+        return format_gemma(system_prompt, user_message);
+    }
+
+    // Default: simple concatenation
+    string_concat(string_concat(system_prompt, string_from("\n\n")), user_message)
+}
+
+fn format_chatml(system: i64, user: i64) -> i64 {
+    let prompt: i64 = string_from("<|im_start|>system\n");
+    prompt = string_concat(prompt, system);
+    prompt = string_concat(prompt, string_from("<|im_end|>\n<|im_start|>user\n"));
+    prompt = string_concat(prompt, user);
+    prompt = string_concat(prompt, string_from("<|im_end|>\n<|im_start|>assistant\n"));
+    prompt
+}
+
+fn format_phi3(system: i64, user: i64) -> i64 {
+    let prompt: i64 = string_from("<|system|>\n");
+    prompt = string_concat(prompt, system);
+    prompt = string_concat(prompt, string_from("<|end|>\n<|user|>\n"));
+    prompt = string_concat(prompt, user);
+    prompt = string_concat(prompt, string_from("<|end|>\n<|assistant|>\n"));
+    prompt
+}
+
+fn format_llama3(system: i64, user: i64) -> i64 {
+    let prompt: i64 = string_from("<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n");
+    prompt = string_concat(prompt, system);
+    prompt = string_concat(prompt, string_from("<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n"));
+    prompt = string_concat(prompt, user);
+    prompt = string_concat(prompt, string_from("<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"));
+    prompt
+}
+
+fn format_gemma(system: i64, user: i64) -> i64 {
+    let prompt: i64 = string_from("<start_of_turn>user\n");
+    if string_len(system) > 0 {
+        prompt = string_concat(prompt, string_from("System: "));
+        prompt = string_concat(prompt, system);
+        prompt = string_concat(prompt, string_from("\n\n"));
+    }
+    prompt = string_concat(prompt, user);
+    prompt = string_concat(prompt, string_from("<end_of_turn>\n<start_of_turn>model\n"));
+    prompt
+}
+
+// ============================================================================
+// Edge Hive Integration
+// ============================================================================
+
+// Create model for device profile
+fn create_model_for_device(profile: i64) -> i64 {
+    let device_class: i64 = device_get_class(profile);
+    let ram_mb: i64 = device_get_ram_mb(profile);
+    let storage_mb: i64 = device_get_storage_mb(profile);
+    let battery: i64 = device_get_battery(profile);
+
+    let model_type: i64 = select_model_for_device(device_class, ram_mb, storage_mb, battery);
+    local_model_new(model_type)
+}
+
+// Check if device can run local model
+fn device_can_run_local_model(profile: i64) -> i64 {
+    let device_class: i64 = device_get_class(profile);
+    let ram_mb: i64 = device_get_ram_mb(profile);
+
+    // Minimum requirements: 256MB RAM for smallest model
+    if ram_mb < 256 {
+        return 0;
+    }
+
+    // Watches with low RAM can't run models
+    if device_class == DEVICE_WATCH() {
+        if ram_mb < 512 { return 0; }
+    }
+
+    1
+}
+
+// Get confidence score for local handling
+// Higher score = more confident in local handling
+fn local_model_confidence(model: i64, request_type: i64, payload: i64) -> i64 {
+    if local_model_is_none(model) == 1 {
+        return 0;  // No local model - no confidence
+    }
+
+    if local_model_is_ready(model) != 1 {
+        return 0;  // Model not ready
+    }
+
+    let info: i64 = local_model_info(model);
+    let params: i64 = model_info_params(info);
+
+    // Base confidence from model size
+    let base_conf: i64 = 0;
+    if params >= 3000 { base_conf = 800; }      // 3B+ models: high confidence
+    else if params >= 1500 { base_conf = 650; } // 1.5B+ models: good confidence
+    else if params >= 500 { base_conf = 500; }  // 500M+ models: moderate
+    else if params >= 300 { base_conf = 350; }  // 300M+ models: basic
+    else { base_conf = 200; }                   // Smaller: low confidence
+
+    // Adjust based on request complexity
+    let payload_len: i64 = estimate_payload_complexity(payload);
+    if payload_len > 1000 {
+        base_conf = base_conf - 200;  // Complex requests reduce confidence
+    }
+    if payload_len > 500 {
+        base_conf = base_conf - 100;
+    }
+
+    // Adjust based on past performance
+    let stats: i64 = local_model_stats(model);
+    let total_inf: i64 = stats_total_inferences(stats);
+    if total_inf > 100 {
+        // We have history - use average tokens/sec as quality signal
+        let avg_tps: i64 = stats_avg_tps(stats);
+        if avg_tps > 1000 { base_conf = base_conf + 50; }  // Fast inference
+        if avg_tps < 200 { base_conf = base_conf - 100; }  // Slow inference
+    }
+
+    // Clamp to valid range
+    if base_conf < 0 { base_conf = 0; }
+    if base_conf > 1000 { base_conf = 1000; }
+
+    base_conf
+}
+
+fn estimate_payload_complexity(payload: i64) -> i64 {
+    // Estimate complexity based on payload size and content
+    let len: i64 = vec_len(payload);
+    if len == 0 { return 0; }
+
+    // First element is usually the main content
+    let content: i64 = vec_get(payload, 0);
+    string_len(content)
+}
+
+// ============================================================================
+// Runtime Declarations (extern)
+// ============================================================================
+
+// These are provided by the runtime
+extern fn time_now() -> i64;
+extern fn vec_new() -> i64;
+extern fn vec_push(v: i64, val: i64) -> i64;
+extern fn vec_get(v: i64, idx: i64) -> i64;
+extern fn vec_set(v: i64, idx: i64, val: i64) -> i64;
+extern fn vec_len(v: i64) -> i64;
+extern fn string_from(s: &str) -> i64;
+extern fn string_len(s: i64) -> i64;
+extern fn string_concat(a: i64, b: i64) -> i64;
+extern fn file_exists(path: i64) -> i64;
+
+// Device functions (from device.sx)
+extern fn device_get_class(profile: i64) -> i64;
+extern fn device_get_ram_mb(profile: i64) -> i64;
+extern fn device_get_storage_mb(profile: i64) -> i64;
+extern fn device_get_battery(profile: i64) -> i64;
+extern fn detect_platform() -> i64;
+
+// Platform constants
+fn PLATFORM_MACOS() -> i64 { 1 }
+fn PLATFORM_IOS() -> i64 { 2 }
+fn PLATFORM_LINUX() -> i64 { 3 }
+fn PLATFORM_WINDOWS() -> i64 { 4 }
+fn PLATFORM_ANDROID() -> i64 { 5 }
+
+// LLM backend functions (provided by runtime, wrapping llama.cpp)
+extern fn llm_load_model(path: i64, quant: i64) -> i64;
+extern fn llm_unload_model(handle: i64) -> i64;
+extern fn llm_create_cache(handle: i64, size: i64) -> i64;
+extern fn llm_free_cache(cache: i64) -> i64;
+extern fn llm_tokenize(handle: i64, text: i64) -> i64;
+extern fn llm_detokenize(handle: i64, tokens: i64) -> i64;
+extern fn llm_generate(handle: i64, tokens: i64, cache: i64, max_tokens: i64, temp: i64, top_k: i64, top_p: i64, rep_pen: i64) -> i64;

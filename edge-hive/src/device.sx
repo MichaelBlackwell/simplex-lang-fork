@@ -1,0 +1,476 @@
+// Edge Hive - Device Profile
+// Detects and manages device capabilities
+//
+// DeviceProfile encoding (packed into i64 slots):
+// Slot 0: device_class | (ram_mb << 8) | (has_gpu << 24)
+// Slot 1: storage_gb | (battery_level << 16) | (network_state << 24)
+// Slot 2: sensor_flags (bitfield)
+// Slot 3: screen_width | (screen_height << 16)
+
+// =============================================================================
+// DeviceProfile Constructor
+// =============================================================================
+
+fn device_profile_new() -> i64 {
+    let profile: i64 = vec_new();
+    vec_push(profile, 0);  // Slot 0: class, ram, gpu
+    vec_push(profile, 0);  // Slot 1: storage, battery, network
+    vec_push(profile, 0);  // Slot 2: sensors
+    vec_push(profile, 0);  // Slot 3: screen
+    profile
+}
+
+// =============================================================================
+// Setters
+// =============================================================================
+
+fn device_set_class(profile: i64, class: i64) -> i64 {
+    let slot0: i64 = vec_get(profile, 0);
+    let new_slot0: i64 = (slot0 / 256) * 256 + class;
+    vec_set(profile, 0, new_slot0);
+    0
+}
+
+fn device_set_ram_mb(profile: i64, ram_mb: i64) -> i64 {
+    let slot0: i64 = vec_get(profile, 0);
+    let class: i64 = slot0 % 256;
+    let has_gpu: i64 = (slot0 / 16777216) % 256;
+    let new_slot0: i64 = class + (ram_mb % 65536) * 256 + has_gpu * 16777216;
+    vec_set(profile, 0, new_slot0);
+    0
+}
+
+fn device_set_has_gpu(profile: i64, has_gpu: i64) -> i64 {
+    let slot0: i64 = vec_get(profile, 0);
+    let class: i64 = slot0 % 256;
+    let ram: i64 = (slot0 / 256) % 65536;
+    let new_slot0: i64 = class + ram * 256 + has_gpu * 16777216;
+    vec_set(profile, 0, new_slot0);
+    0
+}
+
+fn device_set_storage_gb(profile: i64, storage_gb: i64) -> i64 {
+    let slot1: i64 = vec_get(profile, 1);
+    let battery: i64 = (slot1 / 65536) % 256;
+    let network: i64 = (slot1 / 16777216) % 256;
+    let new_slot1: i64 = (storage_gb % 65536) + battery * 65536 + network * 16777216;
+    vec_set(profile, 1, new_slot1);
+    0
+}
+
+fn device_set_battery(profile: i64, battery_pct: i64) -> i64 {
+    let slot1: i64 = vec_get(profile, 1);
+    let storage: i64 = slot1 % 65536;
+    let network: i64 = (slot1 / 16777216) % 256;
+    let new_slot1: i64 = storage + (battery_pct % 256) * 65536 + network * 16777216;
+    vec_set(profile, 1, new_slot1);
+    0
+}
+
+fn device_set_network(profile: i64, network_state: i64) -> i64 {
+    let slot1: i64 = vec_get(profile, 1);
+    let storage: i64 = slot1 % 65536;
+    let battery: i64 = (slot1 / 65536) % 256;
+    let new_slot1: i64 = storage + battery * 65536 + (network_state % 256) * 16777216;
+    vec_set(profile, 1, new_slot1);
+    0
+}
+
+fn device_set_screen(profile: i64, width: i64, height: i64) -> i64 {
+    let new_slot3: i64 = (width % 65536) + (height % 65536) * 65536;
+    vec_set(profile, 3, new_slot3);
+    0
+}
+
+// =============================================================================
+// Getters
+// =============================================================================
+
+fn device_get_class(profile: i64) -> i64 {
+    let slot0: i64 = vec_get(profile, 0);
+    slot0 % 256
+}
+
+fn device_get_ram_mb(profile: i64) -> i64 {
+    let slot0: i64 = vec_get(profile, 0);
+    (slot0 / 256) % 65536
+}
+
+fn device_get_has_gpu(profile: i64) -> i64 {
+    let slot0: i64 = vec_get(profile, 0);
+    (slot0 / 16777216) % 256
+}
+
+fn device_get_storage_gb(profile: i64) -> i64 {
+    let slot1: i64 = vec_get(profile, 1);
+    slot1 % 65536
+}
+
+fn device_get_battery(profile: i64) -> i64 {
+    let slot1: i64 = vec_get(profile, 1);
+    (slot1 / 65536) % 256
+}
+
+fn device_get_network(profile: i64) -> i64 {
+    let slot1: i64 = vec_get(profile, 1);
+    (slot1 / 16777216) % 256
+}
+
+fn device_get_screen_width(profile: i64) -> i64 {
+    let slot3: i64 = vec_get(profile, 3);
+    slot3 % 65536
+}
+
+fn device_get_screen_height(profile: i64) -> i64 {
+    let slot3: i64 = vec_get(profile, 3);
+    (slot3 / 65536) % 65536
+}
+
+// =============================================================================
+// Sensor Flags (Slot 2 bitfield)
+// =============================================================================
+
+fn SENSOR_GPS() -> i64 { 1 }
+fn SENSOR_ACCELEROMETER() -> i64 { 2 }
+fn SENSOR_GYROSCOPE() -> i64 { 4 }
+fn SENSOR_COMPASS() -> i64 { 8 }
+fn SENSOR_BAROMETER() -> i64 { 16 }
+fn SENSOR_HEART_RATE() -> i64 { 32 }
+fn SENSOR_CAMERA() -> i64 { 64 }
+fn SENSOR_MICROPHONE() -> i64 { 128 }
+fn SENSOR_FINGERPRINT() -> i64 { 256 }
+fn SENSOR_FACE_ID() -> i64 { 512 }
+fn SENSOR_NFC() -> i64 { 1024 }
+fn SENSOR_BLUETOOTH() -> i64 { 2048 }
+
+fn device_add_sensor(profile: i64, sensor_flag: i64) -> i64 {
+    let sensors: i64 = vec_get(profile, 2);
+    vec_set(profile, 2, sensors + sensor_flag);
+    0
+}
+
+fn device_has_sensor(profile: i64, sensor_flag: i64) -> i64 {
+    let sensors: i64 = vec_get(profile, 2);
+    if (sensors / sensor_flag) % 2 == 1 { 1 } else { 0 }
+}
+
+// =============================================================================
+// Device Detection (Platform-specific stubs)
+// =============================================================================
+
+fn detect_device_profile() -> i64 {
+    let profile: i64 = device_profile_new();
+
+    // Detect device class from hardware characteristics
+    let device_class: i64 = detect_device_class_from_hardware();
+    device_set_class(profile, device_class);
+
+    // Query actual hardware specs
+    let ram_mb: i64 = detect_system_ram_mb();
+    device_set_ram_mb(profile, ram_mb);
+
+    let storage_gb: i64 = detect_system_storage_gb();
+    device_set_storage_gb(profile, storage_gb);
+
+    let has_gpu: i64 = detect_has_gpu();
+    device_set_has_gpu(profile, has_gpu);
+
+    // Screen dimensions
+    let screen: i64 = detect_screen_dimensions();
+    let screen_width: i64 = screen % 65536;
+    let screen_height: i64 = (screen / 65536) % 65536;
+    device_set_screen(profile, screen_width, screen_height);
+
+    // Battery level
+    let battery: i64 = detect_battery_level();
+    device_set_battery(profile, battery);
+
+    // Network state
+    let network: i64 = detect_network_state();
+    device_set_network(profile, network);
+
+    // Sensors
+    let sensors: i64 = detect_available_sensors();
+    vec_set(profile, 2, sensors);
+
+    profile
+}
+
+// Refresh device profile with current dynamic state
+fn device_profile_refresh(profile: i64) -> i64 {
+    // Update dynamic values (battery, network)
+    let battery: i64 = detect_battery_level();
+    device_set_battery(profile, battery);
+
+    let network: i64 = detect_network_state();
+    device_set_network(profile, network);
+
+    profile
+}
+
+// Platform constants
+fn PLATFORM_UNKNOWN() -> i64 { 0 }
+fn PLATFORM_MACOS() -> i64 { 1 }
+fn PLATFORM_IOS() -> i64 { 2 }
+fn PLATFORM_LINUX() -> i64 { 3 }
+fn PLATFORM_WINDOWS() -> i64 { 4 }
+fn PLATFORM_ANDROID() -> i64 { 5 }
+fn PLATFORM_WATCHOS() -> i64 { 6 }
+
+// =============================================================================
+// Platform Detection (via runtime intrinsics)
+// =============================================================================
+
+fn get_platform() -> i64 {
+    // Use runtime intrinsic for platform detection
+    sys_get_platform()
+}
+
+// =============================================================================
+// Hardware Detection
+// =============================================================================
+
+fn detect_system_ram_mb() -> i64 {
+    // Query system for actual RAM
+    let bytes: i64 = sys_get_memory_total();
+    bytes / 1048576  // Convert to MB
+}
+
+fn detect_system_storage_gb() -> i64 {
+    // Query available disk space
+    let bytes: i64 = sys_get_disk_available();
+    bytes / 1073741824  // Convert to GB
+}
+
+fn detect_has_gpu() -> i64 {
+    // Check for GPU presence
+    sys_has_gpu()
+}
+
+fn detect_screen_dimensions() -> i64 {
+    // Returns packed width | (height << 16)
+    sys_get_screen_dimensions()
+}
+
+fn detect_battery_level() -> i64 {
+    // Returns 0-100 or 100 if no battery (desktop)
+    let level: i64 = sys_get_battery_level();
+    if level < 0 {
+        return 100;  // No battery = always "full"
+    }
+    level
+}
+
+fn detect_network_state() -> i64 {
+    // Query current network connectivity
+    let state: i64 = sys_get_network_state();
+
+    // Map system state to our constants
+    if state == 0 {
+        return NET_DISCONNECTED();
+    }
+    if state == 1 {
+        return NET_WIFI();
+    }
+    if state == 2 {
+        return NET_CELLULAR();
+    }
+    if state == 3 {
+        return NET_ETHERNET();
+    }
+
+    NET_DISCONNECTED()
+}
+
+fn detect_available_sensors() -> i64 {
+    let sensors: i64 = 0;
+
+    if sys_has_sensor(1) == 1 { sensors = sensors + SENSOR_GPS(); }
+    if sys_has_sensor(2) == 1 { sensors = sensors + SENSOR_ACCELEROMETER(); }
+    if sys_has_sensor(3) == 1 { sensors = sensors + SENSOR_GYROSCOPE(); }
+    if sys_has_sensor(4) == 1 { sensors = sensors + SENSOR_COMPASS(); }
+    if sys_has_sensor(5) == 1 { sensors = sensors + SENSOR_BAROMETER(); }
+    if sys_has_sensor(6) == 1 { sensors = sensors + SENSOR_HEART_RATE(); }
+    if sys_has_sensor(7) == 1 { sensors = sensors + SENSOR_CAMERA(); }
+    if sys_has_sensor(8) == 1 { sensors = sensors + SENSOR_MICROPHONE(); }
+    if sys_has_sensor(9) == 1 { sensors = sensors + SENSOR_FINGERPRINT(); }
+    if sys_has_sensor(10) == 1 { sensors = sensors + SENSOR_FACE_ID(); }
+    if sys_has_sensor(11) == 1 { sensors = sensors + SENSOR_NFC(); }
+    if sys_has_sensor(12) == 1 { sensors = sensors + SENSOR_BLUETOOTH(); }
+
+    sensors
+}
+
+// =============================================================================
+// Enhanced Device Detection
+// =============================================================================
+
+fn detect_device_class_from_hardware() -> i64 {
+    let platform: i64 = get_platform();
+    let ram_mb: i64 = detect_system_ram_mb();
+    let screen: i64 = detect_screen_dimensions();
+    let screen_width: i64 = screen % 65536;
+    let has_battery: i64 = sys_has_battery();
+
+    // Platform-specific detection
+    if platform == PLATFORM_WATCHOS() {
+        return DEVICE_WATCH();
+    }
+
+    if platform == PLATFORM_IOS() {
+        // Distinguish iPhone from iPad by screen size
+        if screen_width > 1200 {
+            return DEVICE_TABLET();
+        }
+        return DEVICE_PHONE();
+    }
+
+    if platform == PLATFORM_ANDROID() {
+        // Use RAM and screen size to classify
+        if ram_mb < 2048 {
+            return DEVICE_WEARABLE();
+        }
+        if screen_width > 1200 {
+            return DEVICE_TABLET();
+        }
+        return DEVICE_PHONE();
+    }
+
+    // Desktop platforms (macOS, Linux, Windows)
+    if has_battery == 1 {
+        return DEVICE_LAPTOP();
+    }
+
+    DEVICE_DESKTOP()
+}
+
+// =============================================================================
+// Device Capability Queries
+// =============================================================================
+
+fn device_can_run_local_model(profile: i64) -> i64 {
+    let class: i64 = device_get_class(profile);
+    let max_params: i64 = max_model_params(class);
+    if max_params > 0 { 1 } else { 0 }
+}
+
+fn device_is_battery_critical(profile: i64) -> i64 {
+    let battery: i64 = device_get_battery(profile);
+    if battery < 20 { 1 } else { 0 }
+}
+
+fn device_is_battery_low(profile: i64) -> i64 {
+    let battery: i64 = device_get_battery(profile);
+    if battery < 50 { 1 } else { 0 }
+}
+
+fn device_is_connected(profile: i64) -> i64 {
+    let net: i64 = device_get_network(profile);
+    is_connected(net)
+}
+
+fn device_has_high_bandwidth(profile: i64) -> i64 {
+    let net: i64 = device_get_network(profile);
+    is_high_bandwidth(net)
+}
+
+fn device_sync_strategy(profile: i64) -> i64 {
+    let class: i64 = device_get_class(profile);
+    let battery: i64 = device_get_battery(profile);
+
+    // If battery critical, be more aggressive about delegation
+    if battery < 20 {
+        return SYNC_AGGRESSIVE();
+    }
+
+    default_sync_strategy(class)
+}
+
+// =============================================================================
+// Device Profile Summary (for debugging)
+// =============================================================================
+
+fn device_print_summary(profile: i64) -> i64 {
+    let class: i64 = device_get_class(profile);
+    let class_name: i64 = device_class_name(class);
+
+    println(string_concat(string_from("Device: "), class_name));
+    print(string_from("  RAM: "));
+    print_i64(device_get_ram_mb(profile));
+    println(string_from(" MB"));
+    print(string_from("  Storage: "));
+    print_i64(device_get_storage_gb(profile));
+    println(string_from(" GB"));
+    print(string_from("  GPU: "));
+    if device_get_has_gpu(profile) == 1 {
+        println(string_from("yes"));
+    } else {
+        println(string_from("no"));
+    }
+    print(string_from("  Battery: "));
+    print_i64(device_get_battery(profile));
+    println(string_from("%"));
+    print(string_from("  Can run local model: "));
+    if device_can_run_local_model(profile) == 1 {
+        print(string_from("yes (up to "));
+        print_i64(max_model_params(class) / 1000000);
+        println(string_from("M params)"));
+    } else {
+        println(string_from("no"));
+    }
+    0
+}
+
+// =============================================================================
+// Runtime Declarations (extern functions from C runtime)
+// =============================================================================
+
+// Platform detection
+extern fn sys_get_platform() -> i64;
+
+// Hardware queries
+extern fn sys_get_memory_total() -> i64;
+extern fn sys_get_disk_available() -> i64;
+extern fn sys_has_gpu() -> i64;
+extern fn sys_get_screen_dimensions() -> i64;
+extern fn sys_has_battery() -> i64;
+extern fn sys_get_battery_level() -> i64;
+extern fn sys_get_network_state() -> i64;
+extern fn sys_has_sensor(sensor_id: i64) -> i64;
+
+// Vector operations (from runtime.sx)
+extern fn vec_new() -> i64;
+extern fn vec_push(v: i64, val: i64) -> i64;
+extern fn vec_get(v: i64, idx: i64) -> i64;
+extern fn vec_set(v: i64, idx: i64, val: i64) -> i64;
+
+// String operations (from runtime.sx)
+extern fn string_from(s: &str) -> i64;
+extern fn string_concat(a: i64, b: i64) -> i64;
+
+// I/O (from runtime.sx)
+extern fn print(s: i64) -> i64;
+extern fn println(s: i64) -> i64;
+extern fn print_i64(n: i64) -> i64;
+
+// Type system functions (from types.sx)
+extern fn DEVICE_WATCH() -> i64;
+extern fn DEVICE_WEARABLE() -> i64;
+extern fn DEVICE_PHONE() -> i64;
+extern fn DEVICE_TABLET() -> i64;
+extern fn DEVICE_LAPTOP() -> i64;
+extern fn DEVICE_DESKTOP() -> i64;
+extern fn device_class_name(class: i64) -> i64;
+extern fn max_model_params(class: i64) -> i64;
+extern fn default_sync_strategy(class: i64) -> i64;
+
+// Network state constants (from types.sx)
+extern fn NET_DISCONNECTED() -> i64;
+extern fn NET_WIFI() -> i64;
+extern fn NET_CELLULAR() -> i64;
+extern fn NET_ETHERNET() -> i64;
+extern fn is_connected(net: i64) -> i64;
+extern fn is_high_bandwidth(net: i64) -> i64;
+
+// Sync strategy constants (from types.sx)
+extern fn SYNC_AGGRESSIVE() -> i64;

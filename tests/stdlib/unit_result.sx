@@ -10,71 +10,71 @@
 // =============================================================================
 
 fn RES_ERR_ZERO_SENTINEL() -> i64 {
-    0 - 9223372036854775807 - 1
+ 0 - 9223372036854775807 - 1
 }
 
 fn res_ok(value: i64) -> i64 {
-    // Ok values are stored as-is if >= 0
-    // For Ok with negative values, we use a different encoding
-    // Simplified: we'll only support non-negative Ok values in tests
-    if value >= 0 {
-        value
-    } else {
-        // Encode negative Ok values by shifting
-        value
-    }
+ // Ok values are stored as-is if >= 0
+ // For Ok with negative values, we use a different encoding
+ // Simplified: we'll only support non-negative Ok values in tests
+ if value >= 0 {
+ value
+ } else {
+ // Encode negative Ok values by shifting
+ value
+ }
 }
 
 fn res_err(error: i64) -> i64 {
-    if error == 0 {
-        RES_ERR_ZERO_SENTINEL()
-    } else {
-        // Encode errors as negative of (error + large offset)
-        0 - 1000000000 - error
-    }
+ if error == 0 {
+ RES_ERR_ZERO_SENTINEL()
+ } else {
+ // Encode errors as negative of (error + large offset)
+ 0 - 1000000000 - error
+ }
 }
 
 fn res_is_ok(res: i64) -> i64 {
-    // Ok if not an error encoding
-    if res == RES_ERR_ZERO_SENTINEL() {
-        0
-    } else {
-        if res <= 0 - 1000000000 {
-            0
-        } else {
-            1
-        }
-    }
+ // Ok if not an error encoding
+ if res == RES_ERR_ZERO_SENTINEL() {
+ 0
+ } else {
+ if res <= 0 - 1000000000 {
+ 0
+ } else {
+ 1
+ }
+ }
 }
 
 fn res_is_err(res: i64) -> i64 {
-    if res_is_ok(res) == 1 {
-        0
-    } else {
-        1
-    }
+ if res_is_ok(res) == 1 {
+ 0
+ } else {
+ 1
+ }
 }
 
 fn res_unwrap(res: i64) -> i64 {
-    // Assumes result is Ok
-    res
+ // Assumes result is Ok
+ res
 }
 
 fn res_unwrap_err(res: i64) -> i64 {
-    // Assumes result is Err
-    if res == RES_ERR_ZERO_SENTINEL() {
-        0
-    } else {
-        0 - res - 1000000000
-    }
+ // Assumes result is Err
+ if res == RES_ERR_ZERO_SENTINEL() {
+ 0
+ } else {
+ 0 - res - 1000000000
+ }
 }
 
 fn res_unwrap_or(res: i64, default: i64) -> i64 {
-    if res_is_ok(res) == 1 {
-        res
-    } else {
-        default
-    }
+ if res_is_ok(res) == 1 {
+ res
+ } else {
+ default
+ }
 }
 
 // =============================================================================
@@ -82,28 +82,28 @@ fn res_unwrap_or(res: i64, default: i64) -> i64 {
 // =============================================================================
 
 fn test_res_ok() -> i64 {
-    println("  Testing result ok...");
+ println(" Testing result ok...");
 
-    let res: i64 = res_ok(42);
+ let res: i64 = res_ok(42);
 
-    if res_is_ok(res) != 1 {
-        println("    FAIL: result_ok should be Ok");
-        return 1;
-    }
+ if res_is_ok(res) != 1 {
+ println(" FAIL: result_ok should be Ok");
+ return 1;
+ }
 
-    if res_is_err(res) != 0 {
-        println("    FAIL: result_ok should not be Err");
-        return 1;
-    }
+ if res_is_err(res) != 0 {
+ println(" FAIL: result_ok should not be Err");
+ return 1;
+ }
 
-    let val: i64 = res_unwrap(res);
-    if val != 42 {
-        println("    FAIL: unwrapped Ok value should be 42");
-        return 1;
-    }
+ let val: i64 = res_unwrap(res);
+ if val != 42 {
+ println(" FAIL: unwrapped Ok value should be 42");
+ return 1;
+ }
 
-    println("    PASS: result ok");
-    0
+ println(" PASS: result ok");
+ 0
 }
 
 // =============================================================================
@@ -111,28 +111,28 @@ fn test_res_ok() -> i64 {
 // =============================================================================
 
 fn test_res_err() -> i64 {
-    println("  Testing result err...");
+ println(" Testing result err...");
 
-    let res: i64 = res_err(404);
+ let res: i64 = res_err(404);
 
-    if res_is_err(res) != 1 {
-        println("    FAIL: result_err should be Err");
-        return 1;
-    }
+ if res_is_err(res) != 1 {
+ println(" FAIL: result_err should be Err");
+ return 1;
+ }
 
-    if res_is_ok(res) != 0 {
-        println("    FAIL: result_err should not be Ok");
-        return 1;
-    }
+ if res_is_ok(res) != 0 {
+ println(" FAIL: result_err should not be Ok");
+ return 1;
+ }
 
-    let err: i64 = res_unwrap_err(res);
-    if err != 404 {
-        println("    FAIL: unwrapped Err value should be 404");
-        return 1;
-    }
+ let err: i64 = res_unwrap_err(res);
+ if err != 404 {
+ println(" FAIL: unwrapped Err value should be 404");
+ return 1;
+ }
 
-    println("    PASS: result err");
-    0
+ println(" PASS: result err");
+ 0
 }
 
 // =============================================================================
@@ -140,25 +140,25 @@ fn test_res_err() -> i64 {
 // =============================================================================
 
 fn test_res_unwrap_or() -> i64 {
-    println("  Testing result unwrap_or...");
+ println(" Testing result unwrap_or...");
 
-    let ok: i64 = res_ok(100);
-    let err: i64 = res_err(500);
+ let ok: i64 = res_ok(100);
+ let err: i64 = res_err(500);
 
-    let val1: i64 = res_unwrap_or(ok, 0);
-    if val1 != 100 {
-        println("    FAIL: unwrap_or Ok should return inner value");
-        return 1;
-    }
+ let val1: i64 = res_unwrap_or(ok, 0);
+ if val1 != 100 {
+ println(" FAIL: unwrap_or Ok should return inner value");
+ return 1;
+ }
 
-    let val2: i64 = res_unwrap_or(err, 999);
-    if val2 != 999 {
-        println("    FAIL: unwrap_or Err should return default");
-        return 1;
-    }
+ let val2: i64 = res_unwrap_or(err, 999);
+ if val2 != 999 {
+ println(" FAIL: unwrap_or Err should return default");
+ return 1;
+ }
 
-    println("    PASS: result unwrap_or");
-    0
+ println(" PASS: result unwrap_or");
+ 0
 }
 
 // =============================================================================
@@ -166,31 +166,31 @@ fn test_res_unwrap_or() -> i64 {
 // =============================================================================
 
 fn test_result_chaining() -> i64 {
-    println("  Testing result chaining...");
+ println(" Testing result chaining...");
 
-    let res: i64 = res_ok(10);
+ let res: i64 = res_ok(10);
 
-    if res_is_ok(res) == 1 {
-        let val: i64 = res_unwrap(res);
-        let next: i64 = res_ok(val * 2);
+ if res_is_ok(res) == 1 {
+ let val: i64 = res_unwrap(res);
+ let next: i64 = res_ok(val * 2);
 
-        if res_is_ok(next) == 1 {
-            let final_val: i64 = res_unwrap(next);
-            if final_val != 20 {
-                println("    FAIL: chained result should be 20");
-                return 1;
-            }
-        } else {
-            println("    FAIL: next should be Ok");
-            return 1;
-        }
-    } else {
-        println("    FAIL: res should be Ok");
-        return 1;
-    }
+ if res_is_ok(next) == 1 {
+ let final_val: i64 = res_unwrap(next);
+ if final_val != 20 {
+ println(" FAIL: chained result should be 20");
+ return 1;
+ }
+ } else {
+ println(" FAIL: next should be Ok");
+ return 1;
+ }
+ } else {
+ println(" FAIL: res should be Ok");
+ return 1;
+ }
 
-    println("    PASS: result chaining");
-    0
+ println(" PASS: result chaining");
+ 0
 }
 
 // =============================================================================
@@ -198,23 +198,23 @@ fn test_result_chaining() -> i64 {
 // =============================================================================
 
 fn test_result_error_propagation() -> i64 {
-    println("  Testing error propagation...");
+ println(" Testing error propagation...");
 
-    let err: i64 = res_err(500);
+ let err: i64 = res_err(500);
 
-    if res_is_err(err) == 1 {
-        let error_code: i64 = res_unwrap_err(err);
-        if error_code != 500 {
-            println("    FAIL: error code should propagate");
-            return 1;
-        }
-    } else {
-        println("    FAIL: should be Err");
-        return 1;
-    }
+ if res_is_err(err) == 1 {
+ let error_code: i64 = res_unwrap_err(err);
+ if error_code != 500 {
+ println(" FAIL: error code should propagate");
+ return 1;
+ }
+ } else {
+ println(" FAIL: should be Err");
+ return 1;
+ }
 
-    println("    PASS: error propagation");
-    0
+ println(" PASS: error propagation");
+ 0
 }
 
 // =============================================================================
@@ -222,32 +222,32 @@ fn test_result_error_propagation() -> i64 {
 // =============================================================================
 
 fn test_result_with_zero() -> i64 {
-    println("  Testing result with zero...");
+ println(" Testing result with zero...");
 
-    // Ok(0) should work
-    let ok_zero: i64 = res_ok(0);
-    if res_is_ok(ok_zero) != 1 {
-        println("    FAIL: Ok(0) should be Ok");
-        return 1;
-    }
-    if res_unwrap(ok_zero) != 0 {
-        println("    FAIL: unwrap Ok(0) should be 0");
-        return 1;
-    }
+ // Ok(0) should work
+ let ok_zero: i64 = res_ok(0);
+ if res_is_ok(ok_zero) != 1 {
+ println(" FAIL: Ok(0) should be Ok");
+ return 1;
+ }
+ if res_unwrap(ok_zero) != 0 {
+ println(" FAIL: unwrap Ok(0) should be 0");
+ return 1;
+ }
 
-    // Err(0) should work
-    let err_zero: i64 = res_err(0);
-    if res_is_err(err_zero) != 1 {
-        println("    FAIL: Err(0) should be Err");
-        return 1;
-    }
-    if res_unwrap_err(err_zero) != 0 {
-        println("    FAIL: unwrap Err(0) should be 0");
-        return 1;
-    }
+ // Err(0) should work
+ let err_zero: i64 = res_err(0);
+ if res_is_err(err_zero) != 1 {
+ println(" FAIL: Err(0) should be Err");
+ return 1;
+ }
+ if res_unwrap_err(err_zero) != 0 {
+ println(" FAIL: unwrap Err(0) should be 0");
+ return 1;
+ }
 
-    println("    PASS: result with zero");
-    0
+ println(" PASS: result with zero");
+ 0
 }
 
 // =============================================================================
@@ -255,41 +255,41 @@ fn test_result_with_zero() -> i64 {
 // =============================================================================
 
 fn test_result_map_pattern() -> i64 {
-    println("  Testing result map pattern...");
+ println(" Testing result map pattern...");
 
-    let ok: i64 = res_ok(5);
+ let ok: i64 = res_ok(5);
 
-    // Map: if Ok, transform the value
-    let mapped: i64 = if res_is_ok(ok) == 1 {
-        res_ok(res_unwrap(ok) * 10)
-    } else {
-        ok  // Pass through error
-    };
+ // Map: if Ok, transform the value
+ let mapped: i64 = if res_is_ok(ok) == 1 {
+ res_ok(res_unwrap(ok) * 10)
+ } else {
+ ok // Pass through error
+ };
 
-    if res_is_ok(mapped) != 1 {
-        println("    FAIL: mapped should be Ok");
-        return 1;
-    }
-    if res_unwrap(mapped) != 50 {
-        println("    FAIL: mapped value should be 50");
-        return 1;
-    }
+ if res_is_ok(mapped) != 1 {
+ println(" FAIL: mapped should be Ok");
+ return 1;
+ }
+ if res_unwrap(mapped) != 50 {
+ println(" FAIL: mapped value should be 50");
+ return 1;
+ }
 
-    // Map over Err should preserve error
-    let err: i64 = res_err(42);
-    let mapped_err: i64 = if res_is_ok(err) == 1 {
-        res_ok(res_unwrap(err) * 10)
-    } else {
-        err
-    };
+ // Map over Err should preserve error
+ let err: i64 = res_err(42);
+ let mapped_err: i64 = if res_is_ok(err) == 1 {
+ res_ok(res_unwrap(err) * 10)
+ } else {
+ err
+ };
 
-    if res_is_err(mapped_err) != 1 {
-        println("    FAIL: mapped error should be Err");
-        return 1;
-    }
+ if res_is_err(mapped_err) != 1 {
+ println(" FAIL: mapped error should be Err");
+ return 1;
+ }
 
-    println("    PASS: result map pattern");
-    0
+ println(" PASS: result map pattern");
+ 0
 }
 
 // =============================================================================
@@ -297,36 +297,36 @@ fn test_result_map_pattern() -> i64 {
 // =============================================================================
 
 fn divide(a: i64, b: i64) -> i64 {
-    if b == 0 {
-        res_err(1)  // Division by zero error
-    } else {
-        res_ok(a / b)
-    }
+ if b == 0 {
+ res_err(1) // Division by zero error
+ } else {
+ res_ok(a / b)
+ }
 }
 
 fn test_result_and_then() -> i64 {
-    println("  Testing result and_then pattern...");
+ println(" Testing result and_then pattern...");
 
-    // Success case
-    let r1: i64 = divide(100, 5);
-    if res_is_ok(r1) != 1 {
-        println("    FAIL: 100/5 should succeed");
-        return 1;
-    }
-    if res_unwrap(r1) != 20 {
-        println("    FAIL: 100/5 should be 20");
-        return 1;
-    }
+ // Success case
+ let r1: i64 = divide(100, 5);
+ if res_is_ok(r1) != 1 {
+ println(" FAIL: 100/5 should succeed");
+ return 1;
+ }
+ if res_unwrap(r1) != 20 {
+ println(" FAIL: 100/5 should be 20");
+ return 1;
+ }
 
-    // Failure case
-    let r2: i64 = divide(100, 0);
-    if res_is_err(r2) != 1 {
-        println("    FAIL: 100/0 should fail");
-        return 1;
-    }
+ // Failure case
+ let r2: i64 = divide(100, 0);
+ if res_is_err(r2) != 1 {
+ println(" FAIL: 100/0 should fail");
+ return 1;
+ }
 
-    println("    PASS: result and_then pattern");
-    0
+ println(" PASS: result and_then pattern");
+ 0
 }
 
 // =============================================================================
@@ -334,26 +334,26 @@ fn test_result_and_then() -> i64 {
 // =============================================================================
 
 fn main() -> i64 {
-    println("=== Result Tests ===");
-    println("");
+ println("=== Result Tests ===");
+ println("");
 
-    let f1: i64 = test_res_ok();
-    let f2: i64 = test_res_err();
-    let f3: i64 = test_res_unwrap_or();
-    let f4: i64 = test_result_chaining();
-    let f5: i64 = test_result_error_propagation();
-    let f6: i64 = test_result_with_zero();
-    let f7: i64 = test_result_map_pattern();
-    let f8: i64 = test_result_and_then();
+ let f1: i64 = test_res_ok();
+ let f2: i64 = test_res_err();
+ let f3: i64 = test_res_unwrap_or();
+ let f4: i64 = test_result_chaining();
+ let f5: i64 = test_result_error_propagation();
+ let f6: i64 = test_result_with_zero();
+ let f7: i64 = test_result_map_pattern();
+ let f8: i64 = test_result_and_then();
 
-    let failures: i64 = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8;
+ let failures: i64 = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8;
 
-    println("");
-    if failures == 0 {
-        println("All Result tests passed!");
-    } else {
-        println("Some Result tests failed");
-    }
+ println("");
+ if failures == 0 {
+ println("All Result tests passed!");
+ } else {
+ println("Some Result tests failed");
+ }
 
-    failures
+ failures
 }

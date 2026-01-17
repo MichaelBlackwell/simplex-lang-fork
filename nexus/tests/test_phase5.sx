@@ -1,0 +1,1100 @@
+// Nexus Protocol - Phase 5 Tests
+//
+// Tests for distributed state and federation:
+// - STF type encoding (actor addresses, beliefs, goals, intentions)
+// - Vector clocks for causality
+// - CRDT operations
+// - Federation protocol
+
+fn main() -> i64 {
+    print("=== Nexus Phase 5 Tests ===\n\n");
+
+    let passed = 0;
+    let failed = 0;
+
+    // STF Actor Address tests
+    if test_actor_addr_create() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_actor_addr_encode_decode() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_actor_addr_comparison() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // STF Belief tests
+    if test_stf_belief_create() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_stf_belief_encode_decode() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // STF Goal tests
+    if test_stf_goal_create() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_stf_goal_encode_decode() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // STF Intention tests
+    if test_stf_intention_create() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_stf_intention_encode_decode() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Vector Clock tests
+    if test_nex_vclock_create() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_nex_vclock_increment() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_nex_vclock_compare() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_nex_vclock_merge() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_nex_vclock_encode_decode() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // CRDT tests
+    if test_gcounter() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_gcounter_merge() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_pncounter() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_lww_register() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_or_set() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_crdt_delta_encode_decode() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    // Federation tests
+    if test_cluster_create() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_join_protocol() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_leave_protocol() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_announce_protocol() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_discover_protocol() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    if test_leader_election() == 0 { passed = passed + 1; }
+    else { failed = failed + 1; }
+
+    print("\nPassed: ");
+    print_i64(passed);
+    print(" / ");
+    print_i64(passed + failed);
+    print("\n");
+
+    if failed > 0 { 1 } else { 0 }
+}
+
+// =============================================================================
+// STF Actor Address Tests
+// =============================================================================
+
+fn test_actor_addr_create() -> i64 {
+    print("Testing actor address creation... ");
+
+    let addr = actor_addr_new(1000, 10, 5, 42);
+
+    if actor_addr_node(addr) != 1000 {
+        print("FAIL: wrong node\n");
+        return 1;
+    }
+    if actor_addr_hive(addr) != 10 {
+        print("FAIL: wrong hive\n");
+        return 1;
+    }
+    if actor_addr_specialist(addr) != 5 {
+        print("FAIL: wrong specialist\n");
+        return 1;
+    }
+    if actor_addr_instance(addr) != 42 {
+        print("FAIL: wrong instance\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_actor_addr_encode_decode() -> i64 {
+    print("Testing actor address encode/decode... ");
+
+    let addr = actor_addr_new(12345678, 100, 50, 999999);
+    let encoded = actor_addr_encode(addr);
+
+    if vec_len(encoded) != 13 {
+        print("FAIL: wrong encoded length\n");
+        return 1;
+    }
+
+    let decoded = actor_addr_decode(encoded, 0);
+    if decoded == 0 {
+        print("FAIL: decode failed\n");
+        return 1;
+    }
+
+    if actor_addr_node(decoded) != 12345678 {
+        print("FAIL: wrong decoded node\n");
+        return 1;
+    }
+    if actor_addr_hive(decoded) != 100 {
+        print("FAIL: wrong decoded hive\n");
+        return 1;
+    }
+    if actor_addr_specialist(decoded) != 50 {
+        print("FAIL: wrong decoded specialist\n");
+        return 1;
+    }
+    if actor_addr_instance(decoded) != 999999 {
+        print("FAIL: wrong decoded instance\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_actor_addr_comparison() -> i64 {
+    print("Testing actor address comparison... ");
+
+    let addr1 = actor_addr_new(100, 10, 5, 1);
+    let addr2 = actor_addr_new(100, 10, 5, 1);
+    let addr3 = actor_addr_new(100, 10, 5, 2);
+    let addr4 = actor_addr_new(200, 10, 5, 1);
+
+    if actor_addr_equals(addr1, addr2) != 1 {
+        print("FAIL: equal addresses not equal\n");
+        return 1;
+    }
+
+    if actor_addr_equals(addr1, addr3) != 0 {
+        print("FAIL: different instances equal\n");
+        return 1;
+    }
+
+    if actor_addr_same_node(addr1, addr3) != 1 {
+        print("FAIL: same node not detected\n");
+        return 1;
+    }
+
+    if actor_addr_same_node(addr1, addr4) != 0 {
+        print("FAIL: different nodes detected as same\n");
+        return 1;
+    }
+
+    if actor_addr_same_hive(addr1, addr3) != 1 {
+        print("FAIL: same hive not detected\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// STF Belief Tests
+// =============================================================================
+
+fn test_stf_belief_create() -> i64 {
+    print("Testing STF belief creation... ");
+
+    let belief = stf_belief_new(1001, 8500, 10);
+
+    if stf_belief_id(belief) != 1001 {
+        print("FAIL: wrong belief ID\n");
+        return 1;
+    }
+    if stf_belief_confidence(belief) != 8500 {
+        print("FAIL: wrong confidence\n");
+        return 1;
+    }
+    if stf_belief_derivative(belief) != 10 {
+        print("FAIL: wrong derivative\n");
+        return 1;
+    }
+
+    // Add a source
+    let source = actor_addr_new(100, 1, 1, 1);
+    stf_belief_add_source(belief, source);
+
+    if vec_len(stf_belief_sources(belief)) != 1 {
+        print("FAIL: wrong source count\n");
+        return 1;
+    }
+
+    // Set content
+    let content = vec_new();
+    vec_push(content, 65);
+    vec_push(content, 66);
+    stf_belief_set_content(belief, content);
+
+    if vec_len(stf_belief_content(belief)) != 2 {
+        print("FAIL: wrong content length\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_stf_belief_encode_decode() -> i64 {
+    print("Testing STF belief encode/decode... ");
+
+    let belief = stf_belief_new(42000, 9500, -50);
+
+    let source1 = actor_addr_new(100, 1, 1, 1);
+    let source2 = actor_addr_new(200, 2, 2, 2);
+    stf_belief_add_source(belief, source1);
+    stf_belief_add_source(belief, source2);
+
+    let content = vec_new();
+    vec_push(content, 1);
+    vec_push(content, 2);
+    vec_push(content, 3);
+    stf_belief_set_content(belief, content);
+
+    let encoded = stf_belief_encode(belief);
+    let decoded = stf_belief_decode(encoded, 0);
+
+    if decoded == 0 {
+        print("FAIL: decode failed\n");
+        return 1;
+    }
+
+    if stf_belief_id(decoded) != 42000 {
+        print("FAIL: wrong decoded ID\n");
+        return 1;
+    }
+    if stf_belief_confidence(decoded) != 9500 {
+        print("FAIL: wrong decoded confidence\n");
+        return 1;
+    }
+    if stf_belief_derivative(decoded) != -50 {
+        print("FAIL: wrong decoded derivative, got ");
+        print_i64(stf_belief_derivative(decoded));
+        print("\n");
+        return 1;
+    }
+    if vec_len(stf_belief_sources(decoded)) != 2 {
+        print("FAIL: wrong decoded source count\n");
+        return 1;
+    }
+    if vec_len(stf_belief_content(decoded)) != 3 {
+        print("FAIL: wrong decoded content length\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// STF Goal Tests
+// =============================================================================
+
+fn test_stf_goal_create() -> i64 {
+    print("Testing STF goal creation... ");
+
+    let goal = stf_goal_new(500, 1000, 1735689600);
+
+    if stf_goal_id(goal) != 500 {
+        print("FAIL: wrong goal ID\n");
+        return 1;
+    }
+    if stf_goal_priority(goal) != 1000 {
+        print("FAIL: wrong priority\n");
+        return 1;
+    }
+    if stf_goal_deadline(goal) != 1735689600 {
+        print("FAIL: wrong deadline\n");
+        return 1;
+    }
+    if stf_goal_status(goal) != GOAL_STATUS_PENDING() {
+        print("FAIL: wrong initial status\n");
+        return 1;
+    }
+
+    stf_goal_set_status(goal, GOAL_STATUS_ACTIVE());
+    if stf_goal_status(goal) != GOAL_STATUS_ACTIVE() {
+        print("FAIL: status not updated\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_stf_goal_encode_decode() -> i64 {
+    print("Testing STF goal encode/decode... ");
+
+    let goal = stf_goal_new(12345, 5000, 1800000000);
+    stf_goal_set_priority(goal, 5000, -100);
+    stf_goal_set_parent(goal, 12300);
+    stf_goal_set_status(goal, GOAL_STATUS_ACHIEVED());
+
+    let desc = vec_new();
+    vec_push(desc, 84);  // T
+    vec_push(desc, 69);  // E
+    vec_push(desc, 83);  // S
+    vec_push(desc, 84);  // T
+    stf_goal_set_description(goal, desc);
+
+    let encoded = stf_goal_encode(goal);
+    let decoded = stf_goal_decode(encoded, 0);
+
+    if decoded == 0 {
+        print("FAIL: decode failed\n");
+        return 1;
+    }
+
+    if stf_goal_id(decoded) != 12345 {
+        print("FAIL: wrong decoded ID\n");
+        return 1;
+    }
+    if stf_goal_priority(decoded) != 5000 {
+        print("FAIL: wrong decoded priority\n");
+        return 1;
+    }
+    if stf_goal_parent(decoded) != 12300 {
+        print("FAIL: wrong decoded parent\n");
+        return 1;
+    }
+    if stf_goal_status(decoded) != GOAL_STATUS_ACHIEVED() {
+        print("FAIL: wrong decoded status\n");
+        return 1;
+    }
+    if vec_len(stf_goal_description(decoded)) != 4 {
+        print("FAIL: wrong decoded description length\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// STF Intention Tests
+// =============================================================================
+
+fn test_stf_intention_create() -> i64 {
+    print("Testing STF intention creation... ");
+
+    let intention = stf_intention_new(100, 500);
+
+    if stf_intention_id(intention) != 100 {
+        print("FAIL: wrong intention ID\n");
+        return 1;
+    }
+    if stf_intention_goal_id(intention) != 500 {
+        print("FAIL: wrong goal ID\n");
+        return 1;
+    }
+    if stf_intention_status(intention) != INTENTION_STATUS_PLANNING() {
+        print("FAIL: wrong initial status\n");
+        return 1;
+    }
+
+    stf_intention_set_status(intention, INTENTION_STATUS_EXECUTING());
+    stf_intention_set_progress(intention, 5000, 100);
+
+    if stf_intention_status(intention) != INTENTION_STATUS_EXECUTING() {
+        print("FAIL: status not updated\n");
+        return 1;
+    }
+    if stf_intention_progress(intention) != 5000 {
+        print("FAIL: progress not updated\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_stf_intention_encode_decode() -> i64 {
+    print("Testing STF intention encode/decode... ");
+
+    let intention = stf_intention_new(999, 888);
+    stf_intention_set_status(intention, INTENTION_STATUS_PAUSED());
+    stf_intention_set_progress(intention, 7500, -50);
+
+    let plan = vec_new();
+    vec_push(plan, 1);
+    vec_push(plan, 2);
+    vec_push(plan, 3);
+    stf_intention_set_plan(intention, 5, 2, plan);
+
+    let encoded = stf_intention_encode(intention);
+    let decoded = stf_intention_decode(encoded, 0);
+
+    if decoded == 0 {
+        print("FAIL: decode failed\n");
+        return 1;
+    }
+
+    if stf_intention_id(decoded) != 999 {
+        print("FAIL: wrong decoded ID\n");
+        return 1;
+    }
+    if stf_intention_goal_id(decoded) != 888 {
+        print("FAIL: wrong decoded goal ID\n");
+        return 1;
+    }
+    if stf_intention_status(decoded) != INTENTION_STATUS_PAUSED() {
+        print("FAIL: wrong decoded status\n");
+        return 1;
+    }
+    if stf_intention_progress(decoded) != 7500 {
+        print("FAIL: wrong decoded progress\n");
+        return 1;
+    }
+    if stf_intention_step_count(decoded) != 5 {
+        print("FAIL: wrong decoded step count\n");
+        return 1;
+    }
+    if stf_intention_current_step(decoded) != 2 {
+        print("FAIL: wrong decoded current step\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// Vector Clock Tests
+// =============================================================================
+
+fn test_nex_vclock_create() -> i64 {
+    print("Testing vector clock creation... ");
+
+    let vc = nex_vclock_new(100);
+
+    if nex_vclock_local_node(vc) != 100 {
+        print("FAIL: wrong local node\n");
+        return 1;
+    }
+    if nex_vclock_size(vc) != 0 {
+        print("FAIL: initial size not 0\n");
+        return 1;
+    }
+    if nex_vclock_get(vc, 100) != 0 {
+        print("FAIL: initial counter not 0\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_nex_vclock_increment() -> i64 {
+    print("Testing vector clock increment... ");
+
+    let vc = nex_vclock_new(100);
+
+    let val1 = nex_vclock_increment(vc);
+    if val1 != 1 {
+        print("FAIL: first increment not 1\n");
+        return 1;
+    }
+
+    let val2 = nex_vclock_increment(vc);
+    if val2 != 2 {
+        print("FAIL: second increment not 2\n");
+        return 1;
+    }
+
+    if nex_vclock_get(vc, 100) != 2 {
+        print("FAIL: counter not 2\n");
+        return 1;
+    }
+
+    if nex_vclock_size(vc) != 1 {
+        print("FAIL: size not 1\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_nex_vclock_compare() -> i64 {
+    print("Testing vector clock comparison... ");
+
+    // vc1: {100: 2, 200: 1}
+    let vc1 = nex_vclock_new(100);
+    nex_vclock_set(vc1, 100, 2);
+    nex_vclock_set(vc1, 200, 1);
+
+    // vc2: {100: 2, 200: 1} (equal)
+    let vc2 = nex_vclock_new(100);
+    nex_vclock_set(vc2, 100, 2);
+    nex_vclock_set(vc2, 200, 1);
+
+    if nex_vclock_compare(vc1, vc2) != NEX_VCLOCK_EQUAL() {
+        print("FAIL: equal clocks not equal\n");
+        return 1;
+    }
+
+    // vc3: {100: 3, 200: 1} (vc1 < vc3)
+    let vc3 = nex_vclock_new(100);
+    nex_vclock_set(vc3, 100, 3);
+    nex_vclock_set(vc3, 200, 1);
+
+    if nex_vclock_compare(vc1, vc3) != NEX_VCLOCK_BEFORE() {
+        print("FAIL: vc1 should be before vc3\n");
+        return 1;
+    }
+
+    if nex_vclock_compare(vc3, vc1) != NEX_VCLOCK_AFTER() {
+        print("FAIL: vc3 should be after vc1\n");
+        return 1;
+    }
+
+    // vc4: {100: 1, 200: 2} (concurrent with vc1)
+    let vc4 = nex_vclock_new(100);
+    nex_vclock_set(vc4, 100, 1);
+    nex_vclock_set(vc4, 200, 2);
+
+    if nex_vclock_compare(vc1, vc4) != NEX_VCLOCK_CONCURRENT() {
+        print("FAIL: should be concurrent\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_nex_vclock_merge() -> i64 {
+    print("Testing vector clock merge... ");
+
+    let vc1 = nex_vclock_new(100);
+    nex_vclock_set(vc1, 100, 5);
+    nex_vclock_set(vc1, 200, 3);
+
+    let vc2 = nex_vclock_new(200);
+    nex_vclock_set(vc2, 100, 3);
+    nex_vclock_set(vc2, 200, 7);
+    nex_vclock_set(vc2, 300, 2);
+
+    nex_vclock_merge(vc1, vc2);
+
+    // Should have max of each
+    if nex_vclock_get(vc1, 100) != 5 {
+        print("FAIL: node 100 should be 5\n");
+        return 1;
+    }
+    if nex_vclock_get(vc1, 200) != 7 {
+        print("FAIL: node 200 should be 7\n");
+        return 1;
+    }
+    if nex_vclock_get(vc1, 300) != 2 {
+        print("FAIL: node 300 should be 2\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_nex_vclock_encode_decode() -> i64 {
+    print("Testing vector clock encode/decode... ");
+
+    let vc = nex_vclock_new(100);
+    nex_vclock_set(vc, 100, 10);
+    nex_vclock_set(vc, 200, 20);
+    nex_vclock_set(vc, 300, 30);
+
+    let encoded = nex_vclock_encode(vc);
+    let decoded = nex_vclock_decode(encoded, 0);
+
+    if decoded == 0 {
+        print("FAIL: decode failed\n");
+        return 1;
+    }
+
+    if nex_vclock_local_node(decoded) != 100 {
+        print("FAIL: wrong local node\n");
+        return 1;
+    }
+    if nex_vclock_get(decoded, 100) != 10 {
+        print("FAIL: wrong counter for 100\n");
+        return 1;
+    }
+    if nex_vclock_get(decoded, 200) != 20 {
+        print("FAIL: wrong counter for 200\n");
+        return 1;
+    }
+    if nex_vclock_get(decoded, 300) != 30 {
+        print("FAIL: wrong counter for 300\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// CRDT Tests
+// =============================================================================
+
+fn test_gcounter() -> i64 {
+    print("Testing G-Counter... ");
+
+    let gc = gcounter_new(100);
+
+    if gcounter_value(gc) != 0 {
+        print("FAIL: initial value not 0\n");
+        return 1;
+    }
+
+    gcounter_increment(gc, 5);
+    if gcounter_value(gc) != 5 {
+        print("FAIL: value should be 5\n");
+        return 1;
+    }
+
+    gcounter_increment(gc, 3);
+    if gcounter_value(gc) != 8 {
+        print("FAIL: value should be 8\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_gcounter_merge() -> i64 {
+    print("Testing G-Counter merge... ");
+
+    let gc1 = gcounter_new(100);
+    gcounter_increment(gc1, 5);
+
+    let gc2 = gcounter_new(200);
+    gcounter_increment(gc2, 3);
+
+    // Simulate receiving gc2's state
+    gcounter_set_node(gc1, 200, gcounter_get_node(gc2, 200));
+
+    // Total should be 5 + 3 = 8
+    if gcounter_value(gc1) != 8 {
+        print("FAIL: merged value should be 8, got ");
+        print_i64(gcounter_value(gc1));
+        print("\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_pncounter() -> i64 {
+    print("Testing PN-Counter... ");
+
+    let pn = pncounter_new(100);
+
+    if pncounter_value(pn) != 0 {
+        print("FAIL: initial value not 0\n");
+        return 1;
+    }
+
+    pncounter_increment(pn, 10);
+    if pncounter_value(pn) != 10 {
+        print("FAIL: value should be 10\n");
+        return 1;
+    }
+
+    pncounter_decrement(pn, 3);
+    if pncounter_value(pn) != 7 {
+        print("FAIL: value should be 7\n");
+        return 1;
+    }
+
+    pncounter_decrement(pn, 10);
+    if pncounter_value(pn) != -3 {
+        print("FAIL: value should be -3\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_lww_register() -> i64 {
+    print("Testing LWW-Register... ");
+
+    let reg = lww_register_new(100);
+
+    let val1 = vec_new();
+    vec_push(val1, 1);
+    lww_register_set(reg, val1, 100);
+
+    if vec_len(lww_register_value(reg)) != 1 {
+        print("FAIL: value not set\n");
+        return 1;
+    }
+
+    // Older timestamp should be ignored
+    let val2 = vec_new();
+    vec_push(val2, 2);
+    lww_register_set(reg, val2, 50);
+
+    if vec_get(lww_register_value(reg), 0) != 1 {
+        print("FAIL: older value overwrote newer\n");
+        return 1;
+    }
+
+    // Newer timestamp should update
+    let val3 = vec_new();
+    vec_push(val3, 3);
+    lww_register_set(reg, val3, 200);
+
+    if vec_get(lww_register_value(reg), 0) != 3 {
+        print("FAIL: newer value did not update\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_or_set() -> i64 {
+    print("Testing OR-Set... ");
+
+    let set = or_set_new(100);
+
+    if or_set_contains(set, 42) != 0 {
+        print("FAIL: empty set contains value\n");
+        return 1;
+    }
+
+    or_set_add(set, 42);
+    or_set_add(set, 100);
+    or_set_add(set, 42);  // Duplicate add
+
+    if or_set_contains(set, 42) != 1 {
+        print("FAIL: set should contain 42\n");
+        return 1;
+    }
+
+    let values = or_set_values(set);
+    if vec_len(values) != 2 {
+        print("FAIL: should have 2 unique values, got ");
+        print_i64(vec_len(values));
+        print("\n");
+        return 1;
+    }
+
+    or_set_remove(set, 42);
+    if or_set_contains(set, 42) != 0 {
+        print("FAIL: set should not contain 42 after remove\n");
+        return 1;
+    }
+    if or_set_contains(set, 100) != 1 {
+        print("FAIL: set should still contain 100\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_crdt_delta_encode_decode() -> i64 {
+    print("Testing CRDT delta encode/decode... ");
+
+    let delta = crdt_delta_new(CRDT_TYPE_GCOUNTER(), CRDT_OP_INCREMENT(), 100, 12345);
+
+    let key = vec_new();
+    vec_push(key, 1);
+    vec_push(key, 2);
+    crdt_delta_set_key(delta, key);
+
+    let value = vec_new();
+    vec_push(value, 10);
+    vec_push(value, 20);
+    vec_push(value, 30);
+    crdt_delta_set_value(delta, value);
+
+    let encoded = crdt_delta_encode(delta);
+    let decoded = crdt_delta_decode(encoded, 0);
+
+    if decoded == 0 {
+        print("FAIL: decode failed\n");
+        return 1;
+    }
+
+    if crdt_delta_type(decoded) != CRDT_TYPE_GCOUNTER() {
+        print("FAIL: wrong type\n");
+        return 1;
+    }
+    if crdt_delta_op(decoded) != CRDT_OP_INCREMENT() {
+        print("FAIL: wrong op\n");
+        return 1;
+    }
+    if crdt_delta_node(decoded) != 100 {
+        print("FAIL: wrong node\n");
+        return 1;
+    }
+    if crdt_delta_timestamp(decoded) != 12345 {
+        print("FAIL: wrong timestamp\n");
+        return 1;
+    }
+    if vec_len(crdt_delta_key(decoded)) != 2 {
+        print("FAIL: wrong key length\n");
+        return 1;
+    }
+    if vec_len(crdt_delta_value(decoded)) != 3 {
+        print("FAIL: wrong value length\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+// =============================================================================
+// Federation Tests
+// =============================================================================
+
+fn test_cluster_create() -> i64 {
+    print("Testing cluster creation... ");
+
+    let cluster = fed_cluster_new(1, 100);
+
+    if fed_cluster_id(cluster) != 1 {
+        print("FAIL: wrong cluster ID\n");
+        return 1;
+    }
+    if fed_cluster_local_node(cluster) != 100 {
+        print("FAIL: wrong local node\n");
+        return 1;
+    }
+    if fed_cluster_leader(cluster) != 0 {
+        print("FAIL: initial leader not 0\n");
+        return 1;
+    }
+    if vec_len(fed_cluster_members(cluster)) != 0 {
+        print("FAIL: initial members not empty\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_join_protocol() -> i64 {
+    print("Testing JOIN protocol... ");
+
+    let cluster = fed_cluster_new(1, 100);
+
+    // Create JOIN payload
+    let addr = actor_addr_new(200, 1, 1, 1);
+    let payload = join_payload_new(200, 1, CAP_BELIEFS() | CAP_GOALS(), addr);
+
+    // Handle JOIN
+    let result = fed_cluster_handle_join(cluster, payload, 1000);
+    if result != ERR_NONE() {
+        print("FAIL: join failed\n");
+        return 1;
+    }
+
+    // Check member was added
+    if vec_len(fed_cluster_members(cluster)) != 1 {
+        print("FAIL: member not added\n");
+        return 1;
+    }
+
+    let member = fed_cluster_find_member(cluster, 200);
+    if member == 0 {
+        print("FAIL: member not found\n");
+        return 1;
+    }
+
+    if fed_member_status(member) != MEMBER_STATUS_ACTIVE() {
+        print("FAIL: member not active\n");
+        return 1;
+    }
+
+    if (fed_member_capabilities(member) & CAP_BELIEFS()) == 0 {
+        print("FAIL: capabilities not set\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_leave_protocol() -> i64 {
+    print("Testing LEAVE protocol... ");
+
+    let cluster = fed_cluster_new(1, 100);
+
+    // Add a member first
+    let addr = actor_addr_new(200, 1, 1, 1);
+    let join_payload = join_payload_new(200, 1, CAP_BELIEFS(), addr);
+    fed_cluster_handle_join(cluster, join_payload, 1000);
+
+    // Set them as leader
+    fed_cluster_set_leader(cluster, 200);
+
+    // Create LEAVE payload
+    let leave_payload_data = leave_payload_new(200, LEAVE_REASON_SHUTDOWN(), 0);
+
+    // Handle LEAVE
+    let result = fed_cluster_handle_leave(cluster, leave_payload_data);
+    if result != ERR_NONE() {
+        print("FAIL: leave failed\n");
+        return 1;
+    }
+
+    // Check member is leaving
+    let member = fed_cluster_find_member(cluster, 200);
+    if fed_member_status(member) != MEMBER_STATUS_LEAVING() {
+        print("FAIL: member not marked leaving\n");
+        return 1;
+    }
+
+    // Check leader was cleared
+    if fed_cluster_leader(cluster) != 0 {
+        print("FAIL: leader not cleared\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_announce_protocol() -> i64 {
+    print("Testing ANNOUNCE protocol... ");
+
+    let cluster = fed_cluster_new(1, 100);
+
+    // Add member
+    let addr = actor_addr_new(200, 1, 1, 1);
+    let join_payload = join_payload_new(200, 1, CAP_BELIEFS(), addr);
+    fed_cluster_handle_join(cluster, join_payload, 1000);
+
+    // Create ANNOUNCE with services
+    let services = vec_new();
+    vec_push(services, 1001);  // Service ID 1001
+    vec_push(services, 1002);  // Service ID 1002
+
+    let announce = announce_payload_new(200, services);
+    fed_cluster_handle_announce(cluster, announce);
+
+    // Check services were added
+    let member = fed_cluster_find_member(cluster, 200);
+    let member_services = fed_member_services(member);
+    if vec_len(member_services) != 2 {
+        print("FAIL: services not added, got ");
+        print_i64(vec_len(member_services));
+        print("\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_discover_protocol() -> i64 {
+    print("Testing DISCOVER protocol... ");
+
+    let cluster = fed_cluster_new(1, 100);
+
+    // Add members with different capabilities
+    let addr1 = actor_addr_new(200, 1, 1, 1);
+    let join1 = join_payload_new(200, 1, CAP_BELIEFS() | CAP_INFERENCE(), addr1);
+    fed_cluster_handle_join(cluster, join1, 1000);
+
+    let addr2 = actor_addr_new(300, 1, 1, 1);
+    let join2 = join_payload_new(300, 1, CAP_BELIEFS() | CAP_PLANNING(), addr2);
+    fed_cluster_handle_join(cluster, join2, 1001);
+
+    let addr3 = actor_addr_new(400, 1, 1, 1);
+    let join3 = join_payload_new(400, 1, CAP_GOALS(), addr3);
+    fed_cluster_handle_join(cluster, join3, 1002);
+
+    // Discover nodes with BELIEFS capability
+    let discover = discover_payload_new(DISCOVER_TYPE_CAPABILITY(), CAP_BELIEFS(), 10);
+    let results = fed_cluster_handle_discover(cluster, discover);
+
+    if vec_len(results) != 2 {
+        print("FAIL: should find 2 nodes with BELIEFS, got ");
+        print_i64(vec_len(results));
+        print("\n");
+        return 1;
+    }
+
+    // Discover nodes with INFERENCE
+    let discover2 = discover_payload_new(DISCOVER_TYPE_CAPABILITY(), CAP_INFERENCE(), 10);
+    let results2 = fed_cluster_handle_discover(cluster, discover2);
+
+    if vec_len(results2) != 1 {
+        print("FAIL: should find 1 node with INFERENCE\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}
+
+fn test_leader_election() -> i64 {
+    print("Testing leader election... ");
+
+    let cluster = fed_cluster_new(1, 100);
+
+    // Add members
+    let addr1 = actor_addr_new(200, 1, 1, 1);
+    let join1 = join_payload_new(200, 1, CAP_BELIEFS(), addr1);
+    fed_cluster_handle_join(cluster, join1, 1000);
+
+    let addr2 = actor_addr_new(300, 1, 1, 1);
+    let join2 = join_payload_new(300, 1, CAP_BELIEFS(), addr2);
+    fed_cluster_handle_join(cluster, join2, 1001);
+
+    let addr3 = actor_addr_new(150, 1, 1, 1);
+    let join3 = join_payload_new(150, 1, CAP_BELIEFS(), addr3);
+    fed_cluster_handle_join(cluster, join3, 1002);
+
+    // Elect leader (should be highest node ID = 300)
+    let leader = fed_cluster_elect_leader(cluster);
+    if leader != 300 {
+        print("FAIL: leader should be 300, got ");
+        print_i64(leader);
+        print("\n");
+        return 1;
+    }
+
+    if fed_cluster_leader(cluster) != 300 {
+        print("FAIL: cluster leader not set\n");
+        return 1;
+    }
+
+    // Check is_leader
+    if fed_cluster_is_leader(cluster) != 0 {
+        print("FAIL: local node should not be leader\n");
+        return 1;
+    }
+
+    print("PASS\n");
+    0
+}

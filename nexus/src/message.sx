@@ -1,0 +1,1008 @@
+// Nexus Protocol - Message Routing and Streaming Module
+//
+// Phase 4: Implements message routing, streaming, and compression
+//
+// Features:
+// - Message routing and dispatch for different MSG_* types
+// - Streaming support (START/DATA/END) for large data transfers
+// - Simple compression (run-length encoding)
+// - Cognitive message types (BELIEF, GOAL, INTENTION, QUERY)
+// - Message correlation for request/response patterns
+
+// =============================================================================
+// Message Structure
+// =============================================================================
+
+// Message Payload Layout:
+// - Message type (1 byte): MSG_* constant from types.sx
+// - Flags (1 byte): Message-specific flags
+// - Correlation ID (4 bytes, optional): For request/response matching
+// - Stream ID (2 bytes, optional): For streaming
+// - Payload length (2 bytes): Length of content
+// - Payload (variable): Message content
+
+fn message_new(msg_type: i64) -> i64 {
+    let msg = vec_new();
+    vec_push(msg, msg_type);   // Slot 0: type
+    vec_push(msg, 0);          // Slot 1: flags
+    vec_push(msg, 0);          // Slot 2: correlation_id
+    vec_push(msg, 0);          // Slot 3: stream_id
+    vec_push(msg, vec_new());  // Slot 4: payload
+    msg
+}
+
+fn message_type(msg: i64) -> i64 { vec_get(msg, 0) }
+fn message_flags(msg: i64) -> i64 { vec_get(msg, 1) }
+fn message_correlation_id(msg: i64) -> i64 { vec_get(msg, 2) }
+fn message_stream_id(msg: i64) -> i64 { vec_get(msg, 3) }
+fn message_payload(msg: i64) -> i64 { vec_get(msg, 4) }
+
+fn message_set_flags(msg: i64, flags: i64) -> i64 {
+    vec_set(msg, 1, flags);
+    0
+}
+
+fn message_set_correlation_id(msg: i64, id: i64) -> i64 {
+    vec_set(msg, 2, id);
+    0
+}
+
+fn message_set_stream_id(msg: i64, id: i64) -> i64 {
+    vec_set(msg, 3, id);
+    0
+}
+
+fn message_set_payload(msg: i64, payload: i64) -> i64 {
+    vec_set(msg, 4, payload);
+    0
+}
+
+// =============================================================================
+// Message Encoding/Decoding
+// =============================================================================
+
+fn message_encode(msg: i64) -> i64 {
+    let bytes = vec_new();
+    let msg_type = message_type(msg);
+    let flags = message_flags(msg);
+    let correlation_id = message_correlation_id(msg);
+    let stream_id = message_stream_id(msg);
+    let payload = message_payload(msg);
+
+    // Message type (1 byte)
+    vec_push(bytes, msg_type & 255);
+
+    // Flags (1 byte)
+    vec_push(bytes, flags & 255);
+
+    // Correlation ID (4 bytes) if present
+    if correlation_id != 0 {
+        vec_push(bytes, (correlation_id >> 24) & 255);
+        vec_push(bytes, (correlation_id >> 16) & 255);
+        vec_push(bytes, (correlation_id >> 8) & 255);
+        vec_push(bytes, correlation_id & 255);
+    }
+
+    // Stream ID (2 bytes) if present
+    if stream_id != 0 {
+        vec_push(bytes, (stream_id >> 8) & 255);
+        vec_push(bytes, stream_id & 255);
+    }
+
+    // Payload length (2 bytes)
+    let payload_len = vec_len(payload);
+    vec_push(bytes, (payload_len >> 8) & 255);
+    vec_push(bytes, payload_len & 255);
+
+    // Payload
+    let i = 0;
+    while i < payload_len {
+        vec_push(bytes, vec_get(payload, i));
+        i = i + 1;
+    }
+
+    bytes
+}
+
+fn message_decode(bytes: i64) -> i64 {
+    if vec_len(bytes) < 4 {
+        return 0;  // Error: too small
+    }
+
+    let pos = 0;
+
+    // Message type
+    let msg_type = vec_get(bytes, pos);
+    pos = pos + 1;
+
+    // Flags
+    let flags = vec_get(bytes, pos);
+    pos = pos + 1;
+
+    let msg = message_new(msg_type);
+    message_set_flags(msg, flags);
+
+    // Check for correlation ID flag
+    let has_correlation = (flags & 1) != 0;
+    if has_correlation {
+        if pos + 4 > vec_len(bytes) { return 0; }
+        let correlation_id = (vec_get(bytes, pos) << 24) |
+                            (vec_get(bytes, pos + 1) << 16) |
+                            (vec_get(bytes, pos + 2) << 8) |
+                            vec_get(bytes, pos + 3);
+        message_set_correlation_id(msg, correlation_id);
+        pos = pos + 4;
+    }
+
+    // Check for stream ID flag
+    let has_stream = (flags & 2) != 0;
+    if has_stream {
+        if pos + 2 > vec_len(bytes) { return 0; }
+        let stream_id = (vec_get(bytes, pos) << 8) | vec_get(bytes, pos + 1);
+        message_set_stream_id(msg, stream_id);
+        pos = pos + 2;
+    }
+
+    // Payload length
+    if pos + 2 > vec_len(bytes) { return 0; }
+    let payload_len = (vec_get(bytes, pos) << 8) | vec_get(bytes, pos + 1);
+    pos = pos + 2;
+
+    // Payload
+    if pos + payload_len > vec_len(bytes) { return 0; }
+    let payload = vec_new();
+    let i = 0;
+    while i < payload_len {
+        vec_push(payload, vec_get(bytes, pos + i));
+        i = i + 1;
+    }
+    message_set_payload(msg, payload);
+
+    msg
+}
+
+// =============================================================================
+// Message Flag Constants
+// =============================================================================
+
+fn MSG_FLAG_HAS_CORRELATION() -> i64 { 1 }
+fn MSG_FLAG_HAS_STREAM() -> i64 { 2 }
+fn MSG_FLAG_COMPRESSED() -> i64 { 4 }
+fn MSG_FLAG_REQUIRES_ACK() -> i64 { 8 }
+fn MSG_FLAG_IS_REPLY() -> i64 { 16 }
+fn MSG_FLAG_IS_ERROR() -> i64 { 32 }
+
+// =============================================================================
+// Streaming Support
+// =============================================================================
+
+// Stream State:
+// Slot 0: stream_id
+// Slot 1: total_chunks
+// Slot 2: received_chunks
+// Slot 3: buffer (accumulated data)
+// Slot 4: is_complete
+
+fn stream_state_new(stream_id: i64) -> i64 {
+    let state = vec_new();
+    vec_push(state, stream_id);      // Slot 0: stream_id
+    vec_push(state, 0);              // Slot 1: total_chunks
+    vec_push(state, 0);              // Slot 2: received_chunks
+    vec_push(state, vec_new());      // Slot 3: buffer
+    vec_push(state, 0);              // Slot 4: is_complete
+    state
+}
+
+fn stream_state_id(state: i64) -> i64 { vec_get(state, 0) }
+fn stream_state_total(state: i64) -> i64 { vec_get(state, 1) }
+fn stream_state_received(state: i64) -> i64 { vec_get(state, 2) }
+fn stream_state_buffer(state: i64) -> i64 { vec_get(state, 3) }
+fn stream_state_is_complete(state: i64) -> i64 { vec_get(state, 4) }
+
+fn stream_state_set_total(state: i64, total: i64) -> i64 {
+    vec_set(state, 1, total);
+    0
+}
+
+// Stream START message payload:
+// - Total chunks (2 bytes): Expected number of DATA chunks
+// - Total size (4 bytes): Total data size in bytes
+// - Content type (1 byte): Type of streamed content
+
+fn STREAM_CONTENT_RAW() -> i64 { 0 }
+fn STREAM_CONTENT_BELIEFS() -> i64 { 1 }
+fn STREAM_CONTENT_BASELINE() -> i64 { 2 }
+fn STREAM_CONTENT_CATALOG() -> i64 { 3 }
+
+fn stream_start_payload_new(total_chunks: i64, total_size: i64, content_type: i64) -> i64 {
+    let payload = vec_new();
+
+    // Total chunks (2 bytes)
+    vec_push(payload, (total_chunks >> 8) & 255);
+    vec_push(payload, total_chunks & 255);
+
+    // Total size (4 bytes)
+    vec_push(payload, (total_size >> 24) & 255);
+    vec_push(payload, (total_size >> 16) & 255);
+    vec_push(payload, (total_size >> 8) & 255);
+    vec_push(payload, total_size & 255);
+
+    // Content type (1 byte)
+    vec_push(payload, content_type & 255);
+
+    payload
+}
+
+fn stream_start_payload_parse(payload: i64) -> i64 {
+    if vec_len(payload) < 7 {
+        return 0;
+    }
+
+    let result = vec_new();
+
+    // Total chunks
+    let chunks = (vec_get(payload, 0) << 8) | vec_get(payload, 1);
+    vec_push(result, chunks);
+
+    // Total size
+    let size = (vec_get(payload, 2) << 24) |
+               (vec_get(payload, 3) << 16) |
+               (vec_get(payload, 4) << 8) |
+               vec_get(payload, 5);
+    vec_push(result, size);
+
+    // Content type
+    vec_push(result, vec_get(payload, 6));
+
+    result
+}
+
+// Stream DATA message payload:
+// - Chunk index (2 bytes): Which chunk this is (0-indexed)
+// - Chunk data (variable): The actual data
+
+fn stream_data_payload_new(chunk_index: i64, data: i64) -> i64 {
+    let payload = vec_new();
+
+    // Chunk index (2 bytes)
+    vec_push(payload, (chunk_index >> 8) & 255);
+    vec_push(payload, chunk_index & 255);
+
+    // Data
+    let i = 0;
+    let data_len = vec_len(data);
+    while i < data_len {
+        vec_push(payload, vec_get(data, i));
+        i = i + 1;
+    }
+
+    payload
+}
+
+fn stream_data_payload_parse(payload: i64) -> i64 {
+    if vec_len(payload) < 2 {
+        return 0;
+    }
+
+    let result = vec_new();
+
+    // Chunk index
+    let index = (vec_get(payload, 0) << 8) | vec_get(payload, 1);
+    vec_push(result, index);
+
+    // Data
+    let data = vec_new();
+    let i = 2;
+    let len = vec_len(payload);
+    while i < len {
+        vec_push(data, vec_get(payload, i));
+        i = i + 1;
+    }
+    vec_push(result, data);
+
+    result
+}
+
+// Stream END message payload:
+// - Checksum (4 bytes): CRC32 or similar of complete data
+// - Final chunk count (2 bytes): Actual chunks sent
+
+fn stream_end_payload_new(checksum: i64, final_count: i64) -> i64 {
+    let payload = vec_new();
+
+    // Checksum (4 bytes)
+    vec_push(payload, (checksum >> 24) & 255);
+    vec_push(payload, (checksum >> 16) & 255);
+    vec_push(payload, (checksum >> 8) & 255);
+    vec_push(payload, checksum & 255);
+
+    // Final chunk count (2 bytes)
+    vec_push(payload, (final_count >> 8) & 255);
+    vec_push(payload, final_count & 255);
+
+    payload
+}
+
+fn stream_end_payload_parse(payload: i64) -> i64 {
+    if vec_len(payload) < 6 {
+        return 0;
+    }
+
+    let result = vec_new();
+
+    // Checksum
+    let checksum = (vec_get(payload, 0) << 24) |
+                   (vec_get(payload, 1) << 16) |
+                   (vec_get(payload, 2) << 8) |
+                   vec_get(payload, 3);
+    vec_push(result, checksum);
+
+    // Final count
+    let count = (vec_get(payload, 4) << 8) | vec_get(payload, 5);
+    vec_push(result, count);
+
+    result
+}
+
+// Create stream messages
+fn message_stream_start(stream_id: i64, total_chunks: i64, total_size: i64, content_type: i64) -> i64 {
+    let msg = message_new(MSG_STREAM_START());
+    message_set_stream_id(msg, stream_id);
+    message_set_flags(msg, MSG_FLAG_HAS_STREAM());
+    let payload = stream_start_payload_new(total_chunks, total_size, content_type);
+    message_set_payload(msg, payload);
+    msg
+}
+
+fn message_stream_data(stream_id: i64, chunk_index: i64, data: i64) -> i64 {
+    let msg = message_new(MSG_STREAM_DATA());
+    message_set_stream_id(msg, stream_id);
+    message_set_flags(msg, MSG_FLAG_HAS_STREAM());
+    let payload = stream_data_payload_new(chunk_index, data);
+    message_set_payload(msg, payload);
+    msg
+}
+
+fn message_stream_end(stream_id: i64, checksum: i64, final_count: i64) -> i64 {
+    let msg = message_new(MSG_STREAM_END());
+    message_set_stream_id(msg, stream_id);
+    message_set_flags(msg, MSG_FLAG_HAS_STREAM());
+    let payload = stream_end_payload_new(checksum, final_count);
+    message_set_payload(msg, payload);
+    msg
+}
+
+// Handle stream DATA - accumulate into buffer
+fn stream_handle_data(state: i64, data_payload: i64) -> i64 {
+    let parsed = stream_data_payload_parse(data_payload);
+    if parsed == 0 { return ERR_DECODE_ERROR(); }
+
+    let chunk_index = vec_get(parsed, 0);
+    let data = vec_get(parsed, 1);
+    let buffer = stream_state_buffer(state);
+
+    // Append data to buffer
+    let i = 0;
+    let len = vec_len(data);
+    while i < len {
+        vec_push(buffer, vec_get(data, i));
+        i = i + 1;
+    }
+
+    // Increment received count
+    let received = vec_get(state, 2);
+    vec_set(state, 2, received + 1);
+
+    ERR_NONE()
+}
+
+// Handle stream END - verify and complete
+fn stream_handle_end(state: i64, end_payload: i64) -> i64 {
+    let parsed = stream_end_payload_parse(end_payload);
+    if parsed == 0 { return ERR_DECODE_ERROR(); }
+
+    let expected_checksum = vec_get(parsed, 0);
+    let final_count = vec_get(parsed, 1);
+
+    // Verify we received all chunks
+    let received = stream_state_received(state);
+    if received != final_count {
+        return ERR_DECODE_ERROR();  // Missing chunks
+    }
+
+    // Compute checksum of buffer
+    let buffer = stream_state_buffer(state);
+    let actual_checksum = compute_simple_checksum(buffer);
+
+    if actual_checksum != expected_checksum {
+        return ERR_CHECKSUM_MISMATCH();
+    }
+
+    // Mark complete
+    vec_set(state, 4, 1);
+
+    ERR_NONE()
+}
+
+// Simple checksum (XOR-based, same as sync checksum)
+fn compute_simple_checksum(data: i64) -> i64 {
+    let checksum = 0;
+    let i = 0;
+    let len = vec_len(data);
+    while i < len {
+        let byte = vec_get(data, i);
+        checksum = checksum ^ (byte << ((i % 4) * 8));
+        i = i + 1;
+    }
+    checksum
+}
+
+// =============================================================================
+// Compression (Simple Run-Length Encoding)
+// =============================================================================
+
+// RLE Format:
+// - Literal run: [0x00-0x7F][N bytes] - N+1 literal bytes follow
+// - Repeat run: [0x80-0xFF][byte] - repeat byte (N-127) times
+
+fn compress_rle(data: i64) -> i64 {
+    let output = vec_new();
+    let len = vec_len(data);
+
+    if len == 0 {
+        return output;
+    }
+
+    let i = 0;
+    while i < len {
+        // Look for runs of same byte
+        let byte = vec_get(data, i);
+        let run_len = 1;
+        while i + run_len < len && run_len < 130 && vec_get(data, i + run_len) == byte {
+            run_len = run_len + 1;
+        }
+
+        if run_len >= 3 {
+            // Repeat run: worth encoding
+            vec_push(output, 127 + run_len);  // 0x80 + (run_len - 1)
+            vec_push(output, byte);
+            i = i + run_len;
+        } else {
+            // Look for literal run (non-repeating bytes)
+            let lit_start = i;
+            let lit_len = 0;
+            while i + lit_len < len && lit_len < 128 {
+                let current = vec_get(data, i + lit_len);
+                // Check if this starts a run of 3+
+                let next_run = 1;
+                while i + lit_len + next_run < len && next_run < 3 &&
+                      vec_get(data, i + lit_len + next_run) == current {
+                    next_run = next_run + 1;
+                }
+                if next_run >= 3 {
+                    // Start of a repeat run - stop literal here
+                    break;
+                }
+                lit_len = lit_len + 1;
+            }
+
+            if lit_len == 0 { lit_len = 1; }  // At least one byte
+
+            // Output literal run
+            vec_push(output, lit_len - 1);  // 0x00-0x7F
+            let j = 0;
+            while j < lit_len {
+                vec_push(output, vec_get(data, i + j));
+                j = j + 1;
+            }
+            i = i + lit_len;
+        }
+    }
+
+    output
+}
+
+fn decompress_rle(data: i64) -> i64 {
+    let output = vec_new();
+    let len = vec_len(data);
+    let i = 0;
+
+    while i < len {
+        let control = vec_get(data, i);
+        i = i + 1;
+
+        if control < 128 {
+            // Literal run: control + 1 bytes follow
+            let lit_len = control + 1;
+            let j = 0;
+            while j < lit_len && i < len {
+                vec_push(output, vec_get(data, i));
+                i = i + 1;
+                j = j + 1;
+            }
+        } else {
+            // Repeat run: repeat next byte (control - 127) times
+            if i >= len { break; }
+            let byte = vec_get(data, i);
+            i = i + 1;
+            let repeat = control - 127;
+            let j = 0;
+            while j < repeat {
+                vec_push(output, byte);
+                j = j + 1;
+            }
+        }
+    }
+
+    output
+}
+
+// Compress message payload if beneficial
+fn message_compress_payload(msg: i64) -> i64 {
+    let payload = message_payload(msg);
+    let original_len = vec_len(payload);
+
+    if original_len < 16 {
+        return 0;  // Too small to bother
+    }
+
+    let compressed = compress_rle(payload);
+    let compressed_len = vec_len(compressed);
+
+    // Only use compression if it saves at least 10%
+    if compressed_len < (original_len * 9) / 10 {
+        message_set_payload(msg, compressed);
+        let flags = message_flags(msg);
+        message_set_flags(msg, flags | MSG_FLAG_COMPRESSED());
+        return original_len - compressed_len;  // Bytes saved
+    }
+
+    0  // No compression applied
+}
+
+fn message_decompress_payload(msg: i64) -> i64 {
+    let flags = message_flags(msg);
+    if (flags & MSG_FLAG_COMPRESSED()) == 0 {
+        return 0;  // Not compressed
+    }
+
+    let payload = message_payload(msg);
+    let decompressed = decompress_rle(payload);
+    message_set_payload(msg, decompressed);
+
+    // Clear compression flag
+    message_set_flags(msg, flags & (255 - MSG_FLAG_COMPRESSED()));
+
+    vec_len(decompressed)
+}
+
+// =============================================================================
+// Cognitive Message Types
+// =============================================================================
+
+// BELIEF message payload:
+// - Belief ID (4 bytes): Unique identifier
+// - Confidence (4 bytes): Fixed-point confidence (0-10000 = 0.0-1.0)
+// - Content length (2 bytes)
+// - Content (variable): Serialized belief content
+
+fn belief_message_new(belief_id: i64, confidence: i64, content: i64) -> i64 {
+    let msg = message_new(MSG_BELIEF());
+
+    let payload = vec_new();
+
+    // Belief ID (4 bytes)
+    vec_push(payload, (belief_id >> 24) & 255);
+    vec_push(payload, (belief_id >> 16) & 255);
+    vec_push(payload, (belief_id >> 8) & 255);
+    vec_push(payload, belief_id & 255);
+
+    // Confidence (4 bytes) - scaled 0-10000
+    vec_push(payload, (confidence >> 24) & 255);
+    vec_push(payload, (confidence >> 16) & 255);
+    vec_push(payload, (confidence >> 8) & 255);
+    vec_push(payload, confidence & 255);
+
+    // Content length (2 bytes)
+    let content_len = vec_len(content);
+    vec_push(payload, (content_len >> 8) & 255);
+    vec_push(payload, content_len & 255);
+
+    // Content
+    let i = 0;
+    while i < content_len {
+        vec_push(payload, vec_get(content, i));
+        i = i + 1;
+    }
+
+    message_set_payload(msg, payload);
+    msg
+}
+
+fn belief_message_parse(msg: i64) -> i64 {
+    let payload = message_payload(msg);
+    if vec_len(payload) < 10 {
+        return 0;
+    }
+
+    let result = vec_new();
+
+    // Belief ID
+    let belief_id = (vec_get(payload, 0) << 24) |
+                    (vec_get(payload, 1) << 16) |
+                    (vec_get(payload, 2) << 8) |
+                    vec_get(payload, 3);
+    vec_push(result, belief_id);
+
+    // Confidence
+    let confidence = (vec_get(payload, 4) << 24) |
+                     (vec_get(payload, 5) << 16) |
+                     (vec_get(payload, 6) << 8) |
+                     vec_get(payload, 7);
+    vec_push(result, confidence);
+
+    // Content length
+    let content_len = (vec_get(payload, 8) << 8) | vec_get(payload, 9);
+
+    // Content
+    let content = vec_new();
+    let i = 0;
+    while i < content_len && 10 + i < vec_len(payload) {
+        vec_push(content, vec_get(payload, 10 + i));
+        i = i + 1;
+    }
+    vec_push(result, content);
+
+    result
+}
+
+// GOAL message payload:
+// - Goal ID (4 bytes): Unique identifier
+// - Priority (2 bytes): 0-65535 priority
+// - Deadline (4 bytes): Unix timestamp or 0 for no deadline
+// - Description length (2 bytes)
+// - Description (variable)
+
+fn goal_message_new(goal_id: i64, priority: i64, deadline: i64, description: i64) -> i64 {
+    let msg = message_new(MSG_GOAL());
+
+    let payload = vec_new();
+
+    // Goal ID (4 bytes)
+    vec_push(payload, (goal_id >> 24) & 255);
+    vec_push(payload, (goal_id >> 16) & 255);
+    vec_push(payload, (goal_id >> 8) & 255);
+    vec_push(payload, goal_id & 255);
+
+    // Priority (2 bytes)
+    vec_push(payload, (priority >> 8) & 255);
+    vec_push(payload, priority & 255);
+
+    // Deadline (4 bytes)
+    vec_push(payload, (deadline >> 24) & 255);
+    vec_push(payload, (deadline >> 16) & 255);
+    vec_push(payload, (deadline >> 8) & 255);
+    vec_push(payload, deadline & 255);
+
+    // Description length (2 bytes)
+    let desc_len = vec_len(description);
+    vec_push(payload, (desc_len >> 8) & 255);
+    vec_push(payload, desc_len & 255);
+
+    // Description
+    let i = 0;
+    while i < desc_len {
+        vec_push(payload, vec_get(description, i));
+        i = i + 1;
+    }
+
+    message_set_payload(msg, payload);
+    msg
+}
+
+fn goal_message_parse(msg: i64) -> i64 {
+    let payload = message_payload(msg);
+    if vec_len(payload) < 12 {
+        return 0;
+    }
+
+    let result = vec_new();
+
+    // Goal ID
+    let goal_id = (vec_get(payload, 0) << 24) |
+                  (vec_get(payload, 1) << 16) |
+                  (vec_get(payload, 2) << 8) |
+                  vec_get(payload, 3);
+    vec_push(result, goal_id);
+
+    // Priority
+    let priority = (vec_get(payload, 4) << 8) | vec_get(payload, 5);
+    vec_push(result, priority);
+
+    // Deadline
+    let deadline = (vec_get(payload, 6) << 24) |
+                   (vec_get(payload, 7) << 16) |
+                   (vec_get(payload, 8) << 8) |
+                   vec_get(payload, 9);
+    vec_push(result, deadline);
+
+    // Description length
+    let desc_len = (vec_get(payload, 10) << 8) | vec_get(payload, 11);
+
+    // Description
+    let description = vec_new();
+    let i = 0;
+    while i < desc_len && 12 + i < vec_len(payload) {
+        vec_push(description, vec_get(payload, 12 + i));
+        i = i + 1;
+    }
+    vec_push(result, description);
+
+    result
+}
+
+// QUERY message payload:
+// - Query ID (4 bytes): For response correlation
+// - Query type (1 byte): Type of query
+// - Query data length (2 bytes)
+// - Query data (variable)
+
+fn QUERY_TYPE_BELIEF() -> i64 { 1 }
+fn QUERY_TYPE_GOAL() -> i64 { 2 }
+fn QUERY_TYPE_STATE() -> i64 { 3 }
+fn QUERY_TYPE_CAPABILITY() -> i64 { 4 }
+
+fn query_message_new(query_id: i64, query_type: i64, query_data: i64) -> i64 {
+    let msg = message_new(MSG_QUERY());
+    message_set_correlation_id(msg, query_id);
+    message_set_flags(msg, MSG_FLAG_HAS_CORRELATION() | MSG_FLAG_REQUIRES_ACK());
+
+    let payload = vec_new();
+
+    // Query type (1 byte)
+    vec_push(payload, query_type & 255);
+
+    // Query data length (2 bytes)
+    let data_len = vec_len(query_data);
+    vec_push(payload, (data_len >> 8) & 255);
+    vec_push(payload, data_len & 255);
+
+    // Query data
+    let i = 0;
+    while i < data_len {
+        vec_push(payload, vec_get(query_data, i));
+        i = i + 1;
+    }
+
+    message_set_payload(msg, payload);
+    msg
+}
+
+fn query_message_parse(msg: i64) -> i64 {
+    let payload = message_payload(msg);
+    if vec_len(payload) < 3 {
+        return 0;
+    }
+
+    let result = vec_new();
+
+    // Query type
+    vec_push(result, vec_get(payload, 0));
+
+    // Data length
+    let data_len = (vec_get(payload, 1) << 8) | vec_get(payload, 2);
+
+    // Data
+    let data = vec_new();
+    let i = 0;
+    while i < data_len && 3 + i < vec_len(payload) {
+        vec_push(data, vec_get(payload, 3 + i));
+        i = i + 1;
+    }
+    vec_push(result, data);
+
+    // Include correlation ID from message
+    vec_push(result, message_correlation_id(msg));
+
+    result
+}
+
+// =============================================================================
+// Message Router
+// =============================================================================
+
+// Router State:
+// Slot 0: handlers (vec of handler functions)
+// Slot 1: pending_streams (map of stream_id -> stream_state)
+// Slot 2: pending_queries (map of query_id -> callback)
+// Slot 3: stats
+
+fn msg_router_new() -> i64 {
+    let router = vec_new();
+    vec_push(router, vec_new());   // Slot 0: handlers (up to MSG type count)
+    vec_push(router, vec_new());   // Slot 1: pending_streams
+    vec_push(router, vec_new());   // Slot 2: pending_queries
+    vec_push(router, msg_router_stats_new());  // Slot 3: stats
+    router
+}
+
+fn msg_router_stats_new() -> i64 {
+    let stats = vec_new();
+    vec_push(stats, 0);  // messages_routed
+    vec_push(stats, 0);  // messages_dropped
+    vec_push(stats, 0);  // streams_completed
+    vec_push(stats, 0);  // queries_answered
+    stats
+}
+
+fn msg_router_stats_messages_routed(stats: i64) -> i64 { vec_get(stats, 0) }
+fn msg_router_stats_messages_dropped(stats: i64) -> i64 { vec_get(stats, 1) }
+fn msg_router_stats_streams_completed(stats: i64) -> i64 { vec_get(stats, 2) }
+fn msg_router_stats_queries_answered(stats: i64) -> i64 { vec_get(stats, 3) }
+
+// Get pending streams map
+fn msg_router_pending_streams(router: i64) -> i64 { vec_get(router, 1) }
+
+// Route a message - returns response message or 0
+fn msg_router_dispatch(router: i64, msg: i64) -> i64 {
+    let stats = vec_get(router, 3);
+    let msg_type = message_type(msg);
+
+    // Decompress if needed
+    message_decompress_payload(msg);
+
+    // Handle stream messages specially
+    if msg_type == MSG_STREAM_START() {
+        return msg_router_handle_stream_start(router, msg);
+    }
+    if msg_type == MSG_STREAM_DATA() {
+        return msg_router_handle_stream_data(router, msg);
+    }
+    if msg_type == MSG_STREAM_END() {
+        return msg_router_handle_stream_end(router, msg);
+    }
+
+    // Update stats
+    let routed = vec_get(stats, 0);
+    vec_set(stats, 0, routed + 1);
+
+    // For now, return 0 (no response) for other message types
+    // In a full implementation, we'd dispatch to registered handlers
+    0
+}
+
+fn msg_router_handle_stream_start(router: i64, msg: i64) -> i64 {
+    let stream_id = message_stream_id(msg);
+    let pending = msg_router_pending_streams(router);
+
+    // Create new stream state
+    let state = stream_state_new(stream_id);
+
+    // Parse START payload
+    let payload = message_payload(msg);
+    let parsed = stream_start_payload_parse(payload);
+    if parsed != 0 {
+        let total_chunks = vec_get(parsed, 0);
+        stream_state_set_total(state, total_chunks);
+    }
+
+    // Store in pending streams
+    vec_push(pending, stream_id);
+    vec_push(pending, state);
+
+    0  // No response needed
+}
+
+fn msg_router_handle_stream_data(router: i64, msg: i64) -> i64 {
+    let stream_id = message_stream_id(msg);
+    let pending = msg_router_pending_streams(router);
+
+    // Find stream state
+    let state = msg_router_find_stream(pending, stream_id);
+    if state == 0 {
+        return 0;  // Unknown stream
+    }
+
+    // Handle data
+    let payload = message_payload(msg);
+    stream_handle_data(state, payload);
+
+    0
+}
+
+fn msg_router_handle_stream_end(router: i64, msg: i64) -> i64 {
+    let stream_id = message_stream_id(msg);
+    let pending = msg_router_pending_streams(router);
+    let stats = vec_get(router, 3);
+
+    // Find stream state
+    let state = msg_router_find_stream(pending, stream_id);
+    if state == 0 {
+        return 0;
+    }
+
+    // Handle end
+    let payload = message_payload(msg);
+    let result = stream_handle_end(state, payload);
+
+    if result == ERR_NONE() {
+        // Update stats
+        let completed = vec_get(stats, 2);
+        vec_set(stats, 2, completed + 1);
+    }
+
+    result
+}
+
+fn msg_router_find_stream(pending: i64, stream_id: i64) -> i64 {
+    let len = vec_len(pending);
+    let i = 0;
+    while i < len {
+        if vec_get(pending, i) == stream_id {
+            return vec_get(pending, i + 1);
+        }
+        i = i + 2;  // pairs of (id, state)
+    }
+    0
+}
+
+// =============================================================================
+// Debug/Stats
+// =============================================================================
+
+fn msg_router_print_stats(router: i64) -> i64 {
+    let stats = vec_get(router, 3);
+
+    print("Message Router Stats:\n");
+    print("  Messages routed: ");
+    print_i64(msg_router_stats_messages_routed(stats));
+    print("\n  Messages dropped: ");
+    print_i64(msg_router_stats_messages_dropped(stats));
+    print("\n  Streams completed: ");
+    print_i64(msg_router_stats_streams_completed(stats));
+    print("\n  Queries answered: ");
+    print_i64(msg_router_stats_queries_answered(stats));
+    print("\n");
+
+    0
+}
+
+fn message_type_name(msg_type: i64) -> i64 {
+    if msg_type == MSG_SEND() { print("SEND"); }
+    else if msg_type == MSG_REPLY() { print("REPLY"); }
+    else if msg_type == MSG_STREAM_START() { print("STREAM_START"); }
+    else if msg_type == MSG_STREAM_DATA() { print("STREAM_DATA"); }
+    else if msg_type == MSG_STREAM_END() { print("STREAM_END"); }
+    else if msg_type == MSG_ERROR() { print("ERROR"); }
+    else if msg_type == MSG_BELIEF() { print("BELIEF"); }
+    else if msg_type == MSG_GOAL() { print("GOAL"); }
+    else if msg_type == MSG_INTENTION() { print("INTENTION"); }
+    else if msg_type == MSG_QUERY() { print("QUERY"); }
+    else if msg_type == MSG_OBSERVE() { print("OBSERVE"); }
+    else if msg_type == MSG_SYNC() { print("SYNC"); }
+    else if msg_type == MSG_PING() { print("PING"); }
+    else if msg_type == MSG_PONG() { print("PONG"); }
+    else if msg_type == MSG_FLOW() { print("FLOW"); }
+    else if msg_type == MSG_CLOSE() { print("CLOSE"); }
+    else { print("UNKNOWN"); }
+    0
+}
+
+fn message_print(msg: i64) -> i64 {
+    print("Message {\n");
+    print("  type: ");
+    message_type_name(message_type(msg));
+    print("\n  flags: ");
+    print_i64(message_flags(msg));
+    print("\n  correlation_id: ");
+    print_i64(message_correlation_id(msg));
+    print("\n  stream_id: ");
+    print_i64(message_stream_id(msg));
+    print("\n  payload_len: ");
+    print_i64(vec_len(message_payload(msg)));
+    print("\n}\n");
+    0
+}
+
+// Note: Functions from types.sx are defined in that file
+// Built-in functions: vec_new, vec_push, vec_get, vec_set, vec_len, print, print_i64

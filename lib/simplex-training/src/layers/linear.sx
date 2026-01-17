@@ -1,0 +1,211 @@
+// Linear (fully connected) layer
+//
+// Implements y = xW^T + b with optional bias and automatic differentiation.
+//
+// # Example
+//
+// ```simplex
+// use simplex_training::layers::Linear;
+//
+// // Create linear layer: 64 inputs -> 32 outputs
+// let layer = Linear::new(64, 32, true);
+//
+// let input = DualTensor::randn(&[4, 64]); // batch of 4
+// let output = layer.forward(&input); // [4, 32]
+// ```
+
+use simplex_std::dual;
+use simplex_std::vec::Vec;
+use simplex_learning::tensor::DualTensor;
+
+/// Configuration for linear layer
+#[derive(Clone)]
+pub struct LinearConfig {
+    /// Number of input features
+    pub in_features: usize,
+
+    /// Number of output features
+    pub out_features: usize,
+
+    /// Whether to include bias
+    pub bias: bool,
+
+    /// Weight initialization scale
+    pub init_scale: f64,
+}
+
+impl LinearConfig {
+    pub fn new(in_features: usize, out_features: usize) -> Self {
+        LinearConfig {
+            in_features,
+            out_features,
+            bias: true,
+            init_scale: 1.0 / (in_features as f64).sqrt(),
+        }
+    }
+}
+
+/// Linear (fully connected) layer
+///
+/// Computes y = xW^T + b
+pub struct Linear {
+    /// Weight matrix [out_features, in_features]
+    pub weight: DualTensor,
+
+    /// Bias vector [out_features] (optional)
+    pub bias: Option<DualTensor>,
+
+    /// Input dimension
+    pub in_features: usize,
+
+    /// Output dimension
+    pub out_features: usize,
+}
+
+impl Linear {
+    /// Create new linear layer with random initialization
+    pub fn new(in_features: usize, out_features: usize, bias: bool) -> Self {
+        let config = LinearConfig::new(in_features, out_features);
+
+        // Xavier/Glorot initialization
+        let weight = DualTensor::randn(&[out_features, in_features])
+            .mul_scalar(config.init_scale);
+
+        let bias_tensor = if bias {
+            Some(DualTensor::zeros(&[out_features]))
+        } else {
+            None
+        };
+
+        Linear {
+            weight,
+            bias: bias_tensor,
+            in_features,
+            out_features,
+        }
+    }
+
+    /// Create from configuration
+    pub fn from_config(config: LinearConfig) -> Self {
+        Self::new(config.in_features, config.out_features, config.bias)
+    }
+
+    /// Create with specific weight values
+    pub fn from_weights(weight: DualTensor, bias: Option<DualTensor>) -> Self {
+        let out_features = weight.shape().dims()[0];
+        let in_features = weight.shape().dims()[1];
+
+        Linear {
+            weight,
+            bias,
+            in_features,
+            out_features,
+        }
+    }
+
+    /// Forward pass: y = xW^T + b
+    ///
+    /// Input: [..., in_features]
+    /// Output: [..., out_features]
+    pub fn forward(&self, input: &DualTensor) -> DualTensor {
+        // x @ W^T
+        let output = input.matmul(&self.weight.t());
+
+        // Add bias if present
+        if let Some(ref b) = self.bias {
+            output.add(b)
+        } else {
+            output
+        }
+    }
+
+    /// Get trainable parameters as list of tensors
+    pub fn parameters(&self) -> Vec<&DualTensor> {
+        let mut params = vec![&self.weight];
+        if let Some(ref b) = self.bias {
+            params.push(b);
+        }
+        params
+    }
+
+    /// Get mutable parameters
+    pub fn parameters_mut(&mut self) -> Vec<&mut DualTensor> {
+        let mut params = vec![&mut self.weight];
+        if let Some(ref mut b) = self.bias {
+            params.push(b);
+        }
+        params
+    }
+
+    /// Number of trainable parameters
+    pub fn num_parameters(&self) -> usize {
+        let weight_params = self.in_features * self.out_features;
+        if self.bias.is_some() {
+            weight_params + self.out_features
+        } else {
+            weight_params
+        }
+    }
+
+    /// Reset parameters to random initialization
+    pub fn reset(&mut self) {
+        let scale = 1.0 / (self.in_features as f64).sqrt();
+        self.weight = DualTensor::randn(&[self.out_features, self.in_features])
+            .mul_scalar(scale);
+
+        if let Some(ref mut b) = self.bias {
+            *b = DualTensor::zeros(&[self.out_features]);
+        }
+    }
+
+    /// Clone the layer
+    pub fn clone(&self) -> Self {
+        Linear {
+            weight: self.weight.clone(),
+            bias: self.bias.clone(),
+            in_features: self.in_features,
+            out_features: self.out_features,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_linear_creation() {
+        let layer = Linear::new(64, 32, true);
+
+        assert_eq!(layer.in_features, 64);
+        assert_eq!(layer.out_features, 32);
+        assert!(layer.bias.is_some());
+        assert_eq!(layer.num_parameters(), 64 * 32 + 32);
+    }
+
+    #[test]
+    fn test_linear_no_bias() {
+        let layer = Linear::new(64, 32, false);
+
+        assert!(layer.bias.is_none());
+        assert_eq!(layer.num_parameters(), 64 * 32);
+    }
+
+    #[test]
+    fn test_linear_forward() {
+        let layer = Linear::new(8, 4, true);
+
+        let input = DualTensor::randn(&[2, 8]); // batch of 2
+        let output = layer.forward(&input);
+
+        assert_eq!(output.shape().dims(), &[2, 4]);
+    }
+
+    #[test]
+    fn test_linear_parameters() {
+        let layer = Linear::new(8, 4, true);
+        let params = layer.parameters();
+
+        assert_eq!(params.len(), 2); // weight + bias
+    }
+}

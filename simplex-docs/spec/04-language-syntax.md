@@ -188,18 +188,18 @@ This representation computes both values and derivatives in a single forward pas
 
 ```simplex
 // First-order dual number
-let x: dual = dual::variable(3.0);   // value=3, derivative seed=1
-let c: dual = dual::constant(2.0);   // value=2, derivative=0
+let x: dual = dual::variable(3.0)    // value=3, derivative seed=1
+let c: dual = dual::constant(2.0)    // value=2, derivative=0
 
 // Arithmetic propagates derivatives automatically
-let y = x * x + c * x;               // y.val = 15, y.der = 8 (= 2x + 2)
+let y = x * x + c * x                // y.val = 15, y.der = 8 (= 2x + 2)
 
 // All transcendental functions are differentiable
-let z = x.sin() + x.exp();           // Chain rule applied automatically
+let z = x.sin() + x.exp()            // Chain rule applied automatically
 
 // Access value and derivative
-println(y.val);  // Function value
-println(y.der);  // Derivative at x=3
+print(y.val)  // Function value
+print(y.der)  // Derivative at x=3
 
 // Multi-dimensional gradients
 let dx = multidual::<3>::variable(x, 0);  // ∂/∂x

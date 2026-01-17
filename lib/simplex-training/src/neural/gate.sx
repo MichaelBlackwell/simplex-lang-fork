@@ -1,0 +1,610 @@
+// Dual-mode neural gates for training and inference
+//
+// Gates operate in different modes:
+// - Training: Soft outputs with gradient flow (sigmoid/softmax with temperature)
+// - Inference: Hard binary decisions (deterministic)
+// - Hybrid: Straight-through estimator (hard forward, soft backward)
+//
+// Temperature controls the "sharpness" of decisions:
+// - Low temperature (0.1): Sharp, nearly discrete decisions
+// - High temperature (1.0+): Soft, uncertain decisions
+//
+// # Example
+//
+// ```simplex
+// use simplex_training::neural::{DualGate, GateMode};
+// use simplex::dual;
+//
+// // Create gate with threshold 0.5
+// let mut gate = DualGate::new(0.5);
+//
+// // Training mode with temperature 0.5
+// gate.set_mode(GateMode::Training { temperature: 0.5 });
+// let output = gate.forward(dual::variable(0.7)); // Soft ~0.88
+//
+// // Switch to inference mode
+// gate.set_mode(GateMode::Inference);
+// let output = gate.forward(dual::constant(0.7)); // Hard 1.0
+// ```
+
+use simplex_std::dual;
+use simplex_std::vec::Vec;
+use simplex_std::f64::consts::PI;
+
+/// Neural gate operating mode
+#[derive(Clone, Copy)]
+pub enum GateMode {
+    /// Training: soft outputs with gradients via sigmoid with temperature
+    Training { temperature: f64 },
+
+    /// Inference: hard binary decisions (0 or 1)
+    Inference,
+
+    /// Hybrid: soft gradient flow with hard forward pass
+    /// Uses straight-through estimator for gradient computation
+    Hybrid { temperature: f64 },
+}
+
+impl Default for GateMode {
+    fn default() -> Self {
+        GateMode::Training { temperature: 1.0 }
+    }
+}
+
+/// Dual-mode neural gate
+///
+/// A gate that can operate in training (soft), inference (hard), or hybrid mode.
+/// All parameters are dual numbers for forward-mode automatic differentiation,
+/// enabling meta-gradient computation for schedule learning.
+pub struct DualGate {
+    /// Current operating mode
+    mode: GateMode,
+
+    /// Threshold for gate activation (learnable)
+    threshold: dual,
+
+    /// Temperature for softening (learnable)
+    temperature: dual,
+
+    /// Gate name for debugging
+    name: String,
+}
+
+impl DualGate {
+    /// Create a new dual-mode gate with given threshold
+    pub fn new(threshold: f64) -> Self {
+        DualGate {
+            mode: GateMode::Training { temperature: 1.0 },
+            threshold: dual::variable(threshold),
+            temperature: dual::variable(1.0),
+            name: "gate".to_string(),
+        }
+    }
+
+    /// Create gate with specific name
+    pub fn named(name: &str, threshold: f64) -> Self {
+        DualGate {
+            mode: GateMode::Training { temperature: 1.0 },
+            threshold: dual::variable(threshold),
+            temperature: dual::variable(1.0),
+            name: name.to_string(),
+        }
+    }
+
+    /// Set the operating mode
+    pub fn set_mode(&mut self, mode: GateMode) {
+        self.mode = mode;
+    }
+
+    /// Get the current mode
+    pub fn mode(&self) -> GateMode {
+        self.mode
+    }
+
+    /// Set the threshold
+    pub fn set_threshold(&mut self, threshold: f64) {
+        self.threshold = dual::variable(threshold);
+    }
+
+    /// Get the threshold as dual number
+    pub fn threshold(&self) -> dual {
+        self.threshold
+    }
+
+    /// Set the temperature
+    pub fn set_temperature(&mut self, temperature: f64) {
+        self.temperature = dual::variable(temperature);
+    }
+
+    /// Get the temperature as dual number
+    pub fn temperature(&self) -> dual {
+        self.temperature
+    }
+
+    /// Forward pass through the gate
+    ///
+    /// Returns a dual number representing the gate output:
+    /// - Training: sigmoid((input - threshold) / temperature)
+    /// - Inference: 1.0 if input >= threshold, else 0.0
+    /// - Hybrid: hard value with soft gradient (STE)
+    pub fn forward(&self, input: dual) -> dual {
+        match self.mode {
+            GateMode::Training { temperature } => {
+                // Soft gate: sigmoid with temperature
+                let temp = dual::constant(temperature);
+                let scaled = (input - self.threshold) / temp;
+                scaled.sigmoid()
+            }
+
+            GateMode::Inference => {
+                // Hard gate: binary decision
+                if input.val >= self.threshold.val {
+                    dual::constant(1.0)
+                } else {
+                    dual::constant(0.0)
+                }
+            }
+
+            GateMode::Hybrid { temperature } => {
+                // Straight-through estimator:
+                // Forward: hard decision
+                // Backward: soft gradient (as if we used sigmoid)
+                let temp = dual::constant(temperature);
+                let soft = ((input - self.threshold) / temp).sigmoid();
+                let hard = if input.val >= self.threshold.val { 1.0 } else { 0.0 };
+
+                // Create dual with hard value but soft derivative
+                dual::new(hard, soft.der)
+            }
+        }
+    }
+
+    /// Forward pass with explicit temperature override
+    pub fn forward_with_temp(&self, input: dual, temperature: f64) -> dual {
+        let temp = dual::constant(temperature);
+        let scaled = (input - self.threshold) / temp;
+        scaled.sigmoid()
+    }
+
+    /// Batch forward pass
+    pub fn forward_batch(&self, inputs: &[dual]) -> Vec<dual> {
+        inputs.iter().map(|&x| self.forward(x)).collect()
+    }
+
+    /// Get trainable parameters
+    pub fn parameters(&self) -> Vec<dual> {
+        vec![self.threshold, self.temperature]
+    }
+
+    /// Update parameters with gradients
+    pub fn update(&mut self, learning_rate: f64) {
+        // Update threshold using its gradient
+        self.threshold = dual::variable(
+            self.threshold.val - learning_rate * self.threshold.der
+        );
+
+        // Update temperature (keep positive via exp)
+        let new_temp = (self.temperature.val.ln() - learning_rate * self.temperature.der).exp();
+        self.temperature = dual::variable(new_temp.max(0.01)); // Minimum temperature
+    }
+}
+
+/// Gumbel-Softmax for differentiable categorical sampling
+///
+/// Enables gradient flow through discrete categorical choices by
+/// using the Gumbel-Softmax reparameterization trick.
+///
+/// Reference: "Categorical Reparameterization with Gumbel-Softmax"
+/// https://arxiv.org/abs/1611.01144
+pub struct GumbelSoftmax {
+    /// Temperature for Gumbel-Softmax
+    temperature: dual,
+
+    /// Random state for Gumbel noise
+    rng_state: u64,
+
+    /// Whether to use hard samples with straight-through
+    hard: bool,
+}
+
+impl GumbelSoftmax {
+    /// Create new Gumbel-Softmax layer
+    pub fn new(temperature: f64) -> Self {
+        GumbelSoftmax {
+            temperature: dual::variable(temperature),
+            rng_state: 0x123456789ABCDEF0,
+            hard: false,
+        }
+    }
+
+    /// Create with hard sampling (straight-through)
+    pub fn hard(temperature: f64) -> Self {
+        GumbelSoftmax {
+            temperature: dual::variable(temperature),
+            rng_state: 0x123456789ABCDEF0,
+            hard: true,
+        }
+    }
+
+    /// Set temperature
+    pub fn set_temperature(&mut self, temperature: f64) {
+        self.temperature = dual::variable(temperature);
+    }
+
+    /// Sample Gumbel noise: -log(-log(U)) where U ~ Uniform(0, 1)
+    fn sample_gumbel(&mut self) -> f64 {
+        let u = self.rand_uniform();
+        -(-u.ln()).ln()
+    }
+
+    /// Generate uniform random in (0, 1) using xorshift
+    fn rand_uniform(&mut self) -> f64 {
+        let mut x = self.rng_state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.rng_state = x;
+
+        // Map to (0, 1), avoiding exact 0 and 1
+        let eps = 1e-10;
+        eps + (1.0 - 2.0 * eps) * (x as f64) / (u64::MAX as f64)
+    }
+
+    /// Seed the random number generator
+    pub fn seed(&mut self, seed: u64) {
+        self.rng_state = if seed == 0 { 1 } else { seed };
+    }
+
+    /// Forward pass: Gumbel-Softmax sampling
+    ///
+    /// Takes logits and returns soft (or hard with STE) categorical samples.
+    /// Shape: [batch_size, num_categories] or [num_categories]
+    pub fn forward(&mut self, logits: &[dual]) -> Vec<dual> {
+        let n = logits.len();
+
+        // Add Gumbel noise to logits
+        let mut perturbed: Vec<dual> = Vec::with_capacity(n);
+        for i in 0..n {
+            let gumbel = self.sample_gumbel();
+            perturbed.push(logits[i] + dual::constant(gumbel));
+        }
+
+        // Apply softmax with temperature
+        let soft = self.softmax_with_temp(&perturbed, self.temperature.val);
+
+        if self.hard {
+            // Hard samples with straight-through gradient
+            let argmax = self.argmax(&soft);
+            let mut result = Vec::with_capacity(n);
+            for i in 0..n {
+                let hard_val = if i == argmax { 1.0 } else { 0.0 };
+                // Straight-through: hard forward, soft gradient
+                result.push(dual::new(hard_val, soft[i].der));
+            }
+            result
+        } else {
+            soft
+        }
+    }
+
+    /// Softmax with temperature
+    fn softmax_with_temp(&self, x: &[dual], temperature: f64) -> Vec<dual> {
+        let n = x.len();
+
+        // Find max for numerical stability
+        let max_val = x.iter().map(|d| d.val).fold(f64::NEG_INFINITY, f64::max);
+
+        // Compute exp((x - max) / temperature)
+        let mut exps: Vec<dual> = Vec::with_capacity(n);
+        for i in 0..n {
+            let scaled = (x[i] - dual::constant(max_val)) / dual::constant(temperature);
+            exps.push(scaled.exp());
+        }
+
+        // Sum of exponentials
+        let sum_exp: dual = exps.iter().fold(dual::constant(0.0), |acc, &x| acc + x);
+
+        // Normalize
+        exps.iter().map(|&e| e / sum_exp).collect()
+    }
+
+    /// Find index of maximum value
+    fn argmax(&self, x: &[dual]) -> usize {
+        let mut max_idx = 0;
+        let mut max_val = f64::NEG_INFINITY;
+
+        for (i, d) in x.iter().enumerate() {
+            if d.val > max_val {
+                max_val = d.val;
+                max_idx = i;
+            }
+        }
+
+        max_idx
+    }
+
+    /// Get temperature parameter
+    pub fn temperature(&self) -> dual {
+        self.temperature
+    }
+}
+
+/// Straight-through estimator for binary decisions
+///
+/// In forward pass: hard thresholding
+/// In backward pass: identity gradient (gradient flows through as-is)
+///
+/// Useful for training networks with discrete decisions while maintaining
+/// gradient flow.
+pub struct StraightThroughEstimator {
+    /// Threshold for binarization
+    threshold: f64,
+}
+
+impl StraightThroughEstimator {
+    /// Create new STE with given threshold (default 0.5)
+    pub fn new(threshold: f64) -> Self {
+        StraightThroughEstimator { threshold }
+    }
+
+    /// Forward pass with straight-through gradient
+    pub fn forward(&self, input: dual) -> dual {
+        // Hard binarization for forward
+        let hard_val = if input.val >= self.threshold { 1.0 } else { 0.0 };
+
+        // Keep derivative from input (straight-through)
+        dual::new(hard_val, input.der)
+    }
+
+    /// Batch forward
+    pub fn forward_batch(&self, inputs: &[dual]) -> Vec<dual> {
+        inputs.iter().map(|&x| self.forward(x)).collect()
+    }
+
+    /// Forward with explicit output values
+    ///
+    /// Useful for multi-class where you want different hard values.
+    pub fn forward_with_values(&self, input: dual, low: f64, high: f64) -> dual {
+        let hard_val = if input.val >= self.threshold { high } else { low };
+        dual::new(hard_val, input.der)
+    }
+}
+
+/// Multi-gate for routing to multiple specialists
+///
+/// Implements a soft router that learns to dispatch inputs to appropriate
+/// specialists. Can operate in soft (mixture of experts) or hard (top-k) mode.
+pub struct MultiGate {
+    /// Number of experts/specialists
+    num_experts: usize,
+
+    /// Gating weights [input_dim, num_experts]
+    gate_weights: Vec<dual>,
+
+    /// Input dimension
+    input_dim: usize,
+
+    /// Temperature for softmax
+    temperature: dual,
+
+    /// Top-k for sparse routing (0 = soft routing)
+    top_k: usize,
+
+    /// Operating mode
+    mode: GateMode,
+}
+
+impl MultiGate {
+    /// Create new multi-gate router
+    pub fn new(input_dim: usize, num_experts: usize) -> Self {
+        // Initialize weights with small random values
+        let mut weights = Vec::with_capacity(input_dim * num_experts);
+        let scale = 1.0 / (input_dim as f64).sqrt();
+
+        for _ in 0..(input_dim * num_experts) {
+            // Simple initialization (would use proper RNG in production)
+            weights.push(dual::variable(scale * 0.1));
+        }
+
+        MultiGate {
+            num_experts,
+            gate_weights: weights,
+            input_dim,
+            temperature: dual::variable(1.0),
+            top_k: 0, // Soft routing by default
+            mode: GateMode::Training { temperature: 1.0 },
+        }
+    }
+
+    /// Set top-k for sparse routing
+    pub fn set_top_k(&mut self, k: usize) {
+        self.top_k = k.min(self.num_experts);
+    }
+
+    /// Set temperature
+    pub fn set_temperature(&mut self, temperature: f64) {
+        self.temperature = dual::variable(temperature);
+    }
+
+    /// Set operating mode
+    pub fn set_mode(&mut self, mode: GateMode) {
+        self.mode = mode;
+    }
+
+    /// Forward pass: compute routing weights
+    ///
+    /// Input: [input_dim] vector
+    /// Output: [num_experts] routing weights (sum to 1)
+    pub fn forward(&self, input: &[dual]) -> Vec<dual> {
+        assert_eq!(input.len(), self.input_dim);
+
+        // Compute logits: input @ gate_weights
+        let mut logits: Vec<dual> = Vec::with_capacity(self.num_experts);
+
+        for e in 0..self.num_experts {
+            let mut sum = dual::constant(0.0);
+            for i in 0..self.input_dim {
+                let w_idx = i * self.num_experts + e;
+                sum = sum + input[i] * self.gate_weights[w_idx];
+            }
+            logits.push(sum);
+        }
+
+        // Apply temperature and softmax
+        let temp = match self.mode {
+            GateMode::Training { temperature } => temperature,
+            GateMode::Hybrid { temperature } => temperature,
+            GateMode::Inference => 0.01, // Nearly hard
+        };
+
+        self.softmax_with_temp(&logits, temp)
+    }
+
+    /// Softmax with temperature
+    fn softmax_with_temp(&self, x: &[dual], temperature: f64) -> Vec<dual> {
+        let n = x.len();
+
+        // Find max for stability
+        let max_val = x.iter().map(|d| d.val).fold(f64::NEG_INFINITY, f64::max);
+
+        // Compute exp
+        let mut exps: Vec<dual> = Vec::with_capacity(n);
+        for i in 0..n {
+            let scaled = (x[i] - dual::constant(max_val)) / dual::constant(temperature);
+            exps.push(scaled.exp());
+        }
+
+        // Sum
+        let sum_exp: dual = exps.iter().fold(dual::constant(0.0), |acc, &e| acc + e);
+
+        // Normalize
+        let mut result: Vec<dual> = exps.iter().map(|&e| e / sum_exp).collect();
+
+        // Apply top-k masking if specified
+        if self.top_k > 0 && self.top_k < n {
+            // Find top-k indices
+            let mut indices: Vec<(usize, f64)> = result.iter()
+                .enumerate()
+                .map(|(i, d)| (i, d.val))
+                .collect();
+            indices.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+            // Zero out non-top-k
+            let top_k_indices: std::collections::HashSet<usize> =
+                indices.iter().take(self.top_k).map(|(i, _)| *i).collect();
+
+            for i in 0..n {
+                if !top_k_indices.contains(&i) {
+                    result[i] = dual::constant(0.0);
+                }
+            }
+
+            // Renormalize
+            let new_sum: dual = result.iter().fold(dual::constant(0.0), |acc, &x| acc + x);
+            if new_sum.val > 1e-10 {
+                result = result.iter().map(|&x| x / new_sum).collect();
+            }
+        }
+
+        result
+    }
+
+    /// Get trainable parameters
+    pub fn parameters(&self) -> &[dual] {
+        &self.gate_weights
+    }
+
+    /// Update parameters with learning rate
+    pub fn update(&mut self, gradients: &[f64], learning_rate: f64) {
+        for (i, grad) in gradients.iter().enumerate() {
+            if i < self.gate_weights.len() {
+                let new_val = self.gate_weights[i].val - learning_rate * grad;
+                self.gate_weights[i] = dual::variable(new_val);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dual_gate_training() {
+        let gate = DualGate::new(0.5);
+
+        // Input above threshold should give high output
+        let output = gate.forward(dual::variable(0.8));
+        assert!(output.val > 0.5);
+
+        // Input below threshold should give low output
+        let output = gate.forward(dual::variable(0.2));
+        assert!(output.val < 0.5);
+    }
+
+    #[test]
+    fn test_dual_gate_inference() {
+        let mut gate = DualGate::new(0.5);
+        gate.set_mode(GateMode::Inference);
+
+        // Hard decisions
+        let output = gate.forward(dual::constant(0.8));
+        assert_eq!(output.val, 1.0);
+
+        let output = gate.forward(dual::constant(0.2));
+        assert_eq!(output.val, 0.0);
+    }
+
+    #[test]
+    fn test_gumbel_softmax() {
+        let mut gs = GumbelSoftmax::new(1.0);
+        gs.seed(42);
+
+        let logits = vec![
+            dual::constant(1.0),
+            dual::constant(2.0),
+            dual::constant(0.5),
+        ];
+
+        let output = gs.forward(&logits);
+
+        // Should sum to ~1
+        let sum: f64 = output.iter().map(|d| d.val).sum();
+        assert!((sum - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_straight_through() {
+        let ste = StraightThroughEstimator::new(0.5);
+
+        // Test with gradient
+        let input = dual::new(0.7, 1.0);
+        let output = ste.forward(input);
+
+        // Hard forward
+        assert_eq!(output.val, 1.0);
+        // Gradient flows through
+        assert_eq!(output.der, 1.0);
+    }
+
+    #[test]
+    fn test_multi_gate() {
+        let gate = MultiGate::new(4, 3);
+
+        let input = vec![
+            dual::constant(0.1),
+            dual::constant(0.2),
+            dual::constant(0.3),
+            dual::constant(0.4),
+        ];
+
+        let weights = gate.forward(&input);
+
+        // Should sum to 1
+        let sum: f64 = weights.iter().map(|d| d.val).sum();
+        assert!((sum - 1.0).abs() < 0.01);
+
+        // Should have 3 outputs
+        assert_eq!(weights.len(), 3);
+    }
+}

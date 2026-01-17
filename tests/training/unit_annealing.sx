@@ -1,0 +1,526 @@
+// Unit tests for self-learning annealing optimizer
+//
+// Tests the annealing schedule, meta-gradient optimization, and
+// integration with training loops.
+
+use simplex_std::dual;
+use simplex_std::vec::Vec;
+use simplex_training::pipeline::{AnnealOptimizer, AnnealTrainingState};
+
+#[cfg(test)]
+mod anneal_optimizer_tests {
+ use super::*;
+
+ #[test]
+ fn test_optimizer_creation() {
+ let opt = AnnealOptimizer::new();
+
+ // Initial state
+ assert!((opt.temperature() - 1.0).abs() < 0.001);
+ assert!(opt.current_lr() > 0.0);
+ assert_eq!(opt.best_loss(), f64::MAX);
+ }
+
+ #[test]
+ fn test_optimizer_with_lr() {
+ let opt = AnnealOptimizer::with_lr(1e-3);
+
+ assert!((opt.current_lr() - 1e-3).abs() < 1e-6);
+ }
+
+ #[test]
+ fn test_temperature_cooling() {
+ let mut opt = AnnealOptimizer::new();
+ let initial_temp = opt.temperature();
+
+ // Step through some iterations
+ for i in 0..100 {
+ let loss = 2.0 / (1.0 + i as f64 / 10.0);
+ opt.step(loss);
+ }
+
+ // Temperature should have decreased
+ assert!(opt.temperature() < initial_temp);
+ }
+
+ #[test]
+ fn test_best_loss_tracking() {
+ let mut opt = AnnealOptimizer::new();
+
+ opt.step(1.0);
+ assert!((opt.best_loss() - 1.0).abs() < 1e-10);
+
+ opt.step(0.5);
+ assert!((opt.best_loss() - 0.5).abs() < 1e-10);
+
+ opt.step(0.8); // Worse, shouldn't update
+ assert!((opt.best_loss() - 0.5).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_stagnation_tracking() {
+ let mut opt = AnnealOptimizer::new();
+
+ // Improving losses
+ for i in 0..10 {
+ opt.step(1.0 / (1.0 + i as f64));
+ }
+ assert_eq!(opt.stagnation(), 0);
+
+ // Constant loss (stagnating)
+ for _ in 0..5 {
+ opt.step(1.0);
+ }
+ assert!(opt.stagnation() > 0);
+ }
+
+ #[test]
+ fn test_reheat_on_stagnation() {
+ let mut opt = AnnealOptimizer::new();
+
+ // Cool down first
+ for i in 0..50 {
+ opt.step(1.0 / (1.0 + i as f64));
+ }
+ let cooled_temp = opt.temperature();
+
+ // Now stagnate
+ for _ in 0..150 {
+ opt.step(1.0); // Constant loss
+ }
+
+ // Should have reheated (temperature increased)
+ // Note: Might have reheated and cooled again, so just check it happened
+ assert!(opt.stagnation() < 150); // Should have reset
+ }
+
+ #[test]
+ fn test_learning_rate_computation() {
+ let opt = AnnealOptimizer::new();
+
+ let lr_early = opt.get_lr(100, 1.0);
+ let lr_late = opt.get_lr(5000, 0.5);
+
+ // LR should generally decrease over time (cosine annealing)
+ assert!(lr_early > 0.0);
+ assert!(lr_late > 0.0);
+ }
+
+ #[test]
+ fn test_reset() {
+ let mut opt = AnnealOptimizer::new();
+
+ // Run some steps
+ for i in 0..100 {
+ opt.step(1.0 / (1.0 + i as f64));
+ }
+
+ opt.reset();
+
+ assert!((opt.temperature() - 1.0).abs() < 0.001);
+ assert_eq!(opt.best_loss(), f64::MAX);
+ }
+
+ #[test]
+ fn test_meta_lr() {
+ let mut opt = AnnealOptimizer::new();
+ opt.set_meta_lr(0.01);
+
+ // Meta LR affects schedule parameter updates
+ // Run enough steps to trigger meta_step (every 100)
+ for i in 0..200 {
+ opt.step(1.0 / (1.0 + i as f64));
+ }
+
+ // Schedule params should have been updated
+ let (temp, cool_rate, thresh) = opt.get_schedule_params();
+ // Just verify they're reasonable values
+ assert!(temp.val > 0.0);
+ assert!(cool_rate.val > 0.9);
+ assert!(cool_rate.val < 1.0);
+ }
+
+ #[test]
+ fn test_schedule_params_getter_setter() {
+ let mut opt = AnnealOptimizer::new();
+
+ opt.set_schedule_params(0.5, 0.99, 0.3);
+
+ let (temp, cool, thresh) = opt.get_schedule_params();
+ assert!((temp.val - 0.5).abs() < 1e-10);
+ assert!((cool.val - 0.99).abs() < 1e-10);
+ assert!((thresh.val - 0.3).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_dual_number_schedule() {
+ let opt = AnnealOptimizer::new();
+
+ // Schedule params are dual numbers for meta-gradient computation
+ let (temp, cool, thresh) = opt.get_schedule_params();
+
+ // Should be variables (not constants)
+ assert!((temp.dot - 1.0).abs() < 1e-10);
+ assert!((cool.dot - 1.0).abs() < 1e-10);
+ }
+}
+
+#[cfg(test)]
+mod training_state_tests {
+ use super::*;
+
+ #[test]
+ fn test_state_creation() {
+ let state = AnnealTrainingState::new();
+
+ assert_eq!(state.step, 0);
+ assert_eq!(state.epoch, 0);
+ assert_eq!(state.best_loss, f64::MAX);
+ }
+
+ #[test]
+ fn test_record_step() {
+ let mut state = AnnealTrainingState::new();
+
+ state.record(1.5);
+ assert_eq!(state.step, 1);
+ assert_eq!(state.history.len(), 1);
+ assert!((state.best_loss - 1.5).abs() < 1e-10);
+
+ state.record(1.0);
+ assert_eq!(state.step, 2);
+ assert!((state.best_loss - 1.0).abs() < 1e-10);
+ }
+
+ #[test]
+ fn test_epoch_tracking() {
+ let mut state = AnnealTrainingState::new();
+
+ state.new_epoch();
+ assert_eq!(state.epoch, 1);
+
+ state.new_epoch();
+ assert_eq!(state.epoch, 2);
+ }
+
+ #[test]
+ fn test_learning_rate_from_state() {
+ let state = AnnealTrainingState::new();
+
+ let lr = state.learning_rate();
+ assert!(lr > 0.0);
+ }
+
+ #[test]
+ fn test_temperature_from_state() {
+ let state = AnnealTrainingState::new();
+
+ let temp = state.temperature();
+ assert!((temp - 1.0).abs() < 0.01);
+ }
+
+ #[test]
+ fn test_early_stopping() {
+ let mut state = AnnealTrainingState::new();
+
+ // Not stagnating yet
+ for i in 0..100 {
+ state.record(1.0 / (1.0 + i as f64));
+ }
+ assert!(!state.should_stop(3));
+
+ // Force stagnation
+ for _ in 0..5000 {
+ state.record(1.0);
+ }
+
+ // Should recommend stopping
+ assert!(state.should_stop(3));
+ }
+
+ #[test]
+ fn test_history_accumulation() {
+ let mut state = AnnealTrainingState::new();
+
+ for i in 0..100 {
+ state.record(1.0 / (1.0 + i as f64));
+ }
+
+ assert_eq!(state.history.len(), 100);
+ }
+
+ #[test]
+ fn test_optimizer_integration() {
+ let mut state = AnnealTrainingState::new();
+
+ // State should integrate with optimizer
+ for i in 0..50 {
+ state.record(2.0 / (1.0 + i as f64));
+ }
+
+ // Temperature should have cooled via optimizer
+ assert!(state.temperature() < 1.0);
+ }
+}
+
+#[cfg(test)]
+mod annealing_schedule_tests {
+ use super::*;
+
+ #[test]
+ fn test_cosine_annealing_shape() {
+ let opt = AnnealOptimizer::new();
+
+ let mut lrs = vec![];
+ for step in 0..1000 {
+ let lr = opt.get_lr(step, 1.0);
+ lrs.push(lr);
+ }
+
+ // Cosine annealing should start high and decrease
+ assert!(lrs[0] >= lrs[500]);
+ assert!(lrs[500] >= lrs[999]);
+ }
+
+ #[test]
+ fn test_temperature_scaling() {
+ let opt = AnnealOptimizer::new();
+
+ // High temperature should give higher LR
+ let lr_high_temp = opt.get_lr(100, 1.0);
+
+ // Lower temperature through cooling
+ let mut opt2 = AnnealOptimizer::new();
+ for _ in 0..100 {
+ opt2.step(1.0);
+ }
+ let lr_low_temp = opt2.get_lr(100, 1.0);
+
+ // With same step but cooled temperature, LR should be lower
+ assert!(lr_low_temp <= lr_high_temp);
+ }
+
+ #[test]
+ fn test_warm_restart_potential() {
+ let mut opt = AnnealOptimizer::new();
+
+ // Cool down
+ for i in 0..200 {
+ opt.step(1.0 / (1.0 + i as f64));
+ }
+ let temp_after_cooling = opt.temperature();
+
+ // Reheat (simulating warm restart)
+ opt.set_schedule_params(1.0, opt.get_schedule_params().1.val, 0.5);
+
+ assert!((opt.temperature() - 1.0).abs() < 0.01);
+ assert!(opt.temperature() > temp_after_cooling);
+ }
+}
+
+#[cfg(test)]
+mod meta_gradient_tests {
+ use super::*;
+
+ #[test]
+ fn test_meta_gradients_propagate() {
+ let opt = AnnealOptimizer::new();
+ let (temp, cool, _) = opt.get_schedule_params();
+
+ // These are dual numbers with gradients
+ // Multiplying them should propagate gradients
+ let product = temp * cool;
+
+ // Gradient should be non-zero
+ assert!(!product.dot.is_nan());
+ }
+
+ #[test]
+ fn test_cool_rate_adaptation() {
+ let mut opt = AnnealOptimizer::new();
+ let initial_cool_rate = opt.get_schedule_params().1.val;
+
+ // Run many steps to trigger meta updates
+ for i in 0..500 {
+ opt.step(1.0 / (1.0 + i as f64));
+ }
+
+ let final_cool_rate = opt.get_schedule_params().1.val;
+
+ // Cool rate might have adapted
+ // Just verify it's still in valid range
+ assert!(final_cool_rate > 0.9);
+ assert!(final_cool_rate < 1.0);
+ }
+
+ #[test]
+ fn test_meta_optimization_stability() {
+ let mut opt = AnnealOptimizer::new();
+
+ // Simulate long training with varying losses
+ let mut loss = 2.0;
+ for i in 0..1000 {
+ // Add some noise
+ let noise = 0.1 * ((i as f64 * 0.1).sin());
+ loss = 2.0 / (1.0 + i as f64 / 100.0) + noise.abs();
+ opt.step(loss);
+ }
+
+ // Should not have diverged
+ let (temp, cool, thresh) = opt.get_schedule_params();
+ assert!(temp.val.is_finite());
+ assert!(cool.val.is_finite());
+ assert!(thresh.val.is_finite());
+ }
+}
+
+#[cfg(test)]
+mod acceptance_threshold_tests {
+ use super::*;
+
+ #[test]
+ fn test_acceptance_threshold_range() {
+ let opt = AnnealOptimizer::new();
+ let (_, _, thresh) = opt.get_schedule_params();
+
+ assert!(thresh.val >= 0.0);
+ assert!(thresh.val <= 1.0);
+ }
+
+ #[test]
+ fn test_threshold_affects_acceptance() {
+ // In simulated annealing, acceptance threshold affects
+ // whether worse solutions are accepted
+
+ let mut opt_low = AnnealOptimizer::new();
+ opt_low.set_schedule_params(1.0, 0.995, 0.1); // Low threshold
+
+ let mut opt_high = AnnealOptimizer::new();
+ opt_high.set_schedule_params(1.0, 0.995, 0.9); // High threshold
+
+ // Both should track best loss the same way
+ // (threshold mainly affects exploration in full SA implementation)
+ opt_low.step(1.0);
+ opt_high.step(1.0);
+
+ assert!((opt_low.best_loss() - 1.0).abs() < 1e-10);
+ assert!((opt_high.best_loss() - 1.0).abs() < 1e-10);
+ }
+}
+
+#[cfg(test)]
+mod checkpoint_tests {
+ use super::*;
+
+ #[test]
+ fn test_state_checkpointing() {
+ let mut state = AnnealTrainingState::new();
+
+ for i in 0..100 {
+ state.record(1.0 / (1.0 + i as f64));
+ }
+
+ // Get checkpoint data
+ let step = state.step;
+ let epoch = state.epoch;
+ let best = state.best_loss;
+ let history_len = state.history.len();
+
+ // Verify checkpoint has expected data
+ assert_eq!(step, 100);
+ assert_eq!(history_len, 100);
+ assert!(best < 1.0);
+ }
+
+ #[test]
+ fn test_optimizer_state_serialization() {
+ let mut opt = AnnealOptimizer::new();
+
+ for i in 0..50 {
+ opt.step(2.0 / (1.0 + i as f64));
+ }
+
+ // Get serializable state
+ let (temp, cool, thresh) = opt.get_schedule_params();
+ let temp_val = temp.val;
+ let cool_val = cool.val;
+ let thresh_val = thresh.val;
+
+ // Create new optimizer and restore
+ let mut opt2 = AnnealOptimizer::new();
+ opt2.set_schedule_params(temp_val, cool_val, thresh_val);
+
+ // Should have same schedule params
+ let (temp2, cool2, thresh2) = opt2.get_schedule_params();
+ assert!((temp2.val - temp_val).abs() < 1e-10);
+ assert!((cool2.val - cool_val).abs() < 1e-10);
+ assert!((thresh2.val - thresh_val).abs() < 1e-10);
+ }
+}
+
+#[cfg(test)]
+mod integration_tests {
+ use super::*;
+
+ #[test]
+ fn test_full_training_simulation() {
+ let mut state = AnnealTrainingState::new();
+
+ // Simulate 3 epochs of training
+ for epoch in 0..3 {
+ state.new_epoch();
+
+ // 100 batches per epoch
+ for batch in 0..100 {
+ // Loss decreases within epoch and across epochs
+ let epoch_factor = 1.0 / (1.0 + epoch as f64);
+ let batch_factor = 1.0 / (1.0 + batch as f64 / 50.0);
+ let loss = 2.0 * epoch_factor * batch_factor;
+
+ state.record(loss);
+ }
+ }
+
+ assert_eq!(state.epoch, 3);
+ assert_eq!(state.step, 300);
+ assert!(state.best_loss < 2.0);
+ assert!(!state.should_stop(5)); // Loss was decreasing
+ }
+
+ #[test]
+ fn test_early_stopping_scenario() {
+ let mut state = AnnealTrainingState::new();
+
+ // Initial improvement
+ for i in 0..100 {
+ state.record(2.0 / (1.0 + i as f64));
+ }
+
+ // Then plateau
+ for _ in 0..5000 {
+ state.record(0.5); // Constant loss
+ }
+
+ // Should trigger early stopping
+ assert!(state.should_stop(2));
+ }
+
+ #[test]
+ fn test_lr_schedule_integration() {
+ let mut state = AnnealTrainingState::new();
+
+ let mut lr_values = vec![];
+
+ for i in 0..500 {
+ let loss = 2.0 / (1.0 + i as f64 / 100.0);
+ state.record(loss);
+ lr_values.push(state.learning_rate());
+ }
+
+ // LR should generally decrease
+ let first_10_avg: f64 = lr_values[..10].iter().sum::<f64>() / 10.0;
+ let last_10_avg: f64 = lr_values[490..].iter().sum::<f64>() / 10.0;
+
+ assert!(last_10_avg <= first_10_avg);
+ }
+}

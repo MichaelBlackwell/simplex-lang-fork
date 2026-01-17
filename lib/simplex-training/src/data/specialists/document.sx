@@ -1,0 +1,281 @@
+// Document extraction data generator
+//
+// Generates synthetic documents and extraction tasks for training
+// document processing specialists.
+
+use simplex_std::vec::Vec;
+use simplex_std::string::String;
+use super::super::generator::{DataGenerator, TrainingExample, ExampleMetadata, Rng, WordLists};
+use super::super::super::SpecialistDomain;
+
+/// Generator for document extraction training data
+pub struct DocumentGenerator {
+    /// Random number generator
+    rng: Rng,
+
+    /// Company names
+    companies: Vec<String>,
+
+    /// Document types
+    doc_types: Vec<String>,
+
+    /// Name pool
+    names: Vec<String>,
+
+    /// Generator name
+    name: String,
+}
+
+impl DocumentGenerator {
+    /// Create new document generator
+    pub fn new() -> Self {
+        DocumentGenerator {
+            rng: Rng::new(42),
+            companies: WordLists::companies().iter().map(|s| s.to_string()).collect(),
+            doc_types: WordLists::document_types().iter().map(|s| s.to_string()).collect(),
+            names: WordLists::names().iter().map(|s| s.to_string()).collect(),
+            name: "document_generator".to_string(),
+        }
+    }
+
+    /// Generate invoice document
+    fn generate_invoice(&mut self) -> TrainingExample {
+        let company = self.rng.choice_clone(&self.companies);
+        let date = self.rng.date();
+        let invoice_num = format!("INV-{:06}", self.rng.int_range(1000, 999999));
+        let amount = self.rng.float_range(100.0, 50000.0);
+        let tax = amount * 0.08;
+        let total = amount + tax;
+
+        let prompt = format!(
+            "<document type=\"invoice\">\n\
+             INVOICE #{}\n\
+             Company: {}\n\
+             Date: {}\n\
+             \n\
+             Items:\n\
+             - Professional Services: ${:.2}\n\
+             - Tax (8%): ${:.2}\n\
+             \n\
+             Total Due: ${:.2}\n\
+             Payment Terms: Net 30\n\
+             </document>\n\n\
+             Extract all structured data from this invoice.",
+            invoice_num, company, date, amount, tax, total
+        );
+
+        let response = format!(
+            "**Extracted Invoice Data:**\n\n\
+             | Field | Value |\n\
+             |-------|-------|\n\
+             | Document Type | Invoice |\n\
+             | Invoice Number | {} |\n\
+             | Company | {} |\n\
+             | Date | {} |\n\
+             | Subtotal | ${:.2} |\n\
+             | Tax Rate | 8% |\n\
+             | Tax Amount | ${:.2} |\n\
+             | Total | ${:.2} |\n\
+             | Payment Terms | Net 30 |\n\n\
+             [confidence: 0.94]",
+            invoice_num, company, date, amount, tax, total
+        );
+
+        TrainingExample {
+            prompt,
+            response,
+            metadata: ExampleMetadata {
+                domain: "document_extraction".to_string(),
+                confidence_target: 0.94,
+                source: "synthetic".to_string(),
+                difficulty: 0.4,
+                quality: 1.0,
+                tags: vec!["invoice".to_string(), "extraction".to_string()],
+            },
+        }
+    }
+
+    /// Generate receipt document
+    fn generate_receipt(&mut self) -> TrainingExample {
+        let company = self.rng.choice_clone(&self.companies);
+        let date = self.rng.date();
+        let num_items = self.rng.int_range(2, 6) as usize;
+
+        let items: Vec<(String, f64)> = (0..num_items)
+            .map(|i| {
+                let item_name = format!("Item {}", i + 1);
+                let price = self.rng.float_range(5.0, 100.0);
+                (item_name, price)
+            })
+            .collect();
+
+        let subtotal: f64 = items.iter().map(|(_, p)| p).sum();
+        let tax = subtotal * 0.08;
+        let total = subtotal + tax;
+
+        let items_text: String = items
+            .iter()
+            .map(|(name, price)| format!("  - {}: ${:.2}", name, price))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let prompt = format!(
+            "<document type=\"receipt\">\n\
+             {}\n\
+             Date: {}\n\
+             \n\
+             Items:\n\
+             {}\n\
+             \n\
+             Subtotal: ${:.2}\n\
+             Tax: ${:.2}\n\
+             Total: ${:.2}\n\
+             </document>\n\n\
+             Extract all information from this receipt.",
+            company, date, items_text, subtotal, tax, total
+        );
+
+        let response = format!(
+            "**Receipt Extraction:**\n\n\
+             - Store: {}\n\
+             - Date: {}\n\
+             - Items: {} items\n\
+             - Subtotal: ${:.2}\n\
+             - Tax: ${:.2}\n\
+             - Total: ${:.2}\n\n\
+             [confidence: 0.92]",
+            company, date, num_items, subtotal, tax, total
+        );
+
+        TrainingExample {
+            prompt,
+            response,
+            metadata: ExampleMetadata {
+                domain: "document_extraction".to_string(),
+                confidence_target: 0.92,
+                source: "synthetic".to_string(),
+                difficulty: 0.3,
+                quality: 1.0,
+                tags: vec!["receipt".to_string()],
+            },
+        }
+    }
+
+    /// Generate contract document
+    fn generate_contract(&mut self) -> TrainingExample {
+        let company1 = self.rng.choice_clone(&self.companies);
+        let company2 = self.rng.choice_clone(&self.companies);
+        let date = self.rng.date();
+        let contract_value = self.rng.float_range(10000.0, 500000.0);
+        let term_months = self.rng.int_range(6, 36);
+
+        let prompt = format!(
+            "<document type=\"contract\">\n\
+             SERVICE AGREEMENT\n\n\
+             This agreement is entered into on {} between:\n\
+             Party A: {}\n\
+             Party B: {}\n\n\
+             1. Services: Professional consulting services\n\
+             2. Term: {} months\n\
+             3. Compensation: ${:.2}\n\
+             4. Payment: Monthly installments\n\
+             5. Governing Law: State of California\n\n\
+             Signatures on file.\n\
+             </document>\n\n\
+             Extract the key terms from this contract.",
+            date, company1, company2, term_months, contract_value
+        );
+
+        let response = format!(
+            "**Contract Summary:**\n\n\
+             | Term | Details |\n\
+             |------|--------|\n\
+             | Document Type | Service Agreement |\n\
+             | Effective Date | {} |\n\
+             | Party A | {} |\n\
+             | Party B | {} |\n\
+             | Service Type | Professional consulting |\n\
+             | Contract Term | {} months |\n\
+             | Total Value | ${:.2} |\n\
+             | Payment Schedule | Monthly |\n\
+             | Jurisdiction | California |\n\n\
+             [confidence: 0.89]",
+            date, company1, company2, term_months, contract_value
+        );
+
+        TrainingExample {
+            prompt,
+            response,
+            metadata: ExampleMetadata {
+                domain: "document_extraction".to_string(),
+                confidence_target: 0.89,
+                source: "synthetic".to_string(),
+                difficulty: 0.6,
+                quality: 1.0,
+                tags: vec!["contract".to_string(), "legal".to_string()],
+            },
+        }
+    }
+}
+
+impl DataGenerator for DocumentGenerator {
+    fn generate(&mut self) -> TrainingExample {
+        match self.rng.int_range(0, 2) {
+            0 => self.generate_invoice(),
+            1 => self.generate_receipt(),
+            _ => self.generate_contract(),
+        }
+    }
+
+    fn domain(&self) -> SpecialistDomain {
+        SpecialistDomain::Document
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn seed(&mut self, seed: u64) {
+        self.rng.seed(seed);
+    }
+
+    fn reset(&mut self) {
+        // Reset to initial state if needed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_document_generator() {
+        let mut gen = DocumentGenerator::new();
+
+        let example = gen.generate();
+        assert!(!example.prompt.is_empty());
+        assert!(!example.response.is_empty());
+        assert_eq!(example.metadata.domain, "document_extraction");
+    }
+
+    #[test]
+    fn test_batch_generation() {
+        let mut gen = DocumentGenerator::new();
+
+        let examples = gen.generate_batch(10);
+        assert_eq!(examples.len(), 10);
+    }
+
+    #[test]
+    fn test_reproducibility() {
+        let mut gen1 = DocumentGenerator::new();
+        gen1.seed(42);
+        let ex1 = gen1.generate();
+
+        let mut gen2 = DocumentGenerator::new();
+        gen2.seed(42);
+        let ex2 = gen2.generate();
+
+        assert_eq!(ex1.prompt, ex2.prompt);
+    }
+}

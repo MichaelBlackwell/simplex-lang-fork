@@ -9,47 +9,47 @@
 // =============================================================================
 
 fn abs_i64(x: i64) -> i64 {
-    if x >= 0 {
-        x
-    } else {
-        0 - x
-    }
+ if x >= 0 {
+ x
+ } else {
+ 0 - x
+ }
 }
 
 fn approx_eq(a: i64, b: i64, tol: i64) -> i64 {
-    if abs_i64(a - b) <= tol {
-        1
-    } else {
-        0
-    }
+ if abs_i64(a - b) <= tol {
+ 1
+ } else {
+ 0
+ }
 }
 
 fn min_i64(a: i64, b: i64) -> i64 {
-    if a < b {
-        a
-    } else {
-        b
-    }
+ if a < b {
+ a
+ } else {
+ b
+ }
 }
 
 fn max_i64(a: i64, b: i64) -> i64 {
-    if a > b {
-        a
-    } else {
-        b
-    }
+ if a > b {
+ a
+ } else {
+ b
+ }
 }
 
 fn clamp_i64(val: i64, lo: i64, hi: i64) -> i64 {
-    if val < lo {
-        lo
-    } else {
-        if val > hi {
-            hi
-        } else {
-            val
-        }
-    }
+ if val < lo {
+ lo
+ } else {
+ if val > hi {
+ hi
+ } else {
+ val
+ }
+ }
 }
 
 // =============================================================================
@@ -58,33 +58,33 @@ fn clamp_i64(val: i64, lo: i64, hi: i64) -> i64 {
 
 // Linear warmup: ramps from 0 to max_lr over warmup_steps
 fn warmup_lr(step: i64, warmup_steps: i64, max_lr: i64) -> i64 {
-    if step >= warmup_steps {
-        max_lr
-    } else {
-        max_lr * step / warmup_steps
-    }
+ if step >= warmup_steps {
+ max_lr
+ } else {
+ max_lr * step / warmup_steps
+ }
 }
 
 // Linear decay: decreases from start_lr to end_lr over total_steps
 fn decay_lr(step: i64, total_steps: i64, start_lr: i64, end_lr: i64) -> i64 {
-    if step >= total_steps {
-        end_lr
-    } else {
-        start_lr - (start_lr - end_lr) * step / total_steps
-    }
+ if step >= total_steps {
+ end_lr
+ } else {
+ start_lr - (start_lr - end_lr) * step / total_steps
+ }
 }
 
 // Combined warmup + decay schedule
 fn warmup_decay_lr(step: i64, warmup_steps: i64, total_steps: i64, max_lr: i64, end_lr: i64) -> i64 {
-    if step < warmup_steps {
-        // Warmup phase
-        max_lr * step / warmup_steps
-    } else {
-        // Decay phase
-        let decay_step: i64 = step - warmup_steps;
-        let decay_total: i64 = total_steps - warmup_steps;
-        max_lr - (max_lr - end_lr) * decay_step / decay_total
-    }
+ if step < warmup_steps {
+ // Warmup phase
+ max_lr * step / warmup_steps
+ } else {
+ // Decay phase
+ let decay_step: i64 = step - warmup_steps;
+ let decay_total: i64 = total_steps - warmup_steps;
+ max_lr - (max_lr - end_lr) * decay_step / decay_total
+ }
 }
 
 // =============================================================================
@@ -93,20 +93,20 @@ fn warmup_decay_lr(step: i64, warmup_steps: i64, total_steps: i64, max_lr: i64, 
 
 // Temperature for soft labels: starts high, decreases
 fn distill_temperature(step: i64, total_steps: i64, start_temp: i64, end_temp: i64) -> i64 {
-    if step >= total_steps {
-        end_temp
-    } else {
-        start_temp - (start_temp - end_temp) * step / total_steps
-    }
+ if step >= total_steps {
+ end_temp
+ } else {
+ start_temp - (start_temp - end_temp) * step / total_steps
+ }
 }
 
 // Alpha blending: balance between hard and soft labels
 fn distill_alpha(step: i64, total_steps: i64, start_alpha: i64, end_alpha: i64) -> i64 {
-    if step >= total_steps {
-        end_alpha
-    } else {
-        start_alpha + (end_alpha - start_alpha) * step / total_steps
-    }
+ if step >= total_steps {
+ end_alpha
+ } else {
+ start_alpha + (end_alpha - start_alpha) * step / total_steps
+ }
 }
 
 // =============================================================================
@@ -115,26 +115,26 @@ fn distill_alpha(step: i64, total_steps: i64, start_alpha: i64, end_alpha: i64) 
 
 // Sparsity schedule: target sparsity increases over time
 fn sparsity_schedule(step: i64, start_step: i64, end_step: i64, target_sparsity: i64) -> i64 {
-    if step < start_step {
-        0
-    } else {
-        if step >= end_step {
-            target_sparsity
-        } else {
-            target_sparsity * (step - start_step) / (end_step - start_step)
-        }
-    }
+ if step < start_step {
+ 0
+ } else {
+ if step >= end_step {
+ target_sparsity
+ } else {
+ target_sparsity * (step - start_step) / (end_step - start_step)
+ }
+ }
 }
 
 // Count pruned weights (simple threshold based)
 fn count_pruned(weights_abs_sum: i64, threshold: i64, count: i64) -> i64 {
-    // Simplified: estimate pruned as those below threshold
-    // In practice this would iterate over actual weights
-    if weights_abs_sum < threshold * count {
-        count  // All would be pruned
-    } else {
-        0  // None pruned
-    }
+ // Simplified: estimate pruned as those below threshold
+ // In practice this would iterate over actual weights
+ if weights_abs_sum < threshold * count {
+ count // All would be pruned
+ } else {
+ 0 // None pruned
+ }
 }
 
 // =============================================================================
@@ -143,16 +143,16 @@ fn count_pruned(weights_abs_sum: i64, threshold: i64, count: i64) -> i64 {
 
 // Quantize value to n bits (scaled representation)
 fn quantize(value: i64, bits: i64) -> i64 {
-    let levels: i64 = 1 << bits;  // 2^bits levels
-    let step: i64 = 1000 / levels;  // Assuming value in [0, 1000]
-    let quantized: i64 = (value / step) * step;
-    quantized
+ let levels: i64 = 1 << bits; // 2^bits levels
+ let step: i64 = 1000 / levels; // Assuming value in [0, 1000]
+ let quantized: i64 = (value / step) * step;
+ quantized
 }
 
 // Straight-Through Estimator (STE) for gradients
 // Returns original gradient unchanged (passthrough)
 fn ste_gradient(forward: i64, gradient: i64) -> i64 {
-    gradient  // Pass gradient through unchanged
+ gradient // Pass gradient through unchanged
 }
 
 // =============================================================================
@@ -161,12 +161,12 @@ fn ste_gradient(forward: i64, gradient: i64) -> i64 {
 
 // Compute meta-loss (simplified: validation loss)
 fn meta_loss(val_loss: i64, reg_loss: i64, reg_weight: i64) -> i64 {
-    val_loss + reg_loss * reg_weight / 1000
+ val_loss + reg_loss * reg_weight / 1000
 }
 
 // Update meta-parameters with gradient
 fn meta_update(param: i64, grad: i64, meta_lr: i64) -> i64 {
-    param - grad * meta_lr / 1000
+ param - grad * meta_lr / 1000
 }
 
 // =============================================================================
@@ -174,41 +174,41 @@ fn meta_update(param: i64, grad: i64, meta_lr: i64) -> i64 {
 // =============================================================================
 
 fn test_warmup_lr() -> i64 {
-    println("  Testing warmup LR schedule...");
+ println(" Testing warmup LR schedule...");
 
-    let warmup_steps: i64 = 100;
-    let max_lr: i64 = 1000;  // 1.0 scaled
+ let warmup_steps: i64 = 100;
+ let max_lr: i64 = 1000; // 1.0 scaled
 
-    // At step 0, LR should be 0
-    let lr0: i64 = warmup_lr(0, warmup_steps, max_lr);
-    if lr0 != 0 {
-        println("    FAIL: LR at step 0 should be 0");
-        return 1;
-    }
+ // At step 0, LR should be 0
+ let lr0: i64 = warmup_lr(0, warmup_steps, max_lr);
+ if lr0 != 0 {
+ println(" FAIL: LR at step 0 should be 0");
+ return 1;
+ }
 
-    // At warmup completion, LR should be max_lr
-    let lr_end: i64 = warmup_lr(warmup_steps, warmup_steps, max_lr);
-    if lr_end != max_lr {
-        println("    FAIL: LR at warmup end should be max_lr");
-        return 1;
-    }
+ // At warmup completion, LR should be max_lr
+ let lr_end: i64 = warmup_lr(warmup_steps, warmup_steps, max_lr);
+ if lr_end != max_lr {
+ println(" FAIL: LR at warmup end should be max_lr");
+ return 1;
+ }
 
-    // Midpoint should be half max_lr
-    let lr_mid: i64 = warmup_lr(50, warmup_steps, max_lr);
-    if approx_eq(lr_mid, 500, 10) == 0 {
-        println("    FAIL: LR at midpoint should be ~500");
-        return 1;
-    }
+ // Midpoint should be half max_lr
+ let lr_mid: i64 = warmup_lr(50, warmup_steps, max_lr);
+ if approx_eq(lr_mid, 500, 10) == 0 {
+ println(" FAIL: LR at midpoint should be ~500");
+ return 1;
+ }
 
-    // After warmup, LR stays at max
-    let lr_after: i64 = warmup_lr(200, warmup_steps, max_lr);
-    if lr_after != max_lr {
-        println("    FAIL: LR after warmup should stay at max");
-        return 1;
-    }
+ // After warmup, LR stays at max
+ let lr_after: i64 = warmup_lr(200, warmup_steps, max_lr);
+ if lr_after != max_lr {
+ println(" FAIL: LR after warmup should stay at max");
+ return 1;
+ }
 
-    println("    PASS: warmup LR schedule");
-    0
+ println(" PASS: warmup LR schedule");
+ 0
 }
 
 // =============================================================================
@@ -216,42 +216,42 @@ fn test_warmup_lr() -> i64 {
 // =============================================================================
 
 fn test_decay_lr() -> i64 {
-    println("  Testing decay LR schedule...");
+ println(" Testing decay LR schedule...");
 
-    let total_steps: i64 = 100;
-    let start_lr: i64 = 1000;
-    let end_lr: i64 = 100;
+ let total_steps: i64 = 100;
+ let start_lr: i64 = 1000;
+ let end_lr: i64 = 100;
 
-    // At step 0, LR should be start_lr
-    let lr0: i64 = decay_lr(0, total_steps, start_lr, end_lr);
-    if lr0 != start_lr {
-        println("    FAIL: LR at step 0 should be start_lr");
-        return 1;
-    }
+ // At step 0, LR should be start_lr
+ let lr0: i64 = decay_lr(0, total_steps, start_lr, end_lr);
+ if lr0 != start_lr {
+ println(" FAIL: LR at step 0 should be start_lr");
+ return 1;
+ }
 
-    // At end, LR should be end_lr
-    let lr_end: i64 = decay_lr(total_steps, total_steps, start_lr, end_lr);
-    if lr_end != end_lr {
-        println("    FAIL: LR at end should be end_lr");
-        return 1;
-    }
+ // At end, LR should be end_lr
+ let lr_end: i64 = decay_lr(total_steps, total_steps, start_lr, end_lr);
+ if lr_end != end_lr {
+ println(" FAIL: LR at end should be end_lr");
+ return 1;
+ }
 
-    // Should be monotonically decreasing
-    let lr1: i64 = decay_lr(25, total_steps, start_lr, end_lr);
-    let lr2: i64 = decay_lr(50, total_steps, start_lr, end_lr);
-    let lr3: i64 = decay_lr(75, total_steps, start_lr, end_lr);
+ // Should be monotonically decreasing
+ let lr1: i64 = decay_lr(25, total_steps, start_lr, end_lr);
+ let lr2: i64 = decay_lr(50, total_steps, start_lr, end_lr);
+ let lr3: i64 = decay_lr(75, total_steps, start_lr, end_lr);
 
-    if lr1 <= lr2 {
-        println("    FAIL: LR should decrease over time");
-        return 1;
-    }
-    if lr2 <= lr3 {
-        println("    FAIL: LR should decrease over time");
-        return 1;
-    }
+ if lr1 <= lr2 {
+ println(" FAIL: LR should decrease over time");
+ return 1;
+ }
+ if lr2 <= lr3 {
+ println(" FAIL: LR should decrease over time");
+ return 1;
+ }
 
-    println("    PASS: decay LR schedule");
-    0
+ println(" PASS: decay LR schedule");
+ 0
 }
 
 // =============================================================================
@@ -259,40 +259,40 @@ fn test_decay_lr() -> i64 {
 // =============================================================================
 
 fn test_warmup_decay() -> i64 {
-    println("  Testing warmup + decay schedule...");
+ println(" Testing warmup + decay schedule...");
 
-    let warmup_steps: i64 = 20;
-    let total_steps: i64 = 100;
-    let max_lr: i64 = 1000;
-    let end_lr: i64 = 100;
+ let warmup_steps: i64 = 20;
+ let total_steps: i64 = 100;
+ let max_lr: i64 = 1000;
+ let end_lr: i64 = 100;
 
-    // During warmup: should increase
-    let lr_early: i64 = warmup_decay_lr(10, warmup_steps, total_steps, max_lr, end_lr);
-    if lr_early >= max_lr {
-        println("    FAIL: early LR should be less than max");
-        return 1;
-    }
+ // During warmup: should increase
+ let lr_early: i64 = warmup_decay_lr(10, warmup_steps, total_steps, max_lr, end_lr);
+ if lr_early >= max_lr {
+ println(" FAIL: early LR should be less than max");
+ return 1;
+ }
 
-    // At warmup end: should be at max
-    let lr_warmup_end: i64 = warmup_decay_lr(20, warmup_steps, total_steps, max_lr, end_lr);
-    if approx_eq(lr_warmup_end, max_lr, 10) == 0 {
-        println("    FAIL: LR at warmup end should be max");
-        return 1;
-    }
+ // At warmup end: should be at max
+ let lr_warmup_end: i64 = warmup_decay_lr(20, warmup_steps, total_steps, max_lr, end_lr);
+ if approx_eq(lr_warmup_end, max_lr, 10) == 0 {
+ println(" FAIL: LR at warmup end should be max");
+ return 1;
+ }
 
-    // During decay: should decrease
-    let lr_mid: i64 = warmup_decay_lr(60, warmup_steps, total_steps, max_lr, end_lr);
-    if lr_mid >= max_lr {
-        println("    FAIL: decay LR should be less than max");
-        return 1;
-    }
-    if lr_mid <= end_lr {
-        println("    FAIL: decay LR should be more than end");
-        return 1;
-    }
+ // During decay: should decrease
+ let lr_mid: i64 = warmup_decay_lr(60, warmup_steps, total_steps, max_lr, end_lr);
+ if lr_mid >= max_lr {
+ println(" FAIL: decay LR should be less than max");
+ return 1;
+ }
+ if lr_mid <= end_lr {
+ println(" FAIL: decay LR should be more than end");
+ return 1;
+ }
 
-    println("    PASS: warmup + decay schedule");
-    0
+ println(" PASS: warmup + decay schedule");
+ 0
 }
 
 // =============================================================================
@@ -300,36 +300,36 @@ fn test_warmup_decay() -> i64 {
 // =============================================================================
 
 fn test_distillation_temp() -> i64 {
-    println("  Testing distillation temperature...");
+ println(" Testing distillation temperature...");
 
-    let total_steps: i64 = 100;
-    let start_temp: i64 = 5000;  // 5.0 scaled
-    let end_temp: i64 = 1000;    // 1.0 scaled
+ let total_steps: i64 = 100;
+ let start_temp: i64 = 5000; // 5.0 scaled
+ let end_temp: i64 = 1000; // 1.0 scaled
 
-    // Start should be high
-    let temp0: i64 = distill_temperature(0, total_steps, start_temp, end_temp);
-    if temp0 != start_temp {
-        println("    FAIL: temp at start should be start_temp");
-        return 1;
-    }
+ // Start should be high
+ let temp0: i64 = distill_temperature(0, total_steps, start_temp, end_temp);
+ if temp0 != start_temp {
+ println(" FAIL: temp at start should be start_temp");
+ return 1;
+ }
 
-    // End should be low
-    let temp_end: i64 = distill_temperature(total_steps, total_steps, start_temp, end_temp);
-    if temp_end != end_temp {
-        println("    FAIL: temp at end should be end_temp");
-        return 1;
-    }
+ // End should be low
+ let temp_end: i64 = distill_temperature(total_steps, total_steps, start_temp, end_temp);
+ if temp_end != end_temp {
+ println(" FAIL: temp at end should be end_temp");
+ return 1;
+ }
 
-    // Should decrease monotonically
-    let temp25: i64 = distill_temperature(25, total_steps, start_temp, end_temp);
-    let temp75: i64 = distill_temperature(75, total_steps, start_temp, end_temp);
-    if temp25 <= temp75 {
-        println("    FAIL: temperature should decrease");
-        return 1;
-    }
+ // Should decrease monotonically
+ let temp25: i64 = distill_temperature(25, total_steps, start_temp, end_temp);
+ let temp75: i64 = distill_temperature(75, total_steps, start_temp, end_temp);
+ if temp25 <= temp75 {
+ println(" FAIL: temperature should decrease");
+ return 1;
+ }
 
-    println("    PASS: distillation temperature");
-    0
+ println(" PASS: distillation temperature");
+ 0
 }
 
 // =============================================================================
@@ -337,27 +337,27 @@ fn test_distillation_temp() -> i64 {
 // =============================================================================
 
 fn test_distillation_alpha() -> i64 {
-    println("  Testing distillation alpha...");
+ println(" Testing distillation alpha...");
 
-    let total_steps: i64 = 100;
-    let start_alpha: i64 = 900;  // 0.9 - mostly soft labels
-    let end_alpha: i64 = 100;    // 0.1 - mostly hard labels
+ let total_steps: i64 = 100;
+ let start_alpha: i64 = 900; // 0.9 - mostly soft labels
+ let end_alpha: i64 = 100; // 0.1 - mostly hard labels
 
-    // Alpha should transition from soft to hard labels
-    let alpha_start: i64 = distill_alpha(0, total_steps, start_alpha, end_alpha);
-    let alpha_end: i64 = distill_alpha(total_steps, total_steps, start_alpha, end_alpha);
+ // Alpha should transition from soft to hard labels
+ let alpha_start: i64 = distill_alpha(0, total_steps, start_alpha, end_alpha);
+ let alpha_end: i64 = distill_alpha(total_steps, total_steps, start_alpha, end_alpha);
 
-    if alpha_start != start_alpha {
-        println("    FAIL: alpha at start should be start_alpha");
-        return 1;
-    }
-    if alpha_end != end_alpha {
-        println("    FAIL: alpha at end should be end_alpha");
-        return 1;
-    }
+ if alpha_start != start_alpha {
+ println(" FAIL: alpha at start should be start_alpha");
+ return 1;
+ }
+ if alpha_end != end_alpha {
+ println(" FAIL: alpha at end should be end_alpha");
+ return 1;
+ }
 
-    println("    PASS: distillation alpha");
-    0
+ println(" PASS: distillation alpha");
+ 0
 }
 
 // =============================================================================
@@ -365,36 +365,36 @@ fn test_distillation_alpha() -> i64 {
 // =============================================================================
 
 fn test_sparsity_schedule() -> i64 {
-    println("  Testing sparsity schedule...");
+ println(" Testing sparsity schedule...");
 
-    let start_step: i64 = 20;
-    let end_step: i64 = 80;
-    let target_sparsity: i64 = 500;  // 50%
+ let start_step: i64 = 20;
+ let end_step: i64 = 80;
+ let target_sparsity: i64 = 500; // 50%
 
-    // Before start: sparsity should be 0
-    let s0: i64 = sparsity_schedule(10, start_step, end_step, target_sparsity);
-    if s0 != 0 {
-        println("    FAIL: sparsity before start should be 0");
-        return 1;
-    }
+ // Before start: sparsity should be 0
+ let s0: i64 = sparsity_schedule(10, start_step, end_step, target_sparsity);
+ if s0 != 0 {
+ println(" FAIL: sparsity before start should be 0");
+ return 1;
+ }
 
-    // At end: sparsity should be target
-    let s_end: i64 = sparsity_schedule(80, start_step, end_step, target_sparsity);
-    if s_end != target_sparsity {
-        println("    FAIL: sparsity at end should be target");
-        return 1;
-    }
+ // At end: sparsity should be target
+ let s_end: i64 = sparsity_schedule(80, start_step, end_step, target_sparsity);
+ if s_end != target_sparsity {
+ println(" FAIL: sparsity at end should be target");
+ return 1;
+ }
 
-    // In between: should increase monotonically
-    let s_mid1: i64 = sparsity_schedule(40, start_step, end_step, target_sparsity);
-    let s_mid2: i64 = sparsity_schedule(60, start_step, end_step, target_sparsity);
-    if s_mid1 >= s_mid2 {
-        println("    FAIL: sparsity should increase");
-        return 1;
-    }
+ // In between: should increase monotonically
+ let s_mid1: i64 = sparsity_schedule(40, start_step, end_step, target_sparsity);
+ let s_mid2: i64 = sparsity_schedule(60, start_step, end_step, target_sparsity);
+ if s_mid1 >= s_mid2 {
+ println(" FAIL: sparsity should increase");
+ return 1;
+ }
 
-    println("    PASS: sparsity schedule");
-    0
+ println(" PASS: sparsity schedule");
+ 0
 }
 
 // =============================================================================
@@ -402,39 +402,39 @@ fn test_sparsity_schedule() -> i64 {
 // =============================================================================
 
 fn test_quantization() -> i64 {
-    println("  Testing quantization...");
+ println(" Testing quantization...");
 
-    // 4-bit quantization: 16 levels
-    let bits: i64 = 4;
-    let v1: i64 = quantize(500, bits);
-    let v2: i64 = quantize(510, bits);
+ // 4-bit quantization: 16 levels
+ let bits: i64 = 4;
+ let v1: i64 = quantize(500, bits);
+ let v2: i64 = quantize(510, bits);
 
-    // Close values should quantize to same level
-    if v1 != v2 {
-        println("    FAIL: close values should quantize same");
-        return 1;
-    }
+ // Close values should quantize to same level
+ if v1 != v2 {
+ println(" FAIL: close values should quantize same");
+ return 1;
+ }
 
-    // Very different values should quantize differently
-    let v3: i64 = quantize(100, bits);
-    let v4: i64 = quantize(900, bits);
-    if v3 == v4 {
-        println("    FAIL: different values should quantize differently");
-        return 1;
-    }
+ // Very different values should quantize differently
+ let v3: i64 = quantize(100, bits);
+ let v4: i64 = quantize(900, bits);
+ if v3 == v4 {
+ println(" FAIL: different values should quantize differently");
+ return 1;
+ }
 
-    // Quantized value should be in valid range
-    if v1 < 0 {
-        println("    FAIL: quantized value should be non-negative");
-        return 1;
-    }
-    if v1 > 1000 {
-        println("    FAIL: quantized value should not exceed max");
-        return 1;
-    }
+ // Quantized value should be in valid range
+ if v1 < 0 {
+ println(" FAIL: quantized value should be non-negative");
+ return 1;
+ }
+ if v1 > 1000 {
+ println(" FAIL: quantized value should not exceed max");
+ return 1;
+ }
 
-    println("    PASS: quantization");
-    0
+ println(" PASS: quantization");
+ 0
 }
 
 // =============================================================================
@@ -442,27 +442,27 @@ fn test_quantization() -> i64 {
 // =============================================================================
 
 fn test_ste() -> i64 {
-    println("  Testing straight-through estimator...");
+ println(" Testing straight-through estimator...");
 
-    // STE should pass gradient unchanged
-    let forward: i64 = 500;  // Quantized forward value
-    let grad: i64 = 100;     // Original gradient
+ // STE should pass gradient unchanged
+ let forward: i64 = 500; // Quantized forward value
+ let grad: i64 = 100; // Original gradient
 
-    let ste_grad: i64 = ste_gradient(forward, grad);
-    if ste_grad != grad {
-        println("    FAIL: STE should pass gradient unchanged");
-        return 1;
-    }
+ let ste_grad: i64 = ste_gradient(forward, grad);
+ if ste_grad != grad {
+ println(" FAIL: STE should pass gradient unchanged");
+ return 1;
+ }
 
-    // Should work for any gradient value
-    let neg_grad: i64 = ste_gradient(500, -50);
-    if neg_grad != -50 {
-        println("    FAIL: STE should work for negative gradients");
-        return 1;
-    }
+ // Should work for any gradient value
+ let neg_grad: i64 = ste_gradient(500, -50);
+ if neg_grad != -50 {
+ println(" FAIL: STE should work for negative gradients");
+ return 1;
+ }
 
-    println("    PASS: straight-through estimator");
-    0
+ println(" PASS: straight-through estimator");
+ 0
 }
 
 // =============================================================================
@@ -470,30 +470,30 @@ fn test_ste() -> i64 {
 // =============================================================================
 
 fn test_meta_loss() -> i64 {
-    println("  Testing meta-loss computation...");
+ println(" Testing meta-loss computation...");
 
-    let val_loss: i64 = 1000;   // Validation loss
-    let reg_loss: i64 = 100;    // Regularization loss
-    let reg_weight: i64 = 100;  // 0.1 scaled
+ let val_loss: i64 = 1000; // Validation loss
+ let reg_loss: i64 = 100; // Regularization loss
+ let reg_weight: i64 = 100; // 0.1 scaled
 
-    let total: i64 = meta_loss(val_loss, reg_loss, reg_weight);
+ let total: i64 = meta_loss(val_loss, reg_loss, reg_weight);
 
-    // Total should be val_loss + reg_loss * reg_weight
-    // = 1000 + 100 * 100 / 1000 = 1000 + 10 = 1010
-    if approx_eq(total, 1010, 5) == 0 {
-        println("    FAIL: meta-loss should be ~1010");
-        return 1;
-    }
+ // Total should be val_loss + reg_loss * reg_weight
+ // = 1000 + 100 * 100 / 1000 = 1000 + 10 = 1010
+ if approx_eq(total, 1010, 5) == 0 {
+ println(" FAIL: meta-loss should be ~1010");
+ return 1;
+ }
 
-    // Zero reg_weight should give just val_loss
-    let no_reg: i64 = meta_loss(val_loss, reg_loss, 0);
-    if no_reg != val_loss {
-        println("    FAIL: zero reg_weight should give val_loss");
-        return 1;
-    }
+ // Zero reg_weight should give just val_loss
+ let no_reg: i64 = meta_loss(val_loss, reg_loss, 0);
+ if no_reg != val_loss {
+ println(" FAIL: zero reg_weight should give val_loss");
+ return 1;
+ }
 
-    println("    PASS: meta-loss computation");
-    0
+ println(" PASS: meta-loss computation");
+ 0
 }
 
 // =============================================================================
@@ -501,30 +501,30 @@ fn test_meta_loss() -> i64 {
 // =============================================================================
 
 fn test_meta_update() -> i64 {
-    println("  Testing meta-parameter update...");
+ println(" Testing meta-parameter update...");
 
-    let param: i64 = 500;      // Initial parameter
-    let grad: i64 = 100;       // Gradient
-    let meta_lr: i64 = 100;    // 0.1 scaled
+ let param: i64 = 500; // Initial parameter
+ let grad: i64 = 100; // Gradient
+ let meta_lr: i64 = 100; // 0.1 scaled
 
-    let updated: i64 = meta_update(param, grad, meta_lr);
+ let updated: i64 = meta_update(param, grad, meta_lr);
 
-    // Updated = param - grad * meta_lr / 1000
-    // = 500 - 100 * 100 / 1000 = 500 - 10 = 490
-    if approx_eq(updated, 490, 2) == 0 {
-        println("    FAIL: updated param should be ~490");
-        return 1;
-    }
+ // Updated = param - grad * meta_lr / 1000
+ // = 500 - 100 * 100 / 1000 = 500 - 10 = 490
+ if approx_eq(updated, 490, 2) == 0 {
+ println(" FAIL: updated param should be ~490");
+ return 1;
+ }
 
-    // Negative gradient should increase param
-    let neg_update: i64 = meta_update(param, -100, meta_lr);
-    if neg_update <= param {
-        println("    FAIL: negative gradient should increase param");
-        return 1;
-    }
+ // Negative gradient should increase param
+ let neg_update: i64 = meta_update(param, -100, meta_lr);
+ if neg_update <= param {
+ println(" FAIL: negative gradient should increase param");
+ return 1;
+ }
 
-    println("    PASS: meta-parameter update");
-    0
+ println(" PASS: meta-parameter update");
+ 0
 }
 
 // =============================================================================
@@ -532,28 +532,28 @@ fn test_meta_update() -> i64 {
 // =============================================================================
 
 fn main() -> i64 {
-    println("=== Training Pipeline Tests (TASK-003) ===");
-    println("");
+ println("=== Training Pipeline Tests (TASK-003) ===");
+ println("");
 
-    let f1: i64 = test_warmup_lr();
-    let f2: i64 = test_decay_lr();
-    let f3: i64 = test_warmup_decay();
-    let f4: i64 = test_distillation_temp();
-    let f5: i64 = test_distillation_alpha();
-    let f6: i64 = test_sparsity_schedule();
-    let f7: i64 = test_quantization();
-    let f8: i64 = test_ste();
-    let f9: i64 = test_meta_loss();
-    let f10: i64 = test_meta_update();
+ let f1: i64 = test_warmup_lr();
+ let f2: i64 = test_decay_lr();
+ let f3: i64 = test_warmup_decay();
+ let f4: i64 = test_distillation_temp();
+ let f5: i64 = test_distillation_alpha();
+ let f6: i64 = test_sparsity_schedule();
+ let f7: i64 = test_quantization();
+ let f8: i64 = test_ste();
+ let f9: i64 = test_meta_loss();
+ let f10: i64 = test_meta_update();
 
-    let failures: i64 = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10;
+ let failures: i64 = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10;
 
-    println("");
-    if failures == 0 {
-        println("All Training Pipeline tests passed!");
-    } else {
-        println("Some Training Pipeline tests failed");
-    }
+ println("");
+ if failures == 0 {
+ println("All Training Pipeline tests passed!");
+ } else {
+ println("Some Training Pipeline tests failed");
+ }
 
-    failures
+ failures
 }

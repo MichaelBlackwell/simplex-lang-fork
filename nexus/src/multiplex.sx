@@ -1,0 +1,977 @@
+// Nexus Protocol - Stream Multiplexing
+//
+// This module provides stream multiplexing over a single session/connection.
+// Multiple logical streams can be interleaved over a shared transport.
+
+// ============================================================================
+// Stream Types
+// ============================================================================
+
+// Stream types
+fn STREAM_TYPE_DATA() -> i64 { 0 }        // Regular data stream
+fn STREAM_TYPE_CONTROL() -> i64 { 1 }     // Control/signaling stream
+fn STREAM_TYPE_RPC() -> i64 { 2 }         // Request-response stream
+fn STREAM_TYPE_BROADCAST() -> i64 { 3 }   // One-to-many stream
+fn STREAM_TYPE_PRIORITY() -> i64 { 4 }    // High-priority stream
+
+// Mux stream states (HTTP/2 inspired)
+fn MUX_STREAM_STATE_IDLE() -> i64 { 0 }              // Not yet opened
+fn MUX_STREAM_STATE_RESERVED_LOCAL() -> i64 { 1 }   // Reserved by local side
+fn MUX_STREAM_STATE_RESERVED_REMOTE() -> i64 { 2 }  // Reserved by remote side
+fn MUX_STREAM_STATE_OPEN() -> i64 { 3 }             // Fully open, bidirectional
+fn MUX_STREAM_STATE_HALF_CLOSED_LOCAL() -> i64 { 4 }  // Local side closed
+fn MUX_STREAM_STATE_HALF_CLOSED_REMOTE() -> i64 { 5 } // Remote side closed
+fn MUX_STREAM_STATE_CLOSED() -> i64 { 6 }           // Fully closed
+
+// Stream priority levels
+fn STREAM_PRIORITY_LOWEST() -> i64 { 0 }
+fn STREAM_PRIORITY_LOW() -> i64 { 64 }
+fn STREAM_PRIORITY_NORMAL() -> i64 { 128 }
+fn STREAM_PRIORITY_HIGH() -> i64 { 192 }
+fn STREAM_PRIORITY_HIGHEST() -> i64 { 255 }
+
+// Stream error codes
+fn STREAM_ERROR_NONE() -> i64 { 0 }
+fn STREAM_ERROR_PROTOCOL() -> i64 { 1 }
+fn STREAM_ERROR_INTERNAL() -> i64 { 2 }
+fn STREAM_ERROR_FLOW_CONTROL() -> i64 { 3 }
+fn STREAM_ERROR_TIMEOUT() -> i64 { 4 }
+fn STREAM_ERROR_STREAM_CLOSED() -> i64 { 5 }
+fn STREAM_ERROR_FRAME_SIZE() -> i64 { 6 }
+fn STREAM_ERROR_REFUSED() -> i64 { 7 }
+fn STREAM_ERROR_CANCEL() -> i64 { 8 }
+fn STREAM_ERROR_COMPRESSION() -> i64 { 9 }
+fn STREAM_ERROR_ENHANCE_CALM() -> i64 { 11 }  // Rate limiting
+
+// ============================================================================
+// Stream ID
+// ============================================================================
+
+// Stream IDs: odd = client-initiated, even = server-initiated
+// Stream ID 0 is reserved for connection-level frames
+
+fn stream_id_new(id: i64) -> i64 {
+    let sid = alloc(16);
+    store64(sid, id);           // id
+    store64(sid + 8, 0);        // flags
+    sid
+}
+
+fn stream_id_value(sid: i64) -> i64 {
+    load64(sid)
+}
+
+fn stream_id_flags(sid: i64) -> i64 {
+    load64(sid + 8)
+}
+
+fn stream_id_set_flags(sid: i64, flags: i64) {
+    store64(sid + 8, flags);
+}
+
+fn stream_id_is_client_initiated(sid: i64) -> i64 {
+    let id = stream_id_value(sid);
+    id % 2 == 1
+}
+
+fn stream_id_is_server_initiated(sid: i64) -> i64 {
+    let id = stream_id_value(sid);
+    id != 0 && id % 2 == 0
+}
+
+fn stream_id_is_connection_level(sid: i64) -> i64 {
+    stream_id_value(sid) == 0
+}
+
+fn stream_id_free(sid: i64) {
+    // Simple deallocation marker
+}
+
+// ============================================================================
+// Stream
+// ============================================================================
+
+// Stream structure offsets
+fn STREAM_OFFSET_ID() -> i64 { 0 }
+fn STREAM_OFFSET_TYPE() -> i64 { 8 }
+fn STREAM_OFFSET_STATE() -> i64 { 16 }
+fn STREAM_OFFSET_PRIORITY() -> i64 { 24 }
+fn STREAM_OFFSET_WEIGHT() -> i64 { 32 }
+fn STREAM_OFFSET_DEPENDENCY() -> i64 { 40 }
+fn STREAM_OFFSET_SEND_WINDOW() -> i64 { 48 }
+fn STREAM_OFFSET_RECV_WINDOW() -> i64 { 56 }
+fn STREAM_OFFSET_SEND_BUFFER() -> i64 { 64 }
+fn STREAM_OFFSET_RECV_BUFFER() -> i64 { 72 }
+fn STREAM_OFFSET_SEND_OFFSET() -> i64 { 80 }
+fn STREAM_OFFSET_RECV_OFFSET() -> i64 { 88 }
+fn STREAM_OFFSET_ERROR_CODE() -> i64 { 96 }
+fn STREAM_OFFSET_USER_DATA() -> i64 { 104 }
+fn STREAM_OFFSET_CREATED_AT() -> i64 { 112 }
+fn STREAM_OFFSET_LAST_ACTIVE() -> i64 { 120 }
+fn STREAM_OFFSET_BYTES_SENT() -> i64 { 128 }
+fn STREAM_OFFSET_BYTES_RECV() -> i64 { 136 }
+fn STREAM_OFFSET_FRAMES_SENT() -> i64 { 144 }
+fn STREAM_OFFSET_FRAMES_RECV() -> i64 { 152 }
+fn STREAM_SIZE() -> i64 { 160 }
+
+fn mux_stream_new(id: i64, stream_type: i64, now: i64) -> i64 {
+    let s = alloc(STREAM_SIZE());
+
+    store64(s + STREAM_OFFSET_ID(), id);
+    store64(s + STREAM_OFFSET_TYPE(), stream_type);
+    store64(s + STREAM_OFFSET_STATE(), MUX_STREAM_STATE_IDLE());
+    store64(s + STREAM_OFFSET_PRIORITY(), STREAM_PRIORITY_NORMAL());
+    store64(s + STREAM_OFFSET_WEIGHT(), 16);  // Default weight
+    store64(s + STREAM_OFFSET_DEPENDENCY(), 0);
+    store64(s + STREAM_OFFSET_SEND_WINDOW(), 65535);  // Default 64KB
+    store64(s + STREAM_OFFSET_RECV_WINDOW(), 65535);
+    store64(s + STREAM_OFFSET_SEND_BUFFER(), 0);
+    store64(s + STREAM_OFFSET_RECV_BUFFER(), 0);
+    store64(s + STREAM_OFFSET_SEND_OFFSET(), 0);
+    store64(s + STREAM_OFFSET_RECV_OFFSET(), 0);
+    store64(s + STREAM_OFFSET_ERROR_CODE(), STREAM_ERROR_NONE());
+    store64(s + STREAM_OFFSET_USER_DATA(), 0);
+    store64(s + STREAM_OFFSET_CREATED_AT(), now);
+    store64(s + STREAM_OFFSET_LAST_ACTIVE(), now);
+    store64(s + STREAM_OFFSET_BYTES_SENT(), 0);
+    store64(s + STREAM_OFFSET_BYTES_RECV(), 0);
+    store64(s + STREAM_OFFSET_FRAMES_SENT(), 0);
+    store64(s + STREAM_OFFSET_FRAMES_RECV(), 0);
+
+    s
+}
+
+fn stream_id(s: i64) -> i64 { load64(s + STREAM_OFFSET_ID()) }
+fn stream_type(s: i64) -> i64 { load64(s + STREAM_OFFSET_TYPE()) }
+fn stream_state(s: i64) -> i64 { load64(s + STREAM_OFFSET_STATE()) }
+fn stream_priority(s: i64) -> i64 { load64(s + STREAM_OFFSET_PRIORITY()) }
+fn stream_weight(s: i64) -> i64 { load64(s + STREAM_OFFSET_WEIGHT()) }
+fn stream_dependency(s: i64) -> i64 { load64(s + STREAM_OFFSET_DEPENDENCY()) }
+fn stream_send_window(s: i64) -> i64 { load64(s + STREAM_OFFSET_SEND_WINDOW()) }
+fn stream_recv_window(s: i64) -> i64 { load64(s + STREAM_OFFSET_RECV_WINDOW()) }
+fn stream_send_buffer(s: i64) -> i64 { load64(s + STREAM_OFFSET_SEND_BUFFER()) }
+fn stream_recv_buffer(s: i64) -> i64 { load64(s + STREAM_OFFSET_RECV_BUFFER()) }
+fn stream_error_code(s: i64) -> i64 { load64(s + STREAM_OFFSET_ERROR_CODE()) }
+fn stream_user_data(s: i64) -> i64 { load64(s + STREAM_OFFSET_USER_DATA()) }
+fn stream_created_at(s: i64) -> i64 { load64(s + STREAM_OFFSET_CREATED_AT()) }
+fn stream_last_active(s: i64) -> i64 { load64(s + STREAM_OFFSET_LAST_ACTIVE()) }
+fn stream_bytes_sent(s: i64) -> i64 { load64(s + STREAM_OFFSET_BYTES_SENT()) }
+fn stream_bytes_recv(s: i64) -> i64 { load64(s + STREAM_OFFSET_BYTES_RECV()) }
+fn stream_frames_sent(s: i64) -> i64 { load64(s + STREAM_OFFSET_FRAMES_SENT()) }
+fn stream_frames_recv(s: i64) -> i64 { load64(s + STREAM_OFFSET_FRAMES_RECV()) }
+
+fn stream_set_state(s: i64, state: i64) { store64(s + STREAM_OFFSET_STATE(), state); }
+fn stream_set_priority(s: i64, priority: i64) { store64(s + STREAM_OFFSET_PRIORITY(), priority); }
+fn stream_set_weight(s: i64, weight: i64) { store64(s + STREAM_OFFSET_WEIGHT(), weight); }
+fn stream_set_dependency(s: i64, dep: i64) { store64(s + STREAM_OFFSET_DEPENDENCY(), dep); }
+fn stream_set_send_window(s: i64, window: i64) { store64(s + STREAM_OFFSET_SEND_WINDOW(), window); }
+fn stream_set_recv_window(s: i64, window: i64) { store64(s + STREAM_OFFSET_RECV_WINDOW(), window); }
+fn stream_set_send_buffer(s: i64, buf: i64) { store64(s + STREAM_OFFSET_SEND_BUFFER(), buf); }
+fn stream_set_recv_buffer(s: i64, buf: i64) { store64(s + STREAM_OFFSET_RECV_BUFFER(), buf); }
+fn stream_set_error_code(s: i64, code: i64) { store64(s + STREAM_OFFSET_ERROR_CODE(), code); }
+fn stream_set_user_data(s: i64, data: i64) { store64(s + STREAM_OFFSET_USER_DATA(), data); }
+fn stream_set_last_active(s: i64, time: i64) { store64(s + STREAM_OFFSET_LAST_ACTIVE(), time); }
+
+fn stream_add_bytes_sent(s: i64, bytes: i64) {
+    let current = stream_bytes_sent(s);
+    store64(s + STREAM_OFFSET_BYTES_SENT(), current + bytes);
+}
+
+fn stream_add_bytes_recv(s: i64, bytes: i64) {
+    let current = stream_bytes_recv(s);
+    store64(s + STREAM_OFFSET_BYTES_RECV(), current + bytes);
+}
+
+fn stream_add_frames_sent(s: i64, count: i64) {
+    let current = stream_frames_sent(s);
+    store64(s + STREAM_OFFSET_FRAMES_SENT(), current + count);
+}
+
+fn stream_add_frames_recv(s: i64, count: i64) {
+    let current = stream_frames_recv(s);
+    store64(s + STREAM_OFFSET_FRAMES_RECV(), current + count);
+}
+
+// Stream state checks
+fn stream_is_idle(s: i64) -> i64 { stream_state(s) == MUX_STREAM_STATE_IDLE() }
+fn stream_is_open(s: i64) -> i64 { stream_state(s) == MUX_STREAM_STATE_OPEN() }
+fn stream_is_closed(s: i64) -> i64 { stream_state(s) == MUX_STREAM_STATE_CLOSED() }
+
+fn stream_can_send(s: i64) -> i64 {
+    let state = stream_state(s);
+    state == MUX_STREAM_STATE_OPEN() || state == MUX_STREAM_STATE_HALF_CLOSED_REMOTE()
+}
+
+fn stream_can_recv(s: i64) -> i64 {
+    let state = stream_state(s);
+    state == MUX_STREAM_STATE_OPEN() || state == MUX_STREAM_STATE_HALF_CLOSED_LOCAL()
+}
+
+// Stream lifecycle
+fn stream_open(s: i64, now: i64) -> i64 {
+    let state = stream_state(s);
+    if state != MUX_STREAM_STATE_IDLE() &&
+       state != MUX_STREAM_STATE_RESERVED_LOCAL() &&
+       state != MUX_STREAM_STATE_RESERVED_REMOTE() {
+        return 0;
+    }
+    stream_set_state(s, MUX_STREAM_STATE_OPEN());
+    stream_set_last_active(s, now);
+    1
+}
+
+fn stream_close_local(s: i64, now: i64) -> i64 {
+    let state = stream_state(s);
+    if state == MUX_STREAM_STATE_OPEN() {
+        stream_set_state(s, MUX_STREAM_STATE_HALF_CLOSED_LOCAL());
+        stream_set_last_active(s, now);
+        return 1;
+    }
+    if state == MUX_STREAM_STATE_HALF_CLOSED_REMOTE() {
+        stream_set_state(s, MUX_STREAM_STATE_CLOSED());
+        stream_set_last_active(s, now);
+        return 1;
+    }
+    0
+}
+
+fn stream_close_remote(s: i64, now: i64) -> i64 {
+    let state = stream_state(s);
+    if state == MUX_STREAM_STATE_OPEN() {
+        stream_set_state(s, MUX_STREAM_STATE_HALF_CLOSED_REMOTE());
+        stream_set_last_active(s, now);
+        return 1;
+    }
+    if state == MUX_STREAM_STATE_HALF_CLOSED_LOCAL() {
+        stream_set_state(s, MUX_STREAM_STATE_CLOSED());
+        stream_set_last_active(s, now);
+        return 1;
+    }
+    0
+}
+
+fn stream_reset(s: i64, error_code: i64, now: i64) -> i64 {
+    stream_set_state(s, MUX_STREAM_STATE_CLOSED());
+    stream_set_error_code(s, error_code);
+    stream_set_last_active(s, now);
+    1
+}
+
+fn stream_free(s: i64) {
+    // Free buffers if allocated
+    let send_buf = stream_send_buffer(s);
+    if send_buf != 0 {
+        // buffer_free(send_buf)
+    }
+    let recv_buf = stream_recv_buffer(s);
+    if recv_buf != 0 {
+        // buffer_free(recv_buf)
+    }
+    // Dealloc marker
+}
+
+// ============================================================================
+// Stream Frame
+// ============================================================================
+
+// Frame types for multiplexing
+fn MUX_FRAME_DATA() -> i64 { 0 }
+fn MUX_FRAME_HEADERS() -> i64 { 1 }
+fn MUX_FRAME_PRIORITY() -> i64 { 2 }
+fn MUX_FRAME_RST_STREAM() -> i64 { 3 }
+fn MUX_FRAME_SETTINGS() -> i64 { 4 }
+fn MUX_FRAME_PUSH_PROMISE() -> i64 { 5 }
+fn MUX_FRAME_PING() -> i64 { 6 }
+fn MUX_FRAME_GOAWAY() -> i64 { 7 }
+fn MUX_FRAME_WINDOW_UPDATE() -> i64 { 8 }
+fn MUX_FRAME_CONTINUATION() -> i64 { 9 }
+
+// Frame flags
+fn MUX_FLAG_END_STREAM() -> i64 { 1 }
+fn MUX_FLAG_END_HEADERS() -> i64 { 4 }
+fn MUX_FLAG_PADDED() -> i64 { 8 }
+fn MUX_FLAG_PRIORITY() -> i64 { 32 }
+fn MUX_FLAG_ACK() -> i64 { 1 }  // For SETTINGS and PING
+
+// Mux frame structure
+fn MUX_FRAME_OFFSET_LENGTH() -> i64 { 0 }
+fn MUX_FRAME_OFFSET_TYPE() -> i64 { 8 }
+fn MUX_FRAME_OFFSET_FLAGS() -> i64 { 16 }
+fn MUX_FRAME_OFFSET_STREAM_ID() -> i64 { 24 }
+fn MUX_FRAME_OFFSET_PAYLOAD() -> i64 { 32 }
+fn MUX_FRAME_HEADER_SIZE() -> i64 { 40 }
+
+fn mux_frame_new(frame_type: i64, flags: i64, stream_id: i64, payload: i64, length: i64) -> i64 {
+    let f = alloc(MUX_FRAME_HEADER_SIZE());
+    store64(f + MUX_FRAME_OFFSET_LENGTH(), length);
+    store64(f + MUX_FRAME_OFFSET_TYPE(), frame_type);
+    store64(f + MUX_FRAME_OFFSET_FLAGS(), flags);
+    store64(f + MUX_FRAME_OFFSET_STREAM_ID(), stream_id);
+    store64(f + MUX_FRAME_OFFSET_PAYLOAD(), payload);
+    f
+}
+
+fn mux_frame_length(f: i64) -> i64 { load64(f + MUX_FRAME_OFFSET_LENGTH()) }
+fn mux_frame_type(f: i64) -> i64 { load64(f + MUX_FRAME_OFFSET_TYPE()) }
+fn mux_frame_flags(f: i64) -> i64 { load64(f + MUX_FRAME_OFFSET_FLAGS()) }
+fn mux_frame_stream_id(f: i64) -> i64 { load64(f + MUX_FRAME_OFFSET_STREAM_ID()) }
+fn mux_frame_payload(f: i64) -> i64 { load64(f + MUX_FRAME_OFFSET_PAYLOAD()) }
+
+fn mux_frame_has_flag(f: i64, flag: i64) -> i64 {
+    (mux_frame_flags(f) & flag) != 0
+}
+
+fn mux_frame_is_end_stream(f: i64) -> i64 {
+    mux_frame_has_flag(f, MUX_FLAG_END_STREAM())
+}
+
+fn mux_frame_free(f: i64) {
+    // Dealloc marker
+}
+
+// ============================================================================
+// Multiplexer Configuration
+// ============================================================================
+
+fn MUX_CONFIG_OFFSET_MAX_STREAMS() -> i64 { 0 }
+fn MUX_CONFIG_OFFSET_INIT_WINDOW() -> i64 { 8 }
+fn MUX_CONFIG_OFFSET_MAX_FRAME_SIZE() -> i64 { 16 }
+fn MUX_CONFIG_OFFSET_MAX_HEADER_SIZE() -> i64 { 24 }
+fn MUX_CONFIG_OFFSET_ENABLE_PUSH() -> i64 { 32 }
+fn MUX_CONFIG_OFFSET_IDLE_TIMEOUT() -> i64 { 40 }
+fn MUX_CONFIG_SIZE() -> i64 { 48 }
+
+fn mux_config_new() -> i64 {
+    let c = alloc(MUX_CONFIG_SIZE());
+    store64(c + MUX_CONFIG_OFFSET_MAX_STREAMS(), 100);
+    store64(c + MUX_CONFIG_OFFSET_INIT_WINDOW(), 65535);
+    store64(c + MUX_CONFIG_OFFSET_MAX_FRAME_SIZE(), 16384);
+    store64(c + MUX_CONFIG_OFFSET_MAX_HEADER_SIZE(), 4096);
+    store64(c + MUX_CONFIG_OFFSET_ENABLE_PUSH(), 1);
+    store64(c + MUX_CONFIG_OFFSET_IDLE_TIMEOUT(), 60000);
+    c
+}
+
+fn mux_config_max_streams(c: i64) -> i64 { load64(c + MUX_CONFIG_OFFSET_MAX_STREAMS()) }
+fn mux_config_init_window(c: i64) -> i64 { load64(c + MUX_CONFIG_OFFSET_INIT_WINDOW()) }
+fn mux_config_max_frame_size(c: i64) -> i64 { load64(c + MUX_CONFIG_OFFSET_MAX_FRAME_SIZE()) }
+fn mux_config_max_header_size(c: i64) -> i64 { load64(c + MUX_CONFIG_OFFSET_MAX_HEADER_SIZE()) }
+fn mux_config_enable_push(c: i64) -> i64 { load64(c + MUX_CONFIG_OFFSET_ENABLE_PUSH()) }
+fn mux_config_idle_timeout(c: i64) -> i64 { load64(c + MUX_CONFIG_OFFSET_IDLE_TIMEOUT()) }
+
+fn mux_config_set_max_streams(c: i64, v: i64) { store64(c + MUX_CONFIG_OFFSET_MAX_STREAMS(), v); }
+fn mux_config_set_init_window(c: i64, v: i64) { store64(c + MUX_CONFIG_OFFSET_INIT_WINDOW(), v); }
+fn mux_config_set_max_frame_size(c: i64, v: i64) { store64(c + MUX_CONFIG_OFFSET_MAX_FRAME_SIZE(), v); }
+fn mux_config_set_max_header_size(c: i64, v: i64) { store64(c + MUX_CONFIG_OFFSET_MAX_HEADER_SIZE(), v); }
+fn mux_config_set_enable_push(c: i64, v: i64) { store64(c + MUX_CONFIG_OFFSET_ENABLE_PUSH(), v); }
+fn mux_config_set_idle_timeout(c: i64, v: i64) { store64(c + MUX_CONFIG_OFFSET_IDLE_TIMEOUT(), v); }
+
+fn mux_config_free(c: i64) {
+    // Dealloc marker
+}
+
+// ============================================================================
+// Multiplexer
+// ============================================================================
+
+fn MUX_OFFSET_CONFIG() -> i64 { 0 }
+fn MUX_OFFSET_IS_SERVER() -> i64 { 8 }
+fn MUX_OFFSET_NEXT_STREAM_ID() -> i64 { 16 }
+fn MUX_OFFSET_LAST_STREAM_ID() -> i64 { 24 }
+fn MUX_OFFSET_CONN_WINDOW_SEND() -> i64 { 32 }
+fn MUX_OFFSET_CONN_WINDOW_RECV() -> i64 { 40 }
+fn MUX_OFFSET_STREAM_ARRAY() -> i64 { 48 }
+fn MUX_OFFSET_STREAM_COUNT() -> i64 { 56 }
+fn MUX_OFFSET_STREAM_CAPACITY() -> i64 { 64 }
+fn MUX_OFFSET_PENDING_FRAMES() -> i64 { 72 }
+fn MUX_OFFSET_PENDING_COUNT() -> i64 { 80 }
+fn MUX_OFFSET_GOAWAY_SENT() -> i64 { 88 }
+fn MUX_OFFSET_GOAWAY_RECV() -> i64 { 96 }
+fn MUX_OFFSET_ERROR_CODE() -> i64 { 104 }
+fn MUX_OFFSET_CREATED_AT() -> i64 { 112 }
+fn MUX_OFFSET_LAST_ACTIVE() -> i64 { 120 }
+fn MUX_SIZE() -> i64 { 128 }
+
+fn multiplexer_new(config: i64, is_server: i64, now: i64) -> i64 {
+    let m = alloc(MUX_SIZE());
+
+    store64(m + MUX_OFFSET_CONFIG(), config);
+    store64(m + MUX_OFFSET_IS_SERVER(), is_server);
+
+    // Server uses even stream IDs, client uses odd
+    if is_server != 0 {
+        store64(m + MUX_OFFSET_NEXT_STREAM_ID(), 2);
+    } else {
+        store64(m + MUX_OFFSET_NEXT_STREAM_ID(), 1);
+    }
+
+    store64(m + MUX_OFFSET_LAST_STREAM_ID(), 0);
+    store64(m + MUX_OFFSET_CONN_WINDOW_SEND(), mux_config_init_window(config));
+    store64(m + MUX_OFFSET_CONN_WINDOW_RECV(), mux_config_init_window(config));
+
+    // Allocate initial stream array
+    let capacity = 16;
+    let stream_array = alloc(capacity * 8);
+    store64(m + MUX_OFFSET_STREAM_ARRAY(), stream_array);
+    store64(m + MUX_OFFSET_STREAM_COUNT(), 0);
+    store64(m + MUX_OFFSET_STREAM_CAPACITY(), capacity);
+
+    store64(m + MUX_OFFSET_PENDING_FRAMES(), 0);
+    store64(m + MUX_OFFSET_PENDING_COUNT(), 0);
+    store64(m + MUX_OFFSET_GOAWAY_SENT(), 0);
+    store64(m + MUX_OFFSET_GOAWAY_RECV(), 0);
+    store64(m + MUX_OFFSET_ERROR_CODE(), STREAM_ERROR_NONE());
+    store64(m + MUX_OFFSET_CREATED_AT(), now);
+    store64(m + MUX_OFFSET_LAST_ACTIVE(), now);
+
+    m
+}
+
+fn multiplexer_config(m: i64) -> i64 { load64(m + MUX_OFFSET_CONFIG()) }
+fn multiplexer_is_server(m: i64) -> i64 { load64(m + MUX_OFFSET_IS_SERVER()) }
+fn multiplexer_next_stream_id(m: i64) -> i64 { load64(m + MUX_OFFSET_NEXT_STREAM_ID()) }
+fn multiplexer_last_stream_id(m: i64) -> i64 { load64(m + MUX_OFFSET_LAST_STREAM_ID()) }
+fn multiplexer_conn_window_send(m: i64) -> i64 { load64(m + MUX_OFFSET_CONN_WINDOW_SEND()) }
+fn multiplexer_conn_window_recv(m: i64) -> i64 { load64(m + MUX_OFFSET_CONN_WINDOW_RECV()) }
+fn multiplexer_stream_count(m: i64) -> i64 { load64(m + MUX_OFFSET_STREAM_COUNT()) }
+fn multiplexer_goaway_sent(m: i64) -> i64 { load64(m + MUX_OFFSET_GOAWAY_SENT()) }
+fn multiplexer_goaway_recv(m: i64) -> i64 { load64(m + MUX_OFFSET_GOAWAY_RECV()) }
+fn multiplexer_error_code(m: i64) -> i64 { load64(m + MUX_OFFSET_ERROR_CODE()) }
+fn multiplexer_created_at(m: i64) -> i64 { load64(m + MUX_OFFSET_CREATED_AT()) }
+fn multiplexer_last_active(m: i64) -> i64 { load64(m + MUX_OFFSET_LAST_ACTIVE()) }
+
+fn multiplexer_set_conn_window_send(m: i64, v: i64) { store64(m + MUX_OFFSET_CONN_WINDOW_SEND(), v); }
+fn multiplexer_set_conn_window_recv(m: i64, v: i64) { store64(m + MUX_OFFSET_CONN_WINDOW_RECV(), v); }
+fn multiplexer_set_last_active(m: i64, v: i64) { store64(m + MUX_OFFSET_LAST_ACTIVE(), v); }
+fn multiplexer_set_goaway_sent(m: i64, v: i64) { store64(m + MUX_OFFSET_GOAWAY_SENT(), v); }
+fn multiplexer_set_goaway_recv(m: i64, v: i64) { store64(m + MUX_OFFSET_GOAWAY_RECV(), v); }
+fn multiplexer_set_error_code(m: i64, v: i64) { store64(m + MUX_OFFSET_ERROR_CODE(), v); }
+
+// Stream management
+fn multiplexer_find_stream(m: i64, target_id: i64) -> i64 {
+    let stream_array = load64(m + MUX_OFFSET_STREAM_ARRAY());
+    let count = multiplexer_stream_count(m);
+
+    let i = 0;
+    while i < count {
+        let s = load64(stream_array + i * 8);
+        if stream_id(s) == target_id {
+            return s;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+fn multiplexer_add_stream(m: i64, s: i64) -> i64 {
+    let config = multiplexer_config(m);
+    let count = multiplexer_stream_count(m);
+    let capacity = load64(m + MUX_OFFSET_STREAM_CAPACITY());
+
+    // Check max streams
+    if count >= mux_config_max_streams(config) {
+        return 0;
+    }
+
+    // Grow array if needed
+    if count >= capacity {
+        let new_capacity = capacity * 2;
+        let old_array = load64(m + MUX_OFFSET_STREAM_ARRAY());
+        let new_array = alloc(new_capacity * 8);
+
+        let i = 0;
+        while i < count {
+            store64(new_array + i * 8, load64(old_array + i * 8));
+            i = i + 1;
+        }
+
+        store64(m + MUX_OFFSET_STREAM_ARRAY(), new_array);
+        store64(m + MUX_OFFSET_STREAM_CAPACITY(), new_capacity);
+    }
+
+    let stream_array = load64(m + MUX_OFFSET_STREAM_ARRAY());
+    store64(stream_array + count * 8, s);
+    store64(m + MUX_OFFSET_STREAM_COUNT(), count + 1);
+
+    // Update last stream ID
+    let sid = stream_id(s);
+    if sid > multiplexer_last_stream_id(m) {
+        store64(m + MUX_OFFSET_LAST_STREAM_ID(), sid);
+    }
+
+    1
+}
+
+fn multiplexer_remove_stream(m: i64, target_id: i64) -> i64 {
+    let stream_array = load64(m + MUX_OFFSET_STREAM_ARRAY());
+    let count = multiplexer_stream_count(m);
+
+    let i = 0;
+    while i < count {
+        let s = load64(stream_array + i * 8);
+        if stream_id(s) == target_id {
+            // Shift remaining elements
+            let j = i;
+            while j < count - 1 {
+                store64(stream_array + j * 8, load64(stream_array + (j + 1) * 8));
+                j = j + 1;
+            }
+            store64(m + MUX_OFFSET_STREAM_COUNT(), count - 1);
+            return 1;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+// Create new stream
+fn multiplexer_create_stream(m: i64, stream_type: i64, now: i64) -> i64 {
+    // Check if goaway received
+    if multiplexer_goaway_recv(m) != 0 {
+        return 0;
+    }
+
+    let next_id = multiplexer_next_stream_id(m);
+    let config = multiplexer_config(m);
+
+    let s = mux_stream_new(next_id, stream_type, now);
+    stream_set_send_window(s, mux_config_init_window(config));
+    stream_set_recv_window(s, mux_config_init_window(config));
+
+    if multiplexer_add_stream(m, s) == 0 {
+        stream_free(s);
+        return 0;
+    }
+
+    // Increment next stream ID by 2 (keep odd/even parity)
+    store64(m + MUX_OFFSET_NEXT_STREAM_ID(), next_id + 2);
+    multiplexer_set_last_active(m, now);
+
+    s
+}
+
+// Accept remote stream
+fn multiplexer_accept_stream(m: i64, sid: i64, stream_type: i64, now: i64) -> i64 {
+    // Verify stream ID parity
+    let is_server = multiplexer_is_server(m);
+    let is_client_stream = sid % 2 == 1;
+
+    // Server should accept odd IDs, client should accept even IDs
+    if is_server != 0 && is_client_stream == 0 {
+        return 0;  // Server can't accept server-initiated streams
+    }
+    if is_server == 0 && is_client_stream != 0 {
+        return 0;  // Client can't accept client-initiated streams
+    }
+
+    // Check if stream already exists
+    if multiplexer_find_stream(m, sid) != 0 {
+        return 0;
+    }
+
+    let config = multiplexer_config(m);
+    let s = mux_stream_new(sid, stream_type, now);
+    stream_set_send_window(s, mux_config_init_window(config));
+    stream_set_recv_window(s, mux_config_init_window(config));
+    stream_open(s, now);
+
+    if multiplexer_add_stream(m, s) == 0 {
+        stream_free(s);
+        return 0;
+    }
+
+    multiplexer_set_last_active(m, now);
+    s
+}
+
+// Send data on stream
+fn multiplexer_send(m: i64, sid: i64, data: i64, length: i64, end_stream: i64, now: i64) -> i64 {
+    let s = multiplexer_find_stream(m, sid);
+    if s == 0 {
+        return 0;
+    }
+
+    if stream_can_send(s) == 0 {
+        return 0;
+    }
+
+    // Check flow control
+    let stream_window = stream_send_window(s);
+    let conn_window = multiplexer_conn_window_send(m);
+
+    let available = stream_window;
+    if conn_window < available {
+        available = conn_window;
+    }
+
+    if length > available {
+        return 0;  // Would block on flow control
+    }
+
+    // Update windows
+    stream_set_send_window(s, stream_window - length);
+    multiplexer_set_conn_window_send(m, conn_window - length);
+
+    // Update statistics
+    stream_add_bytes_sent(s, length);
+    stream_add_frames_sent(s, 1);
+    stream_set_last_active(s, now);
+
+    // Handle end of stream
+    if end_stream != 0 {
+        stream_close_local(s, now);
+    }
+
+    multiplexer_set_last_active(m, now);
+    length
+}
+
+// Receive data on stream
+fn multiplexer_recv(m: i64, sid: i64, data: i64, length: i64, now: i64) -> i64 {
+    let s = multiplexer_find_stream(m, sid);
+    if s == 0 {
+        return 0;
+    }
+
+    if stream_can_recv(s) == 0 {
+        return 0;
+    }
+
+    // Update receive window
+    let stream_window = stream_recv_window(s);
+    let conn_window = multiplexer_conn_window_recv(m);
+
+    stream_set_recv_window(s, stream_window - length);
+    multiplexer_set_conn_window_recv(m, conn_window - length);
+
+    // Update statistics
+    stream_add_bytes_recv(s, length);
+    stream_add_frames_recv(s, 1);
+    stream_set_last_active(s, now);
+
+    multiplexer_set_last_active(m, now);
+    length
+}
+
+// Window update
+fn multiplexer_update_window(m: i64, sid: i64, increment: i64) -> i64 {
+    if sid == 0 {
+        // Connection-level window update
+        let window = multiplexer_conn_window_recv(m);
+        multiplexer_set_conn_window_recv(m, window + increment);
+        return 1;
+    }
+
+    let s = multiplexer_find_stream(m, sid);
+    if s == 0 {
+        return 0;
+    }
+
+    let window = stream_recv_window(s);
+    stream_set_recv_window(s, window + increment);
+    1
+}
+
+// Process window update for sending
+fn multiplexer_window_update_send(m: i64, sid: i64, increment: i64) -> i64 {
+    if sid == 0 {
+        let window = multiplexer_conn_window_send(m);
+        multiplexer_set_conn_window_send(m, window + increment);
+        return 1;
+    }
+
+    let s = multiplexer_find_stream(m, sid);
+    if s == 0 {
+        return 0;
+    }
+
+    let window = stream_send_window(s);
+    stream_set_send_window(s, window + increment);
+    1
+}
+
+// Close stream
+fn multiplexer_close_stream(m: i64, sid: i64, error_code: i64, now: i64) -> i64 {
+    let s = multiplexer_find_stream(m, sid);
+    if s == 0 {
+        return 0;
+    }
+
+    stream_reset(s, error_code, now);
+    multiplexer_set_last_active(m, now);
+    1
+}
+
+// Send GOAWAY
+fn multiplexer_goaway(m: i64, error_code: i64, now: i64) -> i64 {
+    if multiplexer_goaway_sent(m) != 0 {
+        return 0;
+    }
+
+    multiplexer_set_goaway_sent(m, 1);
+    multiplexer_set_error_code(m, error_code);
+    multiplexer_set_last_active(m, now);
+    1
+}
+
+// Process received GOAWAY
+fn multiplexer_recv_goaway(m: i64, last_stream_id: i64, error_code: i64, now: i64) -> i64 {
+    multiplexer_set_goaway_recv(m, 1);
+    multiplexer_set_error_code(m, error_code);
+    multiplexer_set_last_active(m, now);
+
+    // Close streams with ID > last_stream_id
+    let stream_array = load64(m + MUX_OFFSET_STREAM_ARRAY());
+    let count = multiplexer_stream_count(m);
+
+    let i = 0;
+    while i < count {
+        let s = load64(stream_array + i * 8);
+        if stream_id(s) > last_stream_id {
+            stream_reset(s, STREAM_ERROR_REFUSED(), now);
+        }
+        i = i + 1;
+    }
+
+    1
+}
+
+// Check if multiplexer can create new streams
+fn multiplexer_can_create_stream(m: i64) -> i64 {
+    if multiplexer_goaway_recv(m) != 0 {
+        return 0;
+    }
+
+    let config = multiplexer_config(m);
+    if multiplexer_stream_count(m) >= mux_config_max_streams(config) {
+        return 0;
+    }
+
+    1
+}
+
+// Get active stream count
+fn multiplexer_active_stream_count(m: i64) -> i64 {
+    let stream_array = load64(m + MUX_OFFSET_STREAM_ARRAY());
+    let count = multiplexer_stream_count(m);
+
+    let active = 0;
+    let i = 0;
+    while i < count {
+        let s = load64(stream_array + i * 8);
+        let state = stream_state(s);
+        if state != MUX_STREAM_STATE_CLOSED() {
+            active = active + 1;
+        }
+        i = i + 1;
+    }
+    active
+}
+
+// Cleanup closed streams
+fn multiplexer_cleanup_closed(m: i64) -> i64 {
+    let stream_array = load64(m + MUX_OFFSET_STREAM_ARRAY());
+    let count = multiplexer_stream_count(m);
+
+    let removed = 0;
+    let i = 0;
+    while i < count {
+        let s = load64(stream_array + i * 8);
+        if stream_state(s) == MUX_STREAM_STATE_CLOSED() {
+            // Shift remaining elements
+            let j = i;
+            while j < count - 1 {
+                store64(stream_array + j * 8, load64(stream_array + (j + 1) * 8));
+                j = j + 1;
+            }
+            count = count - 1;
+            removed = removed + 1;
+            stream_free(s);
+        } else {
+            i = i + 1;
+        }
+    }
+
+    store64(m + MUX_OFFSET_STREAM_COUNT(), count);
+    removed
+}
+
+fn multiplexer_free(m: i64) {
+    // Free all streams
+    let stream_array = load64(m + MUX_OFFSET_STREAM_ARRAY());
+    let count = multiplexer_stream_count(m);
+
+    let i = 0;
+    while i < count {
+        let s = load64(stream_array + i * 8);
+        stream_free(s);
+        i = i + 1;
+    }
+
+    // Dealloc marker
+}
+
+// ============================================================================
+// Priority Queue for Fair Scheduling
+// ============================================================================
+
+// Priority queue entry
+fn PRIO_ENTRY_OFFSET_STREAM() -> i64 { 0 }
+fn PRIO_ENTRY_OFFSET_PRIORITY() -> i64 { 8 }
+fn PRIO_ENTRY_OFFSET_WEIGHT() -> i64 { 16 }
+fn PRIO_ENTRY_OFFSET_DEFICIT() -> i64 { 24 }
+fn PRIO_ENTRY_SIZE() -> i64 { 32 }
+
+fn prio_entry_new(s: i64) -> i64 {
+    let e = alloc(PRIO_ENTRY_SIZE());
+    store64(e + PRIO_ENTRY_OFFSET_STREAM(), s);
+    store64(e + PRIO_ENTRY_OFFSET_PRIORITY(), stream_priority(s));
+    store64(e + PRIO_ENTRY_OFFSET_WEIGHT(), stream_weight(s));
+    store64(e + PRIO_ENTRY_OFFSET_DEFICIT(), 0);
+    e
+}
+
+fn prio_entry_stream(e: i64) -> i64 { load64(e + PRIO_ENTRY_OFFSET_STREAM()) }
+fn prio_entry_priority(e: i64) -> i64 { load64(e + PRIO_ENTRY_OFFSET_PRIORITY()) }
+fn prio_entry_weight(e: i64) -> i64 { load64(e + PRIO_ENTRY_OFFSET_WEIGHT()) }
+fn prio_entry_deficit(e: i64) -> i64 { load64(e + PRIO_ENTRY_OFFSET_DEFICIT()) }
+
+fn prio_entry_set_deficit(e: i64, d: i64) { store64(e + PRIO_ENTRY_OFFSET_DEFICIT(), d); }
+
+fn prio_entry_free(e: i64) {
+    // Dealloc marker
+}
+
+// Weighted fair queue scheduler
+fn WFQ_OFFSET_ENTRIES() -> i64 { 0 }
+fn WFQ_OFFSET_COUNT() -> i64 { 8 }
+fn WFQ_OFFSET_CAPACITY() -> i64 { 16 }
+fn WFQ_OFFSET_CURRENT() -> i64 { 24 }
+fn WFQ_SIZE() -> i64 { 32 }
+
+fn wfq_scheduler_new() -> i64 {
+    let wfq = alloc(WFQ_SIZE());
+    let capacity = 16;
+    let entries = alloc(capacity * 8);
+
+    store64(wfq + WFQ_OFFSET_ENTRIES(), entries);
+    store64(wfq + WFQ_OFFSET_COUNT(), 0);
+    store64(wfq + WFQ_OFFSET_CAPACITY(), capacity);
+    store64(wfq + WFQ_OFFSET_CURRENT(), 0);
+
+    wfq
+}
+
+fn wfq_scheduler_add(wfq: i64, s: i64) -> i64 {
+    let count = load64(wfq + WFQ_OFFSET_COUNT());
+    let capacity = load64(wfq + WFQ_OFFSET_CAPACITY());
+
+    if count >= capacity {
+        // Grow
+        let new_capacity = capacity * 2;
+        let old_entries = load64(wfq + WFQ_OFFSET_ENTRIES());
+        let new_entries = alloc(new_capacity * 8);
+
+        let i = 0;
+        while i < count {
+            store64(new_entries + i * 8, load64(old_entries + i * 8));
+            i = i + 1;
+        }
+
+        store64(wfq + WFQ_OFFSET_ENTRIES(), new_entries);
+        store64(wfq + WFQ_OFFSET_CAPACITY(), new_capacity);
+    }
+
+    let entries = load64(wfq + WFQ_OFFSET_ENTRIES());
+    let entry = prio_entry_new(s);
+    store64(entries + count * 8, entry);
+    store64(wfq + WFQ_OFFSET_COUNT(), count + 1);
+
+    1
+}
+
+fn wfq_scheduler_remove(wfq: i64, s: i64) -> i64 {
+    let entries = load64(wfq + WFQ_OFFSET_ENTRIES());
+    let count = load64(wfq + WFQ_OFFSET_COUNT());
+
+    let i = 0;
+    while i < count {
+        let e = load64(entries + i * 8);
+        if prio_entry_stream(e) == s {
+            // Shift remaining
+            let j = i;
+            while j < count - 1 {
+                store64(entries + j * 8, load64(entries + (j + 1) * 8));
+                j = j + 1;
+            }
+            store64(wfq + WFQ_OFFSET_COUNT(), count - 1);
+            prio_entry_free(e);
+            return 1;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+// Get next stream to service using weighted fair queuing
+fn wfq_scheduler_next(wfq: i64) -> i64 {
+    let count = load64(wfq + WFQ_OFFSET_COUNT());
+    if count == 0 {
+        return 0;
+    }
+
+    let entries = load64(wfq + WFQ_OFFSET_ENTRIES());
+    let current = load64(wfq + WFQ_OFFSET_CURRENT());
+
+    // Find next stream that can send and has lowest deficit
+    let best_idx = 0 - 1;
+    let best_deficit = 9223372036854775807;  // Max i64
+
+    let i = 0;
+    while i < count {
+        let idx = (current + i) % count;
+        let e = load64(entries + idx * 8);
+        let s = prio_entry_stream(e);
+
+        if stream_can_send(s) != 0 {
+            let deficit = prio_entry_deficit(e);
+            if deficit < best_deficit {
+                best_deficit = deficit;
+                best_idx = idx;
+            }
+        }
+        i = i + 1;
+    }
+
+    if best_idx < 0 {
+        return 0;
+    }
+
+    let e = load64(entries + best_idx * 8);
+    let weight = prio_entry_weight(e);
+
+    // Update deficit (quantum is proportional to weight)
+    prio_entry_set_deficit(e, best_deficit + (256 / weight));
+
+    store64(wfq + WFQ_OFFSET_CURRENT(), (best_idx + 1) % count);
+
+    prio_entry_stream(e)
+}
+
+fn wfq_scheduler_count(wfq: i64) -> i64 {
+    load64(wfq + WFQ_OFFSET_COUNT())
+}
+
+fn wfq_scheduler_free(wfq: i64) {
+    let entries = load64(wfq + WFQ_OFFSET_ENTRIES());
+    let count = load64(wfq + WFQ_OFFSET_COUNT());
+
+    let i = 0;
+    while i < count {
+        let e = load64(entries + i * 8);
+        prio_entry_free(e);
+        i = i + 1;
+    }
+
+    // Dealloc marker
+}

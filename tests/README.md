@@ -108,30 +108,19 @@ tests/
 │       ├── spec_references.sx
 │       └── spec_turbofish.sx
 │
-├── types/                       # Type system tests (24 tests)
+├── types/                       # Type system tests (13 tests)
 │   ├── spec_associated_types.sx
-│   ├── spec_associated_types_p36.sx
 │   ├── spec_generic_methods.sx
-│   ├── spec_generic_methods_p36.sx
 │   ├── spec_generics.sx
 │   ├── spec_if_let.sx
-│   ├── spec_if_let_p36.sx
 │   ├── spec_if_let_simple.sx
-│   ├── spec_if_let_simple_p36.sx
 │   ├── spec_impl_trait.sx
-│   ├── spec_impl_trait_p36.sx
 │   ├── spec_match_binding.sx
-│   ├── spec_match_binding_p36.sx
 │   ├── spec_match_patterns.sx
-│   ├── spec_match_patterns_p36.sx
 │   ├── spec_option_result.sx
-│   ├── spec_option_result_p36.sx
 │   ├── spec_references.sx
-│   ├── spec_references_p36.sx
 │   ├── spec_trait_self_ref.sx
-│   ├── spec_trait_self_ref_p36.sx
 │   ├── spec_turbofish.sx
-│   ├── spec_turbofish_p36.sx
 │   └── spec_type_alias.sx
 │
 ├── neural/                      # Neural IR and gates (16 tests)
@@ -173,7 +162,7 @@ tests/
 │   ├── unit_vec.sx
 │   └── integ_http_client.sx
 │
-├── runtime/                     # Runtime system tests (5 tests)
+├── runtime/                     # Runtime system tests (8 tests)
 │   ├── actors/
 │   │   └── integ_actor_runtime.sx
 │   ├── async/
@@ -181,9 +170,13 @@ tests/
 │   ├── distribution/
 │   │   └── integ_distribution.sx
 │   ├── io/
-│   │   └── integ_io.sx
-│   └── networking/
-│       └── integ_networking.sx
+│   │   ├── integ_io.sx
+│   │   └── unit_fileio.sx
+│   ├── memory/
+│   │   └── integ_memory_safety.sx
+│   ├── networking/
+│   │   └── integ_networking.sx
+│   └── integ_edge_cases.sx
 │
 ├── ai/                          # AI/Cognitive tests (17 tests)
 │   ├── anima/
@@ -212,27 +205,22 @@ tests/
 │   ├── integ_infer_standalone.sx
 │   └── unit_io.sx
 │
-├── toolchain/                   # Compiler toolchain tests (14 tests)
+├── toolchain/                   # Compiler toolchain tests (9 tests)
 │   ├── codegen/
 │   │   ├── unit_codegen.sx
-│   │   ├── unit_compiler_types.sx
-│   │   └── unit_phase35_codegen.sx
+│   │   └── unit_compiler_types.sx
 │   ├── parser/
-│   │   ├── unit_parser.sx
-│   │   └── unit_phase35_parser.sx
+│   │   └── unit_parser.sx
 │   ├── sxpm/
 │   │   └── unit_model_commands.sx
 │   ├── verification/
 │   │   ├── integ_verification_main.sx
 │   │   ├── integ_verification_suite.sx
 │   │   ├── unit_audit_additions.sx
-│   │   ├── unit_failures.sx
-│   │   └── unit_phase35_verification.sx
-│   ├── integ_phase35_toolchain.sx
+│   │   └── unit_failures.sx
 │   ├── integ_toolchain_main.sx
 │   ├── unit_advanced_features.sx
-│   ├── unit_phase34_advanced.sx
-│   └── unit_phase35_runtime.sx
+│   └── unit_runtime.sx
 │
 ├── integration/                 # End-to-end tests (7 tests)
 │   ├── e2e_config_parser.sx
@@ -273,27 +261,27 @@ tests/
 | Category | Tests | Description |
 |----------|-------|-------------|
 | language | 40 | Core language features (types, async, closures, traits) |
-| types | 24 | Type system tests (generics, associated types, patterns) |
+| types | 13 | Type system tests (generics, associated types, patterns) |
 | neural | 16 | Neural IR, gates, contracts, pruning |
 | stdlib | 16 | Standard library (collections, crypto, cli, regex) |
 | ai | 17 | AI/Cognitive framework (anima, hive, memory, specialists) |
-| toolchain | 14 | Compiler toolchain (parser, codegen, verification) |
+| toolchain | 9 | Compiler toolchain (parser, codegen, verification) |
 | integration | 7 | End-to-end workflow tests |
 | basics | 6 | Basic language constructs |
-| runtime | 5 | Runtime systems (actors, async, networking) |
+| runtime | 8 | Runtime systems (actors, async, networking, memory, I/O) |
 | async | 3 | Async/await features |
 | learning | 3 | Automatic differentiation (dual numbers) |
 | actors | 1 | Actor model |
 | observability | 1 | Metrics and tracing |
-| **Total** | **156** | |
+| **Total** | **140** | |
 
 ## Test Type Distribution
 
 | Type | Count | Description |
 |------|-------|-------------|
 | `spec_` | 90 | Language specification compliance tests |
-| `unit_` | 35 | Isolated function/module tests |
-| `integ_` | 24 | Integration tests |
+| `unit_` | 36 | Isolated function/module tests |
+| `integ_` | 26 | Integration tests |
 | `e2e_` | 7 | End-to-end workflow tests |
 
 ## Writing Tests
@@ -420,11 +408,3 @@ Static analysis warnings (e.g., contract violations) are counted separately.
 
 Tests are automatically discovered by the test runner.
 
-## Phase Variants
-
-Some tests have `_p36` suffix indicating Phase 36 enhancements to the language. These test newer features while maintaining compatibility with the base tests.
-
-```
-spec_generics.sx      # Base generics test
-spec_generics_p36.sx  # Phase 36 enhanced generics test
-```

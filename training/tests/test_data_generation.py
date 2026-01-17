@@ -36,7 +36,7 @@ def test_context_protocol_data():
         assert len(ex["text"]) > 100, f"Example {i} text too short"
         assert "confidence" in ex["text"].lower(), f"Example {i} missing confidence"
 
-    print(f"\n✓ Generated {len(examples)} valid context protocol examples")
+    print(f"\nPASS Generated {len(examples)} valid context protocol examples")
     return True
 
 
@@ -65,7 +65,7 @@ def test_confidence_calibration_data():
         assert "text" in ex, f"Example {i} missing 'text' key"
         assert "[confidence:" in ex["text"], f"Example {i} missing confidence marker"
 
-    print(f"\n✓ Generated {len(examples)} valid calibration examples")
+    print(f"\nPASS Generated {len(examples)} valid calibration examples")
     return True
 
 
@@ -100,7 +100,7 @@ def test_belief_revision_data():
         assert "text" in ex, f"Example {i} missing 'text' key"
         assert "belief" in ex["text"].lower(), f"Example {i} missing belief reference"
 
-    print(f"\n✓ Generated {len(examples)} valid belief revision examples")
+    print(f"\nPASS Generated {len(examples)} valid belief revision examples")
     return True
 
 
@@ -138,7 +138,7 @@ def test_neural_ir_gates_data():
         assert "text" in ex, f"Example {i} missing 'text' key"
         assert len(ex["text"]) > 100, f"Example {i} text too short"
 
-    print(f"\n✓ Generated {len(examples)} valid Neural IR/Gates examples")
+    print(f"\nPASS Generated {len(examples)} valid Neural IR/Gates examples")
     return True
 
 
@@ -181,7 +181,7 @@ def test_full_data_generation():
         print(f"  Neural IR/Gates: {neural_count} examples")
 
         total = context_count + calib_count + belief_count + neural_count
-        print(f"\n✓ Total: {total} examples generated successfully")
+        print(f"\nPASS Total: {total} examples generated successfully")
 
     return True
 
@@ -207,7 +207,7 @@ def main():
             results.append((name, success, None))
         except Exception as e:
             results.append((name, False, str(e)))
-            print(f"\n✗ {name} FAILED: {e}")
+            print(f"\nFAIL {name} FAILED: {e}")
 
     # Summary
     print("\n" + "="*60)
@@ -218,7 +218,7 @@ def main():
     failed = len(results) - passed
 
     for name, success, error in results:
-        status = "✓ PASS" if success else "✗ FAIL"
+        status = "PASS PASS" if success else "FAIL FAIL"
         print(f"  {status}: {name}")
         if error:
             print(f"         Error: {error}")
@@ -228,7 +228,7 @@ def main():
     if failed > 0:
         sys.exit(1)
     else:
-        print("\n✓ All data generation tests passed!")
+        print("\nPASS All data generation tests passed!")
         sys.exit(0)
 
 

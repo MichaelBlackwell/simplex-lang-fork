@@ -4755,7 +4755,9 @@ void* intrinsic_sha256(void* data, int64_t len) {
         0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
     };
 
-    uint8_t* bytes = (uint8_t*)data;
+    // Unwrap SxString to get raw data pointer
+    SxString* str = (SxString*)data;
+    uint8_t* bytes = str ? (uint8_t*)str->data : (uint8_t*)data;
     size_t i = 0;
 
     // Process full blocks
@@ -14249,6 +14251,11 @@ int64_t cli_getenv(int64_t name_ptr) {
     return (int64_t)intrinsic_string_new(value);
 }
 
+// Alias for env_get (used by sxc.sx and other toolchain files)
+int64_t env_get(int64_t name_ptr) {
+    return cli_getenv(name_ptr);
+}
+
 // Set environment variable
 int64_t cli_setenv(int64_t name_ptr, int64_t value_ptr) {
     SxString* name = (SxString*)name_ptr;
@@ -14270,6 +14277,31 @@ void file_write(int64_t path_ptr, int64_t content_ptr) {
     SxString* path = (SxString*)path_ptr;
     SxString* content = (SxString*)content_ptr;
     intrinsic_write_file(path, content);
+}
+
+// Check if file exists
+int64_t file_exists(int64_t path_ptr) {
+    SxString* path = (SxString*)path_ptr;
+    if (!path || !path->data) return 0;
+    struct stat st;
+    return stat(path->data, &st) == 0 ? 1 : 0;
+}
+
+// Delete a file
+int64_t file_delete(int64_t path_ptr) {
+    SxString* path = (SxString*)path_ptr;
+    if (!path || !path->data) return -1;
+    return unlink(path->data);
+}
+
+// String length wrapper
+int64_t string_len(int64_t str_ptr) {
+    return intrinsic_string_len((SxString*)str_ptr);
+}
+
+// String concatenation wrapper
+int64_t string_concat(int64_t a_ptr, int64_t b_ptr) {
+    return (int64_t)intrinsic_string_concat((SxString*)a_ptr, (SxString*)b_ptr);
 }
 
 // Remove path (file or directory)

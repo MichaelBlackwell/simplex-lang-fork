@@ -1,0 +1,205 @@
+// Runtime Edge Case Integration Tests
+// Tests boundary conditions, stress scenarios, and error recovery
+// Uses procedural patterns compatible with bootstrap compiler
+
+fn test_string_boundaries() -> i64 {
+ println(" Testing string boundary conditions...");
+
+ // Empty string
+ let empty: str = "";
+ if string_len(empty) == 0 {
+ println(" PASS: Empty string length is 0");
+ } else {
+ println(" FAIL: Empty string length wrong");
+ return 1;
+ }
+
+ // Very long string concatenation
+ var long_str: str = "";
+ var i: i64 = 0;
+ while i < 500 {
+ long_str = string_concat(long_str, "x");
+ i = i + 1;
+ }
+
+ if string_len(long_str) == 500 {
+ println(" PASS: Long string concatenation works");
+ } else {
+ println(" FAIL: Long string length incorrect");
+ return 1;
+ }
+
+ 0
+}
+
+fn test_vector_boundaries() -> i64 {
+ println(" Testing vector boundary conditions...");
+
+ // Empty vector using vec_new() runtime function
+ let empty_vec: i64 = vec_new();
+ if vec_len(empty_vec) == 0 {
+ println(" PASS: Empty vector length is 0");
+ } else {
+ println(" FAIL: Empty vector length wrong");
+ return 1;
+ }
+
+ // Single element
+ let single: i64 = vec_new();
+ vec_push(single, 42);
+ if vec_len(single) == 1 {
+ if vec_get(single, 0) == 42 {
+ println(" PASS: Single element vector works");
+ } else {
+ println(" FAIL: Single element value wrong");
+ return 1;
+ }
+ } else {
+ println(" FAIL: Single element vector length wrong");
+ return 1;
+ }
+
+ 0
+}
+
+fn test_numeric_boundaries() -> i64 {
+ println(" Testing numeric boundary conditions...");
+
+ // Large numbers
+ let large: i64 = 9223372036854775807; // i64 max
+ let negative: i64 = 0 - 9223372036854775807;
+
+ if large > 0 {
+ if negative < 0 {
+ println(" PASS: Large number handling works");
+ } else {
+ println(" FAIL: Negative number handling failed");
+ return 1;
+ }
+ } else {
+ println(" FAIL: Large number handling failed");
+ return 1;
+ }
+
+ // Zero
+ let zero: i64 = 0;
+ if zero == 0 {
+ println(" PASS: Zero handling works");
+ } else {
+ println(" FAIL: Zero handling failed");
+ return 1;
+ }
+
+ 0
+}
+
+fn test_memory_pressure() -> i64 {
+ println(" Testing memory pressure...");
+
+ // Allocate many objects - simulated using a counter
+ var total_objects: i64 = 0;
+ var i: i64 = 0;
+ while i < 200 {
+ // Simulate creating an inner vector
+ let inner: i64 = vec_new();
+ var j: i64 = 0;
+ while j < 50 {
+ vec_push(inner, j);
+ total_objects = total_objects + 1;
+ j = j + 1;
+ }
+ i = i + 1;
+ }
+
+ // 200 vectors of 50 items each = 10000 total allocations
+ if total_objects == 10000 {
+ println(" PASS: Memory pressure test (10000 allocations)");
+ } else {
+ println(" FAIL: Memory pressure test failed");
+ return 1;
+ }
+
+ 0
+}
+
+fn test_rapid_operations() -> i64 {
+ println(" Testing rapid operations...");
+
+ // Rapid string operations
+ var i: i64 = 0;
+ while i < 1000 {
+ let temp: str = string_concat("item_", int_to_string(i));
+ // temp discarded each iteration
+ i = i + 1;
+ }
+ println(" PASS: 1000 rapid string operations");
+
+ // Rapid vector operations
+ i = 0;
+ while i < 500 {
+ let temp: i64 = vec_new();
+ vec_push(temp, 1);
+ vec_push(temp, 2);
+ vec_push(temp, 3);
+ // temp discarded each iteration
+ i = i + 1;
+ }
+ println(" PASS: 500 rapid vector operations");
+
+ 0
+}
+
+fn stress_test() -> i64 {
+ println(" Running stress test...");
+
+ var total_ops: i64 = 0;
+
+ // Combined stress: strings + vectors + numbers
+ var i: i64 = 0;
+ while i < 100 {
+ // String work
+ let s1: str = "stress";
+ let s2: str = string_concat(s1, "_test_");
+ let s3: str = string_concat(s2, int_to_string(i));
+ total_ops = total_ops + 1;
+
+ // Vector work
+ let v: i64 = vec_new();
+ var j: i64 = 0;
+ while j < 10 {
+ vec_push(v, i * 10 + j);
+ total_ops = total_ops + 1;
+ j = j + 1;
+ }
+
+ i = i + 1;
+ }
+
+ println(string_concat(" PASS: Stress test completed - ",
+ string_concat(int_to_string(total_ops), " operations")));
+
+ 0
+}
+
+fn main() -> i64 {
+ println("=== Runtime Edge Case Tests ===");
+ println("");
+
+ var failures: i64 = 0;
+
+ failures = failures + test_string_boundaries();
+ failures = failures + test_vector_boundaries();
+ failures = failures + test_numeric_boundaries();
+ failures = failures + test_memory_pressure();
+ failures = failures + test_rapid_operations();
+ failures = failures + stress_test();
+
+ println("");
+ if failures == 0 {
+ println("=== ALL EDGE CASE TESTS PASSED ===");
+ } else {
+ println("=== EDGE CASE TESTS FAILED ===");
+ }
+
+ failures
+}

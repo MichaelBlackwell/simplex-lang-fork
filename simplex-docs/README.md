@@ -27,6 +27,7 @@ Simplex (Latin for "simple") is a programming language designed for the AI era. 
 | [SLM Provisioning](spec/13-slm-provisioning.md) | Per-hive model architecture |
 | [Neural IR](spec/14-neural-ir.md) | Differentiable execution and neural gates |
 | [Real-Time Learning](spec/15-real-time-learning.md) | Online learning and adaptation |
+| [Edge Hive](spec/16-edge-hive.md) | Lightweight autonomous hive for edge devices |
 
 ### Tutorial
 
@@ -82,6 +83,7 @@ Start the tutorial: [Tutorial Index](tutorial/README.md)
 - **Learning the language?** Follow the [12-chapter tutorial](tutorial/README.md)
 - **Want syntax reference?** Jump to [Language Syntax](spec/04-language-syntax.md)
 - **Building AI agents?** See [The Anima](spec/12-anima.md) and [Cognitive Hive AI](spec/09-cognitive-hive.md)
+- **Edge deployment?** Check [Edge Hive](spec/16-edge-hive.md) for device-side intelligence
 - **See complete code?** Check [Examples](examples/document-pipeline.md)
 - **Planning deployment?** See [Cost Optimization](spec/08-cost-optimization.md)
 - **Building the VM?** Read [Virtual Machine](spec/05-virtual-machine.md)
@@ -104,6 +106,32 @@ Start the tutorial: [Tutorial Index](tutorial/README.md)
 ---
 
 ## Key Features (v0.9.0)
+
+### NEW in v0.9.0: Edge Hive
+
+**Run intelligence on every device**: The Edge Hive brings autonomous cognitive capabilities to edge devices, from smartwatches to desktops.
+
+```simplex
+// Create an Edge Hive on this device
+let hive = create_edge_hive("wss://hive.example.com")
+
+// Connect to cloud for delegation
+edge_hive_connect(hive)
+
+// Handle requests locally when confident, delegate when needed
+let response = edge_hive_query(hive, query)
+
+// User preferences are learned and persisted
+hive_set_preference(hive, "theme", 1)
+```
+
+- **Local-first**: Processing happens on-device, cloud is a fallback
+- **User advocacy**: Represents user interests, not provider interests
+- **Adaptive**: Automatically scales from watch to desktop
+- **Offline-capable**: Works without network connectivity
+- **Privacy-first**: All data local by default
+
+See [Edge Hive Specification](spec/16-edge-hive.md) for details.
 
 ### NEW in v0.9.0: Self-Learning Annealing
 
@@ -135,11 +163,11 @@ See [RELEASE-0.9.0.md](RELEASE-0.9.0.md) for complete release notes.
 Native `dual` type for forward-mode automatic differentiation with zero overhead:
 
 ```simplex
-let x: dual = dual::variable(3.0);
-let y = x * x + x.sin();
+let x: dual = dual::variable(3.0)
+let y = x * x + x.sin()
 
-println(y.val);  // f(3) = 9.1411...
-println(y.der);  // f'(3) = 6.9899... (exact, not numerical)
+print(y.val)  // f(3) = 9.1411...
+print(y.der)  // f'(3) = 6.9899... (exact, not numerical)
 ```
 
 - **Zero overhead**: Compiles to same assembly as hand-written derivatives
@@ -281,6 +309,15 @@ See [RELEASE-0.5.0.md](RELEASE-0.5.0.md) for complete release notes.
 - `simplex-training` library for self-optimizing pipelines
 - Learnable LR, distillation, pruning, and quantization schedules
 
+### Edge Hive (v0.9.0)
+- Lightweight autonomous hive for edge devices (watch to desktop)
+- Local-first processing with cloud delegation fallback
+- BeliefStore with CRDT-based sync across devices
+- Specialist system for domain-specific local handling
+- Adaptive footprint based on device capabilities
+- Privacy-first design with local data by default
+- Offline operation as a first-class feature
+
 ### High-Performance Inference (v0.9.0)
 - Native llama.cpp integration via `simplex-inference`
 - Continuous batching for throughput optimization
@@ -308,9 +345,9 @@ The entire toolchain is **fully cross-platform**:
 
 | Platform | Bootstrap | Compiler | Tools |
 |----------|-----------|----------|-------|
-| **macOS** (Intel/ARM) | ✅ | ✅ | ✅ |
-| **Linux** (x86_64/ARM64) | ✅ | ✅ | ✅ |
-| **Windows** (x86_64) | ✅ | ✅ | ✅ |
+| **macOS** (Intel/ARM) | Yes | Yes | Yes |
+| **Linux** (x86_64/ARM64) | Yes | Yes | Yes |
+| **Windows** (x86_64) | Yes | Yes | Yes |
 
 - `stage0.py` automatically detects the platform and generates appropriate target triples
 - All tools use platform-appropriate path separators and commands
@@ -359,7 +396,7 @@ Simplex uses the following terminology for its module system:
 | 0.6.0 | 2026-01-08 | Neural IR: neural gates, Gumbel-Softmax, dual compilation, hardware targeting |
 | 0.7.0 | 2026-01-09 | Real-Time Learning: simplex-learning library, streaming optimizers, federated learning |
 | 0.8.0 | 2026-01-10 | Dual Numbers: native forward-mode AD, zero-overhead compilation, multidual for gradients |
-| 0.9.0 | 2026-01-11 | Self-Learning Annealing: learnable schedules, test restructure (156 tests), simplex-training library |
+| 0.9.0 | 2026-01-11 | Self-Learning Annealing, Edge Hive, test restructure (156 tests), simplex-training library |
 
 ---
 

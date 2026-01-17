@@ -1,0 +1,256 @@
+// Neural IR gate training data generator
+//
+// Generates training data for Neural IR soft gates, temperature-aware
+// attention, and probabilistic outputs.
+
+use simplex_std::vec::Vec;
+use simplex_std::string::String;
+use super::super::generator::{DataGenerator, TrainingExample, ExampleMetadata, Rng};
+use super::super::super::SpecialistDomain;
+
+/// Generator for Neural IR gate training data
+pub struct NeuralIRGenerator {
+    rng: Rng,
+    name: String,
+}
+
+impl NeuralIRGenerator {
+    pub fn new() -> Self {
+        NeuralIRGenerator {
+            rng: Rng::new(42),
+            name: "neural_ir_generator".to_string(),
+        }
+    }
+
+    /// Generate temperature-aware decision task
+    fn generate_temperature_aware(&mut self) -> TrainingExample {
+        let temp = self.rng.choice_clone(&[0.1, 0.3, 0.5, 0.7, 1.0, 2.0, 5.0]);
+        let semantics = match temp {
+            t if t <= 0.3 => "very deterministic",
+            t if t <= 0.7 => "balanced",
+            t if t <= 1.0 => "standard sampling",
+            _ => "high exploration",
+        };
+
+        // Generate probability distribution based on temperature
+        let (p1, p2, p3) = self.temperature_to_probs(temp);
+
+        let prompt = format!(
+            "You are operating at temperature {} ({}).\n\n\
+             Task: Select between options for code review approach.\n\
+             Options: Approve, Request Changes, Comment Only\n\n\
+             Provide your selection with probability distribution.",
+            temp, semantics
+        );
+
+        let response = format!(
+            "**Temperature Analysis:** {} ({})\n\n\
+             **Probability Distribution:**\n\
+             | Option | Probability |\n\
+             |--------|------------|\n\
+             | Approve | {:.2} |\n\
+             | Request Changes | {:.2} |\n\
+             | Comment Only | {:.2} |\n\n\
+             At this temperature:\n\
+             - {} distribution sharpness\n\
+             - {} certainty in selection\n\n\
+             [confidence: {:.2}]",
+            temp, semantics, p1, p2, p3,
+            if temp < 0.5 { "High" } else { "Low" },
+            if temp < 0.5 { "High" } else { "Lower" },
+            p1.max(p2).max(p3)
+        );
+
+        TrainingExample {
+            prompt,
+            response,
+            metadata: ExampleMetadata {
+                domain: "neural_ir".to_string(),
+                confidence_target: p1.max(p2).max(p3),
+                source: "synthetic".to_string(),
+                difficulty: 0.5,
+                quality: 1.0,
+                tags: vec!["temperature".to_string()],
+            },
+        }
+    }
+
+    fn temperature_to_probs(&self, temp: f64) -> (f64, f64, f64) {
+        // Simulate softmax with temperature
+        let logits = [2.0, 1.0, 0.5]; // Base logits
+        let scaled: Vec<f64> = logits.iter().map(|l| (l / temp).exp()).collect();
+        let sum: f64 = scaled.iter().sum();
+        (scaled[0] / sum, scaled[1] / sum, scaled[2] / sum)
+    }
+
+    /// Generate soft logic gate task
+    fn generate_soft_logic(&mut self) -> TrainingExample {
+        let confidence = self.rng.float_range(0.1, 0.95);
+        let threshold = self.rng.choice_clone(&[0.3, 0.5, 0.7, 0.8, 0.9]);
+        let passes = confidence >= threshold;
+        let margin = (confidence - threshold).abs();
+
+        let prompt = format!(
+            "Soft Logic Gate Evaluation:\n\n\
+             Input confidence: {:.3}\n\
+             Threshold: {:.2}\n\n\
+             Should this pass the gate?",
+            confidence, threshold
+        );
+
+        let soft_output = 1.0 / (1.0 + (-10.0 * (confidence - threshold)).exp());
+
+        let response = format!(
+            "**Soft Logic Gate Analysis**\n\n\
+             | Metric | Value |\n\
+             |--------|-------|\n\
+             | Input Confidence | {:.3} |\n\
+             | Threshold | {:.2} |\n\
+             | Margin | {}{:.3} |\n\
+             | Hard Decision | {} |\n\n\
+             **Gate Output:**\n\
+             - Hard: {} (binary)\n\
+             - Soft: {:.3} (continuous sigmoid)\n\n\
+             The soft output allows gradient flow for training.\n\n\
+             [confidence: 0.99]",
+            confidence, threshold,
+            if passes { "+" } else { "-" }, margin,
+            if passes { "PASS" } else { "FAIL" },
+            if passes { 1.0 } else { 0.0 },
+            soft_output
+        );
+
+        TrainingExample {
+            prompt,
+            response,
+            metadata: ExampleMetadata {
+                domain: "neural_ir".to_string(),
+                confidence_target: 0.99,
+                source: "synthetic".to_string(),
+                difficulty: 0.4,
+                quality: 1.0,
+                tags: vec!["soft_gate".to_string()],
+            },
+        }
+    }
+
+    /// Generate Gumbel-Softmax task
+    fn generate_gumbel_softmax(&mut self) -> TrainingExample {
+        let temp = self.rng.choice_clone(&[0.1, 0.5, 1.0, 2.0]);
+        let n_options = 4;
+
+        let prompt = format!(
+            "Perform Gumbel-Softmax sampling:\n\n\
+             Logits: [2.0, 1.0, 0.5, 0.0]\n\
+             Temperature: {}\n\
+             Hard sampling: true\n\n\
+             Show the sampling process and result.",
+            temp
+        );
+
+        let response = format!(
+            "**Gumbel-Softmax Sampling:**\n\n\
+             1. **Add Gumbel noise** to logits:\n\
+                g_i ~ Gumbel(0, 1) = -log(-log(U)), U ~ Uniform(0,1)\n\n\
+             2. **Compute perturbed logits:**\n\
+                z_i = (logit_i + g_i) / temperature\n\n\
+             3. **Apply softmax:**\n\
+                p_i = exp(z_i) / Σ exp(z_j)\n\n\
+             4. **Hard sampling (with STE):**\n\
+                - Forward: argmax (one-hot)\n\
+                - Backward: soft gradient flows\n\n\
+             **Temperature effect (τ={}):**\n\
+             - {} samples (approaching argmax)\n\
+             - Maintains differentiability via reparameterization\n\n\
+             [confidence: 0.96]",
+            temp,
+            if temp < 0.5 { "Sharp" } else if temp < 1.5 { "Moderate" } else { "Soft" }
+        );
+
+        TrainingExample {
+            prompt,
+            response,
+            metadata: ExampleMetadata {
+                domain: "neural_ir".to_string(),
+                confidence_target: 0.96,
+                source: "synthetic".to_string(),
+                difficulty: 0.7,
+                quality: 1.0,
+                tags: vec!["gumbel".to_string(), "differentiable".to_string()],
+            },
+        }
+    }
+
+    /// Generate multi-gate routing task
+    fn generate_routing(&mut self) -> TrainingExample {
+        let n_experts = 4;
+        let top_k = 2;
+
+        let prompt = format!(
+            "Expert Routing Decision:\n\n\
+             Available experts: Math, Code, Language, Reasoning\n\
+             Input: \"Write a function to calculate prime numbers\"\n\
+             Routing: Top-{} selection\n\n\
+             Determine routing weights.",
+            top_k
+        );
+
+        let response = format!(
+            "**Expert Routing Analysis:**\n\n\
+             **Input Classification:**\n\
+             The input combines code generation with mathematical concepts.\n\n\
+             **Routing Weights (pre-normalization):**\n\
+             | Expert | Score | Selected |\n\
+             |--------|-------|----------|\n\
+             | Math | 0.35 | Yes |\n\
+             | Code | 0.45 | Yes |\n\
+             | Language | 0.10 | |\n\
+             | Reasoning | 0.10 | |\n\n\
+             **Final Routing (Top-{}):**\n\
+             - Code: 56% weight\n\
+             - Math: 44% weight\n\n\
+             **Rationale:** Prime number calculation is primarily a coding task \
+             but requires mathematical reasoning for efficiency.\n\n\
+             [confidence: 0.91]",
+            top_k
+        );
+
+        TrainingExample {
+            prompt,
+            response,
+            metadata: ExampleMetadata {
+                domain: "neural_ir".to_string(),
+                confidence_target: 0.91,
+                source: "synthetic".to_string(),
+                difficulty: 0.6,
+                quality: 1.0,
+                tags: vec!["routing".to_string(), "moe".to_string()],
+            },
+        }
+    }
+}
+
+impl DataGenerator for NeuralIRGenerator {
+    fn generate(&mut self) -> TrainingExample {
+        match self.rng.int_range(0, 3) {
+            0 => self.generate_temperature_aware(),
+            1 => self.generate_soft_logic(),
+            2 => self.generate_gumbel_softmax(),
+            _ => self.generate_routing(),
+        }
+    }
+
+    fn domain(&self) -> SpecialistDomain {
+        SpecialistDomain::Custom("neural_ir".to_string())
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn seed(&mut self, seed: u64) {
+        self.rng.seed(seed);
+    }
+
+    fn reset(&mut self) {}
+}

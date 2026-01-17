@@ -1,0 +1,387 @@
+// LoRA configuration
+//
+// Defines configuration options for LoRA fine-tuning including
+// rank, alpha, target modules, and training parameters.
+
+use simplex_std::vec::Vec;
+use simplex_std::string::String;
+
+/// LoRA configuration
+#[derive(Clone)]
+pub struct LoRAConfig {
+    /// Rank (r): dimension of low-rank matrices
+    /// Higher = more capacity but more parameters
+    /// Typical values: 8, 16, 32, 64
+    pub rank: usize,
+
+    /// Alpha: scaling factor
+    /// The LoRA scaling is alpha/rank
+    /// Typically set equal to rank or 2*rank
+    pub alpha: f64,
+
+    /// Dropout rate for LoRA layers (0.0 to disable)
+    pub dropout: f64,
+
+    /// Target modules to apply LoRA to
+    /// Common choices: ["q_proj", "v_proj"] or all attention projections
+    pub target_modules: Vec<String>,
+
+    /// Whether to train bias terms
+    pub train_bias: BiasMode,
+
+    /// Whether to use rank stabilization
+    /// Helps with training stability at higher ranks
+    pub use_rslora: bool,
+
+    /// Fan in/fan out initialization
+    pub fan_in_fan_out: bool,
+
+    /// Modules to exclude from LoRA
+    pub exclude_modules: Vec<String>,
+
+    /// Whether LoRA is applied to queries
+    pub lora_on_query: bool,
+
+    /// Whether LoRA is applied to keys
+    pub lora_on_key: bool,
+
+    /// Whether LoRA is applied to values
+    pub lora_on_value: bool,
+
+    /// Whether LoRA is applied to output projection
+    pub lora_on_output: bool,
+
+    /// Whether LoRA is applied to MLP layers
+    pub lora_on_mlp: bool,
+}
+
+/// Bias training mode
+#[derive(Clone, Copy)]
+pub enum BiasMode {
+    /// Don't train any bias
+    None,
+    /// Train only LoRA layer biases
+    LoRAOnly,
+    /// Train all biases
+    All,
+}
+
+impl LoRAConfig {
+    /// Create default LoRA configuration
+    pub fn default() -> Self {
+        LoRAConfig {
+            rank: 8,
+            alpha: 16.0,
+            dropout: 0.05,
+            target_modules: vec![
+                "q_proj".to_string(),
+                "v_proj".to_string(),
+            ],
+            train_bias: BiasMode::None,
+            use_rslora: false,
+            fan_in_fan_out: false,
+            exclude_modules: Vec::new(),
+            lora_on_query: true,
+            lora_on_key: false,
+            lora_on_value: true,
+            lora_on_output: false,
+            lora_on_mlp: false,
+        }
+    }
+
+    /// Simple configuration for basic tasks
+    pub fn simple() -> Self {
+        LoRAConfig {
+            rank: 8,
+            alpha: 16.0,
+            dropout: 0.05,
+            target_modules: vec![
+                "q_proj".to_string(),
+                "v_proj".to_string(),
+            ],
+            train_bias: BiasMode::None,
+            use_rslora: false,
+            fan_in_fan_out: false,
+            exclude_modules: Vec::new(),
+            lora_on_query: true,
+            lora_on_key: false,
+            lora_on_value: true,
+            lora_on_output: false,
+            lora_on_mlp: false,
+        }
+    }
+
+    /// Standard configuration for NLU tasks
+    pub fn standard() -> Self {
+        LoRAConfig {
+            rank: 16,
+            alpha: 32.0,
+            dropout: 0.05,
+            target_modules: vec![
+                "q_proj".to_string(),
+                "k_proj".to_string(),
+                "v_proj".to_string(),
+                "o_proj".to_string(),
+            ],
+            train_bias: BiasMode::None,
+            use_rslora: false,
+            fan_in_fan_out: false,
+            exclude_modules: Vec::new(),
+            lora_on_query: true,
+            lora_on_key: true,
+            lora_on_value: true,
+            lora_on_output: true,
+            lora_on_mlp: false,
+        }
+    }
+
+    /// Complex configuration for generation tasks
+    pub fn complex() -> Self {
+        LoRAConfig {
+            rank: 32,
+            alpha: 64.0,
+            dropout: 0.1,
+            target_modules: vec![
+                "q_proj".to_string(),
+                "k_proj".to_string(),
+                "v_proj".to_string(),
+                "o_proj".to_string(),
+                "gate_proj".to_string(),
+                "up_proj".to_string(),
+                "down_proj".to_string(),
+            ],
+            train_bias: BiasMode::None,
+            use_rslora: true,
+            fan_in_fan_out: false,
+            exclude_modules: Vec::new(),
+            lora_on_query: true,
+            lora_on_key: true,
+            lora_on_value: true,
+            lora_on_output: true,
+            lora_on_mlp: true,
+        }
+    }
+
+    /// Configuration for code generation
+    pub fn code() -> Self {
+        LoRAConfig {
+            rank: 32,
+            alpha: 64.0,
+            dropout: 0.05,
+            target_modules: vec![
+                "q_proj".to_string(),
+                "k_proj".to_string(),
+                "v_proj".to_string(),
+                "o_proj".to_string(),
+                "gate_proj".to_string(),
+                "up_proj".to_string(),
+                "down_proj".to_string(),
+            ],
+            train_bias: BiasMode::LoRAOnly,
+            use_rslora: true,
+            fan_in_fan_out: false,
+            exclude_modules: Vec::new(),
+            lora_on_query: true,
+            lora_on_key: true,
+            lora_on_value: true,
+            lora_on_output: true,
+            lora_on_mlp: true,
+        }
+    }
+
+    /// Set rank and adjust alpha proportionally
+    pub fn with_rank(mut self, rank: usize) -> Self {
+        let ratio = self.alpha / self.rank as f64;
+        self.rank = rank;
+        self.alpha = ratio * rank as f64;
+        self
+    }
+
+    /// Set alpha explicitly
+    pub fn with_alpha(mut self, alpha: f64) -> Self {
+        self.alpha = alpha;
+        self
+    }
+
+    /// Set dropout
+    pub fn with_dropout(mut self, dropout: f64) -> Self {
+        self.dropout = dropout.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Set target modules
+    pub fn with_targets(mut self, modules: Vec<String>) -> Self {
+        self.target_modules = modules;
+        self
+    }
+
+    /// Add target module
+    pub fn add_target(mut self, module: &str) -> Self {
+        if !self.target_modules.contains(&module.to_string()) {
+            self.target_modules.push(module.to_string());
+        }
+        self
+    }
+
+    /// Exclude module
+    pub fn exclude(mut self, module: &str) -> Self {
+        self.exclude_modules.push(module.to_string());
+        self
+    }
+
+    /// Enable RSLoRA (rank stabilization)
+    pub fn with_rslora(mut self) -> Self {
+        self.use_rslora = true;
+        self
+    }
+
+    /// Set bias training mode
+    pub fn with_bias(mut self, mode: BiasMode) -> Self {
+        self.train_bias = mode;
+        self
+    }
+
+    /// Check if module should have LoRA applied
+    pub fn should_apply(&self, module_name: &str) -> bool {
+        if self.exclude_modules.iter().any(|e| module_name.contains(e.as_str())) {
+            return false;
+        }
+        self.target_modules.iter().any(|t| module_name.contains(t.as_str()))
+    }
+
+    /// Get effective scaling factor
+    pub fn get_scaling(&self) -> f64 {
+        if self.use_rslora {
+            // RSLoRA: scale by sqrt(rank) for stability
+            self.alpha / (self.rank as f64).sqrt()
+        } else {
+            self.alpha / self.rank as f64
+        }
+    }
+
+    /// Estimate number of trainable parameters
+    ///
+    /// Given base model hidden size and number of layers
+    pub fn estimate_params(&self, hidden_size: usize, num_layers: usize) -> usize {
+        let mut params_per_layer = 0;
+
+        // Attention projections
+        let attn_targets = [
+            (self.lora_on_query, "q_proj"),
+            (self.lora_on_key, "k_proj"),
+            (self.lora_on_value, "v_proj"),
+            (self.lora_on_output, "o_proj"),
+        ];
+
+        for (enabled, _) in attn_targets.iter() {
+            if *enabled {
+                // Each projection: hidden_size -> hidden_size
+                // LoRA params: hidden_size * rank + rank * hidden_size
+                params_per_layer += 2 * hidden_size * self.rank;
+            }
+        }
+
+        // MLP (if enabled)
+        if self.lora_on_mlp {
+            // Typically 3 projections in MLP (gate, up, down)
+            // up/gate: hidden -> 4*hidden, down: 4*hidden -> hidden
+            params_per_layer += 2 * hidden_size * self.rank;  // gate
+            params_per_layer += 2 * hidden_size * self.rank;  // up
+            params_per_layer += 2 * hidden_size * self.rank;  // down (approx)
+        }
+
+        params_per_layer * num_layers
+    }
+}
+
+/// Builder for LoRA configuration
+pub struct LoRAConfigBuilder {
+    config: LoRAConfig,
+}
+
+impl LoRAConfigBuilder {
+    pub fn new() -> Self {
+        LoRAConfigBuilder {
+            config: LoRAConfig::default(),
+        }
+    }
+
+    pub fn rank(mut self, rank: usize) -> Self {
+        self.config.rank = rank;
+        self
+    }
+
+    pub fn alpha(mut self, alpha: f64) -> Self {
+        self.config.alpha = alpha;
+        self
+    }
+
+    pub fn dropout(mut self, dropout: f64) -> Self {
+        self.config.dropout = dropout;
+        self
+    }
+
+    pub fn target(mut self, module: &str) -> Self {
+        self.config.target_modules.push(module.to_string());
+        self
+    }
+
+    pub fn build(self) -> LoRAConfig {
+        self.config
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config() {
+        let config = LoRAConfig::default();
+
+        assert_eq!(config.rank, 8);
+        assert_eq!(config.alpha, 16.0);
+        assert_eq!(config.target_modules.len(), 2);
+    }
+
+    #[test]
+    fn test_scaling() {
+        let config = LoRAConfig::default();
+        assert!((config.get_scaling() - 2.0).abs() < 0.001); // 16/8 = 2
+
+        let rslora = LoRAConfig::default().with_rslora();
+        let expected = 16.0 / (8.0_f64).sqrt(); // ~5.66
+        assert!((rslora.get_scaling() - expected).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_should_apply() {
+        let config = LoRAConfig::default();
+
+        assert!(config.should_apply("model.layers.0.self_attn.q_proj"));
+        assert!(config.should_apply("model.layers.0.self_attn.v_proj"));
+        assert!(!config.should_apply("model.layers.0.self_attn.k_proj"));
+    }
+
+    #[test]
+    fn test_with_rank() {
+        let config = LoRAConfig::default().with_rank(16);
+
+        assert_eq!(config.rank, 16);
+        assert_eq!(config.alpha, 32.0); // Proportionally scaled
+    }
+
+    #[test]
+    fn test_builder() {
+        let config = LoRAConfigBuilder::new()
+            .rank(32)
+            .alpha(64.0)
+            .dropout(0.1)
+            .target("q_proj")
+            .target("k_proj")
+            .build();
+
+        assert_eq!(config.rank, 32);
+        assert_eq!(config.alpha, 64.0);
+    }
+}

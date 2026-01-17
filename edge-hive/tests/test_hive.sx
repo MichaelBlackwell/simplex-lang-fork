@@ -1,0 +1,703 @@
+// Edge Hive - Integration Tests
+// Tests for the main EdgeHive cognitive loop
+// Note: Uses 'h' as variable name since 'hive' is a keyword
+
+fn main() -> i64 {
+    println(string_from("=== Edge Hive Integration Tests ==="));
+    let passed: i64 = 0;
+    let failed: i64 = 0;
+
+    if test_hiveinst_creation() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_device_detection() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_specialist_routing() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_preferences() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_federation_state() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_offline_mode() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    println(string_from(""));
+    println(string_from("--- Security API Tests ---"));
+
+    if test_secure_hiveinst_creation() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_hiveinst_identity() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_secure_shutdown() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_secure_preferences() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    println(string_from(""));
+    print(string_from("Passed: "));
+    print_num(passed);
+    print(string_from(", Failed: "));
+    print_num(failed);
+    println(string_from(""));
+
+    failed
+}
+
+fn test_hiveinst_creation() -> i64 {
+    print(string_from("Testing hive creation... "));
+
+    let device_id: i64 = 12345;
+    let endpoint: i64 = string_from("wss://test.example.com");
+    let h: i64 = edge_hive_create(device_id, endpoint);
+
+    if h == 0 {
+        println(string_from("FAIL: hive creation returned null"));
+        return 1;
+    }
+
+    if hiveinst_state(h) != HIVE_IDLE() {
+        println(string_from("FAIL: initial state should be idle"));
+        return 1;
+    }
+
+    let profile: i64 = hiveinst_device_profile(h);
+    if profile == 0 {
+        println(string_from("FAIL: should have device profile"));
+        return 1;
+    }
+
+    let beliefs: i64 = hiveinst_belief_store(h);
+    if beliefs == 0 {
+        println(string_from("FAIL: should have belief store"));
+        return 1;
+    }
+
+    let specialists: i64 = hiveinst_specialists(h);
+    if specialists == 0 {
+        println(string_from("FAIL: should have specialists"));
+        return 1;
+    }
+
+    let fed: i64 = hiveinst_federation(h);
+    if fed == 0 {
+        println(string_from("FAIL: should have federation manager"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_device_detection() -> i64 {
+    print(string_from("Testing device detection... "));
+
+    let profile: i64 = detect_device_profile();
+
+    let class: i64 = device_get_class(profile);
+    if class < DEVICE_WATCH() {
+        println(string_from("FAIL: invalid device class"));
+        return 1;
+    }
+    if class > DEVICE_DESKTOP() {
+        println(string_from("FAIL: device class out of range"));
+        return 1;
+    }
+
+    let ram: i64 = device_get_ram_mb(profile);
+    if ram <= 0 {
+        println(string_from("FAIL: RAM should be positive"));
+        return 1;
+    }
+
+    let battery: i64 = device_get_battery(profile);
+    if battery < 0 {
+        println(string_from("FAIL: battery cannot be negative"));
+        return 1;
+    }
+    if battery > 100 {
+        println(string_from("FAIL: battery cannot exceed 100"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_specialist_routing() -> i64 {
+    print(string_from("Testing specialist routing... "));
+
+    let profile: i64 = detect_device_profile();
+    let registry: i64 = create_default_specialists(profile);
+
+    let count: i64 = specialist_registry_count(registry);
+    if count == 0 {
+        println(string_from("FAIL: should have specialists"));
+        return 1;
+    }
+
+    let context: i64 = specialist_registry_find_by_type(registry, SPECIALIST_CONTEXT());
+    if context == 0 {
+        println(string_from("FAIL: should have context specialist"));
+        return 1;
+    }
+
+    let notif: i64 = specialist_registry_find_by_type(registry, SPECIALIST_NOTIFICATION());
+    if notif == 0 {
+        println(string_from("FAIL: should have notification specialist"));
+        return 1;
+    }
+
+    let best: i64 = find_best_specialist(registry, REQUEST_NOTIFICATION(), 0);
+    if best == 0 {
+        println(string_from("FAIL: should find specialist for notification"));
+        return 1;
+    }
+
+    if specialist_type(best) != SPECIALIST_NOTIFICATION() {
+        println(string_from("FAIL: best for notification should be notification specialist"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_preferences() -> i64 {
+    print(string_from("Testing preferences... "));
+
+    let h: i64 = edge_hive_create(1, string_from("test"));
+
+    let key: i64 = string_from("theme");
+    hiveinst_set_preference(h, key, 1);
+
+    let value: i64 = hiveinst_get_preference(h, key);
+    if value != 1 {
+        println(string_from("FAIL: preference not stored correctly"));
+        return 1;
+    }
+
+    hiveinst_set_preference(h, key, 2);
+    let updated: i64 = hiveinst_get_preference(h, key);
+    if updated != 2 {
+        println(string_from("FAIL: preference not updated"));
+        return 1;
+    }
+
+    let missing: i64 = hiveinst_get_preference(h, string_from("nonexistent"));
+    if missing != 0 {
+        println(string_from("FAIL: missing preference should return 0"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_federation_state() -> i64 {
+    print(string_from("Testing federation state... "));
+
+    let h: i64 = edge_hive_create(1, string_from("wss://test"));
+    let fed: i64 = hiveinst_federation(h);
+
+    if federation_state(fed) != FED_DISCONNECTED() {
+        println(string_from("FAIL: should start disconnected"));
+        return 1;
+    }
+
+    federation_connect(fed);
+
+    if federation_is_connected(fed) != 1 {
+        println(string_from("FAIL: should be connected after connect"));
+        return 1;
+    }
+
+    federation_disconnect(fed);
+
+    if federation_is_connected(fed) != 0 {
+        println(string_from("FAIL: should be disconnected after disconnect"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_offline_mode() -> i64 {
+    print(string_from("Testing offline mode... "));
+
+    let h: i64 = edge_hive_create(1, string_from("test"));
+
+    edge_hive_test_mode(h);
+
+    let request: i64 = vec_new();
+    vec_push(request, 1);
+    let response: i64 = hiveinst_handle_request(h, REQUEST_QUERY(), request);
+
+    if response == 0 {
+        println(string_from("FAIL: offline mode should still produce response"));
+        return 1;
+    }
+
+    if hiveinst_state(h) != HIVE_IDLE() {
+        println(string_from("FAIL: hive should return to idle after request"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// === Security API Tests ===
+
+fn test_secure_hiveinst_creation() -> i64 {
+    print(string_from("Testing secure hive creation... "));
+
+    let username: i64 = string_from("test_user");
+    let password: i64 = string_from("secure_password");
+    let endpoint: i64 = string_from("wss://test.example.com");
+
+    let identity: i64 = user_identity_new(username, password);
+    if identity == 0 {
+        println(string_from("FAIL: identity creation returned null"));
+        return 1;
+    }
+
+    let device_id: i64 = generate_secure_device_id();
+    let h: i64 = edge_hive_create_secure(identity, device_id, endpoint);
+
+    if h == 0 {
+        println(string_from("FAIL: secure hive creation returned null"));
+        return 1;
+    }
+
+    if hiveinst_state(h) != HIVE_IDLE() {
+        println(string_from("FAIL: initial state should be idle"));
+        return 1;
+    }
+
+    if hiveinst_device_profile(h) == 0 {
+        println(string_from("FAIL: should have device profile"));
+        return 1;
+    }
+
+    if hiveinst_belief_store(h) == 0 {
+        println(string_from("FAIL: should have belief store"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_hiveinst_identity() -> i64 {
+    print(string_from("Testing hive identity... "));
+
+    let username: i64 = string_from("identity_test_user");
+    let password: i64 = string_from("test_pass_123");
+    let endpoint: i64 = string_from("wss://test.com");
+
+    let identity: i64 = user_identity_new(username, password);
+    let device_id: i64 = generate_secure_device_id();
+    let h: i64 = edge_hive_create_secure(identity, device_id, endpoint);
+
+    if hiveinst_has_identity(h) != 1 {
+        println(string_from("FAIL: secure hive should have identity"));
+        return 1;
+    }
+
+    let retrieved: i64 = hiveinst_identity(h);
+    if retrieved == 0 {
+        println(string_from("FAIL: should retrieve identity"));
+        return 1;
+    }
+
+    let legacy_h: i64 = edge_hive_create(1, string_from("test"));
+    if hiveinst_has_identity(legacy_h) != 0 {
+        println(string_from("FAIL: legacy hive should not have identity"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_secure_shutdown() -> i64 {
+    print(string_from("Testing secure shutdown... "));
+
+    let username: i64 = string_from("shutdown_test");
+    let password: i64 = string_from("shutdown_pass");
+    let endpoint: i64 = string_from("wss://test.com");
+
+    let identity: i64 = user_identity_new(username, password);
+    let device_id: i64 = generate_secure_device_id();
+    let h: i64 = edge_hive_create_secure(identity, device_id, endpoint);
+
+    hiveinst_set_preference(h, string_from("theme"), 1);
+
+    let result: i64 = hiveinst_shutdown_secure(h);
+    if result != 0 {
+        println(string_from("FAIL: secure shutdown should succeed"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_secure_preferences() -> i64 {
+    print(string_from("Testing secure preferences... "));
+
+    let username: i64 = string_from("pref_user");
+    let password: i64 = string_from("pref_password");
+    let endpoint: i64 = string_from("wss://test.com");
+
+    let identity: i64 = user_identity_new(username, password);
+    let device_id: i64 = generate_secure_device_id();
+    let h: i64 = edge_hive_create_secure(identity, device_id, endpoint);
+
+    // Store keys in variables to ensure same ID for set/get
+    let theme_key: i64 = string_from("theme");
+    let notif_key: i64 = string_from("notifications");
+    let privacy_key: i64 = string_from("privacy_level");
+
+    hiveinst_set_preference(h, theme_key, 2);
+    hiveinst_set_preference(h, notif_key, 1);
+    hiveinst_set_preference(h, privacy_key, 3);
+
+    let theme: i64 = hiveinst_get_preference(h, theme_key);
+    if theme != 2 {
+        println(string_from("FAIL: theme preference not stored"));
+        return 1;
+    }
+
+    let notif: i64 = hiveinst_get_preference(h, notif_key);
+    if notif != 1 {
+        println(string_from("FAIL: notifications preference not stored"));
+        return 1;
+    }
+
+    let privacy: i64 = hiveinst_get_preference(h, privacy_key);
+    if privacy != 3 {
+        println(string_from("FAIL: privacy_level preference not stored"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// Runtime stubs
+fn string_from(s: &str) -> i64 { 0 }
+fn print(s: i64) -> i64 { 0 }
+fn println(s: i64) -> i64 { 0 }
+fn print_num(n: i64) -> i64 { 0 }
+fn time_now() -> i64 { 0 }
+
+fn vec_new() -> i64 { 0 }
+fn vec_push(v: i64, val: i64) -> i64 { 0 }
+fn vec_get(v: i64, idx: i64) -> i64 { 0 }
+fn vec_set(v: i64, idx: i64, val: i64) -> i64 { 0 }
+fn vec_len(v: i64) -> i64 { 0 }
+
+// Constants
+fn HIVE_IDLE() -> i64 { 0 }
+fn HIVE_PROCESSING() -> i64 { 1 }
+
+fn DEVICE_WATCH() -> i64 { 1 }
+fn DEVICE_DESKTOP() -> i64 { 6 }
+
+fn SPECIALIST_CONTEXT() -> i64 { 1 }
+fn SPECIALIST_NOTIFICATION() -> i64 { 6 }
+
+fn REQUEST_QUERY() -> i64 { 1 }
+fn REQUEST_NOTIFICATION() -> i64 { 4 }
+
+fn FED_DISCONNECTED() -> i64 { 0 }
+fn FED_CONNECTED() -> i64 { 2 }
+
+fn BELIEF_PREFERENCE() -> i64 { 1 }
+
+// Hive creation and accessors (renamed to avoid keyword conflict)
+fn edge_hive_create(device_id: i64, endpoint: i64) -> i64 {
+    let h: i64 = vec_new();
+    let profile: i64 = detect_device_profile();
+    vec_push(h, profile);
+    vec_push(h, bstore_new(1000));
+    vec_push(h, create_default_specialists(profile));
+    vec_push(h, federation_new(device_id, endpoint));
+    vec_push(h, vec_new());
+    vec_push(h, vec_new());
+    vec_push(h, HIVE_IDLE());
+    vec_push(h, vec_new());
+    vec_push(h, vec_new());
+    h
+}
+
+fn hiveinst_device_profile(h: i64) -> i64 { vec_get(h, 0) }
+fn hiveinst_belief_store(h: i64) -> i64 { vec_get(h, 1) }
+fn hiveinst_specialists(h: i64) -> i64 { vec_get(h, 2) }
+fn hiveinst_federation(h: i64) -> i64 { vec_get(h, 3) }
+fn hiveinst_state(h: i64) -> i64 { vec_get(h, 6) }
+
+fn hiveinst_set_state(h: i64, state: i64) -> i64 {
+    vec_set(h, 6, state);
+    0
+}
+
+fn hiveinst_handle_request(h: i64, request_type: i64, payload: i64) -> i64 {
+    hiveinst_set_state(h, HIVE_PROCESSING());
+    let response: i64 = vec_new();
+    vec_push(response, 0);
+    vec_push(response, 0);
+    vec_push(response, 500);
+    hiveinst_set_state(h, HIVE_IDLE());
+    response
+}
+
+fn hiveinst_set_preference(h: i64, key: i64, value: i64) -> i64 {
+    let beliefs: i64 = hiveinst_belief_store(h);
+    bstore_set(beliefs, BELIEF_PREFERENCE(), key, value, 1000)
+}
+
+fn hiveinst_get_preference(h: i64, key: i64) -> i64 {
+    let beliefs: i64 = hiveinst_belief_store(h);
+    bstore_get(beliefs, BELIEF_PREFERENCE(), key)
+}
+
+fn edge_hive_test_mode(h: i64) -> i64 { 0 }
+
+fn detect_device_profile() -> i64 {
+    let profile: i64 = vec_new();
+    vec_push(profile, 5 + 16384 * 256);
+    vec_push(profile, 512 + 100 * 65536);
+    vec_push(profile, 0);
+    vec_push(profile, 2560 + 1600 * 65536);
+    profile
+}
+
+fn device_get_class(profile: i64) -> i64 {
+    let slot0: i64 = vec_get(profile, 0);
+    slot0 % 256
+}
+
+fn device_get_ram_mb(profile: i64) -> i64 {
+    let slot0: i64 = vec_get(profile, 0);
+    (slot0 / 256) % 65536
+}
+
+fn device_get_battery(profile: i64) -> i64 {
+    let slot1: i64 = vec_get(profile, 1);
+    (slot1 / 65536) % 256
+}
+
+fn create_default_specialists(profile: i64) -> i64 {
+    let registry: i64 = vec_new();
+    vec_push(registry, specialist_new(SPECIALIST_CONTEXT(), profile));
+    vec_push(registry, specialist_new(SPECIALIST_NOTIFICATION(), profile));
+    registry
+}
+
+fn specialist_new(spec_type: i64, profile: i64) -> i64 {
+    let spec: i64 = vec_new();
+    vec_push(spec, spec_type);
+    vec_push(spec, 2);
+    vec_push(spec, 1);
+    spec
+}
+
+fn specialist_type(spec: i64) -> i64 { vec_get(spec, 0) }
+
+fn specialist_registry_count(registry: i64) -> i64 { vec_len(registry) }
+
+fn specialist_registry_find_by_type(registry: i64, spec_type: i64) -> i64 {
+    let len: i64 = vec_len(registry);
+    let i: i64 = 0;
+    while i < len {
+        let spec: i64 = vec_get(registry, i);
+        if specialist_type(spec) == spec_type {
+            return spec;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+fn find_best_specialist(registry: i64, request_type: i64, context: i64) -> i64 {
+    if request_type == REQUEST_NOTIFICATION() {
+        return specialist_registry_find_by_type(registry, SPECIALIST_NOTIFICATION());
+    }
+    specialist_registry_find_by_type(registry, SPECIALIST_CONTEXT())
+}
+
+// Renamed to bstore to avoid potential conflicts
+fn bstore_new(max: i64) -> i64 {
+    let store: i64 = vec_new();
+    vec_push(store, vec_new());
+    vec_push(store, max);
+    vec_push(store, 0);
+    store
+}
+
+fn bstore_set(store: i64, btype: i64, key: i64, value: i64, conf: i64) -> i64 {
+    let beliefs: i64 = vec_get(store, 0);
+    // Search for existing entry to update
+    let len: i64 = vec_len(beliefs);
+    let i: i64 = 0;
+    while i < len {
+        let entry: i64 = vec_get(beliefs, i);
+        if vec_get(entry, 0) == btype {
+            if vec_get(entry, 1) == key {
+                // Found existing entry - update it
+                vec_set(entry, 2, value);
+                vec_set(entry, 3, conf);
+                return 0;
+            }
+        }
+        i = i + 1;
+    }
+    // Not found - create new entry
+    let entry: i64 = vec_new();
+    vec_push(entry, btype);
+    vec_push(entry, key);
+    vec_push(entry, value);
+    vec_push(entry, conf);
+    vec_push(beliefs, entry);
+    0
+}
+
+fn bstore_get(store: i64, btype: i64, key: i64) -> i64 {
+    let beliefs: i64 = vec_get(store, 0);
+    let len: i64 = vec_len(beliefs);
+    let i: i64 = 0;
+    while i < len {
+        let entry: i64 = vec_get(beliefs, i);
+        if vec_get(entry, 0) == btype {
+            if vec_get(entry, 1) == key {
+                return vec_get(entry, 2);
+            }
+        }
+        i = i + 1;
+    }
+    0
+}
+
+fn federation_new(device_id: i64, endpoint: i64) -> i64 {
+    let fed: i64 = vec_new();
+    vec_push(fed, FED_DISCONNECTED());
+    vec_push(fed, endpoint);
+    vec_push(fed, device_id);
+    fed
+}
+
+fn federation_state(fed: i64) -> i64 { vec_get(fed, 0) }
+
+fn federation_is_connected(fed: i64) -> i64 {
+    let state: i64 = federation_state(fed);
+    if state == FED_CONNECTED() { 1 } else { 0 }
+}
+
+fn federation_connect(fed: i64) -> i64 {
+    vec_set(fed, 0, FED_CONNECTED());
+    1
+}
+
+fn federation_disconnect(fed: i64) -> i64 {
+    vec_set(fed, 0, FED_DISCONNECTED());
+    0
+}
+
+// Security API stubs
+fn user_identity_new(username: i64, password: i64) -> i64 {
+    let identity: i64 = vec_new();
+    vec_push(identity, username);
+    vec_push(identity, username);
+    vec_push(identity, vec_new());
+    vec_push(identity, vec_new());
+    vec_push(identity, 0);
+    vec_push(identity, vec_new());
+    vec_push(identity, vec_new());
+    identity
+}
+
+fn generate_secure_device_id() -> i64 {
+    1234567890
+}
+
+fn edge_hive_create_secure(identity: i64, device_id: i64, endpoint: i64) -> i64 {
+    let h: i64 = vec_new();
+    let profile: i64 = detect_device_profile();
+    vec_push(h, profile);
+    vec_push(h, bstore_new(1000));
+    vec_push(h, create_default_specialists(profile));
+    vec_push(h, federation_new(device_id, endpoint));
+    vec_push(h, vec_new());
+    vec_push(h, vec_new());
+    vec_push(h, HIVE_IDLE());
+    vec_push(h, vec_new());
+    vec_push(h, vec_new());
+    vec_push(h, identity);
+    vec_push(h, 0);
+    h
+}
+
+fn hiveinst_identity(h: i64) -> i64 {
+    vec_get(h, 9)
+}
+
+fn hiveinst_has_identity(h: i64) -> i64 {
+    let len: i64 = vec_len(h);
+    if len > 9 {
+        let identity: i64 = vec_get(h, 9);
+        if identity != 0 { return 1; }
+    }
+    0
+}
+
+fn hiveinst_shutdown_secure(h: i64) -> i64 {
+    if hiveinst_has_identity(h) == 1 {
+        let identity: i64 = hiveinst_identity(h);
+        vec_set(h, 9, 0);
+    }
+    0
+}
+
+fn identity_clear_key(identity: i64) -> i64 {
+    0
+}

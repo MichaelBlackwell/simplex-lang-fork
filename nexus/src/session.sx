@@ -1,0 +1,1060 @@
+// =============================================================================
+// Nexus Protocol - Phase 10: Session Management
+// =============================================================================
+//
+// This module provides session lifecycle management for the Nexus protocol:
+//   - Session creation and teardown
+//   - Session state machine
+//   - Session persistence and recovery
+//   - Session-level configuration and timeouts
+//   - Session resumption after reconnection
+//
+// A Session represents a logical connection between two hives that may span
+// multiple physical transport connections (through reconnection).
+//
+// =============================================================================
+
+// =============================================================================
+// Session State Constants
+// =============================================================================
+
+fn SESSION_STATE_NEW() -> i64 { 0 }            // Just created, not started
+fn SESSION_STATE_CONNECTING() -> i64 { 1 }     // Establishing connection
+fn SESSION_STATE_HANDSHAKING() -> i64 { 2 }    // Protocol handshake in progress
+fn SESSION_STATE_AUTHENTICATING() -> i64 { 3 } // Security authentication
+fn SESSION_STATE_ACTIVE() -> i64 { 4 }         // Fully established, operational
+fn SESSION_STATE_DRAINING() -> i64 { 5 }       // Graceful shutdown, completing pending
+fn SESSION_STATE_SUSPENDED() -> i64 { 6 }      // Temporarily disconnected, can resume
+fn SESSION_STATE_CLOSING() -> i64 { 7 }        // Final shutdown sequence
+fn SESSION_STATE_CLOSED() -> i64 { 8 }         // Fully terminated
+fn SESSION_STATE_ERROR() -> i64 { 9 }          // Fatal error state
+
+// Session flags
+fn SESSION_FLAG_NONE() -> i64 { 0 }
+fn SESSION_FLAG_RESUMABLE() -> i64 { 1 }       // Can resume after disconnect
+fn SESSION_FLAG_ENCRYPTED() -> i64 { 2 }       // Encryption enabled
+fn SESSION_FLAG_COMPRESSED() -> i64 { 4 }      // Compression enabled
+fn SESSION_FLAG_MULTIPLEXED() -> i64 { 8 }     // Stream multiplexing enabled
+fn SESSION_FLAG_PRIORITY() -> i64 { 16 }       // Priority scheduling enabled
+fn SESSION_FLAG_FLOW_CONTROL() -> i64 { 32 }   // Flow control enabled
+
+// Session close codes
+fn SESSION_CLOSE_NORMAL() -> i64 { 0 }         // Normal graceful close
+fn SESSION_CLOSE_GOING_AWAY() -> i64 { 1 }     // Peer is shutting down
+fn SESSION_CLOSE_PROTOCOL_ERROR() -> i64 { 2 } // Protocol violation
+fn SESSION_CLOSE_INTERNAL_ERROR() -> i64 { 3 } // Internal error
+fn SESSION_CLOSE_TIMEOUT() -> i64 { 4 }        // Idle timeout
+fn SESSION_CLOSE_NO_RESPONSE() -> i64 { 5 }    // No response to ping
+fn SESSION_CLOSE_AUTH_FAILED() -> i64 { 6 }    // Authentication failure
+fn SESSION_CLOSE_RESOURCE_LIMIT() -> i64 { 7 } // Resource limit exceeded
+
+// Default timeouts (milliseconds)
+fn SESSION_CONNECT_TIMEOUT() -> i64 { 30000 }     // 30 seconds
+fn SESSION_HANDSHAKE_TIMEOUT() -> i64 { 30000 }   // 30 seconds
+fn SESSION_IDLE_TIMEOUT() -> i64 { 300000 }       // 5 minutes
+fn SESSION_PING_INTERVAL() -> i64 { 30000 }       // 30 seconds
+fn SESSION_PING_TIMEOUT() -> i64 { 10000 }        // 10 seconds
+fn SESSION_DRAIN_TIMEOUT() -> i64 { 30000 }       // 30 seconds
+fn SESSION_RESUME_TIMEOUT() -> i64 { 60000 }      // 1 minute
+
+// Session limits
+fn SESSION_MAX_STREAMS() -> i64 { 100 }           // Max concurrent streams
+fn SESSION_MAX_PENDING() -> i64 { 1000 }          // Max pending requests
+fn SESSION_MAX_FRAME_SIZE() -> i64 { 1048576 }    // 1MB max frame
+
+// =============================================================================
+// Session Configuration
+// =============================================================================
+
+// Create session configuration
+// Structure: [connect_timeout, handshake_timeout, idle_timeout, ping_interval,
+//             ping_timeout, drain_timeout, resume_timeout, max_streams,
+//             max_pending, max_frame_size, flags]
+fn session_config_new() -> i64 {
+    let config = vec_new();
+    vec_push(config, SESSION_CONNECT_TIMEOUT());    // 0: connect timeout
+    vec_push(config, SESSION_HANDSHAKE_TIMEOUT());  // 1: handshake timeout
+    vec_push(config, SESSION_IDLE_TIMEOUT());       // 2: idle timeout
+    vec_push(config, SESSION_PING_INTERVAL());      // 3: ping interval
+    vec_push(config, SESSION_PING_TIMEOUT());       // 4: ping timeout
+    vec_push(config, SESSION_DRAIN_TIMEOUT());      // 5: drain timeout
+    vec_push(config, SESSION_RESUME_TIMEOUT());     // 6: resume timeout
+    vec_push(config, SESSION_MAX_STREAMS());        // 7: max streams
+    vec_push(config, SESSION_MAX_PENDING());        // 8: max pending
+    vec_push(config, SESSION_MAX_FRAME_SIZE());     // 9: max frame size
+    vec_push(config, SESSION_FLAG_RESUMABLE() + SESSION_FLAG_FLOW_CONTROL()); // 10: flags
+    config
+}
+
+fn session_config_connect_timeout(c: i64) -> i64 { vec_get(c, 0) }
+fn session_config_handshake_timeout(c: i64) -> i64 { vec_get(c, 1) }
+fn session_config_idle_timeout(c: i64) -> i64 { vec_get(c, 2) }
+fn session_config_ping_interval(c: i64) -> i64 { vec_get(c, 3) }
+fn session_config_ping_timeout(c: i64) -> i64 { vec_get(c, 4) }
+fn session_config_drain_timeout(c: i64) -> i64 { vec_get(c, 5) }
+fn session_config_resume_timeout(c: i64) -> i64 { vec_get(c, 6) }
+fn session_config_max_streams(c: i64) -> i64 { vec_get(c, 7) }
+fn session_config_max_pending(c: i64) -> i64 { vec_get(c, 8) }
+fn session_config_max_frame_size(c: i64) -> i64 { vec_get(c, 9) }
+fn session_config_flags(c: i64) -> i64 { vec_get(c, 10) }
+
+fn session_config_set_connect_timeout(c: i64, ms: i64) -> i64 { vec_set(c, 0, ms); 1 }
+fn session_config_set_handshake_timeout(c: i64, ms: i64) -> i64 { vec_set(c, 1, ms); 1 }
+fn session_config_set_idle_timeout(c: i64, ms: i64) -> i64 { vec_set(c, 2, ms); 1 }
+fn session_config_set_ping_interval(c: i64, ms: i64) -> i64 { vec_set(c, 3, ms); 1 }
+fn session_config_set_ping_timeout(c: i64, ms: i64) -> i64 { vec_set(c, 4, ms); 1 }
+fn session_config_set_drain_timeout(c: i64, ms: i64) -> i64 { vec_set(c, 5, ms); 1 }
+fn session_config_set_resume_timeout(c: i64, ms: i64) -> i64 { vec_set(c, 6, ms); 1 }
+fn session_config_set_max_streams(c: i64, max: i64) -> i64 { vec_set(c, 7, max); 1 }
+fn session_config_set_max_pending(c: i64, max: i64) -> i64 { vec_set(c, 8, max); 1 }
+fn session_config_set_max_frame_size(c: i64, size: i64) -> i64 { vec_set(c, 9, size); 1 }
+fn session_config_set_flags(c: i64, flags: i64) -> i64 { vec_set(c, 10, flags); 1 }
+
+fn session_config_has_flag(c: i64, flag: i64) -> i64 {
+    let flags = vec_get(c, 10);
+    if (flags / flag) % 2 == 1 { 1 } else { 0 }
+}
+
+fn session_config_add_flag(c: i64, flag: i64) -> i64 {
+    if session_config_has_flag(c, flag) == 0 {
+        let flags = vec_get(c, 10);
+        vec_set(c, 10, flags + flag);
+    }
+    1
+}
+
+// =============================================================================
+// Session ID
+// =============================================================================
+
+// Generate a unique session ID
+// Structure: [timestamp, random1, random2, counter]
+fn session_id_new(timestamp: i64, seed: i64) -> i64 {
+    let sid = vec_new();
+    vec_push(sid, timestamp);
+    // Simple pseudo-random based on timestamp and seed
+    vec_push(sid, (timestamp * 1103515245 + seed) % 2147483648);
+    vec_push(sid, (seed * 1103515245 + timestamp) % 2147483648);
+    vec_push(sid, 0);  // Counter for uniqueness
+    sid
+}
+
+fn session_id_timestamp(sid: i64) -> i64 { vec_get(sid, 0) }
+fn session_id_random1(sid: i64) -> i64 { vec_get(sid, 1) }
+fn session_id_random2(sid: i64) -> i64 { vec_get(sid, 2) }
+fn session_id_counter(sid: i64) -> i64 { vec_get(sid, 3) }
+
+fn session_id_equals(a: i64, b: i64) -> i64 {
+    if vec_get(a, 0) != vec_get(b, 0) { return 0; }
+    if vec_get(a, 1) != vec_get(b, 1) { return 0; }
+    if vec_get(a, 2) != vec_get(b, 2) { return 0; }
+    if vec_get(a, 3) != vec_get(b, 3) { return 0; }
+    1
+}
+
+// Serialize session ID to bytes
+fn session_id_to_bytes(sid: i64) -> i64 {
+    let bytes = vec_new();
+    let ts = vec_get(sid, 0);
+    let r1 = vec_get(sid, 1);
+    let r2 = vec_get(sid, 2);
+    let cnt = vec_get(sid, 3);
+
+    // 4 bytes each = 16 bytes total
+    vec_push(bytes, (ts / 16777216) % 256);
+    vec_push(bytes, (ts / 65536) % 256);
+    vec_push(bytes, (ts / 256) % 256);
+    vec_push(bytes, ts % 256);
+
+    vec_push(bytes, (r1 / 16777216) % 256);
+    vec_push(bytes, (r1 / 65536) % 256);
+    vec_push(bytes, (r1 / 256) % 256);
+    vec_push(bytes, r1 % 256);
+
+    vec_push(bytes, (r2 / 16777216) % 256);
+    vec_push(bytes, (r2 / 65536) % 256);
+    vec_push(bytes, (r2 / 256) % 256);
+    vec_push(bytes, r2 % 256);
+
+    vec_push(bytes, (cnt / 16777216) % 256);
+    vec_push(bytes, (cnt / 65536) % 256);
+    vec_push(bytes, (cnt / 256) % 256);
+    vec_push(bytes, cnt % 256);
+
+    bytes
+}
+
+// Parse session ID from bytes
+fn session_id_from_bytes(bytes: i64, offset: i64) -> i64 {
+    if vec_len(bytes) < offset + 16 {
+        return 0;
+    }
+
+    let ts = vec_get(bytes, offset) * 16777216 + vec_get(bytes, offset + 1) * 65536 +
+             vec_get(bytes, offset + 2) * 256 + vec_get(bytes, offset + 3);
+    let r1 = vec_get(bytes, offset + 4) * 16777216 + vec_get(bytes, offset + 5) * 65536 +
+             vec_get(bytes, offset + 6) * 256 + vec_get(bytes, offset + 7);
+    let r2 = vec_get(bytes, offset + 8) * 16777216 + vec_get(bytes, offset + 9) * 65536 +
+             vec_get(bytes, offset + 10) * 256 + vec_get(bytes, offset + 11);
+    let cnt = vec_get(bytes, offset + 12) * 16777216 + vec_get(bytes, offset + 13) * 65536 +
+              vec_get(bytes, offset + 14) * 256 + vec_get(bytes, offset + 15);
+
+    let sid = vec_new();
+    vec_push(sid, ts);
+    vec_push(sid, r1);
+    vec_push(sid, r2);
+    vec_push(sid, cnt);
+    sid
+}
+
+// =============================================================================
+// Session Handle
+// =============================================================================
+
+// Create a new session
+// Structure: [id, state, config, local_hive_id, remote_hive_id, transport,
+//             secure_conn, streams, pending_requests, created_at, last_active,
+//             last_ping_sent, last_ping_recv, ping_outstanding, close_code,
+//             error_msg, stats, resume_token]
+fn session_new(config: i64, local_hive_id: i64, now: i64) -> i64 {
+    let session = vec_new();
+    let sid = session_id_new(now, local_hive_id);
+
+    vec_push(session, sid);                      // 0: session ID
+    vec_push(session, SESSION_STATE_NEW());      // 1: state
+    vec_push(session, config);                   // 2: config
+    vec_push(session, local_hive_id);            // 3: local hive ID
+    vec_push(session, 0);                        // 4: remote hive ID (set during handshake)
+    vec_push(session, 0);                        // 5: transport handle
+    vec_push(session, 0);                        // 6: secure connection handle
+    vec_push(session, vec_new());                // 7: active streams
+    vec_push(session, vec_new());                // 8: pending requests
+    vec_push(session, now);                      // 9: created timestamp
+    vec_push(session, now);                      // 10: last activity timestamp
+    vec_push(session, 0);                        // 11: last ping sent time
+    vec_push(session, 0);                        // 12: last ping received time
+    vec_push(session, 0);                        // 13: ping outstanding flag
+    vec_push(session, 0);                        // 14: close code
+    vec_push(session, 0);                        // 15: error message
+    vec_push(session, session_stats_new());      // 16: statistics
+    vec_push(session, 0);                        // 17: resume token
+
+    session
+}
+
+// Accessors
+fn session_id(s: i64) -> i64 { vec_get(s, 0) }
+fn session_state(s: i64) -> i64 { vec_get(s, 1) }
+fn session_config(s: i64) -> i64 { vec_get(s, 2) }
+fn session_local_hive(s: i64) -> i64 { vec_get(s, 3) }
+fn session_remote_hive(s: i64) -> i64 { vec_get(s, 4) }
+fn session_transport(s: i64) -> i64 { vec_get(s, 5) }
+fn session_secure_conn(s: i64) -> i64 { vec_get(s, 6) }
+fn session_streams(s: i64) -> i64 { vec_get(s, 7) }
+fn session_pending(s: i64) -> i64 { vec_get(s, 8) }
+fn session_created_at(s: i64) -> i64 { vec_get(s, 9) }
+fn session_last_active(s: i64) -> i64 { vec_get(s, 10) }
+fn session_last_ping_sent(s: i64) -> i64 { vec_get(s, 11) }
+fn session_last_ping_recv(s: i64) -> i64 { vec_get(s, 12) }
+fn session_ping_outstanding(s: i64) -> i64 { vec_get(s, 13) }
+fn session_close_code(s: i64) -> i64 { vec_get(s, 14) }
+fn session_error_msg(s: i64) -> i64 { vec_get(s, 15) }
+fn session_stats(s: i64) -> i64 { vec_get(s, 16) }
+fn session_resume_token(s: i64) -> i64 { vec_get(s, 17) }
+
+// Setters
+fn session_set_state(s: i64, state: i64) -> i64 { vec_set(s, 1, state); 1 }
+fn session_set_remote_hive(s: i64, hive_id: i64) -> i64 { vec_set(s, 4, hive_id); 1 }
+fn session_set_transport(s: i64, transport: i64) -> i64 { vec_set(s, 5, transport); 1 }
+fn session_set_secure_conn(s: i64, conn: i64) -> i64 { vec_set(s, 6, conn); 1 }
+fn session_set_last_active(s: i64, time: i64) -> i64 { vec_set(s, 10, time); 1 }
+fn session_set_last_ping_sent(s: i64, time: i64) -> i64 { vec_set(s, 11, time); 1 }
+fn session_set_last_ping_recv(s: i64, time: i64) -> i64 { vec_set(s, 12, time); 1 }
+fn session_set_ping_outstanding(s: i64, flag: i64) -> i64 { vec_set(s, 13, flag); 1 }
+fn session_set_close_code(s: i64, code: i64) -> i64 { vec_set(s, 14, code); 1 }
+fn session_set_error_msg(s: i64, msg: i64) -> i64 { vec_set(s, 15, msg); 1 }
+fn session_set_resume_token(s: i64, token: i64) -> i64 { vec_set(s, 17, token); 1 }
+
+// =============================================================================
+// Session Statistics
+// =============================================================================
+
+// Create session statistics
+fn session_stats_new() -> i64 {
+    let stats = vec_new();
+    vec_push(stats, 0);   // 0: frames sent
+    vec_push(stats, 0);   // 1: frames received
+    vec_push(stats, 0);   // 2: bytes sent
+    vec_push(stats, 0);   // 3: bytes received
+    vec_push(stats, 0);   // 4: streams opened
+    vec_push(stats, 0);   // 5: streams closed
+    vec_push(stats, 0);   // 6: requests sent
+    vec_push(stats, 0);   // 7: responses received
+    vec_push(stats, 0);   // 8: errors
+    vec_push(stats, 0);   // 9: pings sent
+    vec_push(stats, 0);   // 10: pongs received
+    vec_push(stats, 0);   // 11: reconnections
+    vec_push(stats, 0);   // 12: total latency sum (for averaging)
+    vec_push(stats, 0);   // 13: latency sample count
+    stats
+}
+
+fn session_stats_frames_sent(st: i64) -> i64 { vec_get(st, 0) }
+fn session_stats_frames_recv(st: i64) -> i64 { vec_get(st, 1) }
+fn session_stats_bytes_sent(st: i64) -> i64 { vec_get(st, 2) }
+fn session_stats_bytes_recv(st: i64) -> i64 { vec_get(st, 3) }
+fn session_stats_streams_opened(st: i64) -> i64 { vec_get(st, 4) }
+fn session_stats_streams_closed(st: i64) -> i64 { vec_get(st, 5) }
+fn session_stats_requests_sent(st: i64) -> i64 { vec_get(st, 6) }
+fn session_stats_responses_recv(st: i64) -> i64 { vec_get(st, 7) }
+fn session_stats_errors(st: i64) -> i64 { vec_get(st, 8) }
+fn session_stats_pings_sent(st: i64) -> i64 { vec_get(st, 9) }
+fn session_stats_pongs_recv(st: i64) -> i64 { vec_get(st, 10) }
+fn session_stats_reconnections(st: i64) -> i64 { vec_get(st, 11) }
+
+fn session_stats_avg_latency(st: i64) -> i64 {
+    let count = vec_get(st, 13);
+    if count == 0 { return 0; }
+    vec_get(st, 12) / count
+}
+
+fn session_stats_inc(st: i64, idx: i64) -> i64 {
+    let val = vec_get(st, idx);
+    vec_set(st, idx, val + 1);
+    val + 1
+}
+
+fn session_stats_add(st: i64, idx: i64, amount: i64) -> i64 {
+    let val = vec_get(st, idx);
+    vec_set(st, idx, val + amount);
+    val + amount
+}
+
+fn session_stats_record_latency(st: i64, latency_ms: i64) -> i64 {
+    session_stats_add(st, 12, latency_ms);
+    session_stats_inc(st, 13)
+}
+
+// =============================================================================
+// Session State Queries
+// =============================================================================
+
+fn session_is_new(s: i64) -> i64 {
+    if session_state(s) == SESSION_STATE_NEW() { 1 } else { 0 }
+}
+
+fn session_is_connecting(s: i64) -> i64 {
+    let state = session_state(s);
+    if state == SESSION_STATE_CONNECTING() || state == SESSION_STATE_HANDSHAKING() ||
+       state == SESSION_STATE_AUTHENTICATING() { 1 } else { 0 }
+}
+
+fn session_is_active(s: i64) -> i64 {
+    if session_state(s) == SESSION_STATE_ACTIVE() { 1 } else { 0 }
+}
+
+fn session_is_closing(s: i64) -> i64 {
+    let state = session_state(s);
+    if state == SESSION_STATE_DRAINING() || state == SESSION_STATE_CLOSING() { 1 } else { 0 }
+}
+
+fn session_is_closed(s: i64) -> i64 {
+    if session_state(s) == SESSION_STATE_CLOSED() { 1 } else { 0 }
+}
+
+fn session_is_suspended(s: i64) -> i64 {
+    if session_state(s) == SESSION_STATE_SUSPENDED() { 1 } else { 0 }
+}
+
+fn session_has_error(s: i64) -> i64 {
+    if session_state(s) == SESSION_STATE_ERROR() { 1 } else { 0 }
+}
+
+fn session_can_send(s: i64) -> i64 {
+    let state = session_state(s);
+    if state == SESSION_STATE_ACTIVE() { 1 } else { 0 }
+}
+
+fn session_can_receive(s: i64) -> i64 {
+    let state = session_state(s);
+    if state == SESSION_STATE_ACTIVE() || state == SESSION_STATE_DRAINING() { 1 } else { 0 }
+}
+
+// =============================================================================
+// Session Lifecycle Operations
+// =============================================================================
+
+// Start connecting the session
+fn session_connect(s: i64, transport: i64, now: i64) -> i64 {
+    let state = session_state(s);
+    if state != SESSION_STATE_NEW() && state != SESSION_STATE_SUSPENDED() {
+        return 0;
+    }
+
+    session_set_transport(s, transport);
+    session_set_state(s, SESSION_STATE_CONNECTING());
+    session_set_last_active(s, now);
+
+    1
+}
+
+// Transition to handshaking state
+fn session_begin_handshake(s: i64, now: i64) -> i64 {
+    if session_state(s) != SESSION_STATE_CONNECTING() {
+        return 0;
+    }
+
+    session_set_state(s, SESSION_STATE_HANDSHAKING());
+    session_set_last_active(s, now);
+    1
+}
+
+// Set secure connection and begin authentication
+fn session_begin_auth(s: i64, secure_conn: i64, now: i64) -> i64 {
+    if session_state(s) != SESSION_STATE_HANDSHAKING() {
+        return 0;
+    }
+
+    session_set_secure_conn(s, secure_conn);
+    session_set_state(s, SESSION_STATE_AUTHENTICATING());
+    session_set_last_active(s, now);
+    1
+}
+
+// Complete authentication and activate session
+fn session_activate(s: i64, remote_hive_id: i64, now: i64) -> i64 {
+    let state = session_state(s);
+    if state != SESSION_STATE_AUTHENTICATING() && state != SESSION_STATE_HANDSHAKING() {
+        return 0;
+    }
+
+    session_set_remote_hive(s, remote_hive_id);
+    session_set_state(s, SESSION_STATE_ACTIVE());
+    session_set_last_active(s, now);
+
+    // Generate resume token if resumable
+    let config = session_config(s);
+    if session_config_has_flag(config, SESSION_FLAG_RESUMABLE()) == 1 {
+        let token = session_generate_resume_token(s, now);
+        session_set_resume_token(s, token);
+    }
+
+    1
+}
+
+// Begin graceful shutdown
+fn session_drain(s: i64, close_code: i64, now: i64) -> i64 {
+    if session_is_active(s) == 0 {
+        return 0;
+    }
+
+    session_set_state(s, SESSION_STATE_DRAINING());
+    session_set_close_code(s, close_code);
+    session_set_last_active(s, now);
+    1
+}
+
+// Suspend session (can be resumed)
+fn session_suspend(s: i64, now: i64) -> i64 {
+    if session_is_active(s) == 0 && session_state(s) != SESSION_STATE_DRAINING() {
+        return 0;
+    }
+
+    let config = session_config(s);
+    if session_config_has_flag(config, SESSION_FLAG_RESUMABLE()) == 0 {
+        // Not resumable, just close
+        return session_close(s, SESSION_CLOSE_GOING_AWAY(), now);
+    }
+
+    session_set_state(s, SESSION_STATE_SUSPENDED());
+    session_set_last_active(s, now);
+
+    // Increment reconnection count
+    let stats = session_stats(s);
+    session_stats_inc(stats, 11);
+
+    1
+}
+
+// Close session
+fn session_close(s: i64, close_code: i64, now: i64) -> i64 {
+    let state = session_state(s);
+    if state == SESSION_STATE_CLOSED() {
+        return 1;  // Already closed
+    }
+
+    session_set_state(s, SESSION_STATE_CLOSING());
+    session_set_close_code(s, close_code);
+
+    // Close all streams
+    let streams = session_streams(s);
+    let stream_count = vec_len(streams);
+    let i = 0;
+    while i < stream_count {
+        // Streams will be closed by multiplex module
+        i = i + 1;
+    }
+
+    // Stay in CLOSING state - transition to CLOSED happens
+    // after graceful shutdown completes (via session_finish_close)
+    session_set_last_active(s, now);
+    1
+}
+
+// Finish close and transition to CLOSED state
+fn session_finish_close(s: i64, now: i64) -> i64 {
+    if session_state(s) == SESSION_STATE_CLOSING() {
+        session_set_state(s, SESSION_STATE_CLOSED());
+        session_set_last_active(s, now);
+    }
+    1
+}
+
+// Set error state
+fn session_set_error(s: i64, code: i64, msg: i64, now: i64) -> i64 {
+    session_set_state(s, SESSION_STATE_ERROR());
+    session_set_close_code(s, code);
+    session_set_error_msg(s, msg);
+    session_set_last_active(s, now);
+
+    let stats = session_stats(s);
+    session_stats_inc(stats, 8);
+    1
+}
+
+// =============================================================================
+// Session Resume
+// =============================================================================
+
+// Generate resume token from session state
+fn session_generate_resume_token(s: i64, now: i64) -> i64 {
+    let token = vec_new();
+    let sid = session_id(s);
+
+    // Include session ID
+    let sid_bytes = session_id_to_bytes(sid);
+    let i = 0;
+    while i < vec_len(sid_bytes) {
+        vec_push(token, vec_get(sid_bytes, i));
+        i = i + 1;
+    }
+
+    // Add timestamp
+    vec_push(token, (now / 16777216) % 256);
+    vec_push(token, (now / 65536) % 256);
+    vec_push(token, (now / 256) % 256);
+    vec_push(token, now % 256);
+
+    // Add local and remote hive IDs
+    let local = session_local_hive(s);
+    vec_push(token, (local / 16777216) % 256);
+    vec_push(token, (local / 65536) % 256);
+    vec_push(token, (local / 256) % 256);
+    vec_push(token, local % 256);
+
+    let remote = session_remote_hive(s);
+    vec_push(token, (remote / 16777216) % 256);
+    vec_push(token, (remote / 65536) % 256);
+    vec_push(token, (remote / 256) % 256);
+    vec_push(token, remote % 256);
+
+    token
+}
+
+// Attempt to resume session with token
+fn session_resume(s: i64, transport: i64, token: i64, now: i64) -> i64 {
+    if session_state(s) != SESSION_STATE_SUSPENDED() {
+        return 0;
+    }
+
+    // Verify token matches our session
+    let our_token = session_resume_token(s);
+    if our_token == 0 {
+        return 0;
+    }
+
+    // Compare session ID portion (first 16 bytes)
+    let token_len = vec_len(token);
+    let our_len = vec_len(our_token);
+    if token_len < 16 || our_len < 16 {
+        return 0;
+    }
+
+    let i = 0;
+    while i < 16 {
+        if vec_get(token, i) != vec_get(our_token, i) {
+            return 0;  // Session ID mismatch
+        }
+        i = i + 1;
+    }
+
+    // Resume the session - go directly to ACTIVE since
+    // the session was previously authenticated
+    session_set_transport(s, transport);
+    session_set_state(s, SESSION_STATE_ACTIVE());
+    session_set_last_active(s, now);
+
+    1
+}
+
+// Check if resume token is still valid
+fn session_resume_token_valid(s: i64, now: i64) -> i64 {
+    let token = session_resume_token(s);
+    if token == 0 {
+        return 0;
+    }
+
+    let config = session_config(s);
+    let resume_timeout = session_config_resume_timeout(config);
+    let last_active = session_last_active(s);
+
+    if now - last_active > resume_timeout {
+        return 0;  // Expired
+    }
+
+    1
+}
+
+// =============================================================================
+// Session Keepalive
+// =============================================================================
+
+// Check if ping should be sent
+fn session_should_ping(s: i64, now: i64) -> i64 {
+    if session_is_active(s) == 0 {
+        return 0;
+    }
+
+    // Don't send if one is already outstanding
+    if session_ping_outstanding(s) == 1 {
+        return 0;
+    }
+
+    let config = session_config(s);
+    let interval = session_config_ping_interval(config);
+    let last_sent = session_last_ping_sent(s);
+
+    if last_sent == 0 {
+        // Never sent a ping, check if enough time since activation
+        let last_active = session_last_active(s);
+        if now - last_active >= interval {
+            return 1;
+        }
+    } else if now - last_sent >= interval {
+        return 1;
+    }
+
+    0
+}
+
+// Record ping sent
+fn session_ping_sent(s: i64, now: i64) -> i64 {
+    session_set_last_ping_sent(s, now);
+    session_set_ping_outstanding(s, 1);
+
+    let stats = session_stats(s);
+    session_stats_inc(stats, 9);
+    1
+}
+
+// Record pong received
+fn session_pong_received(s: i64, now: i64) -> i64 {
+    let ping_sent = session_last_ping_sent(s);
+    session_set_last_ping_recv(s, now);
+    session_set_ping_outstanding(s, 0);
+    session_set_last_active(s, now);
+
+    let stats = session_stats(s);
+    session_stats_inc(stats, 10);
+
+    // Record latency
+    if ping_sent > 0 {
+        let latency = now - ping_sent;
+        session_stats_record_latency(stats, latency);
+    }
+
+    1
+}
+
+// Check if ping has timed out
+fn session_ping_timeout(s: i64, now: i64) -> i64 {
+    if session_ping_outstanding(s) == 0 {
+        return 0;
+    }
+
+    let config = session_config(s);
+    let timeout = session_config_ping_timeout(config);
+    let last_sent = session_last_ping_sent(s);
+
+    if now - last_sent > timeout {
+        return 1;
+    }
+
+    0
+}
+
+// =============================================================================
+// Session Idle Timeout
+// =============================================================================
+
+// Check if session has timed out due to inactivity
+fn session_idle_timeout(s: i64, now: i64) -> i64 {
+    if session_is_active(s) == 0 && session_state(s) != SESSION_STATE_SUSPENDED() {
+        return 0;
+    }
+
+    let config = session_config(s);
+    let timeout = session_config_idle_timeout(config);
+    let last_active = session_last_active(s);
+
+    if now - last_active > timeout {
+        return 1;
+    }
+
+    0
+}
+
+// Update activity timestamp
+fn session_touch(s: i64, now: i64) -> i64 {
+    session_set_last_active(s, now);
+    1
+}
+
+// =============================================================================
+// Stream Management
+// =============================================================================
+
+// Get stream count
+fn session_stream_count(s: i64) -> i64 {
+    vec_len(session_streams(s))
+}
+
+// Check if can open new stream
+fn session_can_open_stream(s: i64) -> i64 {
+    if session_is_active(s) == 0 {
+        return 0;
+    }
+
+    let config = session_config(s);
+    let max_streams = session_config_max_streams(config);
+    let current = session_stream_count(s);
+
+    if current >= max_streams {
+        return 0;
+    }
+
+    1
+}
+
+// Add stream to session
+fn session_add_stream(s: i64, stream_id: i64) -> i64 {
+    if session_can_open_stream(s) == 0 {
+        return 0;
+    }
+
+    let streams = session_streams(s);
+    // Store stream_id directly in the streams list
+    vec_push(streams, stream_id);
+
+    let stats = session_stats(s);
+    session_stats_inc(stats, 4);
+    1
+}
+
+// Remove stream from session
+fn session_remove_stream(s: i64, stream_id: i64) -> i64 {
+    let streams = session_streams(s);
+    let new_streams = vec_new();
+    let len = vec_len(streams);
+
+    let i = 0;
+    while i < len {
+        let sid = vec_get(streams, i);
+        if sid != stream_id {
+            vec_push(new_streams, sid);
+        }
+        i = i + 1;
+    }
+
+    vec_set(s, 7, new_streams);
+
+    let stats = session_stats(s);
+    session_stats_inc(stats, 5);
+    1
+}
+
+// Find stream by ID - returns 1 if found, 0 if not
+fn session_find_stream(s: i64, stream_id: i64) -> i64 {
+    let streams = session_streams(s);
+    let len = vec_len(streams);
+
+    let i = 0;
+    while i < len {
+        let sid = vec_get(streams, i);
+        if sid == stream_id {
+            return 1;
+        }
+        i = i + 1;
+    }
+
+    0
+}
+
+// =============================================================================
+// Pending Request Management
+// =============================================================================
+
+// Get pending request count
+fn session_pending_count(s: i64) -> i64 {
+    vec_len(session_pending(s))
+}
+
+// Check if can add pending request
+fn session_can_add_pending(s: i64) -> i64 {
+    let config = session_config(s);
+    let max_pending = session_config_max_pending(config);
+    let current = session_pending_count(s);
+
+    if current >= max_pending {
+        return 0;
+    }
+
+    1
+}
+
+// Add pending request
+fn session_add_pending(s: i64, request_id: i64) -> i64 {
+    if session_can_add_pending(s) == 0 {
+        return 0;
+    }
+
+    let pending = session_pending(s);
+    // Store request ID directly
+    vec_push(pending, request_id);
+
+    let stats = session_stats(s);
+    session_stats_inc(stats, 6);
+    1
+}
+
+// Remove pending request by ID
+fn session_remove_pending(s: i64, request_id: i64) -> i64 {
+    let pending = session_pending(s);
+    let new_pending = vec_new();
+    let len = vec_len(pending);
+    let found = 0;
+
+    let i = 0;
+    while i < len {
+        let rid = vec_get(pending, i);
+        if rid != request_id {
+            vec_push(new_pending, rid);
+        } else {
+            found = 1;
+        }
+        i = i + 1;
+    }
+
+    vec_set(s, 8, new_pending);
+
+    if found == 1 {
+        let stats = session_stats(s);
+        session_stats_inc(stats, 7);
+    }
+
+    found
+}
+
+// Find pending request by ID - returns 1 if found, 0 if not
+fn session_find_pending(s: i64, request_id: i64) -> i64 {
+    let pending = session_pending(s);
+    let len = vec_len(pending);
+
+    let i = 0;
+    while i < len {
+        let rid = vec_get(pending, i);
+        if rid == request_id {
+            return 1;
+        }
+        i = i + 1;
+    }
+
+    0
+}
+
+// =============================================================================
+// Session Info
+// =============================================================================
+
+// Get session age in milliseconds
+fn session_age(s: i64, now: i64) -> i64 {
+    now - session_created_at(s)
+}
+
+// Get time since last activity
+fn session_idle_time(s: i64, now: i64) -> i64 {
+    now - session_last_active(s)
+}
+
+// Get session info snapshot
+fn session_info(s: i64, now: i64) -> i64 {
+    let info = vec_new();
+    vec_push(info, session_state(s));
+    vec_push(info, session_local_hive(s));
+    vec_push(info, session_remote_hive(s));
+    vec_push(info, session_stream_count(s));
+    vec_push(info, session_pending_count(s));
+    vec_push(info, session_age(s, now));
+    vec_push(info, session_idle_time(s, now));
+
+    let stats = session_stats(s);
+    vec_push(info, session_stats_frames_sent(stats));
+    vec_push(info, session_stats_frames_recv(stats));
+    vec_push(info, session_stats_avg_latency(stats));
+
+    info
+}
+
+fn session_info_state(info: i64) -> i64 { vec_get(info, 0) }
+fn session_info_local_hive(info: i64) -> i64 { vec_get(info, 1) }
+fn session_info_remote_hive(info: i64) -> i64 { vec_get(info, 2) }
+fn session_info_stream_count(info: i64) -> i64 { vec_get(info, 3) }
+fn session_info_pending_count(info: i64) -> i64 { vec_get(info, 4) }
+fn session_info_age(info: i64) -> i64 { vec_get(info, 5) }
+fn session_info_idle_time(info: i64) -> i64 { vec_get(info, 6) }
+fn session_info_frames_sent(info: i64) -> i64 { vec_get(info, 7) }
+fn session_info_frames_recv(info: i64) -> i64 { vec_get(info, 8) }
+fn session_info_avg_latency(info: i64) -> i64 { vec_get(info, 9) }
+
+// Helper functions for session byte tracking
+fn session_add_bytes_sent(s: i64, bytes: i64) -> i64 {
+    let stats: i64 = session_stats(s);
+    session_stats_add(stats, 2, bytes)
+}
+
+fn session_add_bytes_recv(s: i64, bytes: i64) -> i64 {
+    let stats: i64 = session_stats(s);
+    session_stats_add(stats, 3, bytes)
+}
+
+fn session_add_frame_sent(s: i64) -> i64 {
+    let stats: i64 = session_stats(s);
+    session_stats_inc(stats, 0)
+}
+
+fn session_add_frame_recv(s: i64) -> i64 {
+    let stats: i64 = session_stats(s);
+    session_stats_inc(stats, 1)
+}
+
+fn session_add_frames_sent(s: i64, count: i64) -> i64 {
+    let stats: i64 = session_stats(s);
+    session_stats_add(stats, 0, count)
+}
+
+fn session_add_frames_recv(s: i64, count: i64) -> i64 {
+    let stats: i64 = session_stats(s);
+    session_stats_add(stats, 1, count)
+}
+
+// ============================================================================
+// Aliases and additional functions for API compatibility
+// ============================================================================
+
+// Config aliases
+fn session_config_enable_resume(c: i64) -> i64 {
+    session_config_has_flag(c, SESSION_FLAG_RESUMABLE())
+}
+
+fn session_config_keepalive_interval(c: i64) -> i64 {
+    session_config_ping_interval(c)
+}
+
+fn session_config_set_keepalive_interval(c: i64, ms: i64) -> i64 {
+    session_config_set_ping_interval(c, ms)
+}
+
+fn session_config_free(c: i64) -> i64 {
+    // In this implementation, configs use vectors that are GC'd
+    // This is a no-op but provided for API completeness
+    1
+}
+
+// Session state transition aliases
+fn session_handshake(s: i64, now: i64) -> i64 {
+    session_begin_handshake(s, now)
+}
+
+fn session_authenticate(s: i64, now: i64) -> i64 {
+    // Transition from HANDSHAKING to AUTHENTICATING
+    let state: i64 = session_state(s);
+    if state == SESSION_STATE_HANDSHAKING() {
+        session_set_state(s, SESSION_STATE_AUTHENTICATING());
+        session_set_last_active(s, now);
+        1
+    } else {
+        0
+    }
+}
+
+fn session_free(s: i64) -> i64 {
+    // In this implementation, sessions use vectors that are GC'd
+    // This is a no-op but provided for API completeness
+    1
+}
+
+// Session getter aliases
+fn session_local_hive_id(s: i64) -> i64 {
+    session_local_hive(s)
+}
+
+fn session_remote_hive_id(s: i64) -> i64 {
+    session_remote_hive(s)
+}
+
+fn session_get_stats(s: i64) -> i64 {
+    session_stats(s)
+}
+
+// Session ID aliases
+// Note: session_id_generate uses timestamp as seed for uniqueness
+fn session_id_generate(timestamp: i64) -> i64 {
+    session_id_new(timestamp, timestamp * 31337)
+}
+
+// Serialize session ID to a buffer, returns length written
+fn session_id_serialize(sid: i64, buf: i64) -> i64 {
+    let bytes = session_id_to_bytes(sid);
+    let len = vec_len(bytes);
+    let i = 0;
+    while i < len {
+        store64(buf + i * 8, vec_get(bytes, i));
+        i = i + 1;
+    }
+    len
+}
+
+// Parse session ID from buffer with given length
+fn session_id_parse(buf: i64, len: i64) -> i64 {
+    // Create a vector from buffer contents
+    let bytes = vec_new();
+    let i = 0;
+    while i < len {
+        vec_push(bytes, load64(buf + i * 8));
+        i = i + 1;
+    }
+    session_id_from_bytes(bytes, 0)
+}
+
+// Keepalive aliases
+fn session_needs_keepalive(s: i64, now: i64) -> i64 {
+    session_should_ping(s, now)
+}
+
+fn session_send_ping(s: i64, now: i64) -> i64 {
+    session_ping_sent(s, now)
+}
+
+fn session_recv_pong(s: i64, now: i64) -> i64 {
+    session_pong_received(s, now)
+}

@@ -1153,6 +1153,130 @@ pub mod mpsc {
 }
 
 // =============================================================================
+// Oneshot Channels - Single-value, single-use channels
+// =============================================================================
+
+pub mod oneshot {
+    use super::*;
+
+    /// Create a oneshot channel.
+    ///
+    /// Returns (Sender, Receiver) pair. The sender can send exactly one value.
+    pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
+        let inner = Arc::new(OneshotInner {
+            value: Mutex::new(None),
+            is_complete: AtomicBool::new(false),
+            is_sender_dropped: AtomicBool::new(false),
+        });
+        (
+            Sender { inner: inner.clone() },
+            Receiver { inner },
+        )
+    }
+
+    struct OneshotInner<T> {
+        value: Mutex<Option<T>>,
+        is_complete: AtomicBool,
+        is_sender_dropped: AtomicBool,
+    }
+
+    /// Sending half of a oneshot channel.
+    pub struct Sender<T> {
+        inner: Arc<OneshotInner<T>>,
+    }
+
+    impl<T> Sender<T> {
+        /// Send a value on the channel.
+        ///
+        /// Consumes the sender. Returns error if receiver is dropped.
+        pub fn send(self, value: T) -> Result<(), T> {
+            if self.inner.is_sender_dropped.load(Ordering::Relaxed) {
+                return Err(value);
+            }
+
+            {
+                let mut slot = self.inner.value.lock();
+                *slot = Some(value);
+            }
+            self.inner.is_complete.store(true, Ordering::Release);
+            // Prevent drop from running
+            std::mem::forget(self);
+            Ok(())
+        }
+
+        /// Check if the receiver is still connected.
+        pub fn is_closed(&self) -> bool {
+            Arc::strong_count(&self.inner) == 1
+        }
+    }
+
+    impl<T> Drop for Sender<T> {
+        fn drop(&mut self) {
+            self.inner.is_sender_dropped.store(true, Ordering::Release);
+        }
+    }
+
+    /// Receiving half of a oneshot channel.
+    pub struct Receiver<T> {
+        inner: Arc<OneshotInner<T>>,
+    }
+
+    impl<T> Receiver<T> {
+        /// Wait for the value.
+        pub async fn recv(self) -> Result<T, RecvError> {
+            loop {
+                if self.inner.is_complete.load(Ordering::Acquire) {
+                    let mut slot = self.inner.value.lock();
+                    if let Some(value) = slot.take() {
+                        return Ok(value);
+                    }
+                }
+                if self.inner.is_sender_dropped.load(Ordering::Acquire) {
+                    return Err(RecvError::Closed);
+                }
+                crate::task::yield_now().await;
+            }
+        }
+
+        /// Try to receive without blocking.
+        pub fn try_recv(&self) -> Result<T, TryRecvError> {
+            if self.inner.is_complete.load(Ordering::Acquire) {
+                let mut slot = self.inner.value.lock();
+                if let Some(value) = slot.take() {
+                    return Ok(value);
+                }
+            }
+            if self.inner.is_sender_dropped.load(Ordering::Acquire) {
+                Err(TryRecvError::Closed)
+            } else {
+                Err(TryRecvError::Empty)
+            }
+        }
+
+        /// Close the receiving end.
+        pub fn close(&self) {
+            // Just drop our reference - sender will detect via Arc count
+        }
+    }
+
+    /// Error when receiving from a closed channel.
+    #[derive(Debug, Clone)]
+    pub enum RecvError {
+        /// Channel was closed before a value was sent.
+        Closed,
+    }
+
+    /// Error when try_recv fails.
+    #[derive(Debug, Clone)]
+    pub enum TryRecvError {
+        /// No value available yet.
+        Empty,
+        /// Channel was closed.
+        Closed,
+    }
+}
+
+// =============================================================================
 // FFI Declarations
 // =============================================================================
 

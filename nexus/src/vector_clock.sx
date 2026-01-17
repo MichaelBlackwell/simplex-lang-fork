@@ -1,0 +1,383 @@
+// Nexus Protocol - Vector Clock for Causality Tracking
+//
+// Phase 5: Implements vector clocks for distributed event ordering
+//
+// Vector clocks track the logical time across multiple nodes,
+// enabling detection of:
+// - Happened-before relationships
+// - Concurrent events
+// - Causal ordering violations
+
+// =============================================================================
+// Vector Clock Structure
+// =============================================================================
+
+// Vector Clock Layout:
+// - entries: list of (node_id, counter) pairs
+// - local_node_id: this node's ID for incrementing
+//
+// We store entries as a flat vec: [node1, count1, node2, count2, ...]
+
+fn nex_vclock_new(local_node_id: i64) -> i64 {
+    let vc = vec_new();
+    vec_push(vc, local_node_id);  // Slot 0: local node ID
+    vec_push(vc, vec_new());      // Slot 1: entries (node_id, counter pairs)
+    vc
+}
+
+fn nex_vclock_local_node(vc: i64) -> i64 { vec_get(vc, 0) }
+fn nex_vclock_entries(vc: i64) -> i64 { vec_get(vc, 1) }
+
+// Get counter for a specific node (returns 0 if not present)
+fn nex_vclock_get(vc: i64, node_id: i64) -> i64 {
+    let entries = nex_vclock_entries(vc);
+    let len = vec_len(entries);
+    let i = 0;
+    while i < len {
+        if vec_get(entries, i) == node_id {
+            return vec_get(entries, i + 1);
+        }
+        i = i + 2;
+    }
+    0
+}
+
+// Set counter for a specific node
+fn nex_vclock_set(vc: i64, node_id: i64, counter: i64) -> i64 {
+    let entries = nex_vclock_entries(vc);
+    let len = vec_len(entries);
+    let i = 0;
+    while i < len {
+        if vec_get(entries, i) == node_id {
+            vec_set(entries, i + 1, counter);
+            return 0;
+        }
+        i = i + 2;
+    }
+    // Not found, add new entry
+    vec_push(entries, node_id);
+    vec_push(entries, counter);
+    0
+}
+
+// Increment the local node's counter
+fn nex_vclock_increment(vc: i64) -> i64 {
+    let local_node = nex_vclock_local_node(vc);
+    let current = nex_vclock_get(vc, local_node);
+    nex_vclock_set(vc, local_node, current + 1);
+    current + 1
+}
+
+// Get the number of entries
+fn nex_vclock_size(vc: i64) -> i64 {
+    vec_len(nex_vclock_entries(vc)) / 2
+}
+
+// =============================================================================
+// Vector Clock Comparison
+// =============================================================================
+
+// Comparison results
+fn NEX_VCLOCK_EQUAL() -> i64 { 0 }
+fn NEX_VCLOCK_BEFORE() -> i64 { 1 }   // a happened-before b
+fn NEX_VCLOCK_AFTER() -> i64 { 2 }    // a happened-after b
+fn NEX_VCLOCK_CONCURRENT() -> i64 { 3 }  // a and b are concurrent
+
+// Compare two vector clocks
+// Returns: EQUAL, BEFORE (a < b), AFTER (a > b), or CONCURRENT
+fn nex_vclock_compare(a: i64, b: i64) -> i64 {
+    let a_entries = nex_vclock_entries(a);
+    let b_entries = nex_vclock_entries(b);
+
+    let all_nodes = nex_vclock_collect_nodes(a, b);
+    let node_count = vec_len(all_nodes);
+
+    let a_less = 0;   // At least one a[i] < b[i]
+    let a_greater = 0; // At least one a[i] > b[i]
+
+    let i = 0;
+    while i < node_count {
+        let node_id = vec_get(all_nodes, i);
+        let a_val = nex_vclock_get(a, node_id);
+        let b_val = nex_vclock_get(b, node_id);
+
+        if a_val < b_val {
+            a_less = 1;
+        }
+        if a_val > b_val {
+            a_greater = 1;
+        }
+
+        i = i + 1;
+    }
+
+    // Determine relationship
+    if a_less == 0 && a_greater == 0 {
+        return NEX_VCLOCK_EQUAL();
+    }
+    if a_less == 1 && a_greater == 0 {
+        return NEX_VCLOCK_BEFORE();  // a happened-before b
+    }
+    if a_less == 0 && a_greater == 1 {
+        return NEX_VCLOCK_AFTER();   // a happened-after b
+    }
+    // Both are true - concurrent
+    NEX_VCLOCK_CONCURRENT()
+}
+
+// Helper: collect all unique node IDs from both clocks
+fn nex_vclock_collect_nodes(a: i64, b: i64) -> i64 {
+    let nodes = vec_new();
+
+    // Add nodes from a
+    let a_entries = nex_vclock_entries(a);
+    let a_len = vec_len(a_entries);
+    let i = 0;
+    while i < a_len {
+        let node_id = vec_get(a_entries, i);
+        if nex_vclock_node_in_list(nodes, node_id) == 0 {
+            vec_push(nodes, node_id);
+        }
+        i = i + 2;
+    }
+
+    // Add nodes from b
+    let b_entries = nex_vclock_entries(b);
+    let b_len = vec_len(b_entries);
+    i = 0;
+    while i < b_len {
+        let node_id = vec_get(b_entries, i);
+        if nex_vclock_node_in_list(nodes, node_id) == 0 {
+            vec_push(nodes, node_id);
+        }
+        i = i + 2;
+    }
+
+    nodes
+}
+
+fn nex_vclock_node_in_list(nodes: i64, node_id: i64) -> i64 {
+    let len = vec_len(nodes);
+    let i = 0;
+    while i < len {
+        if vec_get(nodes, i) == node_id {
+            return 1;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+// Check if a happened-before b
+fn nex_vclock_happened_before(a: i64, b: i64) -> i64 {
+    nex_vclock_compare(a, b) == NEX_VCLOCK_BEFORE()
+}
+
+// Check if events are concurrent
+fn nex_vclock_concurrent(a: i64, b: i64) -> i64 {
+    nex_vclock_compare(a, b) == NEX_VCLOCK_CONCURRENT()
+}
+
+// =============================================================================
+// Vector Clock Merge
+// =============================================================================
+
+// Merge two vector clocks (take max of each entry)
+// This is used when receiving a message to update local clock
+fn nex_vclock_merge(vc: i64, other: i64) -> i64 {
+    let other_entries = nex_vclock_entries(other);
+    let len = vec_len(other_entries);
+
+    let i = 0;
+    while i < len {
+        let node_id = vec_get(other_entries, i);
+        let other_val = vec_get(other_entries, i + 1);
+        let local_val = nex_vclock_get(vc, node_id);
+
+        if other_val > local_val {
+            nex_vclock_set(vc, node_id, other_val);
+        }
+
+        i = i + 2;
+    }
+
+    0
+}
+
+// Create a copy of a vector clock
+fn nex_vclock_clone(vc: i64) -> i64 {
+    let new_vc = nex_vclock_new(nex_vclock_local_node(vc));
+    let entries = nex_vclock_entries(vc);
+    let len = vec_len(entries);
+
+    let i = 0;
+    while i < len {
+        let node_id = vec_get(entries, i);
+        let counter = vec_get(entries, i + 1);
+        nex_vclock_set(new_vc, node_id, counter);
+        i = i + 2;
+    }
+
+    new_vc
+}
+
+// =============================================================================
+// Vector Clock Encoding/Decoding
+// =============================================================================
+
+fn nex_vclock_encode(vc: i64) -> i64 {
+    let bytes = vec_new();
+
+    // Tag byte
+    vec_push(bytes, STF_VECTOR_CLOCK());
+
+    // Local node ID (4 bytes)
+    let local_node = nex_vclock_local_node(vc);
+    vec_push(bytes, (local_node >> 24) & 255);
+    vec_push(bytes, (local_node >> 16) & 255);
+    vec_push(bytes, (local_node >> 8) & 255);
+    vec_push(bytes, local_node & 255);
+
+    // Entry count (2 bytes)
+    let entries = nex_vclock_entries(vc);
+    let entry_count = vec_len(entries) / 2;
+    vec_push(bytes, (entry_count >> 8) & 255);
+    vec_push(bytes, entry_count & 255);
+
+    // Entries: (node_id: 4 bytes, counter: 4 bytes) each
+    let i = 0;
+    while i < vec_len(entries) {
+        let node_id = vec_get(entries, i);
+        vec_push(bytes, (node_id >> 24) & 255);
+        vec_push(bytes, (node_id >> 16) & 255);
+        vec_push(bytes, (node_id >> 8) & 255);
+        vec_push(bytes, node_id & 255);
+
+        let counter = vec_get(entries, i + 1);
+        vec_push(bytes, (counter >> 24) & 255);
+        vec_push(bytes, (counter >> 16) & 255);
+        vec_push(bytes, (counter >> 8) & 255);
+        vec_push(bytes, counter & 255);
+
+        i = i + 2;
+    }
+
+    bytes
+}
+
+fn nex_vclock_decode(bytes: i64, offset: i64) -> i64 {
+    let len = vec_len(bytes);
+    if len < offset + 7 {
+        return 0;  // Minimum: tag + local_node + count
+    }
+
+    if vec_get(bytes, offset) != STF_VECTOR_CLOCK() {
+        return 0;
+    }
+
+    let pos = offset + 1;
+
+    // Local node ID
+    let local_node = (vec_get(bytes, pos) << 24) |
+                     (vec_get(bytes, pos + 1) << 16) |
+                     (vec_get(bytes, pos + 2) << 8) |
+                     vec_get(bytes, pos + 3);
+    pos = pos + 4;
+
+    // Entry count
+    let entry_count = (vec_get(bytes, pos) << 8) | vec_get(bytes, pos + 1);
+    pos = pos + 2;
+
+    if len < pos + entry_count * 8 {
+        return 0;  // Not enough data for entries
+    }
+
+    let vc = nex_vclock_new(local_node);
+
+    let i = 0;
+    while i < entry_count {
+        let node_id = (vec_get(bytes, pos) << 24) |
+                      (vec_get(bytes, pos + 1) << 16) |
+                      (vec_get(bytes, pos + 2) << 8) |
+                      vec_get(bytes, pos + 3);
+        pos = pos + 4;
+
+        let counter = (vec_get(bytes, pos) << 24) |
+                      (vec_get(bytes, pos + 1) << 16) |
+                      (vec_get(bytes, pos + 2) << 8) |
+                      vec_get(bytes, pos + 3);
+        pos = pos + 4;
+
+        nex_vclock_set(vc, node_id, counter);
+
+        i = i + 1;
+    }
+
+    vc
+}
+
+// =============================================================================
+// Timestamped Values
+// =============================================================================
+
+// A timestamped value pairs data with its vector clock for ordering
+
+fn timestamped_new(value: i64, vc: i64) -> i64 {
+    let ts = vec_new();
+    vec_push(ts, value);
+    vec_push(ts, vc);
+    ts
+}
+
+fn timestamped_value(ts: i64) -> i64 { vec_get(ts, 0) }
+fn timestamped_clock(ts: i64) -> i64 { vec_get(ts, 1) }
+
+// Compare timestamped values for ordering
+fn timestamped_compare(a: i64, b: i64) -> i64 {
+    nex_vclock_compare(timestamped_clock(a), timestamped_clock(b))
+}
+
+// Get the "latest" value based on vector clock
+// Returns a if a >= b, b if b > a, or a if concurrent (arbitrary but consistent)
+fn timestamped_latest(a: i64, b: i64) -> i64 {
+    let cmp = timestamped_compare(a, b);
+    if cmp == NEX_VCLOCK_BEFORE() {
+        return b;  // a < b, so b is later
+    }
+    a  // a >= b or concurrent, return a
+}
+
+// =============================================================================
+// Debug/Print Helpers
+// =============================================================================
+
+fn nex_vclock_print(vc: i64) -> i64 {
+    print("VClock{local=");
+    print_i64(nex_vclock_local_node(vc));
+    print(", entries=[");
+
+    let entries = nex_vclock_entries(vc);
+    let len = vec_len(entries);
+    let i = 0;
+    while i < len {
+        if i > 0 { print(", "); }
+        let node_id = vec_get(entries, i);
+        let counter = vec_get(entries, i + 1);
+        print_i64(node_id);
+        print(":");
+        print_i64(counter);
+        i = i + 2;
+    }
+
+    print("]}");
+    0
+}
+
+fn nex_vclock_compare_name(result: i64) -> i64 {
+    if result == NEX_VCLOCK_EQUAL() { print("EQUAL"); }
+    else if result == NEX_VCLOCK_BEFORE() { print("BEFORE"); }
+    else if result == NEX_VCLOCK_AFTER() { print("AFTER"); }
+    else if result == NEX_VCLOCK_CONCURRENT() { print("CONCURRENT"); }
+    else { print("UNKNOWN"); }
+    0
+}

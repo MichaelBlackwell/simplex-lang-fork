@@ -4,18 +4,28 @@
 // (confidence values about facts). When multiple specialists learn
 // independently, their beliefs can diverge. This module provides
 // mechanisms for reconciling conflicting beliefs across the hive.
+//
+// TASK-013-A: Beliefs now use dual numbers for automatic derivative tracking.
+// This enables belief-gated receive with derivative patterns.
 
 use crate::tensor::Tensor;
+use simplex_std::dual::dual;
 use std::collections::HashMap;
 
 /// A belief held by a specialist
+///
+/// Confidence is stored as a dual number to enable automatic derivative
+/// tracking. The derivative represents the rate of change of confidence,
+/// which can be used in belief guards like:
+///   receive Msg @ confidence("x").derivative < -0.1 => { ... }
 #[derive(Clone)]
 pub struct Belief {
     /// Belief identifier (e.g., "user_prefers_concise_responses")
     pub id: String,
 
-    /// Confidence level (0.0 to 1.0)
-    pub confidence: f64,
+    /// Confidence as dual number (value + derivative)
+    /// The derivative tracks rate of change automatically via dual number arithmetic
+    pub confidence: dual,
 
     /// Evidence count supporting this belief
     pub evidence_count: u64,
@@ -31,11 +41,23 @@ pub struct Belief {
 }
 
 impl Belief {
-    /// Create a new belief
+    /// Create a new belief with initial confidence (derivative starts at 0)
     pub fn new(id: &str, confidence: f64, source: &str) -> Self {
         Belief {
             id: id.to_string(),
-            confidence: confidence.max(0.0).min(1.0),
+            confidence: dual::constant(confidence.max(0.0).min(1.0)),
+            evidence_count: 1,
+            last_updated: current_timestamp(),
+            source: source.to_string(),
+            embedding: None,
+        }
+    }
+
+    /// Create a belief with explicit derivative
+    pub fn with_derivative(id: &str, confidence: f64, derivative: f64, source: &str) -> Self {
+        Belief {
+            id: id.to_string(),
+            confidence: dual::new(confidence.max(0.0).min(1.0), derivative),
             evidence_count: 1,
             last_updated: current_timestamp(),
             source: source.to_string(),
@@ -49,18 +71,40 @@ impl Belief {
         self
     }
 
-    /// Update confidence with new evidence
+    /// Update confidence with new evidence - derivative computed as rate of change
     pub fn update(&mut self, new_evidence_confidence: f64, learning_rate: f64) {
-        self.confidence = self.confidence * (1.0 - learning_rate)
-            + new_evidence_confidence * learning_rate;
-        self.confidence = self.confidence.max(0.0).min(1.0);
+        let old_val = self.confidence.val;
+        let new_val = old_val * (1.0 - learning_rate) + new_evidence_confidence * learning_rate;
+        let new_val_clamped = new_val.max(0.0).min(1.0);
+
+        // Compute derivative as rate of change over time
+        let now = current_timestamp();
+        let dt = (now - self.last_updated) as f64 / 1000.0;  // seconds
+        let derivative = if dt > 0.001 {
+            (new_val_clamped - old_val) / dt
+        } else {
+            self.confidence.der  // Keep previous derivative if dt too small
+        };
+
+        self.confidence = dual::new(new_val_clamped, derivative);
         self.evidence_count += 1;
-        self.last_updated = current_timestamp();
+        self.last_updated = now;
+    }
+
+    /// Get confidence value (without derivative)
+    pub fn value(&self) -> f64 {
+        self.confidence.val
+    }
+
+    /// Get confidence derivative (rate of change)
+    pub fn derivative(&self) -> f64 {
+        self.confidence.der
     }
 
     /// Compute belief strength (confidence * evidence weight)
-    pub fn strength(&self) -> f64 {
-        let evidence_weight = 1.0 - 1.0 / (1.0 + self.evidence_count as f64);
+    /// Returns dual to preserve derivative information
+    pub fn strength(&self) -> dual {
+        let evidence_weight = dual::constant(1.0 - 1.0 / (1.0 + self.evidence_count as f64));
         self.confidence * evidence_weight
     }
 }
@@ -162,11 +206,11 @@ impl BeliefResolver {
             return None;
         }
 
-        // Filter by age
+        // Filter by age and minimum confidence (use .val for comparison)
         let now = current_timestamp();
         let valid_beliefs: Vec<&Belief> = beliefs.iter()
             .filter(|b| now - b.last_updated <= self.max_age_ms)
-            .filter(|b| b.confidence >= self.min_confidence)
+            .filter(|b| b.confidence.val >= self.min_confidence)
             .collect();
 
         if valid_beliefs.is_empty() {
@@ -216,7 +260,7 @@ impl BeliefResolver {
 
     fn resolve_highest_confidence(&self, beliefs: &[&Belief]) -> Belief {
         let best = beliefs.iter()
-            .max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap())
+            .max_by(|a, b| a.confidence.val.partial_cmp(&b.confidence.val).unwrap())
             .unwrap();
         (*best).clone()
     }
@@ -239,13 +283,15 @@ impl BeliefResolver {
         let total_evidence: u64 = beliefs.iter().map(|b| b.evidence_count).sum();
 
         let mut weighted_confidence = 0.0;
+        let mut weighted_derivative = 0.0;
         for belief in beliefs {
             let weight = belief.evidence_count as f64 / total_evidence as f64;
-            weighted_confidence += belief.confidence * weight;
+            weighted_confidence += belief.confidence.val * weight;
+            weighted_derivative += belief.confidence.der * weight;
         }
 
         let mut resolved = beliefs[0].clone();
-        resolved.confidence = weighted_confidence;
+        resolved.confidence = dual::new(weighted_confidence, weighted_derivative);
         resolved.evidence_count = total_evidence;
         resolved.source = "hive:evidence_weighted".to_string();
         resolved.last_updated = current_timestamp();
@@ -253,18 +299,20 @@ impl BeliefResolver {
     }
 
     fn resolve_confidence_weighted(&self, beliefs: &[&Belief]) -> Belief {
-        let total_confidence: f64 = beliefs.iter().map(|b| b.confidence).sum();
+        let total_confidence: f64 = beliefs.iter().map(|b| b.confidence.val).sum();
 
         let mut weighted_confidence = 0.0;
+        let mut weighted_derivative = 0.0;
         for belief in beliefs {
-            let weight = belief.confidence / total_confidence;
-            weighted_confidence += belief.confidence * weight;
+            let weight = belief.confidence.val / total_confidence;
+            weighted_confidence += belief.confidence.val * weight;
+            weighted_derivative += belief.confidence.der * weight;
         }
 
         let total_evidence: u64 = beliefs.iter().map(|b| b.evidence_count).sum();
 
         let mut resolved = beliefs[0].clone();
-        resolved.confidence = weighted_confidence;
+        resolved.confidence = dual::new(weighted_confidence, weighted_derivative);
         resolved.evidence_count = total_evidence;
         resolved.source = "hive:confidence_weighted".to_string();
         resolved.last_updated = current_timestamp();
@@ -278,7 +326,7 @@ impl BeliefResolver {
 
         let mut combined_log_odds = 0.0;
         for belief in beliefs {
-            let p = belief.confidence.max(0.001).min(0.999);
+            let p = belief.confidence.val.max(0.001).min(0.999);
             let log_odds = (p / (1.0 - p)).ln();
             combined_log_odds += log_odds;
         }
@@ -287,10 +335,13 @@ impl BeliefResolver {
         // p = 1 / (1 + exp(-log_odds))
         let combined_confidence = 1.0 / (1.0 + (-combined_log_odds).exp());
 
+        // Average derivative (simplified - full Bayesian derivative would be complex)
+        let avg_derivative: f64 = beliefs.iter().map(|b| b.confidence.der).sum::<f64>() / beliefs.len() as f64;
+
         let total_evidence: u64 = beliefs.iter().map(|b| b.evidence_count).sum();
 
         let mut resolved = beliefs[0].clone();
-        resolved.confidence = combined_confidence;
+        resolved.confidence = dual::new(combined_confidence, avg_derivative);
         resolved.evidence_count = total_evidence;
         resolved.source = "hive:bayesian".to_string();
         resolved.last_updated = current_timestamp();
@@ -329,16 +380,18 @@ impl BeliefResolver {
             *w /= total_weight + 1e-8;
         }
 
-        // Weighted combination
-        let mut weighted_confidence = 0.0;
+        // Weighted combination (compute weighted value and derivative)
+        let mut weighted_val = 0.0;
+        let mut weighted_der = 0.0;
         for (i, belief) in beliefs.iter().enumerate() {
-            weighted_confidence += belief.confidence * weights[i];
+            weighted_val += belief.confidence.val * weights[i];
+            weighted_der += belief.confidence.der * weights[i];
         }
 
         let total_evidence: u64 = beliefs.iter().map(|b| b.evidence_count).sum();
 
         let mut resolved = beliefs[0].clone();
-        resolved.confidence = weighted_confidence;
+        resolved.confidence = dual::new(weighted_val, weighted_der);
         resolved.evidence_count = total_evidence;
         resolved.source = "hive:semantic_weighted".to_string();
         resolved.last_updated = current_timestamp();
@@ -354,10 +407,10 @@ impl BeliefResolver {
         let mut disagree_votes = 0.0;
 
         for belief in beliefs {
-            if belief.confidence >= threshold {
-                agree_votes += belief.confidence;
+            if belief.confidence.val >= threshold {
+                agree_votes += belief.confidence.val;
             } else {
-                disagree_votes += 1.0 - belief.confidence;
+                disagree_votes += 1.0 - belief.confidence.val;
             }
         }
 
@@ -367,10 +420,13 @@ impl BeliefResolver {
             disagree_votes / (agree_votes + disagree_votes + 1e-8) * -1.0 + 1.0
         };
 
+        // Average derivative for majority vote
+        let avg_derivative: f64 = beliefs.iter().map(|b| b.confidence.der).sum::<f64>() / beliefs.len() as f64;
+
         let total_evidence: u64 = beliefs.iter().map(|b| b.evidence_count).sum();
 
         let mut resolved = beliefs[0].clone();
-        resolved.confidence = resolved_confidence.max(0.0).min(1.0);
+        resolved.confidence = dual::new(resolved_confidence.max(0.0).min(1.0), avg_derivative);
         resolved.evidence_count = total_evidence;
         resolved.source = "hive:majority_vote".to_string();
         resolved.last_updated = current_timestamp();
@@ -381,9 +437,9 @@ impl BeliefResolver {
         let record = ResolutionRecord {
             belief_id: resolved.id.clone(),
             conflicts: original.iter()
-                .map(|b| (b.source.clone(), b.confidence))
+                .map(|b| (b.source.clone(), b.confidence.val))
                 .collect(),
-            resolved_confidence: resolved.confidence,
+            resolved_confidence: resolved.confidence.val,
             timestamp: current_timestamp(),
             strategy: format!("{:?}", strategy_name(&self.strategy)),
         };
@@ -485,7 +541,7 @@ impl HiveBeliefManager {
                 if let Some(resolved) = self.resolver.resolve(beliefs) {
                     let changed = self.consensus
                         .get(&id)
-                        .map(|old| (old.confidence - resolved.confidence).abs() > 0.01)
+                        .map(|old| (old.confidence.val - resolved.confidence.val).abs() > 0.01)
                         .unwrap_or(true);
 
                     self.consensus.insert(id.clone(), resolved.clone());
@@ -621,8 +677,12 @@ impl BeliefSynchronizer {
                 / (local.evidence_count + belief.evidence_count) as f64;
             let consensus_weight = 1.0 - local_weight;
 
-            local.confidence = local.confidence * local_weight
-                + belief.confidence * consensus_weight;
+            // Blend both value and derivative using dual arithmetic
+            let blended_val = local.confidence.val * local_weight
+                + belief.confidence.val * consensus_weight;
+            let blended_der = local.confidence.der * local_weight
+                + belief.confidence.der * consensus_weight;
+            local.confidence = dual::new(blended_val, blended_der);
             local.evidence_count += belief.evidence_count;
         } else {
             // Adopt consensus belief

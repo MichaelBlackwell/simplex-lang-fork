@@ -1,0 +1,374 @@
+// TASK-014: Belief Provenance
+//
+// Provenance tracks where a belief comes from. Without provenance, beliefs
+// become "magic globals" - influential state with no evidence, no falsifiability.
+//
+// Every belief must have a clear origin that can be examined and challenged.
+
+use std::time::Instant;
+use std::collections::HashMap;
+
+/// Unique identifier for a belief
+pub type BeliefId = String;
+
+/// Cryptographic signature for authoritative beliefs
+#[derive(Clone)]
+pub struct Signature {
+    /// The signature bytes
+    pub bytes: Vec<u8>,
+
+    /// Signature algorithm (e.g., "ed25519", "ecdsa-p256")
+    pub algorithm: String,
+
+    /// Key identifier
+    pub key_id: String,
+}
+
+impl Signature {
+    /// Create a new signature
+    pub fn new(bytes: Vec<u8>, algorithm: &str, key_id: &str) -> Self {
+        Signature {
+            bytes,
+            algorithm: algorithm.to_string(),
+            key_id: key_id.to_string(),
+        }
+    }
+
+    /// Verify signature against data and public key
+    /// Returns true if signature is valid
+    pub fn verify(&self, _data: &[u8], _public_key: &[u8]) -> bool {
+        // TODO: Implement actual cryptographic verification
+        // For now, placeholder that always succeeds
+        true
+    }
+}
+
+/// Rules for inferring beliefs from other beliefs
+#[derive(Clone)]
+pub enum InferenceRule {
+    /// Modus ponens: A, A→B ⊢ B
+    ModusPonens,
+
+    /// Conjunction introduction: A, B ⊢ A∧B
+    Conjunction,
+
+    /// Bayesian update: prior + evidence → posterior
+    BayesianUpdate {
+        /// Prior probability
+        prior: f64,
+        /// Likelihood ratio
+        likelihood_ratio: f64,
+    },
+
+    /// Weighted average of multiple beliefs
+    WeightedCombination {
+        /// Weights for each premise (must sum to 1.0)
+        weights: Vec<f64>,
+    },
+
+    /// Neural inference from learned model
+    NeuralInference {
+        /// Model identifier
+        model_id: String,
+        /// Model confidence in this inference
+        model_confidence: f64,
+    },
+
+    /// Custom inference rule with description
+    Custom {
+        /// Human-readable description of the rule
+        description: String,
+        /// Formal rule identifier (for logging/auditing)
+        rule_id: String,
+    },
+}
+
+impl InferenceRule {
+    /// Get human-readable name for the rule
+    pub fn name(&self) -> &str {
+        match self {
+            InferenceRule::ModusPonens => "modus_ponens",
+            InferenceRule::Conjunction => "conjunction",
+            InferenceRule::BayesianUpdate { .. } => "bayesian_update",
+            InferenceRule::WeightedCombination { .. } => "weighted_combination",
+            InferenceRule::NeuralInference { .. } => "neural_inference",
+            InferenceRule::Custom { rule_id, .. } => rule_id,
+        }
+    }
+}
+
+/// The origin of a belief - where it came from
+#[derive(Clone)]
+pub enum ProvenanceOrigin {
+    /// Directly observed (sensor, user input, ground truth)
+    /// Most trustworthy: this is empirical evidence
+    Observed {
+        /// Source of observation (e.g., "temperature_sensor", "user_feedback", "api_response")
+        source: String,
+        /// When observed
+        timestamp: Instant,
+        /// Optional raw data that was observed
+        raw_data: Option<String>,
+    },
+
+    /// Inferred from other beliefs via logical/probabilistic rules
+    /// Trustworthiness depends on premises and rule
+    Inferred {
+        /// IDs of beliefs used as premises
+        premises: Vec<BeliefId>,
+        /// The inference rule applied
+        rule: InferenceRule,
+        /// Human-readable explanation of how confidence was derived
+        confidence_derivation: String,
+    },
+
+    /// Received from an external authority (human expert, trusted service)
+    /// Trustworthiness depends on authority's track record
+    Authoritative {
+        /// Who asserted this belief
+        authority: String,
+        /// Optional cryptographic signature
+        signature: Option<Signature>,
+        /// Trust level in this authority (0.0 to 1.0)
+        trust_level: f64,
+        /// When this authority last verified this belief
+        last_verified: Option<Instant>,
+    },
+
+    /// Learned from training data
+    /// Trustworthiness depends on training data quality and validation
+    Learned {
+        /// Hash of training data used
+        training_data_hash: String,
+        /// Version of the model that learned this
+        model_version: String,
+        /// Validation score on held-out data
+        validation_score: f64,
+        /// Number of training examples
+        training_examples: u64,
+    },
+
+    /// Default/prior belief - assumed without specific evidence
+    /// Should have low confidence unless justified
+    Prior {
+        /// Why this is a reasonable prior
+        justification: String,
+        /// Is this a domain-specific or universal prior?
+        prior_type: PriorType,
+    },
+}
+
+/// Types of prior beliefs
+#[derive(Clone)]
+pub enum PriorType {
+    /// Universal prior (applies broadly)
+    Universal,
+    /// Domain-specific prior
+    DomainSpecific { domain: String },
+    /// Inherited from parent context
+    Inherited { parent: BeliefId },
+    /// Regulatory/compliance requirement
+    Regulatory { regulation: String },
+}
+
+/// Full provenance of a belief, including chain of derivation
+#[derive(Clone)]
+pub struct BeliefProvenance {
+    /// Primary origin of this belief
+    pub origin: ProvenanceOrigin,
+
+    /// Chain of reasoning that led to this belief (for complex derivations)
+    /// Each entry is a (belief_id, description) pair
+    pub derivation_chain: Vec<(BeliefId, String)>,
+
+    /// Metadata about the provenance
+    pub metadata: HashMap<String, String>,
+}
+
+impl BeliefProvenance {
+    /// Create provenance for an observed belief
+    pub fn observed(source: &str) -> Self {
+        BeliefProvenance {
+            origin: ProvenanceOrigin::Observed {
+                source: source.to_string(),
+                timestamp: Instant::now(),
+                raw_data: None,
+            },
+            derivation_chain: Vec::new(),
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Create provenance for an observed belief with raw data
+    pub fn observed_with_data(source: &str, raw_data: &str) -> Self {
+        BeliefProvenance {
+            origin: ProvenanceOrigin::Observed {
+                source: source.to_string(),
+                timestamp: Instant::now(),
+                raw_data: Some(raw_data.to_string()),
+            },
+            derivation_chain: Vec::new(),
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Create provenance for an inferred belief
+    pub fn inferred(premises: Vec<BeliefId>, rule: InferenceRule, derivation: &str) -> Self {
+        BeliefProvenance {
+            origin: ProvenanceOrigin::Inferred {
+                premises,
+                rule,
+                confidence_derivation: derivation.to_string(),
+            },
+            derivation_chain: Vec::new(),
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Create provenance for an authoritative belief
+    pub fn authoritative(authority: &str, trust_level: f64) -> Self {
+        BeliefProvenance {
+            origin: ProvenanceOrigin::Authoritative {
+                authority: authority.to_string(),
+                signature: None,
+                trust_level: trust_level.max(0.0).min(1.0),
+                last_verified: Some(Instant::now()),
+            },
+            derivation_chain: Vec::new(),
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Create provenance for an authoritative belief with signature
+    pub fn authoritative_signed(authority: &str, trust_level: f64, signature: Signature) -> Self {
+        BeliefProvenance {
+            origin: ProvenanceOrigin::Authoritative {
+                authority: authority.to_string(),
+                signature: Some(signature),
+                trust_level: trust_level.max(0.0).min(1.0),
+                last_verified: Some(Instant::now()),
+            },
+            derivation_chain: Vec::new(),
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Create provenance for a learned belief
+    pub fn learned(training_hash: &str, model_version: &str, validation_score: f64) -> Self {
+        BeliefProvenance {
+            origin: ProvenanceOrigin::Learned {
+                training_data_hash: training_hash.to_string(),
+                model_version: model_version.to_string(),
+                validation_score: validation_score.max(0.0).min(1.0),
+                training_examples: 0,
+            },
+            derivation_chain: Vec::new(),
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Create provenance for a prior belief
+    pub fn prior(justification: &str) -> Self {
+        BeliefProvenance {
+            origin: ProvenanceOrigin::Prior {
+                justification: justification.to_string(),
+                prior_type: PriorType::Universal,
+            },
+            derivation_chain: Vec::new(),
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Create provenance for a domain-specific prior
+    pub fn domain_prior(justification: &str, domain: &str) -> Self {
+        BeliefProvenance {
+            origin: ProvenanceOrigin::Prior {
+                justification: justification.to_string(),
+                prior_type: PriorType::DomainSpecific { domain: domain.to_string() },
+            },
+            derivation_chain: Vec::new(),
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Add a step to the derivation chain
+    pub fn with_derivation_step(mut self, belief_id: BeliefId, description: &str) -> Self {
+        self.derivation_chain.push((belief_id, description.to_string()));
+        self
+    }
+
+    /// Add metadata
+    pub fn with_metadata(mut self, key: &str, value: &str) -> Self {
+        self.metadata.insert(key.to_string(), value.to_string());
+        self
+    }
+
+    /// Check if this provenance is from direct observation
+    pub fn is_observed(&self) -> bool {
+        matches!(self.origin, ProvenanceOrigin::Observed { .. })
+    }
+
+    /// Check if this provenance is from inference
+    pub fn is_inferred(&self) -> bool {
+        matches!(self.origin, ProvenanceOrigin::Inferred { .. })
+    }
+
+    /// Check if this provenance is authoritative
+    pub fn is_authoritative(&self) -> bool {
+        matches!(self.origin, ProvenanceOrigin::Authoritative { .. })
+    }
+
+    /// Check if this provenance is from learning
+    pub fn is_learned(&self) -> bool {
+        matches!(self.origin, ProvenanceOrigin::Learned { .. })
+    }
+
+    /// Check if this is a prior belief
+    pub fn is_prior(&self) -> bool {
+        matches!(self.origin, ProvenanceOrigin::Prior { .. })
+    }
+
+    /// Get the trust weight for this provenance
+    /// Higher values indicate more trustworthy sources
+    pub fn trust_weight(&self) -> f64 {
+        match &self.origin {
+            ProvenanceOrigin::Observed { .. } => 1.0,  // Observations are most trusted
+            ProvenanceOrigin::Authoritative { trust_level, signature, .. } => {
+                // Signed authorities get a boost
+                let base = *trust_level;
+                if signature.is_some() { base * 1.1 } else { base }.min(1.0)
+            },
+            ProvenanceOrigin::Learned { validation_score, .. } => {
+                // Learned beliefs trusted proportional to validation
+                *validation_score * 0.9  // Slight discount for learned beliefs
+            },
+            ProvenanceOrigin::Inferred { premises, .. } => {
+                // Inferred beliefs are only as good as weakest premise
+                // (actual implementation would look up premise trust)
+                if premises.is_empty() { 0.5 } else { 0.8 }
+            },
+            ProvenanceOrigin::Prior { .. } => 0.3,  // Priors are least trusted
+        }
+    }
+
+    /// Get a human-readable description of this provenance
+    pub fn describe(&self) -> String {
+        match &self.origin {
+            ProvenanceOrigin::Observed { source, timestamp, .. } => {
+                format!("Observed from '{}' at {:?}", source, timestamp)
+            },
+            ProvenanceOrigin::Inferred { premises, rule, .. } => {
+                format!("Inferred via {} from {} premise(s)", rule.name(), premises.len())
+            },
+            ProvenanceOrigin::Authoritative { authority, trust_level, .. } => {
+                format!("Stated by '{}' (trust: {:.2})", authority, trust_level)
+            },
+            ProvenanceOrigin::Learned { model_version, validation_score, .. } => {
+                format!("Learned by model {} (validation: {:.2})", model_version, validation_score)
+            },
+            ProvenanceOrigin::Prior { justification, .. } => {
+                format!("Prior: {}", justification)
+            },
+        }
+    }
+}

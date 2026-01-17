@@ -1,0 +1,720 @@
+// Nexus Protocol - Hive Sync Coordinator
+//
+// Phase 6: Coordinates multiple parallel belief sync streams between hives
+//
+// The coordinator manages:
+// - Multiple concurrent sync sessions with different hives
+// - Neural embedding cache for shared representations
+// - Adaptive sync rate based on change velocity
+// - Codebook negotiation and version management
+// - Priority-based sync scheduling
+
+// =============================================================================
+// Sync Stream State
+// =============================================================================
+
+// Each sync stream represents an active connection to a peer hive
+
+fn STREAM_STATE_INIT() -> i64 { 0 }
+fn STREAM_STATE_NEGOTIATING() -> i64 { 1 }
+fn STREAM_STATE_SYNCING() -> i64 { 2 }
+fn STREAM_STATE_IDLE() -> i64 { 3 }
+fn STREAM_STATE_PAUSED() -> i64 { 4 }
+fn STREAM_STATE_ERROR() -> i64 { 5 }
+fn STREAM_STATE_CLOSED() -> i64 { 6 }
+
+fn sync_stream_new(stream_id: i64, peer_addr: i64) -> i64 {
+    let stream = vec_new();
+    vec_push(stream, stream_id);           // Slot 0: stream ID
+    vec_push(stream, peer_addr);           // Slot 1: peer actor address
+    vec_push(stream, STREAM_STATE_INIT()); // Slot 2: state
+    vec_push(stream, 0);                   // Slot 3: last sync time
+    vec_push(stream, 60);                  // Slot 4: sync rate (Hz)
+    vec_push(stream, 0);                   // Slot 5: beliefs sent
+    vec_push(stream, 0);                   // Slot 6: beliefs received
+    vec_push(stream, 0);                   // Slot 7: bytes sent
+    vec_push(stream, 0);                   // Slot 8: bytes received
+    vec_push(stream, 0);                   // Slot 9: error count
+    vec_push(stream, nex_vclock_new(stream_id)); // Slot 10: vector clock
+    vec_push(stream, vec_new());           // Slot 11: pending beliefs
+    vec_push(stream, 0);                   // Slot 12: priority (0-100)
+    vec_push(stream, vec_new());           // Slot 13: shared codebook IDs
+    stream
+}
+
+fn sync_stream_id(stream: i64) -> i64 { vec_get(stream, 0) }
+fn sync_stream_peer_addr(stream: i64) -> i64 { vec_get(stream, 1) }
+fn sync_stream_state(stream: i64) -> i64 { vec_get(stream, 2) }
+fn sync_stream_last_sync(stream: i64) -> i64 { vec_get(stream, 3) }
+fn sync_stream_sync_rate(stream: i64) -> i64 { vec_get(stream, 4) }
+fn sync_stream_beliefs_sent(stream: i64) -> i64 { vec_get(stream, 5) }
+fn sync_stream_beliefs_received(stream: i64) -> i64 { vec_get(stream, 6) }
+fn sync_stream_bytes_sent(stream: i64) -> i64 { vec_get(stream, 7) }
+fn sync_stream_bytes_received(stream: i64) -> i64 { vec_get(stream, 8) }
+fn sync_stream_error_count(stream: i64) -> i64 { vec_get(stream, 9) }
+fn sync_stream_vclock(stream: i64) -> i64 { vec_get(stream, 10) }
+fn sync_stream_pending(stream: i64) -> i64 { vec_get(stream, 11) }
+fn sync_stream_priority(stream: i64) -> i64 { vec_get(stream, 12) }
+fn sync_stream_codebooks(stream: i64) -> i64 { vec_get(stream, 13) }
+
+fn sync_stream_set_state(stream: i64, state: i64) -> i64 {
+    vec_set(stream, 2, state);
+    0
+}
+
+fn sync_stream_set_last_sync(stream: i64, time: i64) -> i64 {
+    vec_set(stream, 3, time);
+    0
+}
+
+fn sync_stream_set_sync_rate(stream: i64, rate: i64) -> i64 {
+    vec_set(stream, 4, rate);
+    0
+}
+
+fn sync_stream_set_priority(stream: i64, priority: i64) -> i64 {
+    vec_set(stream, 12, priority);
+    0
+}
+
+fn sync_stream_add_sent(stream: i64, beliefs: i64, bytes: i64) -> i64 {
+    let cur_beliefs = sync_stream_beliefs_sent(stream);
+    let cur_bytes = sync_stream_bytes_sent(stream);
+    vec_set(stream, 5, cur_beliefs + beliefs);
+    vec_set(stream, 7, cur_bytes + bytes);
+    0
+}
+
+fn sync_stream_add_received(stream: i64, beliefs: i64, bytes: i64) -> i64 {
+    let cur_beliefs = sync_stream_beliefs_received(stream);
+    let cur_bytes = sync_stream_bytes_received(stream);
+    vec_set(stream, 6, cur_beliefs + beliefs);
+    vec_set(stream, 8, cur_bytes + bytes);
+    0
+}
+
+fn sync_stream_add_error(stream: i64) -> i64 {
+    let errors = sync_stream_error_count(stream);
+    vec_set(stream, 9, errors + 1);
+    errors + 1
+}
+
+fn sync_stream_add_pending(stream: i64, belief_id: i64) -> i64 {
+    let pending = sync_stream_pending(stream);
+    vec_push(pending, belief_id);
+    0
+}
+
+fn sync_stream_add_codebook(stream: i64, codebook_id: i64) -> i64 {
+    let codebooks = sync_stream_codebooks(stream);
+    vec_push(codebooks, codebook_id);
+    0
+}
+
+fn sync_stream_has_codebook(stream: i64, codebook_id: i64) -> i64 {
+    let codebooks = sync_stream_codebooks(stream);
+    let len = vec_len(codebooks);
+    let i = 0;
+    while i < len {
+        if vec_get(codebooks, i) == codebook_id {
+            return 1;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+// =============================================================================
+// Hive Sync Coordinator
+// =============================================================================
+
+// The coordinator manages all sync streams and shared resources
+
+fn hive_coordinator_new(local_addr: i64) -> i64 {
+    let coord = vec_new();
+    vec_push(coord, local_addr);           // Slot 0: local actor address
+    vec_push(coord, vec_new());            // Slot 1: active streams
+    vec_push(coord, vec_new());            // Slot 2: codebooks
+    vec_push(coord, neural_cache_new(1000)); // Slot 3: embedding cache
+    vec_push(coord, pattern_registry_new()); // Slot 4: pattern registry
+    vec_push(coord, 60);                   // Slot 5: default sync rate
+    vec_push(coord, 0);                    // Slot 6: total beliefs synced
+    vec_push(coord, 0);                    // Slot 7: total bytes transferred
+    vec_push(coord, 0);                    // Slot 8: compression ratio (x1000)
+    vec_push(coord, nex_vclock_new(actor_addr_instance(local_addr))); // Slot 9: global clock
+    vec_push(coord, 0);                    // Slot 10: next stream ID
+    vec_push(coord, SYNC_ADAPTIVE());      // Slot 11: sync strategy
+    coord
+}
+
+fn hive_coord_local_addr(coord: i64) -> i64 { vec_get(coord, 0) }
+fn hive_coord_streams(coord: i64) -> i64 { vec_get(coord, 1) }
+fn hive_coord_codebooks(coord: i64) -> i64 { vec_get(coord, 2) }
+fn hive_coord_cache(coord: i64) -> i64 { vec_get(coord, 3) }
+fn hive_coord_patterns(coord: i64) -> i64 { vec_get(coord, 4) }
+fn hive_coord_default_rate(coord: i64) -> i64 { vec_get(coord, 5) }
+fn hive_coord_total_beliefs(coord: i64) -> i64 { vec_get(coord, 6) }
+fn hive_coord_total_bytes(coord: i64) -> i64 { vec_get(coord, 7) }
+fn hive_coord_compression_ratio(coord: i64) -> i64 { vec_get(coord, 8) }
+fn hive_coord_global_clock(coord: i64) -> i64 { vec_get(coord, 9) }
+fn hive_coord_next_stream_id(coord: i64) -> i64 { vec_get(coord, 10) }
+fn hive_coord_sync_strategy(coord: i64) -> i64 { vec_get(coord, 11) }
+
+fn hive_coord_set_default_rate(coord: i64, rate: i64) -> i64 {
+    vec_set(coord, 5, rate);
+    0
+}
+
+fn hive_coord_set_sync_strategy(coord: i64, strategy: i64) -> i64 {
+    vec_set(coord, 11, strategy);
+    0
+}
+
+fn hive_coord_allocate_stream_id(coord: i64) -> i64 {
+    let id = hive_coord_next_stream_id(coord);
+    vec_set(coord, 10, id + 1);
+    id
+}
+
+fn hive_coord_update_stats(coord: i64, beliefs: i64, raw_bytes: i64, compressed_bytes: i64) -> i64 {
+    let total_beliefs = hive_coord_total_beliefs(coord);
+    let total_bytes = hive_coord_total_bytes(coord);
+    vec_set(coord, 6, total_beliefs + beliefs);
+    vec_set(coord, 7, total_bytes + compressed_bytes);
+
+    // Update compression ratio (exponential moving average)
+    if raw_bytes > 0 {
+        let ratio = (compressed_bytes * 1000) / raw_bytes;
+        let old_ratio = hive_coord_compression_ratio(coord);
+        // EMA with alpha = 0.1 (using integer math: new = old * 9/10 + new * 1/10)
+        let new_ratio = (old_ratio * 9 + ratio) / 10;
+        vec_set(coord, 8, new_ratio);
+    }
+
+    0
+}
+
+// =============================================================================
+// Stream Management
+// =============================================================================
+
+fn hive_coord_add_stream(coord: i64, peer_addr: i64) -> i64 {
+    let stream_id = hive_coord_allocate_stream_id(coord);
+    let stream = sync_stream_new(stream_id, peer_addr);
+
+    // Set default sync rate
+    sync_stream_set_sync_rate(stream, hive_coord_default_rate(coord));
+
+    // Add to streams list
+    let streams = hive_coord_streams(coord);
+    vec_push(streams, stream);
+
+    stream
+}
+
+fn hive_coord_get_stream(coord: i64, stream_id: i64) -> i64 {
+    let streams = hive_coord_streams(coord);
+    let len = vec_len(streams);
+    let i = 0;
+    while i < len {
+        let stream = vec_get(streams, i);
+        if sync_stream_id(stream) == stream_id {
+            return stream;
+        }
+        i = i + 1;
+    }
+    0  // Not found
+}
+
+fn hive_coord_get_stream_by_peer(coord: i64, peer_addr: i64) -> i64 {
+    let streams = hive_coord_streams(coord);
+    let len = vec_len(streams);
+    let i = 0;
+    while i < len {
+        let stream = vec_get(streams, i);
+        let stream_peer = sync_stream_peer_addr(stream);
+        if actor_addr_equals(stream_peer, peer_addr) == 1 {
+            return stream;
+        }
+        i = i + 1;
+    }
+    0  // Not found
+}
+
+fn hive_coord_remove_stream(coord: i64, stream_id: i64) -> i64 {
+    let streams = hive_coord_streams(coord);
+    let len = vec_len(streams);
+    let i = 0;
+    while i < len {
+        let stream = vec_get(streams, i);
+        if sync_stream_id(stream) == stream_id {
+            // Remove by copying last element to this position
+            if i < len - 1 {
+                vec_set(streams, i, vec_get(streams, len - 1));
+            }
+            vec_pop(streams);
+            return 1;
+        }
+        i = i + 1;
+    }
+    0  // Not found
+}
+
+fn hive_coord_stream_count(coord: i64) -> i64 {
+    vec_len(hive_coord_streams(coord))
+}
+
+fn hive_coord_active_stream_count(coord: i64) -> i64 {
+    let streams = hive_coord_streams(coord);
+    let len = vec_len(streams);
+    let count = 0;
+    let i = 0;
+    while i < len {
+        let stream = vec_get(streams, i);
+        let state = sync_stream_state(stream);
+        if state == STREAM_STATE_SYNCING() || state == STREAM_STATE_IDLE() {
+            count = count + 1;
+        }
+        i = i + 1;
+    }
+    count
+}
+
+// =============================================================================
+// Codebook Management
+// =============================================================================
+
+fn hive_coord_add_codebook(coord: i64, codebook: i64) -> i64 {
+    let codebooks = hive_coord_codebooks(coord);
+    vec_push(codebooks, codebook);
+    vec_len(codebooks) - 1
+}
+
+fn hive_coord_get_codebook(coord: i64, codebook_id: i64) -> i64 {
+    let codebooks = hive_coord_codebooks(coord);
+    let len = vec_len(codebooks);
+    let i = 0;
+    while i < len {
+        let cb = vec_get(codebooks, i);
+        if nex_codebook_id(cb) == codebook_id {
+            return cb;
+        }
+        i = i + 1;
+    }
+    0  // Not found
+}
+
+fn hive_coord_codebook_count(coord: i64) -> i64 {
+    vec_len(hive_coord_codebooks(coord))
+}
+
+// Negotiate shared codebook with a stream
+fn hive_coord_negotiate_codebook(coord: i64, stream: i64, codebook_id: i64) -> i64 {
+    let cb = hive_coord_get_codebook(coord, codebook_id);
+    if cb == 0 {
+        return 0 - 1;  // Codebook not found
+    }
+
+    // Mark codebook as shared with this stream
+    if sync_stream_has_codebook(stream, codebook_id) == 0 {
+        sync_stream_add_codebook(stream, codebook_id);
+    }
+
+    1
+}
+
+// =============================================================================
+// Adaptive Sync Rate
+// =============================================================================
+
+// Adjust sync rate based on belief change velocity
+fn hive_coord_adjust_sync_rate(coord: i64, stream: i64, change_count: i64, time_delta: i64) -> i64 {
+    let strategy = hive_coord_sync_strategy(coord);
+
+    if strategy == SYNC_FIXED_RATE() {
+        return sync_stream_sync_rate(stream);  // No change
+    }
+
+    if strategy == SYNC_ON_CHANGE() {
+        // Only sync when there are changes
+        if change_count > 0 {
+            // Sync immediately - set very high rate
+            sync_stream_set_sync_rate(stream, 1000);
+        } else {
+            // Reduce rate when idle
+            sync_stream_set_sync_rate(stream, 1);
+        }
+        return sync_stream_sync_rate(stream);
+    }
+
+    // SYNC_ADAPTIVE: Adjust rate based on change velocity
+    if time_delta <= 0 {
+        return sync_stream_sync_rate(stream);
+    }
+
+    // Calculate changes per second (scaled by 1000)
+    let velocity = (change_count * 1000) / time_delta;
+
+    let current_rate = sync_stream_sync_rate(stream);
+    let new_rate = current_rate;
+
+    // High velocity -> increase rate
+    if velocity > 100 {  // > 0.1 changes/sec
+        new_rate = current_rate + 10;
+        if new_rate > 120 { new_rate = 120; }  // Max 120 Hz
+    }
+    // Low velocity -> decrease rate
+    else if velocity < 10 {  // < 0.01 changes/sec
+        new_rate = current_rate - 10;
+        if new_rate < 10 { new_rate = 10; }  // Min 10 Hz
+    }
+
+    sync_stream_set_sync_rate(stream, new_rate);
+    new_rate
+}
+
+// =============================================================================
+// Priority Scheduling
+// =============================================================================
+
+// Get the next stream to sync based on priority and timing
+fn hive_coord_next_stream(coord: i64, current_time: i64) -> i64 {
+    let streams = hive_coord_streams(coord);
+    let len = vec_len(streams);
+
+    if len == 0 {
+        return 0;
+    }
+
+    let best_stream = 0;
+    let best_score = 0 - 1;
+
+    let i = 0;
+    while i < len {
+        let stream = vec_get(streams, i);
+        let state = sync_stream_state(stream);
+
+        // Skip streams that aren't ready
+        if state != STREAM_STATE_SYNCING() && state != STREAM_STATE_IDLE() {
+            i = i + 1;
+            // continue;
+        } else {
+            // Calculate score based on priority and time since last sync
+            let priority = sync_stream_priority(stream);
+            let last_sync = sync_stream_last_sync(stream);
+            let rate = sync_stream_sync_rate(stream);
+
+            // Time since last sync in ms
+            let time_since = current_time - last_sync;
+
+            // Target sync interval in ms (1000 / Hz)
+            let interval = 1000 / rate;
+            if interval == 0 { interval = 1; }
+
+            // Score = priority * overdue_factor
+            // overdue_factor = max(time_since / interval, 1)
+            let overdue = time_since / interval;
+            if overdue < 1 { overdue = 1; }
+
+            let score = (priority + 1) * overdue;
+
+            if best_stream == 0 || score > best_score {
+                best_stream = stream;
+                best_score = score;
+            }
+
+            i = i + 1;
+        }
+    }
+
+    best_stream
+}
+
+// Get all streams that are due for sync
+fn hive_coord_due_streams(coord: i64, current_time: i64) -> i64 {
+    let streams = hive_coord_streams(coord);
+    let len = vec_len(streams);
+    let due = vec_new();
+
+    let i = 0;
+    while i < len {
+        let stream = vec_get(streams, i);
+        let state = sync_stream_state(stream);
+
+        if state == STREAM_STATE_SYNCING() || state == STREAM_STATE_IDLE() {
+            let last_sync = sync_stream_last_sync(stream);
+            let rate = sync_stream_sync_rate(stream);
+            let interval = 1000 / rate;
+            if interval == 0 { interval = 1; }
+
+            if current_time - last_sync >= interval {
+                vec_push(due, stream);
+            }
+        }
+
+        i = i + 1;
+    }
+
+    due
+}
+
+// =============================================================================
+// Sync Execution
+// =============================================================================
+
+// Prepare a sync batch for a stream
+fn hive_coord_prepare_sync(coord: i64, stream: i64, max_beliefs: i64) -> i64 {
+    let batch = vec_new();
+
+    // Get pending beliefs for this stream
+    let pending = sync_stream_pending(stream);
+    let count = vec_len(pending);
+    if count > max_beliefs { count = max_beliefs; }
+
+    let i = 0;
+    while i < count {
+        vec_push(batch, vec_get(pending, i));
+        i = i + 1;
+    }
+
+    // Remove processed beliefs from pending
+    let remaining = vec_new();
+    while i < vec_len(pending) {
+        vec_push(remaining, vec_get(pending, i));
+        i = i + 1;
+    }
+    vec_set(stream, 11, remaining);
+
+    batch
+}
+
+// Record completed sync
+fn hive_coord_complete_sync(coord: i64, stream: i64, beliefs_count: i64, bytes_sent: i64, raw_bytes: i64, current_time: i64) -> i64 {
+    // Update stream stats
+    sync_stream_add_sent(stream, beliefs_count, bytes_sent);
+    sync_stream_set_last_sync(stream, current_time);
+
+    // Update coordinator stats
+    hive_coord_update_stats(coord, beliefs_count, raw_bytes, bytes_sent);
+
+    // Update global clock
+    let gclock = hive_coord_global_clock(coord);
+    nex_vclock_increment(gclock);
+
+    // Merge stream clock with global clock
+    let stream_clock = sync_stream_vclock(stream);
+    nex_vclock_merge(gclock, stream_clock);
+
+    0
+}
+
+// Record received sync
+fn hive_coord_receive_sync(coord: i64, stream: i64, beliefs_count: i64, bytes_received: i64, sender_clock: i64) -> i64 {
+    // Update stream stats
+    sync_stream_add_received(stream, beliefs_count, bytes_received);
+
+    // Merge clocks
+    let stream_clock = sync_stream_vclock(stream);
+    nex_vclock_merge(stream_clock, sender_clock);
+
+    let gclock = hive_coord_global_clock(coord);
+    nex_vclock_merge(gclock, sender_clock);
+
+    0
+}
+
+// =============================================================================
+// Embedding Cache Integration
+// =============================================================================
+
+fn hive_coord_cache_embedding(coord: i64, key: i64, embedding: i64) -> i64 {
+    let cache = hive_coord_cache(coord);
+    neural_cache_put(cache, key, embedding);
+    0
+}
+
+fn hive_coord_get_cached_embedding(coord: i64, key: i64) -> i64 {
+    let cache = hive_coord_cache(coord);
+    neural_cache_get(cache, key)
+}
+
+fn hive_coord_has_cached_embedding(coord: i64, key: i64) -> i64 {
+    let cache = hive_coord_cache(coord);
+    neural_cache_contains(cache, key)
+}
+
+fn hive_coord_cache_size(coord: i64) -> i64 {
+    let cache = hive_coord_cache(coord);
+    neural_cache_size(cache)
+}
+
+// =============================================================================
+// Pattern Registry Integration
+// =============================================================================
+
+fn hive_coord_add_pattern(coord: i64, tmpl: i64) -> i64 {
+    let reg = hive_coord_patterns(coord);
+    pattern_registry_add(reg, tmpl);
+    0
+}
+
+fn hive_coord_get_pattern(coord: i64, pattern_id: i64) -> i64 {
+    let reg = hive_coord_patterns(coord);
+    pattern_registry_get(reg, pattern_id)
+}
+
+fn hive_coord_find_pattern_by_hash(coord: i64, hash: i64) -> i64 {
+    let reg = hive_coord_patterns(coord);
+    pattern_registry_find_by_hash(reg, hash)
+}
+
+// =============================================================================
+// Coordinator Statistics
+// =============================================================================
+
+fn hive_coord_get_stats(coord: i64) -> i64 {
+    let stats = vec_new();
+
+    // Stream stats
+    vec_push(stats, hive_coord_stream_count(coord));           // 0: total streams
+    vec_push(stats, hive_coord_active_stream_count(coord));    // 1: active streams
+
+    // Sync stats
+    vec_push(stats, hive_coord_total_beliefs(coord));          // 2: total beliefs
+    vec_push(stats, hive_coord_total_bytes(coord));            // 3: total bytes
+    vec_push(stats, hive_coord_compression_ratio(coord));      // 4: compression ratio
+
+    // Resource stats
+    vec_push(stats, hive_coord_codebook_count(coord));         // 5: codebooks
+    vec_push(stats, hive_coord_cache_size(coord));             // 6: cache size
+
+    stats
+}
+
+// Calculate bandwidth usage (bytes per second, averaged over streams)
+fn hive_coord_bandwidth(coord: i64) -> i64 {
+    let streams = hive_coord_streams(coord);
+    let len = vec_len(streams);
+
+    if len == 0 {
+        return 0;
+    }
+
+    let total_sent = 0;
+    let total_received = 0;
+    let i = 0;
+    while i < len {
+        let stream = vec_get(streams, i);
+        total_sent = total_sent + sync_stream_bytes_sent(stream);
+        total_received = total_received + sync_stream_bytes_received(stream);
+        i = i + 1;
+    }
+
+    total_sent + total_received
+}
+
+// =============================================================================
+// Coordinator Lifecycle
+// =============================================================================
+
+fn hive_coord_start(coord: i64) -> i64 {
+    // Initialize all streams to negotiating state
+    let streams = hive_coord_streams(coord);
+    let len = vec_len(streams);
+    let i = 0;
+    while i < len {
+        let stream = vec_get(streams, i);
+        sync_stream_set_state(stream, STREAM_STATE_NEGOTIATING());
+        i = i + 1;
+    }
+    0
+}
+
+fn hive_coord_pause_all(coord: i64) -> i64 {
+    let streams = hive_coord_streams(coord);
+    let len = vec_len(streams);
+    let i = 0;
+    while i < len {
+        let stream = vec_get(streams, i);
+        let state = sync_stream_state(stream);
+        if state == STREAM_STATE_SYNCING() || state == STREAM_STATE_IDLE() {
+            sync_stream_set_state(stream, STREAM_STATE_PAUSED());
+        }
+        i = i + 1;
+    }
+    0
+}
+
+fn hive_coord_resume_all(coord: i64) -> i64 {
+    let streams = hive_coord_streams(coord);
+    let len = vec_len(streams);
+    let i = 0;
+    while i < len {
+        let stream = vec_get(streams, i);
+        let state = sync_stream_state(stream);
+        if state == STREAM_STATE_PAUSED() {
+            sync_stream_set_state(stream, STREAM_STATE_IDLE());
+        }
+        i = i + 1;
+    }
+    0
+}
+
+fn hive_coord_shutdown(coord: i64) -> i64 {
+    // Close all streams
+    let streams = hive_coord_streams(coord);
+    let len = vec_len(streams);
+    let i = 0;
+    while i < len {
+        let stream = vec_get(streams, i);
+        sync_stream_set_state(stream, STREAM_STATE_CLOSED());
+        i = i + 1;
+    }
+
+    // Clear cache
+    let cache = hive_coord_cache(coord);
+    neural_cache_clear(cache);
+
+    0
+}
+
+// =============================================================================
+// Debug/Print Helpers
+// =============================================================================
+
+fn sync_stream_print(stream: i64) -> i64 {
+    print("SyncStream(id=");
+    print_i64(sync_stream_id(stream));
+    print(", state=");
+    let state = sync_stream_state(stream);
+    if state == STREAM_STATE_INIT() { print("INIT"); }
+    else if state == STREAM_STATE_NEGOTIATING() { print("NEGOTIATING"); }
+    else if state == STREAM_STATE_SYNCING() { print("SYNCING"); }
+    else if state == STREAM_STATE_IDLE() { print("IDLE"); }
+    else if state == STREAM_STATE_PAUSED() { print("PAUSED"); }
+    else if state == STREAM_STATE_ERROR() { print("ERROR"); }
+    else if state == STREAM_STATE_CLOSED() { print("CLOSED"); }
+    else { print("UNKNOWN"); }
+    print(", rate=");
+    print_i64(sync_stream_sync_rate(stream));
+    print("Hz, sent=");
+    print_i64(sync_stream_beliefs_sent(stream));
+    print(", recv=");
+    print_i64(sync_stream_beliefs_received(stream));
+    print(")");
+    0
+}
+
+fn hive_coord_print(coord: i64) -> i64 {
+    print("HiveCoordinator(streams=");
+    print_i64(hive_coord_stream_count(coord));
+    print(", active=");
+    print_i64(hive_coord_active_stream_count(coord));
+    print(", beliefs=");
+    print_i64(hive_coord_total_beliefs(coord));
+    print(", compression=");
+    print_i64(hive_coord_compression_ratio(coord));
+    print("/1000)");
+    0
+}
+

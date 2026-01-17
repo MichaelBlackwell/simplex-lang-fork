@@ -1,0 +1,724 @@
+// Nexus Protocol - CRDT (Conflict-free Replicated Data Types)
+//
+// Phase 5: Implements CRDTs for distributed state convergence
+//
+// CRDTs provide automatic conflict resolution without coordination:
+// - G-Counter: Grow-only counter
+// - PN-Counter: Increment/decrement counter
+// - LWW-Register: Last-writer-wins register
+// - OR-Set: Observed-remove set
+// - Delta-based replication for efficient sync
+
+// =============================================================================
+// CRDT Delta Operations
+// =============================================================================
+
+// Delta operation types
+fn CRDT_OP_INCREMENT() -> i64 { 1 }
+fn CRDT_OP_DECREMENT() -> i64 { 2 }
+fn CRDT_OP_SET() -> i64 { 3 }
+fn CRDT_OP_ADD() -> i64 { 4 }
+fn CRDT_OP_REMOVE() -> i64 { 5 }
+fn CRDT_OP_MERGE() -> i64 { 6 }
+
+// CRDT types
+fn CRDT_TYPE_GCOUNTER() -> i64 { 1 }
+fn CRDT_TYPE_PNCOUNTER() -> i64 { 2 }
+fn CRDT_TYPE_LWW_REGISTER() -> i64 { 3 }
+fn CRDT_TYPE_OR_SET() -> i64 { 4 }
+
+// =============================================================================
+// CRDT Delta Structure
+// =============================================================================
+
+// Delta Layout:
+// - CRDT type (1 byte)
+// - Operation type (1 byte)
+// - Node ID (4 bytes): Source of operation
+// - Timestamp (4 bytes): For ordering
+// - Key length (2 bytes): For keyed operations
+// - Key (variable)
+// - Value length (2 bytes)
+// - Value (variable)
+
+fn crdt_delta_new(crdt_type: i64, op_type: i64, node_id: i64, timestamp: i64) -> i64 {
+    let delta = vec_new();
+    vec_push(delta, crdt_type);   // Slot 0: CRDT type
+    vec_push(delta, op_type);     // Slot 1: operation type
+    vec_push(delta, node_id);     // Slot 2: source node
+    vec_push(delta, timestamp);   // Slot 3: timestamp
+    vec_push(delta, vec_new());   // Slot 4: key
+    vec_push(delta, vec_new());   // Slot 5: value
+    delta
+}
+
+fn crdt_delta_type(delta: i64) -> i64 { vec_get(delta, 0) }
+fn crdt_delta_op(delta: i64) -> i64 { vec_get(delta, 1) }
+fn crdt_delta_node(delta: i64) -> i64 { vec_get(delta, 2) }
+fn crdt_delta_timestamp(delta: i64) -> i64 { vec_get(delta, 3) }
+fn crdt_delta_key(delta: i64) -> i64 { vec_get(delta, 4) }
+fn crdt_delta_value(delta: i64) -> i64 { vec_get(delta, 5) }
+
+fn crdt_delta_set_key(delta: i64, key: i64) -> i64 {
+    vec_set(delta, 4, key);
+    0
+}
+
+fn crdt_delta_set_value(delta: i64, value: i64) -> i64 {
+    vec_set(delta, 5, value);
+    0
+}
+
+fn crdt_delta_encode(delta: i64) -> i64 {
+    let bytes = vec_new();
+
+    // Tag byte
+    vec_push(bytes, STF_CRDT_DELTA());
+
+    // CRDT type (1 byte)
+    vec_push(bytes, crdt_delta_type(delta) & 255);
+
+    // Operation type (1 byte)
+    vec_push(bytes, crdt_delta_op(delta) & 255);
+
+    // Node ID (4 bytes)
+    let node_id = crdt_delta_node(delta);
+    vec_push(bytes, (node_id >> 24) & 255);
+    vec_push(bytes, (node_id >> 16) & 255);
+    vec_push(bytes, (node_id >> 8) & 255);
+    vec_push(bytes, node_id & 255);
+
+    // Timestamp (4 bytes)
+    let ts = crdt_delta_timestamp(delta);
+    vec_push(bytes, (ts >> 24) & 255);
+    vec_push(bytes, (ts >> 16) & 255);
+    vec_push(bytes, (ts >> 8) & 255);
+    vec_push(bytes, ts & 255);
+
+    // Key
+    let key = crdt_delta_key(delta);
+    let key_len = vec_len(key);
+    vec_push(bytes, (key_len >> 8) & 255);
+    vec_push(bytes, key_len & 255);
+
+    let i = 0;
+    while i < key_len {
+        vec_push(bytes, vec_get(key, i));
+        i = i + 1;
+    }
+
+    // Value
+    let value = crdt_delta_value(delta);
+    let value_len = vec_len(value);
+    vec_push(bytes, (value_len >> 8) & 255);
+    vec_push(bytes, value_len & 255);
+
+    i = 0;
+    while i < value_len {
+        vec_push(bytes, vec_get(value, i));
+        i = i + 1;
+    }
+
+    bytes
+}
+
+fn crdt_delta_decode(bytes: i64, offset: i64) -> i64 {
+    let len = vec_len(bytes);
+    if len < offset + 13 {
+        return 0;  // Minimum size
+    }
+
+    if vec_get(bytes, offset) != STF_CRDT_DELTA() {
+        return 0;
+    }
+
+    let pos = offset + 1;
+
+    // CRDT type
+    let crdt_type = vec_get(bytes, pos);
+    pos = pos + 1;
+
+    // Operation type
+    let op_type = vec_get(bytes, pos);
+    pos = pos + 1;
+
+    // Node ID
+    let node_id = (vec_get(bytes, pos) << 24) |
+                  (vec_get(bytes, pos + 1) << 16) |
+                  (vec_get(bytes, pos + 2) << 8) |
+                  vec_get(bytes, pos + 3);
+    pos = pos + 4;
+
+    // Timestamp
+    let ts = (vec_get(bytes, pos) << 24) |
+             (vec_get(bytes, pos + 1) << 16) |
+             (vec_get(bytes, pos + 2) << 8) |
+             vec_get(bytes, pos + 3);
+    pos = pos + 4;
+
+    let delta = crdt_delta_new(crdt_type, op_type, node_id, ts);
+
+    // Key
+    if len < pos + 2 { return 0; }
+    let key_len = (vec_get(bytes, pos) << 8) | vec_get(bytes, pos + 1);
+    pos = pos + 2;
+
+    if len < pos + key_len { return 0; }
+    let key = vec_new();
+    let i = 0;
+    while i < key_len {
+        vec_push(key, vec_get(bytes, pos + i));
+        i = i + 1;
+    }
+    pos = pos + key_len;
+    crdt_delta_set_key(delta, key);
+
+    // Value
+    if len < pos + 2 { return 0; }
+    let value_len = (vec_get(bytes, pos) << 8) | vec_get(bytes, pos + 1);
+    pos = pos + 2;
+
+    if len < pos + value_len { return 0; }
+    let value = vec_new();
+    i = 0;
+    while i < value_len {
+        vec_push(value, vec_get(bytes, pos + i));
+        i = i + 1;
+    }
+    crdt_delta_set_value(delta, value);
+
+    delta
+}
+
+// =============================================================================
+// G-Counter (Grow-only Counter)
+// =============================================================================
+
+// G-Counter stores a counter per node, sum gives total
+// Only increment is allowed
+
+fn gcounter_new(local_node: i64) -> i64 {
+    let gc = vec_new();
+    vec_push(gc, local_node);   // Slot 0: local node ID
+    vec_push(gc, vec_new());    // Slot 1: counters (node_id, count pairs)
+    gc
+}
+
+fn gcounter_local_node(gc: i64) -> i64 { vec_get(gc, 0) }
+fn gcounter_counters(gc: i64) -> i64 { vec_get(gc, 1) }
+
+fn gcounter_get_node(gc: i64, node_id: i64) -> i64 {
+    let counters = gcounter_counters(gc);
+    let len = vec_len(counters);
+    let i = 0;
+    while i < len {
+        if vec_get(counters, i) == node_id {
+            return vec_get(counters, i + 1);
+        }
+        i = i + 2;
+    }
+    0
+}
+
+fn gcounter_set_node(gc: i64, node_id: i64, value: i64) -> i64 {
+    let counters = gcounter_counters(gc);
+    let len = vec_len(counters);
+    let i = 0;
+    while i < len {
+        if vec_get(counters, i) == node_id {
+            vec_set(counters, i + 1, value);
+            return 0;
+        }
+        i = i + 2;
+    }
+    // Not found, add
+    vec_push(counters, node_id);
+    vec_push(counters, value);
+    0
+}
+
+// Get total count across all nodes
+fn gcounter_value(gc: i64) -> i64 {
+    let counters = gcounter_counters(gc);
+    let len = vec_len(counters);
+    let total = 0;
+    let i = 0;
+    while i < len {
+        total = total + vec_get(counters, i + 1);
+        i = i + 2;
+    }
+    total
+}
+
+// Increment local counter, returns delta
+fn gcounter_increment(gc: i64, amount: i64) -> i64 {
+    let local_node = gcounter_local_node(gc);
+    let current = gcounter_get_node(gc, local_node);
+    gcounter_set_node(gc, local_node, current + amount);
+
+    // Create delta
+    let delta = crdt_delta_new(CRDT_TYPE_GCOUNTER(), CRDT_OP_INCREMENT(), local_node, 0);
+
+    // Value is the new counter value
+    let value = vec_new();
+    let new_val = current + amount;
+    vec_push(value, (new_val >> 24) & 255);
+    vec_push(value, (new_val >> 16) & 255);
+    vec_push(value, (new_val >> 8) & 255);
+    vec_push(value, new_val & 255);
+    crdt_delta_set_value(delta, value);
+
+    delta
+}
+
+// Merge another G-Counter (take max of each node's counter)
+fn gcounter_merge(gc: i64, other: i64) -> i64 {
+    let other_counters = gcounter_counters(other);
+    let len = vec_len(other_counters);
+    let i = 0;
+    while i < len {
+        let node_id = vec_get(other_counters, i);
+        let other_val = vec_get(other_counters, i + 1);
+        let local_val = gcounter_get_node(gc, node_id);
+        if other_val > local_val {
+            gcounter_set_node(gc, node_id, other_val);
+        }
+        i = i + 2;
+    }
+    0
+}
+
+// Apply a delta to the G-Counter
+fn gcounter_apply_delta(gc: i64, delta: i64) -> i64 {
+    if crdt_delta_type(delta) != CRDT_TYPE_GCOUNTER() {
+        return ERR_DECODE_ERROR();
+    }
+
+    let node_id = crdt_delta_node(delta);
+    let value = crdt_delta_value(delta);
+
+    if vec_len(value) >= 4 {
+        let new_val = (vec_get(value, 0) << 24) |
+                      (vec_get(value, 1) << 16) |
+                      (vec_get(value, 2) << 8) |
+                      vec_get(value, 3);
+
+        let current = gcounter_get_node(gc, node_id);
+        if new_val > current {
+            gcounter_set_node(gc, node_id, new_val);
+        }
+    }
+
+    ERR_NONE()
+}
+
+// =============================================================================
+// PN-Counter (Positive-Negative Counter)
+// =============================================================================
+
+// PN-Counter uses two G-Counters: one for increments, one for decrements
+// Value = sum(increments) - sum(decrements)
+
+fn pncounter_new(local_node: i64) -> i64 {
+    let pn = vec_new();
+    vec_push(pn, gcounter_new(local_node));  // Slot 0: positive counter
+    vec_push(pn, gcounter_new(local_node));  // Slot 1: negative counter
+    pn
+}
+
+fn pncounter_positive(pn: i64) -> i64 { vec_get(pn, 0) }
+fn pncounter_negative(pn: i64) -> i64 { vec_get(pn, 1) }
+
+fn pncounter_value(pn: i64) -> i64 {
+    gcounter_value(pncounter_positive(pn)) - gcounter_value(pncounter_negative(pn))
+}
+
+fn pncounter_increment(pn: i64, amount: i64) -> i64 {
+    gcounter_increment(pncounter_positive(pn), amount)
+}
+
+fn pncounter_decrement(pn: i64, amount: i64) -> i64 {
+    gcounter_increment(pncounter_negative(pn), amount)
+}
+
+fn pncounter_merge(pn: i64, other: i64) -> i64 {
+    gcounter_merge(pncounter_positive(pn), pncounter_positive(other));
+    gcounter_merge(pncounter_negative(pn), pncounter_negative(other));
+    0
+}
+
+// =============================================================================
+// LWW-Register (Last-Writer-Wins Register)
+// =============================================================================
+
+// LWW-Register keeps the value with highest timestamp
+
+fn lww_register_new(local_node: i64) -> i64 {
+    let reg = vec_new();
+    vec_push(reg, local_node);   // Slot 0: local node ID
+    vec_push(reg, 0);            // Slot 1: timestamp
+    vec_push(reg, vec_new());    // Slot 2: value
+    reg
+}
+
+fn lww_register_local_node(reg: i64) -> i64 { vec_get(reg, 0) }
+fn lww_register_timestamp(reg: i64) -> i64 { vec_get(reg, 1) }
+fn lww_register_value(reg: i64) -> i64 { vec_get(reg, 2) }
+
+// Set value with current timestamp, returns delta
+fn lww_register_set(reg: i64, value: i64, timestamp: i64) -> i64 {
+    let current_ts = lww_register_timestamp(reg);
+
+    if timestamp > current_ts {
+        vec_set(reg, 1, timestamp);
+        vec_set(reg, 2, value);
+    }
+
+    // Create delta
+    let delta = crdt_delta_new(CRDT_TYPE_LWW_REGISTER(), CRDT_OP_SET(),
+                               lww_register_local_node(reg), timestamp);
+    crdt_delta_set_value(delta, value);
+
+    delta
+}
+
+// Merge another LWW-Register (keep value with higher timestamp)
+fn lww_register_merge(reg: i64, other: i64) -> i64 {
+    let other_ts = lww_register_timestamp(other);
+    let local_ts = lww_register_timestamp(reg);
+
+    if other_ts > local_ts {
+        vec_set(reg, 1, other_ts);
+        vec_set(reg, 2, lww_register_value(other));
+    }
+    0
+}
+
+// Apply a delta
+fn lww_register_apply_delta(reg: i64, delta: i64) -> i64 {
+    if crdt_delta_type(delta) != CRDT_TYPE_LWW_REGISTER() {
+        return ERR_DECODE_ERROR();
+    }
+
+    let delta_ts = crdt_delta_timestamp(delta);
+    let current_ts = lww_register_timestamp(reg);
+
+    if delta_ts > current_ts {
+        vec_set(reg, 1, delta_ts);
+        vec_set(reg, 2, crdt_delta_value(delta));
+    }
+
+    ERR_NONE()
+}
+
+// =============================================================================
+// OR-Set (Observed-Remove Set)
+// =============================================================================
+
+// OR-Set allows both add and remove without conflict
+// Each element is tagged with a unique ID
+// Remove only removes the observed tags, not future adds
+
+fn or_set_new(local_node: i64) -> i64 {
+    let set = vec_new();
+    vec_push(set, local_node);   // Slot 0: local node ID
+    vec_push(set, 0);            // Slot 1: next tag ID
+    vec_push(set, vec_new());    // Slot 2: elements (value, tag pairs)
+    set
+}
+
+fn or_set_local_node(set: i64) -> i64 { vec_get(set, 0) }
+fn or_set_next_tag(set: i64) -> i64 { vec_get(set, 1) }
+fn or_set_elements(set: i64) -> i64 { vec_get(set, 2) }
+
+// Generate a unique tag (node_id << 32 | counter)
+fn or_set_gen_tag(set: i64) -> i64 {
+    let local_node = or_set_local_node(set);
+    let tag_counter = or_set_next_tag(set);
+    vec_set(set, 1, tag_counter + 1);
+    // Combine node and counter (simplified - in practice use full 64 bits)
+    (local_node * 1000000) + tag_counter
+}
+
+// Check if set contains value
+fn or_set_contains(set: i64, value: i64) -> i64 {
+    let elements = or_set_elements(set);
+    let len = vec_len(elements);
+    let i = 0;
+    while i < len {
+        if vec_get(elements, i) == value {
+            return 1;
+        }
+        i = i + 2;  // (value, tag) pairs
+    }
+    0
+}
+
+// Add element to set, returns delta
+fn or_set_add(set: i64, value: i64) -> i64 {
+    let tag = or_set_gen_tag(set);
+    let elements = or_set_elements(set);
+    vec_push(elements, value);
+    vec_push(elements, tag);
+
+    // Create delta
+    let delta = crdt_delta_new(CRDT_TYPE_OR_SET(), CRDT_OP_ADD(),
+                               or_set_local_node(set), 0);
+
+    // Key is the value
+    let key = vec_new();
+    vec_push(key, (value >> 24) & 255);
+    vec_push(key, (value >> 16) & 255);
+    vec_push(key, (value >> 8) & 255);
+    vec_push(key, value & 255);
+    crdt_delta_set_key(delta, key);
+
+    // Value is the tag
+    let tag_bytes = vec_new();
+    vec_push(tag_bytes, (tag >> 24) & 255);
+    vec_push(tag_bytes, (tag >> 16) & 255);
+    vec_push(tag_bytes, (tag >> 8) & 255);
+    vec_push(tag_bytes, tag & 255);
+    crdt_delta_set_value(delta, tag_bytes);
+
+    delta
+}
+
+// Remove element from set (removes all observed tags), returns delta
+fn or_set_remove(set: i64, value: i64) -> i64 {
+    let elements = or_set_elements(set);
+    let removed_tags = vec_new();
+
+    // Find and collect all tags for this value
+    let len = vec_len(elements);
+    let i = 0;
+    while i < len {
+        if vec_get(elements, i) == value {
+            let tag = vec_get(elements, i + 1);
+            vec_push(removed_tags, tag);
+        }
+        i = i + 2;
+    }
+
+    // Remove elements with those tags
+    let new_elements = vec_new();
+    i = 0;
+    while i < len {
+        let elem_value = vec_get(elements, i);
+        let elem_tag = vec_get(elements, i + 1);
+
+        // Check if tag is in removed_tags
+        let should_remove = 0;
+        let j = 0;
+        while j < vec_len(removed_tags) {
+            if vec_get(removed_tags, j) == elem_tag {
+                should_remove = 1;
+            }
+            j = j + 1;
+        }
+
+        if should_remove == 0 {
+            vec_push(new_elements, elem_value);
+            vec_push(new_elements, elem_tag);
+        }
+
+        i = i + 2;
+    }
+
+    vec_set(set, 2, new_elements);
+
+    // Create delta with removed tags
+    let delta = crdt_delta_new(CRDT_TYPE_OR_SET(), CRDT_OP_REMOVE(),
+                               or_set_local_node(set), 0);
+
+    let key = vec_new();
+    vec_push(key, (value >> 24) & 255);
+    vec_push(key, (value >> 16) & 255);
+    vec_push(key, (value >> 8) & 255);
+    vec_push(key, value & 255);
+    crdt_delta_set_key(delta, key);
+
+    // Value contains all removed tags
+    let tag_bytes = vec_new();
+    i = 0;
+    while i < vec_len(removed_tags) {
+        let tag = vec_get(removed_tags, i);
+        vec_push(tag_bytes, (tag >> 24) & 255);
+        vec_push(tag_bytes, (tag >> 16) & 255);
+        vec_push(tag_bytes, (tag >> 8) & 255);
+        vec_push(tag_bytes, tag & 255);
+        i = i + 1;
+    }
+    crdt_delta_set_value(delta, tag_bytes);
+
+    delta
+}
+
+// Get all unique values in set
+fn or_set_values(set: i64) -> i64 {
+    let elements = or_set_elements(set);
+    let values = vec_new();
+    let len = vec_len(elements);
+    let i = 0;
+    while i < len {
+        let value = vec_get(elements, i);
+        // Check if already in values
+        let found = 0;
+        let j = 0;
+        while j < vec_len(values) {
+            if vec_get(values, j) == value {
+                found = 1;
+            }
+            j = j + 1;
+        }
+        if found == 0 {
+            vec_push(values, value);
+        }
+        i = i + 2;
+    }
+    values
+}
+
+// Apply a delta to OR-Set
+fn or_set_apply_delta(set: i64, delta: i64) -> i64 {
+    if crdt_delta_type(delta) != CRDT_TYPE_OR_SET() {
+        return ERR_DECODE_ERROR();
+    }
+
+    let op = crdt_delta_op(delta);
+    let key = crdt_delta_key(delta);
+    let value_bytes = crdt_delta_value(delta);
+
+    if vec_len(key) < 4 {
+        return ERR_DECODE_ERROR();
+    }
+
+    let value = (vec_get(key, 0) << 24) |
+                (vec_get(key, 1) << 16) |
+                (vec_get(key, 2) << 8) |
+                vec_get(key, 3);
+
+    if op == CRDT_OP_ADD() {
+        // Add with the given tag
+        if vec_len(value_bytes) >= 4 {
+            let tag = (vec_get(value_bytes, 0) << 24) |
+                      (vec_get(value_bytes, 1) << 16) |
+                      (vec_get(value_bytes, 2) << 8) |
+                      vec_get(value_bytes, 3);
+
+            // Check if tag already exists
+            let elements = or_set_elements(set);
+            let found = 0;
+            let i = 0;
+            while i < vec_len(elements) {
+                if vec_get(elements, i + 1) == tag {
+                    found = 1;
+                }
+                i = i + 2;
+            }
+
+            if found == 0 {
+                vec_push(elements, value);
+                vec_push(elements, tag);
+            }
+        }
+    } else if op == CRDT_OP_REMOVE() {
+        // Remove elements with the given tags
+        let elements = or_set_elements(set);
+        let new_elements = vec_new();
+
+        let i = 0;
+        while i < vec_len(elements) {
+            let elem_value = vec_get(elements, i);
+            let elem_tag = vec_get(elements, i + 1);
+
+            // Check if this tag is in the removed tags
+            let should_remove = 0;
+            let j = 0;
+            while j < vec_len(value_bytes) {
+                let removed_tag = (vec_get(value_bytes, j) << 24) |
+                                  (vec_get(value_bytes, j + 1) << 16) |
+                                  (vec_get(value_bytes, j + 2) << 8) |
+                                  vec_get(value_bytes, j + 3);
+                if removed_tag == elem_tag {
+                    should_remove = 1;
+                }
+                j = j + 4;
+            }
+
+            if should_remove == 0 {
+                vec_push(new_elements, elem_value);
+                vec_push(new_elements, elem_tag);
+            }
+
+            i = i + 2;
+        }
+
+        vec_set(set, 2, new_elements);
+    }
+
+    ERR_NONE()
+}
+
+// =============================================================================
+// Debug/Print Helpers
+// =============================================================================
+
+fn crdt_delta_print(delta: i64) -> i64 {
+    print("CRDTDelta{type=");
+    let crdt_type = crdt_delta_type(delta);
+    if crdt_type == CRDT_TYPE_GCOUNTER() { print("GCOUNTER"); }
+    else if crdt_type == CRDT_TYPE_PNCOUNTER() { print("PNCOUNTER"); }
+    else if crdt_type == CRDT_TYPE_LWW_REGISTER() { print("LWW_REGISTER"); }
+    else if crdt_type == CRDT_TYPE_OR_SET() { print("OR_SET"); }
+    else { print_i64(crdt_type); }
+
+    print(", op=");
+    let op = crdt_delta_op(delta);
+    if op == CRDT_OP_INCREMENT() { print("INCREMENT"); }
+    else if op == CRDT_OP_DECREMENT() { print("DECREMENT"); }
+    else if op == CRDT_OP_SET() { print("SET"); }
+    else if op == CRDT_OP_ADD() { print("ADD"); }
+    else if op == CRDT_OP_REMOVE() { print("REMOVE"); }
+    else if op == CRDT_OP_MERGE() { print("MERGE"); }
+    else { print_i64(op); }
+
+    print(", node=");
+    print_i64(crdt_delta_node(delta));
+    print(", ts=");
+    print_i64(crdt_delta_timestamp(delta));
+    print("}");
+    0
+}
+
+fn gcounter_print(gc: i64) -> i64 {
+    print("GCounter{value=");
+    print_i64(gcounter_value(gc));
+    print(", nodes=[");
+    let counters = gcounter_counters(gc);
+    let len = vec_len(counters);
+    let i = 0;
+    while i < len {
+        if i > 0 { print(", "); }
+        print_i64(vec_get(counters, i));
+        print(":");
+        print_i64(vec_get(counters, i + 1));
+        i = i + 2;
+    }
+    print("]}");
+    0
+}
+
+fn or_set_print(set: i64) -> i64 {
+    print("ORSet{values=[");
+    let values = or_set_values(set);
+    let len = vec_len(values);
+    let i = 0;
+    while i < len {
+        if i > 0 { print(", "); }
+        print_i64(vec_get(values, i));
+        i = i + 1;
+    }
+    print("]}");
+    0
+}
