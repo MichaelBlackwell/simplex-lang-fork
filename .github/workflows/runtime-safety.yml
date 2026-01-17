@@ -118,41 +118,7 @@ jobs:
           chmod +x build/sxc
           echo "Simplex compiler built successfully"
           
-      - name: Build tests with sanitizers
-        run: |
-          case "${{ matrix.sanitizer }}" in
-            "address")
-              echo "Building with AddressSanitizer..."
-              gcc -O1 -g -fsanitize=address \
-                  -fno-omit-frame-pointer \
-                  -Wall -Wextra \
-                  runtime/standalone_runtime.c \
-                  -o test_asan -lpthread -lm -lssl -lcrypto -lsqlite3
-              echo "ASan build completed"
-              ;;
-
-            "undefined")
-              echo "Building with UBSan..."
-              gcc -O1 -g -fsanitize=undefined \
-                  -fno-omit-frame-pointer \
-                  -Wall -Wextra \
-                  runtime/standalone_runtime.c \
-                  -o test_ubsan -lpthread -lm -lssl -lcrypto -lsqlite3
-              echo "UBSan build completed"
-              ;;
-
-            "thread")
-              echo "Building with ThreadSanitizer..."
-              gcc -O1 -g -fsanitize=thread \
-                  -fno-omit-frame-pointer \
-                  -Wall -Wextra \
-                  runtime/standalone_runtime.c \
-                  -o test_tsan -lpthread -lm -lssl -lcrypto -lsqlite3
-              echo "TSan build completed"
-              ;;
-          esac
-          
-      - name: Run basic tests under sanitizers
+      - name: Run tests with sanitizers
         run: |
           # Create a simple test file
           cat > test_hello.sx << 'SXEOF'
@@ -162,39 +128,50 @@ jobs:
           }
           SXEOF
 
-          # Run simple memory tests
+          # Compile test with the Simplex compiler
+          ./build/sxc test_hello.sx
+
+          echo "Building and running with ${{ matrix.sanitizer }} sanitizer..."
+
           case "${{ matrix.sanitizer }}" in
-            "address"|"undefined")
-              echo "Running tests under ${{ matrix.sanitizer }}..."
+            "address")
               export ASAN_OPTIONS=detect_leaks=1:halt_on_error=1
-              export UBSAN_OPTIONS=halt_on_error=1
-
-              # Compile test with the Simplex compiler
-              ./build/sxc test_hello.sx
-
-              # Build and run with sanitizer
-              gcc -O1 -g -fsanitize=${{ matrix.sanitizer }} \
+              gcc -O1 -g -fsanitize=address \
+                  -fno-omit-frame-pointer \
+                  -Wno-format \
                   runtime/standalone_runtime.c \
                   test_hello.ll -o test_sanitized -lpthread -lm -lssl -lcrypto -lsqlite3
+              ;;
 
-              if ./test_sanitized; then
-                echo "Tests passed under ${{ matrix.sanitizer }}"
-              else
-                echo "Tests failed under ${{ matrix.sanitizer }}"
-                exit 1
-              fi
+            "undefined")
+              export UBSAN_OPTIONS=halt_on_error=1
+              gcc -O1 -g -fsanitize=undefined \
+                  -fno-omit-frame-pointer \
+                  -Wno-format \
+                  runtime/standalone_runtime.c \
+                  test_hello.ll -o test_sanitized -lpthread -lm -lssl -lcrypto -lsqlite3
               ;;
 
             "thread")
-              echo "ThreadSanitizer requires concurrent tests..."
-              echo "ThreadSanitizer build completed (requires specific concurrent test scenarios)"
+              export TSAN_OPTIONS=halt_on_error=1
+              gcc -O1 -g -fsanitize=thread \
+                  -fno-omit-frame-pointer \
+                  -Wno-format \
+                  runtime/standalone_runtime.c \
+                  test_hello.ll -o test_sanitized -lpthread -lm -lssl -lcrypto -lsqlite3
               ;;
           esac
 
-      - name: Check for sanitizer warnings
+          echo "Running test under ${{ matrix.sanitizer }} sanitizer..."
+          if ./test_sanitized; then
+            echo "Tests passed under ${{ matrix.sanitizer }}"
+          else
+            echo "Tests failed under ${{ matrix.sanitizer }}"
+            exit 1
+          fi
+
+      - name: Summary
         run: |
           echo "=== Runtime Safety CI Summary ==="
           echo "Sanitizer: ${{ matrix.sanitizer }}"
-          echo "Build: Successful"
-          echo "Warnings: Treated as errors"
-          echo "Memory safety: Actively monitored"
+          echo "Status: All tests passed"
