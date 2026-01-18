@@ -669,6 +669,226 @@ simplex costs --watch
 
 ---
 
+## Developer Tools (v0.10.0)
+
+Simplex 0.10.0 introduces a comprehensive suite of developer tools to help you write better code, catch bugs early, and optimize performance.
+
+### Code Formatter (sxfmt)
+
+Keep your code consistent and readable with the built-in formatter:
+
+```bash
+# Format a single file
+sxfmt src/main.sx
+
+# Format entire project
+sxfmt .
+
+# Check formatting without modifying (useful for CI)
+sxfmt --check .
+
+# Format with specific style options
+sxfmt --indent-width 4 --max-line-length 100 src/
+```
+
+The formatter follows the official Simplex style guide by default. Add a `.sxfmt.toml` file to customize:
+
+```toml
+# .sxfmt.toml
+indent_width = 4
+max_line_length = 100
+trailing_comma = true
+```
+
+### Static Linter (sxlint)
+
+Catch potential bugs and code smells before they become problems:
+
+```bash
+# Lint a single file
+sxlint src/main.sx
+
+# Lint entire project
+sxlint .
+
+# Lint with specific rules
+sxlint --rules unused-vars,dead-code .
+
+# Show all available lint rules
+sxlint --list-rules
+```
+
+Common lint rules include:
+- `unused-vars` - Detect unused variables
+- `dead-code` - Find unreachable code
+- `actor-blocking` - Warn about blocking operations in actors
+- `unsafe-unwrap` - Flag `.unwrap()` calls without error handling
+
+Configure rules in `simplex.toml`:
+
+```toml
+[lint]
+rules = ["all"]
+deny = ["unsafe-unwrap", "actor-blocking"]
+warn = ["unused-vars"]
+allow = ["dead-code"]
+```
+
+### Benchmarking (sxc bench)
+
+Measure and track performance of your code:
+
+```bash
+# Run all benchmarks
+sxc bench
+
+# Run specific benchmark
+sxc bench --filter "processor"
+
+# Compare against baseline
+sxc bench --baseline main
+
+# Output results as JSON
+sxc bench --output json > results.json
+```
+
+Create benchmark files in `benches/`:
+
+```simplex
+// benches/processor_bench.sx
+use benchmark::*
+
+bench ProcessorThroughput {
+    setup {
+        let docs = generate_test_documents(1000)
+    }
+
+    run {
+        for doc in docs {
+            processor.process(doc)
+        }
+    }
+}
+
+bench SingleDocumentLatency {
+    iterations: 1000,
+
+    run {
+        processor.process(sample_document())
+    }
+}
+```
+
+### Code Coverage (sxc test --coverage)
+
+Understand how well your tests cover your code:
+
+```bash
+# Run tests with coverage
+sxc test --coverage
+
+# Generate HTML coverage report
+sxc test --coverage --coverage-report html
+
+# Set minimum coverage threshold (fails if below)
+sxc test --coverage --min-coverage 80
+
+# Coverage for specific modules
+sxc test --coverage --coverage-include "src/actors/*"
+```
+
+Coverage output shows:
+- Line coverage percentage
+- Branch coverage
+- Uncovered lines highlighted
+- Coverage trends over time
+
+Example output:
+```
+Coverage Report
+---------------
+src/actors/processor.sx    87.3%  (142/163 lines)
+src/actors/storage.sx      92.1%  (105/114 lines)
+src/types.sx              100.0%  (48/48 lines)
+---------------
+Total:                     91.2%  (295/325 lines)
+```
+
+### Error Explanations (sxc explain)
+
+Get detailed explanations for compiler errors:
+
+```bash
+# Explain a specific error code
+sxc explain E0423
+
+# Explain with examples
+sxc explain E0423 --examples
+
+# List all error codes
+sxc explain --list
+```
+
+Example usage:
+```bash
+$ sxc explain E0423
+
+Error E0423: Cannot send message to actor from non-async context
+
+This error occurs when you try to use `send` or `ask` to communicate
+with an actor outside of an async function or actor receive block.
+
+Problem:
+  fn main() {
+      let actor = spawn MyActor
+      send(actor, DoSomething)  // E0423: not in async context
+  }
+
+Solution:
+  Use `async fn` or call from within an actor:
+
+  async fn main() {
+      let actor = spawn MyActor
+      send(actor, DoSomething)  // OK: async context
+  }
+
+See also: Chapter 7 - Introduction to Actors
+```
+
+### Integrating Tools in Your Workflow
+
+Add these to your CI pipeline:
+
+```yaml
+# .github/workflows/ci.yml
+jobs:
+  check:
+    steps:
+      - name: Format check
+        run: sxfmt --check .
+
+      - name: Lint
+        run: sxlint .
+
+      - name: Test with coverage
+        run: sxc test --coverage --min-coverage 80
+
+      - name: Benchmarks
+        run: sxc bench --baseline main
+```
+
+Or use the combined check command:
+
+```bash
+# Run format check, lint, and tests together
+sxc check
+
+# Run everything including benchmarks
+sxc check --all
+```
+
+---
+
 ## What We Built
 
 ```

@@ -1,0 +1,139 @@
+{
+  "categories": [
+    {
+      "name": "Getting Started",
+      "examples": [
+        {
+          "title": "Hello World",
+          "description": "The classic first program",
+          "code": "fn main() {\n    println(\"Hello, World!\");\n}"
+        },
+        {
+          "title": "Variables and Types",
+          "description": "Basic variable declarations and types",
+          "code": "fn main() {\n    // Immutable variable\n    let x: i64 = 42;\n    let name: String = \"Simplex\";\n    let pi: f64 = 3.14159;\n    let active: bool = true;\n\n    // Mutable variable\n    var counter: i64 = 0;\n    counter = counter + 1;\n\n    println(f\"x = {x}\");\n    println(f\"name = {name}\");\n    println(f\"pi = {pi}\");\n    println(f\"active = {active}\");\n    println(f\"counter = {counter}\");\n}"
+        },
+        {
+          "title": "Functions",
+          "description": "Defining and calling functions",
+          "code": "fn add(a: i64, b: i64) -> i64 {\n    return a + b;\n}\n\nfn greet(name: String) {\n    println(f\"Hello, {name}!\");\n}\n\nfn main() {\n    let result = add(10, 20);\n    println(f\"10 + 20 = {result}\");\n\n    greet(\"Simplex\");\n}"
+        },
+        {
+          "title": "Control Flow",
+          "description": "If/else, while, and for loops",
+          "code": "fn main() {\n    // If/else\n    let x: i64 = 42;\n    if x > 50 {\n        println(\"x is greater than 50\");\n    } else if x > 25 {\n        println(\"x is between 26 and 50\");\n    } else {\n        println(\"x is 25 or less\");\n    }\n\n    // While loop\n    var i: i64 = 0;\n    while i < 5 {\n        println(f\"While iteration: {i}\");\n        i = i + 1;\n    }\n\n    // For loop\n    for j in 0..5 {\n        println(f\"For iteration: {j}\");\n    }\n}"
+        }
+      ]
+    },
+    {
+      "name": "Data Structures",
+      "examples": [
+        {
+          "title": "Structs",
+          "description": "Define and use custom structures",
+          "code": "struct Point {\n    x: i64,\n    y: i64,\n}\n\nimpl Point {\n    fn new(x: i64, y: i64) -> Point {\n        return Point { x: x, y: y };\n    }\n\n    fn distance_from_origin(&self) -> f64 {\n        let x_sq: f64 = (self.x * self.x) as f64;\n        let y_sq: f64 = (self.y * self.y) as f64;\n        return sqrt(x_sq + y_sq);\n    }\n}\n\nfn main() {\n    let p = Point::new(3, 4);\n    println(f\"Point: ({p.x}, {p.y})\");\n    println(f\"Distance from origin: {p.distance_from_origin()}\");\n}"
+        },
+        {
+          "title": "Enums",
+          "description": "Enumeration types with variants",
+          "code": "enum Color {\n    Red,\n    Green,\n    Blue,\n    Rgb(i64, i64, i64),\n}\n\nfn color_name(c: Color) -> String {\n    match c {\n        Red => \"red\",\n        Green => \"green\",\n        Blue => \"blue\",\n        Rgb(r, g, b) => f\"rgb({r}, {g}, {b})\",\n    }\n}\n\nfn main() {\n    let c1 = Color::Red;\n    let c2 = Color::Rgb(255, 128, 0);\n\n    println(f\"Color 1: {color_name(c1)}\");\n    println(f\"Color 2: {color_name(c2)}\");\n}"
+        },
+        {
+          "title": "Option Type",
+          "description": "Safe handling of nullable values",
+          "code": "fn find_element(arr: Vec<i64>, target: i64) -> Option<i64> {\n    for i in 0..arr.len() {\n        if arr[i] == target {\n            return Some(i);\n        }\n    }\n    return None;\n}\n\nfn main() {\n    let numbers = vec![10, 20, 30, 40, 50];\n\n    match find_element(numbers, 30) {\n        Some(idx) => println(f\"Found at index {idx}\"),\n        None => println(\"Not found\"),\n    }\n\n    match find_element(numbers, 99) {\n        Some(idx) => println(f\"Found at index {idx}\"),\n        None => println(\"Not found\"),\n    }\n}"
+        },
+        {
+          "title": "Vectors",
+          "description": "Dynamic arrays with Vec<T>",
+          "code": "fn main() {\n    // Create a vector\n    var nums: Vec<i64> = vec![];\n\n    // Add elements\n    nums.push(10);\n    nums.push(20);\n    nums.push(30);\n\n    println(f\"Vector length: {nums.len()}\");\n\n    // Access elements\n    for i in 0..nums.len() {\n        println(f\"nums[{i}] = {nums[i]}\");\n    }\n\n    // Pop element\n    let last = nums.pop();\n    println(f\"Popped: {last}\");\n    println(f\"New length: {nums.len()}\");\n}"
+        }
+      ]
+    },
+    {
+      "name": "Algorithms",
+      "examples": [
+        {
+          "title": "Fibonacci",
+          "description": "Calculate Fibonacci numbers",
+          "code": "fn fibonacci(n: i64) -> i64 {\n    if n <= 1 {\n        return n;\n    }\n    return fibonacci(n - 1) + fibonacci(n - 2);\n}\n\nfn fibonacci_iterative(n: i64) -> i64 {\n    if n <= 1 {\n        return n;\n    }\n\n    var a: i64 = 0;\n    var b: i64 = 1;\n\n    for i in 2..=n {\n        let temp = a + b;\n        a = b;\n        b = temp;\n    }\n\n    return b;\n}\n\nfn main() {\n    println(\"Fibonacci sequence (recursive):\");\n    for i in 0..10 {\n        println(f\"fib({i}) = {fibonacci(i)}\");\n    }\n\n    println(\"\\nFibonacci sequence (iterative):\");\n    for i in 0..20 {\n        println(f\"fib({i}) = {fibonacci_iterative(i)}\");\n    }\n}"
+        },
+        {
+          "title": "Factorial",
+          "description": "Calculate factorial recursively and iteratively",
+          "code": "fn factorial_recursive(n: i64) -> i64 {\n    if n <= 1 {\n        return 1;\n    }\n    return n * factorial_recursive(n - 1);\n}\n\nfn factorial_iterative(n: i64) -> i64 {\n    var result: i64 = 1;\n    for i in 2..=n {\n        result = result * i;\n    }\n    return result;\n}\n\nfn main() {\n    println(\"Factorials:\");\n    for i in 0..12 {\n        let r = factorial_recursive(i);\n        let it = factorial_iterative(i);\n        println(f\"{i}! = {r} (recursive), {it} (iterative)\");\n    }\n}"
+        },
+        {
+          "title": "Prime Numbers",
+          "description": "Check primality and find primes",
+          "code": "fn is_prime(n: i64) -> bool {\n    if n < 2 {\n        return false;\n    }\n    if n == 2 {\n        return true;\n    }\n    if n % 2 == 0 {\n        return false;\n    }\n\n    var i: i64 = 3;\n    while i * i <= n {\n        if n % i == 0 {\n            return false;\n        }\n        i = i + 2;\n    }\n    return true;\n}\n\nfn main() {\n    println(\"Prime numbers up to 50:\");\n    var primes: Vec<i64> = vec![];\n\n    for n in 2..50 {\n        if is_prime(n) {\n            primes.push(n);\n        }\n    }\n\n    for i in 0..primes.len() {\n        print(f\"{primes[i]} \");\n    }\n    println(\"\");\n\n    println(f\"\\nFound {primes.len()} primes\");\n}"
+        },
+        {
+          "title": "Binary Search",
+          "description": "Search in a sorted array",
+          "code": "fn binary_search(arr: Vec<i64>, target: i64) -> Option<i64> {\n    var left: i64 = 0;\n    var right: i64 = arr.len() - 1;\n\n    while left <= right {\n        let mid = left + (right - left) / 2;\n\n        if arr[mid] == target {\n            return Some(mid);\n        } else if arr[mid] < target {\n            left = mid + 1;\n        } else {\n            right = mid - 1;\n        }\n    }\n\n    return None;\n}\n\nfn main() {\n    let numbers = vec![1, 3, 5, 7, 9, 11, 13, 15, 17, 19];\n\n    println(\"Searching in: [1, 3, 5, 7, 9, 11, 13, 15, 17, 19]\");\n\n    let targets = vec![7, 1, 19, 10];\n    for i in 0..targets.len() {\n        let t = targets[i];\n        match binary_search(numbers, t) {\n            Some(idx) => println(f\"Found {t} at index {idx}\"),\n            None => println(f\"{t} not found\"),\n        }\n    }\n}"
+        }
+      ]
+    },
+    {
+      "name": "Actor Model",
+      "examples": [
+        {
+          "title": "Counter Actor",
+          "description": "Simple stateful actor with messages",
+          "code": "actor Counter {\n    count: i64 = 0;\n\n    receive {\n        Increment => {\n            self.count = self.count + 1;\n        }\n        Decrement => {\n            self.count = self.count - 1;\n        }\n        GetCount => {\n            self.count\n        }\n        Reset => {\n            self.count = 0;\n        }\n    }\n}\n\nfn main() -> i64 {\n    let counter = spawn Counter {};\n\n    // Increment several times\n    send counter Increment;\n    send counter Increment;\n    send counter Increment;\n\n    // Get current count\n    let count = ask counter GetCount;\n    println(f\"Count after 3 increments: {count}\");\n\n    // Decrement once\n    send counter Decrement;\n    let count2 = ask counter GetCount;\n    println(f\"Count after decrement: {count2}\");\n\n    return count2;\n}"
+        },
+        {
+          "title": "Ping Pong Actors",
+          "description": "Two actors exchanging messages",
+          "code": "actor Ping {\n    count: i64 = 0;\n    pong_ref: ActorRef = null;\n\n    receive {\n        SetPong(ref) => {\n            self.pong_ref = ref;\n        }\n        Pong => {\n            self.count = self.count + 1;\n            println(f\"Ping received! Count: {self.count}\");\n            if self.count < 5 {\n                send self.pong_ref Ping;\n            }\n        }\n        Start => {\n            println(\"Starting ping-pong!\");\n            send self.pong_ref Ping;\n        }\n        GetCount => {\n            self.count\n        }\n    }\n}\n\nactor Pong {\n    count: i64 = 0;\n    ping_ref: ActorRef = null;\n\n    receive {\n        SetPing(ref) => {\n            self.ping_ref = ref;\n        }\n        Ping => {\n            self.count = self.count + 1;\n            println(f\"Pong received! Count: {self.count}\");\n            send self.ping_ref Pong;\n        }\n    }\n}\n\nfn main() -> i64 {\n    let ping = spawn Ping {};\n    let pong = spawn Pong {};\n\n    // Connect actors\n    send ping SetPong(pong);\n    send pong SetPing(ping);\n\n    // Start the game\n    send ping Start;\n\n    // Wait a bit for messages to process\n    sleep(100);\n\n    ask ping GetCount\n}"
+        },
+        {
+          "title": "Bank Account",
+          "description": "Actor-based bank account with transactions",
+          "code": "actor BankAccount {\n    balance: i64 = 0;\n    owner: String = \"\";\n\n    init {\n        println(f\"Account created for {self.owner}\");\n    }\n\n    receive {\n        Deposit(amount) => {\n            if amount > 0 {\n                self.balance = self.balance + amount;\n                println(f\"Deposited {amount}. New balance: {self.balance}\");\n            }\n        }\n        Withdraw(amount) => {\n            if amount > 0 && amount <= self.balance {\n                self.balance = self.balance - amount;\n                println(f\"Withdrew {amount}. New balance: {self.balance}\");\n                true\n            } else {\n                println(f\"Insufficient funds for withdrawal of {amount}\");\n                false\n            }\n        }\n        GetBalance => {\n            self.balance\n        }\n        Transfer(to_account, amount) => {\n            if amount > 0 && amount <= self.balance {\n                self.balance = self.balance - amount;\n                send to_account Deposit(amount);\n                println(f\"Transferred {amount}\");\n                true\n            } else {\n                false\n            }\n        }\n    }\n}\n\nfn main() -> i64 {\n    let alice = spawn BankAccount { owner: \"Alice\" };\n    let bob = spawn BankAccount { owner: \"Bob\" };\n\n    // Alice deposits money\n    send alice Deposit(1000);\n\n    // Alice transfers to Bob\n    send alice Transfer(bob, 300);\n\n    // Wait for messages to process\n    sleep(50);\n\n    // Check balances\n    let alice_balance = ask alice GetBalance;\n    let bob_balance = ask bob GetBalance;\n\n    println(f\"\\nFinal balances:\");\n    println(f\"Alice: {alice_balance}\");\n    println(f\"Bob: {bob_balance}\");\n\n    return alice_balance + bob_balance;\n}"
+        }
+      ]
+    },
+    {
+      "name": "Advanced",
+      "examples": [
+        {
+          "title": "Pattern Matching",
+          "description": "Comprehensive pattern matching examples",
+          "code": "enum Shape {\n    Circle(f64),           // radius\n    Rectangle(f64, f64),   // width, height\n    Triangle(f64, f64, f64), // three sides\n}\n\nfn area(shape: Shape) -> f64 {\n    match shape {\n        Circle(r) => 3.14159 * r * r,\n        Rectangle(w, h) => w * h,\n        Triangle(a, b, c) => {\n            // Heron's formula\n            let s = (a + b + c) / 2.0;\n            sqrt(s * (s - a) * (s - b) * (s - c))\n        }\n    }\n}\n\nfn describe(shape: Shape) -> String {\n    match shape {\n        Circle(r) if r > 10.0 => \"Large circle\",\n        Circle(r) if r > 5.0 => \"Medium circle\",\n        Circle(_) => \"Small circle\",\n        Rectangle(w, h) if w == h => \"Square\",\n        Rectangle(_, _) => \"Rectangle\",\n        Triangle(a, b, c) if a == b && b == c => \"Equilateral triangle\",\n        Triangle(a, b, _) if a == b => \"Isosceles triangle\",\n        Triangle(_, _, _) => \"Scalene triangle\",\n    }\n}\n\nfn main() {\n    let shapes = vec![\n        Shape::Circle(5.0),\n        Shape::Circle(15.0),\n        Shape::Rectangle(4.0, 6.0),\n        Shape::Rectangle(5.0, 5.0),\n        Shape::Triangle(3.0, 4.0, 5.0),\n        Shape::Triangle(5.0, 5.0, 5.0),\n    ];\n\n    for i in 0..shapes.len() {\n        let shape = shapes[i];\n        let desc = describe(shape);\n        let a = area(shape);\n        println(f\"{desc}: area = {a:.2}\");\n    }\n}"
+        },
+        {
+          "title": "Traits and Generics",
+          "description": "Define and implement traits",
+          "code": "trait Displayable {\n    fn display(&self) -> String;\n}\n\ntrait Comparable {\n    fn compare(&self, other: &Self) -> i64;\n}\n\nstruct Person {\n    name: String,\n    age: i64,\n}\n\nimpl Displayable for Person {\n    fn display(&self) -> String {\n        return f\"{self.name} (age {self.age})\";\n    }\n}\n\nimpl Comparable for Person {\n    fn compare(&self, other: &Person) -> i64 {\n        if self.age < other.age {\n            return -1;\n        } else if self.age > other.age {\n            return 1;\n        }\n        return 0;\n    }\n}\n\nimpl Displayable for i64 {\n    fn display(&self) -> String {\n        return f\"Number: {self}\";\n    }\n}\n\nfn print_all<T: Displayable>(items: Vec<T>) {\n    for i in 0..items.len() {\n        println(items[i].display());\n    }\n}\n\nfn main() {\n    let alice = Person { name: \"Alice\", age: 30 };\n    let bob = Person { name: \"Bob\", age: 25 };\n\n    println(alice.display());\n    println(bob.display());\n\n    let cmp = alice.compare(&bob);\n    if cmp > 0 {\n        println(\"Alice is older\");\n    } else if cmp < 0 {\n        println(\"Bob is older\");\n    } else {\n        println(\"Same age\");\n    }\n\n    println(\"\\nAll people:\");\n    let people = vec![alice, bob];\n    print_all(people);\n}"
+        },
+        {
+          "title": "Result Type Error Handling",
+          "description": "Safe error handling with Result<T, E>",
+          "code": "enum MathError {\n    DivisionByZero,\n    NegativeSquareRoot,\n    Overflow,\n}\n\nfn safe_divide(a: i64, b: i64) -> Result<i64, MathError> {\n    if b == 0 {\n        return Err(MathError::DivisionByZero);\n    }\n    return Ok(a / b);\n}\n\nfn safe_sqrt(x: f64) -> Result<f64, MathError> {\n    if x < 0.0 {\n        return Err(MathError::NegativeSquareRoot);\n    }\n    return Ok(sqrt(x));\n}\n\nfn error_message(e: MathError) -> String {\n    match e {\n        DivisionByZero => \"Cannot divide by zero\",\n        NegativeSquareRoot => \"Cannot take square root of negative number\",\n        Overflow => \"Numeric overflow occurred\",\n    }\n}\n\nfn main() {\n    // Test division\n    let results = vec![\n        (10, 2),\n        (10, 0),\n        (100, 5),\n    ];\n\n    println(\"Division results:\");\n    for i in 0..results.len() {\n        let (a, b) = results[i];\n        match safe_divide(a, b) {\n            Ok(result) => println(f\"{a} / {b} = {result}\"),\n            Err(e) => println(f\"{a} / {b} = Error: {error_message(e)}\"),\n        }\n    }\n\n    println(\"\\nSquare root results:\");\n    let nums = vec![16.0, -4.0, 25.0, 2.0];\n    for i in 0..nums.len() {\n        let n = nums[i];\n        match safe_sqrt(n) {\n            Ok(result) => println(f\"sqrt({n}) = {result}\"),\n            Err(e) => println(f\"sqrt({n}) = Error: {error_message(e)}\"),\n        }\n    }\n}"
+        },
+        {
+          "title": "Async/Await",
+          "description": "Asynchronous programming patterns",
+          "code": "async fn fetch_data(id: i64) -> String {\n    // Simulate async operation\n    sleep(100);\n    return f\"Data for id {id}\";\n}\n\nasync fn process_item(item: String) -> String {\n    sleep(50);\n    return f\"Processed: {item}\";\n}\n\nasync fn fetch_and_process(id: i64) -> String {\n    let data = fetch_data(id).await;\n    let result = process_item(data).await;\n    return result;\n}\n\nasync fn main() {\n    println(\"Starting async operations...\");\n\n    // Sequential execution\n    let result1 = fetch_and_process(1).await;\n    println(result1);\n\n    let result2 = fetch_and_process(2).await;\n    println(result2);\n\n    // Parallel execution (spawn tasks)\n    let task1 = spawn async { fetch_and_process(3).await };\n    let task2 = spawn async { fetch_and_process(4).await };\n\n    let r1 = task1.await;\n    let r2 = task2.await;\n\n    println(r1);\n    println(r2);\n\n    println(\"All operations complete!\");\n}"
+        }
+      ]
+    },
+    {
+      "name": "AI Features",
+      "examples": [
+        {
+          "title": "AI Specialist",
+          "description": "Create an AI specialist for inference",
+          "code": "// Note: AI features require a configured model backend\n\n// Create personal memory for a specialist\nlet anima = Anima::new(30);  // 30% belief threshold\nanima.learn(\"I specialize in code review\", 0.9, \"self\");\nanima.desire(\"Find bugs and suggest improvements\", 0.95);\n\nspecialist CodeReviewer {\n    model: \"simplex-cognitive-7b\";\n    anima: anima;\n    temperature: 0.7;\n    max_tokens: 1000;\n\n    fn review(code: String) -> String {\n        infer(f\"Review this code for bugs and improvements:\\n\\n{code}\")\n    }\n\n    fn suggest_tests(code: String) -> String {\n        infer(f\"Suggest unit tests for this code:\\n\\n{code}\")\n    }\n}\n\nfn main() {\n    let reviewer = spawn CodeReviewer {};\n\n    let code = \"\"\"\n    fn add(a: i64, b: i64) -> i64 {\n        return a + b;\n    }\n    \"\"\";\n\n    let review = ask reviewer review(code);\n    println(\"Code Review:\");\n    println(review);\n\n    let tests = ask reviewer suggest_tests(code);\n    println(\"\\nSuggested Tests:\");\n    println(tests);\n}"
+        },
+        {
+          "title": "Cognitive Hive",
+          "description": "Multiple specialists sharing knowledge",
+          "code": "// Note: Requires configured model backend\n\n// Create shared memory for the hive\nlet mnemonic = HiveMnemonic::new(100, 500, 50);  // 50% belief threshold\nmnemonic.learn(\"Our project uses Result types for error handling\", 0.95);\nmnemonic.learn(\"Code must have 80% test coverage\", 0.90);\n\n// Create shared SLM for the hive\nlet hive_slm = HiveSLM::new(\"QualityHive\", \"simplex-cognitive-7b\", mnemonic);\n\n// Security specialist\nlet security_anima = Anima::new(40);\nsecurity_anima.learn(\"I focus on security vulnerabilities\", 0.95, \"self\");\nlet security = Specialist::new(\"SecurityAnalyzer\", hive_slm, security_anima);\n\n// Quality specialist  \nlet quality_anima = Anima::new(40);\nquality_anima.learn(\"I focus on code quality and best practices\", 0.95, \"self\");\nlet quality = Specialist::new(\"QualityReviewer\", hive_slm, quality_anima);\n\n// Performance specialist\nlet perf_anima = Anima::new(40);\nperf_anima.learn(\"I focus on performance optimization\", 0.95, \"self\");\nlet perf = Specialist::new(\"PerformanceOptimizer\", hive_slm, perf_anima);\n\nfn main() {\n    let code = \"fn process(input: String) { /* ... */ }\";\n\n    // All specialists share the same model and mnemonic\n    // Findings from one are visible to others\n\n    let sec_review = security.analyze(code);\n    security.contribute_to_mnemonic(sec_review);\n\n    let qual_review = quality.review(code);\n    let perf_review = perf.optimize(code);\n\n    println(\"Security: \" + sec_review);\n    println(\"Quality: \" + qual_review);\n    println(\"Performance: \" + perf_review);\n}"
+        }
+      ]
+    }
+  ]
+}

@@ -151,7 +151,9 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: sxc-linux-x86_64
-        path: sxc-linux-x86_64
+        path: |
+          sxc-linux-x86_64
+          runtime/standalone_runtime.c
 
   build-macos:
     strategy:
@@ -302,7 +304,9 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: sxc-macos-${{ matrix.arch }}
-        path: sxc-macos-${{ matrix.arch }}
+        path: |
+          sxc-macos-${{ matrix.arch }}
+          runtime/standalone_runtime.c
 
   build-windows:
     runs-on: windows-latest
@@ -433,13 +437,25 @@ jobs:
     - name: List artifacts
       run: find artifacts -type f
 
+    - name: Prepare release bundle
+      run: |
+        # Copy runtime to release directory for bundling
+        mkdir -p release
+        cp artifacts/sxc-linux-x86_64/sxc-linux-x86_64 release/
+        cp artifacts/sxc-macos-x86_64/sxc-macos-x86_64 release/
+        cp artifacts/sxc-macos-arm64/sxc-macos-arm64 release/
+        # Include runtime (use linux artifact copy)
+        cp artifacts/sxc-linux-x86_64/runtime/standalone_runtime.c release/
+        ls -la release/
+
     - name: Create Release
       uses: softprops/action-gh-release@v2
       with:
         files: |
-          artifacts/sxc-linux-x86_64/sxc-linux-x86_64
-          artifacts/sxc-macos-x86_64/sxc-macos-x86_64
-          artifacts/sxc-macos-arm64/sxc-macos-arm64
+          release/sxc-linux-x86_64
+          release/sxc-macos-x86_64
+          release/sxc-macos-arm64
+          release/standalone_runtime.c
         draft: false
         prerelease: false
         generate_release_notes: true
@@ -515,3 +531,49 @@ jobs:
         if [ $FAIL -gt 0 ]; then
           exit 1
         fi
+
+  build-docs:
+    needs: [build-linux]
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang libssl-dev libsqlite3-dev
+
+    - name: Download Linux binary
+      uses: actions/download-artifact@v4
+      with:
+        name: sxc-linux-x86_64
+        path: .
+
+    - name: Build documentation tools
+      run: |
+        chmod +x sxc-linux-x86_64
+        mv sxc-linux-x86_64 sxc
+
+        echo "=== Building sxdoc ==="
+        ./sxc sxdoc.sx -o sxdoc.ll
+        clang -O2 sxdoc.ll runtime/standalone_runtime.c \
+          -o sxdoc -lm -lssl -lcrypto -lsqlite3 -lpthread
+        chmod +x sxdoc
+
+        echo "=== Building sxdoc-index ==="
+        ./sxc sxdoc-index.sx -o sxdoc-index.ll
+        clang -O2 sxdoc-index.ll runtime/standalone_runtime.c \
+          -o sxdoc-index -lm -lssl -lcrypto -lsqlite3 -lpthread
+        chmod +x sxdoc-index
+
+    - name: Build documentation
+      run: |
+        chmod +x scripts/build-docs.sh
+        ./scripts/build-docs.sh
+
+    - name: Upload documentation
+      uses: actions/upload-artifact@v4
+      with:
+        name: api-docs
+        path: simplex-docs/api/

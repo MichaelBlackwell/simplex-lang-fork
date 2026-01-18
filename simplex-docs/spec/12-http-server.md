@@ -645,7 +645,7 @@ async fn main() -> Result<(), HttpError> {
 async fn health_check(_req: Request) -> Response {
     Response::json(&json!({
         "status": "healthy",
-        "version": "0.9.0"
+        "version": "0.10.0"
     })).unwrap()
 }
 

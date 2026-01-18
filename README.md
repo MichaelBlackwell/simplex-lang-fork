@@ -1,6 +1,6 @@
 # Simplex Programming Language
 
-**Version 0.9.9**
+**Version 0.10.0**
 
 Simplex is a modern systems programming language designed for AI-native applications, featuring first-class support for actors, cognitive agents, and distributed computing.
 
@@ -293,13 +293,39 @@ simplex-lang/
 
 | Tool | Version | Description |
 |------|---------|-------------|
-| **sxc** | 0.9.7 | Simplex Compiler with Neural IR and Dual Numbers |
-| **sxpm** | 0.9.7 | Package Manager with SLM provisioning |
-| **cursus** | 0.9.7 | Bytecode Virtual Machine |
-| **sxdoc** | 0.9.7 | Documentation Generator |
-| **sxlsp** | 0.9.7 | Language Server Protocol |
+| **sxc** | 0.10.0 | Simplex Compiler with Neural IR and Dual Numbers |
+| **sxpm** | 0.10.0 | Package Manager with SLM provisioning |
+| **cursus** | 0.10.0 | Bytecode Virtual Machine |
+| **sxdoc** | 0.10.0 | Documentation Generator |
+| **sxlsp** | 0.10.0 | Language Server Protocol |
+| **sxfmt** | 0.10.0 | Code Formatter |
+| **sxlint** | 0.10.0 | Static Linter |
 
 ## Release History
+
+### v0.10.0 (2026-01-18) - Developer Experience
+
+**New Developer Tools:**
+- **sxfmt**: Code formatter for consistent style
+- **sxlint**: Static linter with 5 lint categories (unused, unreachable, suspicious, style, perf)
+- **Benchmarking**: `sxc bench` for performance measurement
+- **Profiling**: `sxc run --profile` for CPU/memory profiling
+- **Coverage**: `sxc test --coverage` for code coverage
+- **Error explanations**: `sxc explain E0001` with 34 documented errors
+
+**Compiler Improvements:**
+- Source-level stack traces with file:line:column
+- Incremental compilation with dependency tracking
+- Fixed native library linking for extern declarations
+- Package registry with `sxpm publish/search/info`
+- Lock file support for reproducible builds
+
+**IDE Support:**
+- Self-hostable online playground (Flask/Docker in `playground/`)
+- Tree-sitter grammar for editor integration
+- VS Code extension with full LSP support
+
+See [RELEASE-0.10.0.md](simplex-docs/RELEASE-0.10.0.md) for details.
 
 ### v0.9.7 (2026-01-17) - Stability
 
@@ -615,6 +641,8 @@ sxc run tests/learning/unit_dual_numbers.sx
 - [Tutorial](simplex-docs/tutorial/)
 - [Testing Documentation](simplex-docs/testing/)
 - [Getting Started Guide](simplex-docs/guides/getting-started.md)
+- [Release Notes v0.10.0](simplex-docs/RELEASE-0.10.0.md) - Developer Experience
+- [Release Notes v0.9.9](simplex-docs/RELEASE-0.9.9.md) - Runtime Stability
 - [Release Notes v0.9.7](simplex-docs/RELEASE-0.9.7.md) - Distributed Validation
 - [Release Notes v0.9.5](simplex-docs/RELEASE-0.9.5.md) - Consolidated Foundations
 - [Release Notes v0.9.0](simplex-docs/RELEASE-0.9.0.md) - Self-Learning Annealing

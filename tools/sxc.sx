@@ -5,7 +5,7 @@
 // Licensed under AGPL-3.0 - see LICENSE file
 // https://github.com/senuamedia/simplex-lang
 
-fn VERSION() -> i64 { string_from("0.9.5") }
+fn VERSION() -> i64 { string_from("0.10.0") }
 
 // ========================================
 // Platform Detection and Cross-Platform Paths
@@ -108,9 +108,8 @@ fn get_temp_file(name: i64) -> i64 {
 fn get_default_target() -> i64 {
     let os: i64 = get_os_name();
 
-    // Detect architecture (simplified - assumes x86_64 or aarch64)
-    let arch: i64 = string_from("x86_64");
-    // Could check /proc/cpuinfo on Linux, sysctl on macOS, etc.
+    // Detect architecture via native call
+    let arch: i64 = get_native_arch();
 
     if string_eq(os, string_from("windows")) {
         return string_concat(arch, string_from("-pc-windows-msvc"));
@@ -124,6 +123,22 @@ fn get_default_target() -> i64 {
 
     // Unknown - return generic
     string_concat(arch, string_from("-unknown-unknown"))
+}
+
+// Get native CPU architecture (x86_64, aarch64, arm64, etc.)
+fn get_native_arch() -> i64 {
+    // Check compile-time architecture
+    #[cfg(target_arch = "x86_64")]
+    return string_from("x86_64");
+
+    #[cfg(target_arch = "aarch64")]
+    return string_from("aarch64");
+
+    #[cfg(target_arch = "arm64")]
+    return string_from("arm64");
+
+    // Fallback: try to detect at runtime
+    string_from("x86_64")
 }
 
 // ========================================
@@ -835,8 +850,7 @@ fn cmd_check(opts: i64) -> i64 {
     let errors: i64 = parse_result_errors(parse_result);
 
     if errors > 0 {
-        println(string_concat(string_from("Found "), int_to_string(errors)));
-        println(" parse errors");
+        println(string_concat(string_concat(string_from("Found "), int_to_string(errors)), string_from(" parse errors")));
         return 1;
     }
 

@@ -1,0 +1,297 @@
+================================================================================
+Simple function
+================================================================================
+
+fn main() -> i64 {
+    42
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_definition
+    name: (identifier)
+    (parameters)
+    return_type: (type
+      (primitive_type))
+    body: (block
+      (integer_literal))))
+
+================================================================================
+Function with parameters
+================================================================================
+
+fn add(a: i64, b: i64) -> i64 {
+    a + b
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_definition
+    name: (identifier)
+    (parameters
+      (parameter
+        (typed_parameter
+          name: (identifier)
+          type: (type
+            (primitive_type))))
+      (parameter
+        (typed_parameter
+          name: (identifier)
+          type: (type
+            (primitive_type)))))
+    return_type: (type
+      (primitive_type))
+    body: (block
+      (binary_expression
+        (identifier)
+        (identifier)))))
+
+================================================================================
+Public async function
+================================================================================
+
+pub async fn fetch() -> String {
+    "data"
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_definition
+    (visibility)
+    name: (identifier)
+    (parameters)
+    return_type: (type
+      (primitive_type))
+    body: (block
+      (string_literal))))
+
+================================================================================
+Struct definition
+================================================================================
+
+struct Point {
+    x: i64,
+    y: i64,
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (struct_definition
+    name: (type_identifier)
+    (struct_body
+      (struct_field
+        name: (field_identifier)
+        type: (type
+          (primitive_type)))
+      (struct_field
+        name: (field_identifier)
+        type: (type
+          (primitive_type))))))
+
+================================================================================
+Enum definition
+================================================================================
+
+enum Option {
+    Some(i64),
+    None,
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (enum_definition
+    name: (type_identifier)
+    (enum_body
+      (enum_variant
+        name: (identifier)
+        (enum_variant_tuple
+          (type
+            (primitive_type))))
+      (enum_variant
+        name: (identifier)))))
+
+================================================================================
+Trait definition
+================================================================================
+
+trait Display {
+    fn display(&self) -> String;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (trait_definition
+    name: (type_identifier)
+    (trait_body
+      (trait_item
+        (function_signature
+          name: (identifier)
+          (parameters
+            (parameter
+              (self_parameter)))
+          return_type: (type
+            (primitive_type)))))))
+
+================================================================================
+Impl block
+================================================================================
+
+impl Display for Point {
+    fn display(&self) -> String {
+        "Point"
+    }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (impl_block
+    trait: (type
+      (path
+        (path_segment
+          (identifier))))
+    type: (type
+      (path
+        (path_segment
+          (identifier))))
+    (impl_body
+      (function_definition
+        name: (identifier)
+        (parameters
+          (parameter
+            (self_parameter)))
+        return_type: (type
+          (primitive_type))
+        body: (block
+          (string_literal))))))
+
+================================================================================
+Type alias
+================================================================================
+
+type IntPair = (i64, i64);
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (type_alias
+    name: (type_identifier)
+    type: (type
+      (tuple_type
+        (type
+          (primitive_type))
+        (type
+          (primitive_type))))))
+
+================================================================================
+Const declaration
+================================================================================
+
+const MAX_SIZE: usize = 1024;
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    name: (identifier)
+    type: (type
+      (primitive_type))
+    value: (integer_literal)))
+
+================================================================================
+Use declaration
+================================================================================
+
+use std::collections::HashMap;
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (use_declaration
+    (use_tree
+      (path
+        (path_segment
+          (identifier))
+        (path_segment
+          (identifier))
+        (path_segment
+          (identifier))))))
+
+================================================================================
+Actor definition
+================================================================================
+
+actor Counter {
+    var count: i64 = 0;
+
+    receive Increment() {
+        self.count = self.count + 1;
+    }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (actor_definition
+    name: (type_identifier)
+    (actor_body
+      (actor_field
+        name: (identifier)
+        type: (type
+          (primitive_type))
+        (integer_literal))
+      (receive_handler
+        message: (identifier)
+        (parameters)
+        (block
+          (expression_statement
+            (assignment_expression
+              left: (field_expression
+                receiver: (identifier)
+                field: (identifier))
+              right: (binary_expression
+                (field_expression
+                  receiver: (identifier)
+                  field: (identifier))
+                (integer_literal)))))))))
+
+================================================================================
+Specialist definition
+================================================================================
+
+specialist Analyzer {
+    model: "gpt-4",
+
+    fn analyze(text: String) -> String {
+        infer(text)
+    }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (specialist_definition
+    name: (type_identifier)
+    (specialist_body
+      (specialist_config
+        key: (identifier)
+        value: (string_literal))
+      (function_definition
+        name: (identifier)
+        (parameters
+          (parameter
+            (typed_parameter
+              name: (identifier)
+              type: (type
+                (primitive_type)))))
+        return_type: (type
+          (primitive_type))
+        body: (block
+          (infer_expression
+            prompt: (identifier)))))))
