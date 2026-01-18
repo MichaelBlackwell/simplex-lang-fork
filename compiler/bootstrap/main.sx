@@ -5,14 +5,20 @@
 // Licensed under AGPL-3.0 - see LICENSE file
 // https://github.com/senuamedia/simplex-lang
 
+// Dependencies:
+//   - error.sx: Error codes, formatting functions (E_*, format_error, report_*, print_error_summary)
+//   - parser.sx: parse_program_with_source
+//   - lexer.sx: tokenize
+//   - codegen.sx: gen_program_with_module, gen_program_with_debug
+
 // Version
-fn VERSION() -> i64 { string_from("0.9.7") }
+fn VERSION() -> i64 { string_from("0.10.0") }
 
 // CLI argument parsing result
-// Layout: command(0), input_files(1), output_file(2), emit_type(3), verbose(4), force(5), show_deps(6), auto_deps(7)
+// Layout: command(0), input_files(1), output_file(2), emit_type(3), verbose(4), force(5), show_deps(6), auto_deps(7), debug_info(8)
 // Commands: 0=build, 1=run, 2=check, 3=help, 4=version, 5=repl, 6=fmt
 fn cli_new() -> i64 {
-    let cli: i64 = malloc(64);
+    let cli: i64 = malloc(72);
     store_i64(cli, 0, 0);        // command: 0=build, 1=run, 2=check, 3=help, 4=version, 5=repl, 6=fmt
     store_ptr(cli, 1, vec_new()); // input files
     store_ptr(cli, 2, 0);        // output file (optional)
@@ -21,6 +27,7 @@ fn cli_new() -> i64 {
     store_i64(cli, 5, 0);        // force (skip timestamp checks)
     store_i64(cli, 6, 0);        // show_deps
     store_i64(cli, 7, 0);        // auto_deps (auto-compile dependencies)
+    store_i64(cli, 8, 0);        // debug_info: 1 if -g flag is set (emit DWARF debug symbols)
     cli
 }
 
@@ -39,6 +46,8 @@ fn cli_show_deps(cli: i64) -> i64 { load_i64(cli, 6) }
 fn cli_set_show_deps(cli: i64, d: i64) -> i64 { store_i64(cli, 6, d); 0 }
 fn cli_auto_deps(cli: i64) -> i64 { load_i64(cli, 7) }
 fn cli_set_auto_deps(cli: i64, a: i64) -> i64 { store_i64(cli, 7, a); 0 }
+fn cli_debug_info(cli: i64) -> i64 { load_i64(cli, 8) }
+fn cli_set_debug_info(cli: i64, g: i64) -> i64 { store_i64(cli, 8, g); 0 }
 
 fn show_help() -> i64 {
     println("sxc - Simplex Compiler");
@@ -54,6 +63,7 @@ fn show_help() -> i64 {
     println("OPTIONS:");
     println("    -o <file>       Output file name");
     println("    --emit <type>   Output type: llvm-ir (default), asm, obj, exe, dylib");
+    println("    -g              Emit DWARF debug symbols for LLDB/GDB");
     println("    -v, --verbose   Verbose output");
     println("    -f, --force     Force recompilation (ignore timestamps)");
     println("    --deps          Show file dependencies");
@@ -115,6 +125,7 @@ fn parse_flag(arg: i64) -> i64 {
     if string_eq(arg, string_from("--force")) { return 4; }
     if string_eq(arg, string_from("--deps")) { return 5; }  // show deps
     if string_eq(arg, string_from("--auto-deps")) { return 6; } // auto deps
+    if string_eq(arg, string_from("-g")) { return 7; }      // debug info (DWARF)
     -1  // Not a flag
 }
 
@@ -161,6 +172,11 @@ fn parse_args(args: i64) -> i64 {
         }
         if flag == 6 {
             cli_set_auto_deps(cli, 1);
+            i = i + 1;
+            continue;
+        }
+        if flag == 7 {
+            cli_set_debug_info(cli, 1);
             i = i + 1;
             continue;
         }
@@ -325,6 +341,22 @@ fn get_directory(path: i64) -> i64 {
     string_from("")
 }
 
+// Get basename from path (e.g., "foo/bar/baz.sx" -> "baz.sx")
+fn get_basename(path: i64) -> i64 {
+    let len: i64 = string_len(path);
+    let i: i64 = len - 1;
+    while i >= 0 {
+        let c: i64 = string_char_at(path, i);
+        if c == 47 {
+            // ASCII for '/'
+            return string_slice(path, i + 1, len);
+        }
+        i = i - 1;
+    }
+    // No directory, return the whole path
+    path
+}
+
 // Collect all transitive dependencies for a source file
 // Returns vec of paths in dependency order (dependencies before dependents)
 fn collect_all_dependencies(source_path: i64) -> i64 {
@@ -432,11 +464,16 @@ fn is_up_to_date_with_deps(source_path: i64, output_path: i64) -> i64 {
 // Compile a single file
 // emit_type: 0=llvm-ir, 1=obj, 2=exe, 3=asm
 // force: 1 = always recompile, 0 = check timestamps
+// debug_info: 1 = emit DWARF debug symbols, 0 = no debug info
 fn compile_file(path: i64, output_path: i64, verbose: i64, emit_type: i64) -> i64 {
-    return compile_file_force(path, output_path, verbose, emit_type, 0);
+    return compile_file_full(path, output_path, verbose, emit_type, 0, 0);
 }
 
 fn compile_file_force(path: i64, output_path: i64, verbose: i64, emit_type: i64, force: i64) -> i64 {
+    return compile_file_full(path, output_path, verbose, emit_type, force, 0);
+}
+
+fn compile_file_full(path: i64, output_path: i64, verbose: i64, emit_type: i64, force: i64, debug_info: i64) -> i64 {
     // Determine expected output path
     let expected_out: i64 = output_path;
     if expected_out == 0 {
@@ -479,30 +516,40 @@ fn compile_file_force(path: i64, output_path: i64, verbose: i64, emit_type: i64,
     // Read source file
     let source: i64 = read_file(path);
     if source == 0 {
-        println(string_concat(string_from("Error: Could not read file: "), path));
+        report_simple_error(E_CANNOT_READ_FILE(), string_concat("could not read file: ", path));
         return 1;
     }
 
     // Tokenize
     let tokens: i64 = tokenize(source);
 
-    // Parse
-    let parse_result: i64 = parse_program(tokens);
+    // Parse with source info for better error messages
+    let parse_result: i64 = parse_program_with_source(tokens, source, path);
     let items: i64 = parse_result_items(parse_result);
     let parse_errors: i64 = parse_result_errors(parse_result);
 
     // Check for parse errors
     if parse_errors > 0 {
-        println(string_concat(string_from("Compilation failed with "),
-                string_concat(int_to_string(parse_errors), string_from(" parse error(s)."))));
+        print_error_summary(parse_errors, 0);
         return 1;
     }
 
     // Extract module name from path for unique string prefixes
     let module_name: i64 = get_module_name(path);
 
-    // Generate code with module name
-    let output: i64 = gen_program_with_module(items, module_name);
+    // Generate code with module name and optional debug info
+    let output: i64 = 0;
+    if debug_info == 1 {
+        // Get directory from path for debug info
+        let dir: i64 = get_directory(path);
+        if string_len(dir) == 0 {
+            dir = string_from(".");
+        }
+        let filename: i64 = get_basename(path);
+        output = gen_program_with_debug(items, module_name, filename, dir);
+    } else {
+        output = gen_program_with_module(items, module_name);
+    }
 
     // Determine output path based on emit type
     let ll_path: i64 = string_replace_ext(path, ".ll");
@@ -699,6 +746,7 @@ fn main() -> i64 {
         let emit: i64 = cli_emit_type(cli);
         let force: i64 = cli_force(cli);
         let auto_deps: i64 = cli_auto_deps(cli);
+        let debug_info: i64 = cli_debug_info(cli);
         let i: i64 = 0;
         while i < file_count {
             let path: i64 = vec_get(files, i);
@@ -712,7 +760,7 @@ fn main() -> i64 {
                 // Auto-compile all module dependencies
                 result = compile_with_dependencies(path, out, verbose, emit);
             } else {
-                result = compile_file_force(path, out, verbose, emit, force);
+                result = compile_file_full(path, out, verbose, emit, force, debug_info);
             }
             if result != 0 {
                 return result;
@@ -748,14 +796,14 @@ fn main() -> i64 {
             let path: i64 = vec_get(files, i);
             let source: i64 = read_file(path);
             if source == 0 {
-                println(string_concat(string_from("Error: Could not read file: "), path));
+                report_simple_error(E_CANNOT_READ_FILE(), string_concat("could not read file: ", path));
                 return 1;
             }
             let tokens: i64 = tokenize(source);
-            let parse_result: i64 = parse_program(tokens);
+            let parse_result: i64 = parse_program_with_source(tokens, source, path);
             let parse_errors: i64 = parse_result_errors(parse_result);
             if parse_errors > 0 {
-                println(string_concat(path, string_from(": parse errors found")));
+                print_error_summary(parse_errors, 0);
                 return 1;
             }
             println(string_concat(path, string_from(": OK")));
@@ -1134,20 +1182,20 @@ fn try_eval_simple_expr(expr: i64) -> i64 {
 fn format_file(path: i64, write_back: i64) -> i64 {
     let source: i64 = read_file(path);
     if source == 0 {
-        println(string_concat(string_from("Error: Could not read file: "), path));
+        report_simple_error(E_CANNOT_READ_FILE(), string_concat("could not read file: ", path));
         return 1;
     }
 
     // Tokenize
     let tokens: i64 = tokenize(source);
 
-    // Parse
-    let parse_result: i64 = parse_program(tokens);
+    // Parse with source for better errors
+    let parse_result: i64 = parse_program_with_source(tokens, source, path);
     let items: i64 = parse_result_items(parse_result);
     let errors: i64 = parse_result_errors(parse_result);
 
     if errors > 0 {
-        println(string_concat(string_from("Error: Parse errors in "), path));
+        print_error_summary(errors, 0);
         return 1;
     }
 

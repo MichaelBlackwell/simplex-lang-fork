@@ -1,23 +1,26 @@
 {
   "name": "simplex-lang",
   "displayName": "Simplex Language",
-  "description": "Syntax highlighting and language support for the Simplex programming language",
-  "version": "0.3.4",
+  "description": "Full IDE support for the Simplex programming language with LSP integration",
+  "version": "0.10.0",
   "publisher": "senuamedia",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/senuamedia/simplex-lang"
+    "url": "https://github.com/senuamedia/simplex"
   },
   "bugs": {
-    "url": "https://github.com/senuamedia/simplex-lang/issues"
+    "url": "https://github.com/senuamedia/simplex/issues"
   },
-  "homepage": "https://github.com/senuamedia/simplex-lang",
+  "homepage": "https://github.com/senuamedia/simplex",
   "engines": {
-    "vscode": "^1.75.0"
+    "vscode": "^1.80.0"
   },
   "categories": [
-    "Programming Languages"
+    "Programming Languages",
+    "Linters",
+    "Snippets",
+    "Formatters"
   ],
   "keywords": [
     "simplex",
@@ -26,13 +29,18 @@
     "actors",
     "ai",
     "cognitive",
-    "distributed"
+    "distributed",
+    "lsp"
   ],
   "icon": "images/simplex-icon.png",
   "galleryBanner": {
     "color": "#1E1E1E",
     "theme": "dark"
   },
+  "activationEvents": [
+    "onLanguage:simplex"
+  ],
+  "main": "./out/extension.js",
   "contributes": {
     "languages": [
       {
@@ -58,13 +66,202 @@
         "language": "simplex",
         "path": "./snippets/simplex.json"
       }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Simplex",
+      "properties": {
+        "simplex.lspPath": {
+          "type": "string",
+          "default": "sxlsp",
+          "description": "Path to the Simplex language server executable"
+        },
+        "simplex.lspArgs": {
+          "type": "array",
+          "default": ["--stdio"],
+          "items": {
+            "type": "string"
+          },
+          "description": "Arguments to pass to the language server"
+        },
+        "simplex.trace.server": {
+          "type": "string",
+          "enum": ["off", "messages", "verbose"],
+          "default": "off",
+          "description": "Trace communication between VS Code and the language server"
+        },
+        "simplex.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the Simplex language server"
+        },
+        "simplex.enableHoverDocs": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable hover documentation"
+        },
+        "simplex.enableDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable real-time error diagnostics"
+        },
+        "simplex.compilerPath": {
+          "type": "string",
+          "default": "sxc",
+          "description": "Path to the Simplex compiler for build tasks"
+        },
+        "simplex.formatOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Format Simplex files on save"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "simplex.restartServer",
+        "title": "Simplex: Restart Language Server"
+      },
+      {
+        "command": "simplex.showVersion",
+        "title": "Simplex: Show Version"
+      },
+      {
+        "command": "simplex.buildFile",
+        "title": "Simplex: Build Current File"
+      },
+      {
+        "command": "simplex.runFile",
+        "title": "Simplex: Run Current File"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "simplex.buildFile",
+        "key": "ctrl+shift+b",
+        "mac": "cmd+shift+b",
+        "when": "editorLangId == simplex"
+      },
+      {
+        "command": "simplex.runFile",
+        "key": "ctrl+shift+r",
+        "mac": "cmd+shift+r",
+        "when": "editorLangId == simplex"
+      }
+    ],
+    "taskDefinitions": [
+      {
+        "type": "simplex",
+        "required": ["task"],
+        "properties": {
+          "task": {
+            "type": "string",
+            "description": "The Simplex task to perform: build, run, test"
+          },
+          "file": {
+            "type": "string",
+            "description": "The file to build/run"
+          }
+        }
+      }
+    ],
+    "problemMatchers": [
+      {
+        "name": "simplex",
+        "owner": "simplex",
+        "fileLocation": ["relative", "${workspaceFolder}"],
+        "pattern": {
+          "regexp": "^(.+):(\\d+):(\\d+):\\s+(error|warning):\\s+(.+)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "message": 5
+        }
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "simplex",
+        "label": "Simplex Debug",
+        "languages": ["simplex"],
+        "configurationAttributes": {
+          "launch": {
+            "required": ["program"],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Path to the Simplex file to debug",
+                "default": "${file}"
+              },
+              "args": {
+                "type": "array",
+                "description": "Command line arguments",
+                "default": []
+              },
+              "cwd": {
+                "type": "string",
+                "description": "Working directory",
+                "default": "${workspaceFolder}"
+              },
+              "env": {
+                "type": "object",
+                "description": "Environment variables",
+                "default": {}
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "description": "Stop at entry point",
+                "default": false
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "simplex",
+            "request": "launch",
+            "name": "Debug Simplex Program",
+            "program": "${file}",
+            "cwd": "${workspaceFolder}"
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Simplex: Launch",
+            "description": "Launch and debug a Simplex program",
+            "body": {
+              "type": "simplex",
+              "request": "launch",
+              "name": "Debug Simplex Program",
+              "program": "^\"\\${file}\"",
+              "cwd": "^\"\\${workspaceFolder}\""
+            }
+          }
+        ]
+      }
     ]
   },
   "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile",
+    "test": "node ./out/test/runTest.js",
+    "lint": "eslint src --ext ts",
     "package": "vsce package",
     "publish": "vsce publish"
   },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
   "devDependencies": {
-    "@vscode/vsce": "^2.22.0"
+    "@types/node": "^20.10.0",
+    "@types/vscode": "^1.80.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "@vscode/vsce": "^2.22.0",
+    "eslint": "^8.55.0",
+    "typescript": "^5.3.2"
   }
 }

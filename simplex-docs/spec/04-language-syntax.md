@@ -1,6 +1,6 @@
 # Simplex Language Syntax
 
-**Version 0.9.0**
+**Version 0.10.0**
 
 Complete syntax reference for the Simplex programming language.
 
@@ -213,7 +213,7 @@ let h = d2 * d2 * d2;                      // x³
 // h.val = x³, h.d1 = 3x², h.d2 = 6x
 ```
 
-#### Meta-Gradient Applications (v0.9.0)
+#### Meta-Gradient Applications
 
 Dual numbers power self-learning annealing in neural gates. The meta-gradient `∂Loss/∂τ` automatically controls temperature schedules:
 

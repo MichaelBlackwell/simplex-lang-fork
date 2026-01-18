@@ -9,6 +9,9 @@
 // Licensed under AGPL-3.0 - see LICENSE file
 // https://github.com/senuamedia/simplex-lang
 
+// Dependencies: error.sx (format_error, format_simple_error, E_* error codes)
+// These functions are provided when compiled together with error.sx
+
 // Token types enum - duplicated from lexer.sx for standalone compilation
 enum TokenKind {
     Eof,
@@ -176,15 +179,33 @@ fn EXPR_BELIEF_OR() -> i64 { 39 }     // guard || guard
 
 // Parser state - we pass this to all functions
 fn parser_new(tokens: i64) -> i64 {
-    // Allocate parser: tokens(0), pos(1), len(2), errors(3), pending_gt(4)
-    let parser: i64 = malloc(40);
+    // Allocate parser: tokens(0), pos(1), len(2), errors(3), pending_gt(4), source(5), file_path(6)
+    let parser: i64 = malloc(56);
     store_ptr(parser, 0, tokens);
     store_i64(parser, 1, 0);
     let len: i64 = vec_len(tokens);
     store_i64(parser, 2, len);
     store_i64(parser, 3, 0);
     store_i64(parser, 4, 0);  // pending_gt count for handling >> in nested generics
+    store_ptr(parser, 5, "");  // source code for error messages
+    store_ptr(parser, 6, "");  // file path for error messages
     parser
+}
+
+// Create parser with source info for better error messages
+fn parser_new_with_source(tokens: i64, source: i64, file_path: i64) -> i64 {
+    let parser: i64 = parser_new(tokens);
+    store_ptr(parser, 5, source);
+    store_ptr(parser, 6, file_path);
+    parser
+}
+
+fn parser_source(parser: i64) -> i64 {
+    load_ptr(parser, 5)
+}
+
+fn parser_file_path(parser: i64) -> i64 {
+    load_ptr(parser, 6)
 }
 
 // Get/set pending_gt count for handling >> in nested generics
@@ -201,10 +222,104 @@ fn parser_error_count(parser: i64) -> i64 {
     load_i64(parser, 3)
 }
 
+// Legacy error function - uses current token location
 fn parser_add_error(parser: i64, msg: i64) -> i64 {
     let count: i64 = load_i64(parser, 3);
     store_i64(parser, 3, count + 1);
-    println(string_concat(string_from("Parse error: "), msg));
+
+    // Get current token for location info
+    let tok: i64 = parser_current(parser);
+    let line: i64 = 1;
+    let col: i64 = 1;
+    let length: i64 = 1;
+    let tok_text: i64 = "";
+
+    if tok != 0 {
+        line = token_line(tok);
+        col = token_col(tok);
+        tok_text = token_text(tok);
+        length = string_len(tok_text);
+        if length < 1 {
+            length = 1;
+        }
+    }
+
+    let source: i64 = parser_source(parser);
+    let file_path: i64 = parser_file_path(parser);
+
+    // Use new error formatting if we have source info
+    if string_len(source) > 0 {
+        let formatted: i64 = format_error(E_UNEXPECTED_TOKEN(), file_path, line, col, length, msg, source);
+        println(formatted);
+    } else {
+        // Fallback to simple format
+        println(string_concat(string_from("Parse error: "), msg));
+    }
+    0
+}
+
+// Enhanced error function with specific error code
+fn parser_add_error_code(parser: i64, code: i64, msg: i64) -> i64 {
+    let count: i64 = load_i64(parser, 3);
+    store_i64(parser, 3, count + 1);
+
+    let tok: i64 = parser_current(parser);
+    let line: i64 = 1;
+    let col: i64 = 1;
+    let length: i64 = 1;
+
+    if tok != 0 {
+        line = token_line(tok);
+        col = token_col(tok);
+        let tok_text: i64 = token_text(tok);
+        length = string_len(tok_text);
+        if length < 1 {
+            length = 1;
+        }
+    }
+
+    let source: i64 = parser_source(parser);
+    let file_path: i64 = parser_file_path(parser);
+
+    if string_len(source) > 0 {
+        let formatted: i64 = format_error(code, file_path, line, col, length, msg, source);
+        println(formatted);
+    } else {
+        let formatted: i64 = format_simple_error(code, msg);
+        println(formatted);
+    }
+    0
+}
+
+// Error at specific token
+fn parser_add_error_at(parser: i64, tok: i64, code: i64, msg: i64) -> i64 {
+    let count: i64 = load_i64(parser, 3);
+    store_i64(parser, 3, count + 1);
+
+    let line: i64 = 1;
+    let col: i64 = 1;
+    let length: i64 = 1;
+
+    if tok != 0 {
+        line = token_line(tok);
+        col = token_col(tok);
+        let tok_text: i64 = token_text(tok);
+        length = string_len(tok_text);
+        if length < 1 {
+            length = 1;
+        }
+    }
+
+    let source: i64 = parser_source(parser);
+    let file_path: i64 = parser_file_path(parser);
+
+    if string_len(source) > 0 {
+        let formatted: i64 = format_error(code, file_path, line, col, length, msg, source);
+        println(formatted);
+    } else {
+        let formatted: i64 = format_simple_error(code, msg);
+        println(formatted);
+    }
     0
 }
 
@@ -277,9 +392,11 @@ fn parser_expect(parser: i64, kind: i64) -> i64 {
     if parser_check(parser, kind) {
         return parser_advance(parser);
     }
-    // Error - report and continue
+    // Error - report and return a synthetic error token to prevent null pointer dereference
     parser_add_error(parser, string_from("unexpected token"));
-    0
+    // Create a synthetic token with empty text to allow safe recovery
+    // This prevents segfaults when callers use token_text on the result
+    token_new(TokenKind::Eof, string_from(""), 0)
 }
 
 // AST node constructors
@@ -2538,7 +2655,15 @@ fn parse_fn(parser: i64, is_async: i64) -> i64 {
         }
     }
 
-    let body: i64 = parse_block(parser);
+    // Check for extern function declaration (semicolon instead of body)
+    let body: i64 = 0;
+    if parser_match(parser, TokenKind::Semi) {
+        // Extern function - no body, just declaration
+        body = 0;
+    } else {
+        // Regular function with body
+        body = parse_block(parser);
+    }
     ast_fn_def(name, type_params, params, ret_ty, body, is_async)
 }
 
@@ -3494,9 +3619,14 @@ fn parse_result_errors(result: i64) -> i64 {
     load_i64(result, 1)
 }
 
-// Parse entire program
+// Parse entire program (legacy interface without source info)
 fn parse_program(tokens: i64) -> i64 {
-    let parser: i64 = parser_new(tokens);
+    parse_program_with_source(tokens, "", "")
+}
+
+// Parse entire program with source info for better error messages
+fn parse_program_with_source(tokens: i64, source: i64, file_path: i64) -> i64 {
+    let parser: i64 = parser_new_with_source(tokens, source, file_path);
     let items: i64 = vec_new();
 
     while true {
@@ -3516,7 +3646,7 @@ fn parse_program(tokens: i64) -> i64 {
             vec_push(items, item);
         } else {
             // Unknown item - skip token and report error
-            parser_add_error(parser, string_from("unexpected token at top level"));
+            parser_add_error_code(parser, E_UNEXPECTED_TOKEN(), "unexpected token at top level");
             parser_advance(parser);
         }
     }

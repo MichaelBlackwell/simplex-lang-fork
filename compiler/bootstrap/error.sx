@@ -1,0 +1,766 @@
+// Simplex Compiler - Error Reporting Module
+// Rust/Elm-style developer-friendly error messages for 0.10.0
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0 - see LICENSE file
+// https://github.com/senuamedia/simplex-lang
+
+// =============================================================================
+// Error Codes
+// Organized by category for easy reference
+// =============================================================================
+
+// Parse errors (E0001-E0099)
+fn E_UNEXPECTED_TOKEN() -> i64 { 1 }      // E0001
+fn E_UNEXPECTED_EOF() -> i64 { 2 }        // E0002
+fn E_EXPECTED_TOKEN() -> i64 { 3 }        // E0003
+fn E_INVALID_LITERAL() -> i64 { 4 }       // E0004
+fn E_UNCLOSED_DELIMITER() -> i64 { 5 }    // E0005
+fn E_EXPECTED_TYPE() -> i64 { 6 }         // E0006
+fn E_EXPECTED_EXPRESSION() -> i64 { 7 }   // E0007
+fn E_EXPECTED_PATTERN() -> i64 { 8 }      // E0008
+fn E_INVALID_ATTRIBUTE() -> i64 { 9 }     // E0009
+
+// Name resolution errors (E0100-E0199)
+fn E_UNDEFINED_VARIABLE() -> i64 { 100 }  // E0100
+fn E_UNDEFINED_FUNCTION() -> i64 { 101 }  // E0101
+fn E_UNDEFINED_TYPE() -> i64 { 102 }      // E0102
+fn E_UNDEFINED_STRUCT() -> i64 { 103 }    // E0103
+fn E_UNDEFINED_FIELD() -> i64 { 104 }     // E0104
+fn E_UNDEFINED_ENUM() -> i64 { 105 }      // E0105
+fn E_UNDEFINED_VARIANT() -> i64 { 106 }   // E0106
+fn E_UNDEFINED_METHOD() -> i64 { 107 }    // E0107
+fn E_UNDEFINED_TRAIT() -> i64 { 108 }     // E0108
+fn E_DUPLICATE_DEFINITION() -> i64 { 109 } // E0109
+
+// Type errors (E0200-E0299)
+fn E_TYPE_MISMATCH() -> i64 { 200 }       // E0200
+fn E_WRONG_ARG_COUNT() -> i64 { 201 }     // E0201
+fn E_WRONG_TYPE_ARG_COUNT() -> i64 { 202 } // E0202
+fn E_TRAIT_NOT_IMPLEMENTED() -> i64 { 203 } // E0203
+fn E_INVALID_CAST() -> i64 { 204 }        // E0204
+fn E_CANNOT_INFER_TYPE() -> i64 { 205 }   // E0205
+
+// Semantic errors (E0300-E0399)
+fn E_BREAK_OUTSIDE_LOOP() -> i64 { 300 }  // E0300
+fn E_CONTINUE_OUTSIDE_LOOP() -> i64 { 301 } // E0301
+fn E_RETURN_IN_CLOSURE() -> i64 { 302 }   // E0302
+fn E_AWAIT_OUTSIDE_ASYNC() -> i64 { 303 } // E0303
+fn E_YIELD_OUTSIDE_GEN() -> i64 { 304 }   // E0304
+fn E_SELF_OUTSIDE_IMPL() -> i64 { 305 }   // E0305
+
+// IO/File errors (E0400-E0499)
+fn E_FILE_NOT_FOUND() -> i64 { 400 }      // E0400
+fn E_CANNOT_READ_FILE() -> i64 { 401 }    // E0401
+
+// =============================================================================
+// Terminal Colors (ANSI escape codes)
+// =============================================================================
+
+// Check if terminal supports colors (simple heuristic)
+fn term_supports_color() -> i64 {
+    // Check for NO_COLOR environment variable (standard)
+    let no_color: i64 = intrinsic_getenv("NO_COLOR");
+    if no_color != 0 {
+        if string_len(no_color) > 0 {
+            return 0;
+        }
+    }
+    // Check for TERM=dumb
+    let term: i64 = intrinsic_getenv("TERM");
+    if term != 0 {
+        if string_eq(term, "dumb") {
+            return 0;
+        }
+    }
+    // Assume colors are supported by default on modern terminals
+    1
+}
+
+// ANSI color codes
+fn COLOR_RESET() -> i64 { "\x1b[0m" }
+fn COLOR_BOLD() -> i64 { "\x1b[1m" }
+fn COLOR_RED() -> i64 { "\x1b[31m" }
+fn COLOR_BOLD_RED() -> i64 { "\x1b[1;31m" }
+fn COLOR_GREEN() -> i64 { "\x1b[32m" }
+fn COLOR_YELLOW() -> i64 { "\x1b[33m" }
+fn COLOR_BLUE() -> i64 { "\x1b[34m" }
+fn COLOR_CYAN() -> i64 { "\x1b[36m" }
+fn COLOR_WHITE() -> i64 { "\x1b[37m" }
+fn COLOR_BOLD_BLUE() -> i64 { "\x1b[1;34m" }
+fn COLOR_BOLD_CYAN() -> i64 { "\x1b[1;36m" }
+
+// Apply color if terminal supports it
+fn colorize(text: i64, color: i64) -> i64 {
+    if term_supports_color() == 0 {
+        return text;
+    }
+    let sb: i64 = sb_new();
+    sb_append(sb, color);
+    sb_append(sb, text);
+    sb_append(sb, COLOR_RESET());
+    sb_build(sb)
+}
+
+// =============================================================================
+// Error Context - Stores information needed for error reporting
+// =============================================================================
+
+// Global error context
+// Layout: file_path(0), source(1), error_count(2), warning_count(3)
+fn error_ctx_new() -> i64 {
+    let ctx: i64 = malloc(32);
+    store_ptr(ctx, 0, "");     // current file path
+    store_ptr(ctx, 1, "");     // source code
+    store_i64(ctx, 2, 0);       // error count
+    store_i64(ctx, 3, 0);       // warning count
+    ctx
+}
+
+fn error_ctx_set_file(ctx: i64, path: i64) -> i64 {
+    store_ptr(ctx, 0, path);
+    0
+}
+
+fn error_ctx_set_source(ctx: i64, source: i64) -> i64 {
+    store_ptr(ctx, 1, source);
+    0
+}
+
+fn error_ctx_file(ctx: i64) -> i64 {
+    load_ptr(ctx, 0)
+}
+
+fn error_ctx_source(ctx: i64) -> i64 {
+    load_ptr(ctx, 1)
+}
+
+fn error_ctx_error_count(ctx: i64) -> i64 {
+    load_i64(ctx, 2)
+}
+
+fn error_ctx_add_error(ctx: i64) -> i64 {
+    let count: i64 = load_i64(ctx, 2);
+    store_i64(ctx, 2, count + 1);
+    count + 1
+}
+
+fn error_ctx_warning_count(ctx: i64) -> i64 {
+    load_i64(ctx, 3)
+}
+
+fn error_ctx_add_warning(ctx: i64) -> i64 {
+    let count: i64 = load_i64(ctx, 3);
+    store_i64(ctx, 3, count + 1);
+    count + 1
+}
+
+// Global error context instance
+// In a real implementation, this would be passed around or thread-local
+fn get_global_error_ctx() -> i64 {
+    // Static storage using a global pattern
+    // This is initialized once and reused
+    static_error_ctx()
+}
+
+// Static storage for the global error context
+fn static_error_ctx() -> i64 {
+    // Uses the fact that global constants are initialized once
+    error_ctx_new()
+}
+
+// =============================================================================
+// Source Location Tracking
+// =============================================================================
+
+// Source span - represents a range in source code
+// Layout: start_line(0), start_col(1), end_line(2), end_col(3)
+fn span_new(start_line: i64, start_col: i64, end_line: i64, end_col: i64) -> i64 {
+    let span: i64 = malloc(32);
+    store_i64(span, 0, start_line);
+    store_i64(span, 1, start_col);
+    store_i64(span, 2, end_line);
+    store_i64(span, 3, end_col);
+    span
+}
+
+fn span_from_token(tok: i64) -> i64 {
+    let line: i64 = token_line(tok);
+    let col: i64 = token_col(tok);
+    let text: i64 = token_text(tok);
+    let len: i64 = string_len(text);
+    span_new(line, col, line, col + len)
+}
+
+fn span_start_line(span: i64) -> i64 { load_i64(span, 0) }
+fn span_start_col(span: i64) -> i64 { load_i64(span, 1) }
+fn span_end_line(span: i64) -> i64 { load_i64(span, 2) }
+fn span_end_col(span: i64) -> i64 { load_i64(span, 3) }
+
+// =============================================================================
+// Error Code Formatting
+// =============================================================================
+
+// Format error code as E0001, E0002, etc.
+fn format_error_code(code: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, "E");
+    if code < 10 {
+        sb_append(sb, "000");
+    } else {
+    if code < 100 {
+        sb_append(sb, "00");
+    } else {
+    if code < 1000 {
+        sb_append(sb, "0");
+    }
+    }
+    }
+    sb_append_i64(sb, code);
+    sb_build(sb)
+}
+
+// Get error message for error code
+fn error_code_message(code: i64) -> i64 {
+    // Parse errors
+    if code == E_UNEXPECTED_TOKEN() { return "unexpected token"; }
+    if code == E_UNEXPECTED_EOF() { return "unexpected end of file"; }
+    if code == E_EXPECTED_TOKEN() { return "expected token"; }
+    if code == E_INVALID_LITERAL() { return "invalid literal"; }
+    if code == E_UNCLOSED_DELIMITER() { return "unclosed delimiter"; }
+    if code == E_EXPECTED_TYPE() { return "expected type"; }
+    if code == E_EXPECTED_EXPRESSION() { return "expected expression"; }
+    if code == E_EXPECTED_PATTERN() { return "expected pattern"; }
+    if code == E_INVALID_ATTRIBUTE() { return "invalid attribute"; }
+
+    // Name resolution errors
+    if code == E_UNDEFINED_VARIABLE() { return "cannot find value in this scope"; }
+    if code == E_UNDEFINED_FUNCTION() { return "cannot find function in this scope"; }
+    if code == E_UNDEFINED_TYPE() { return "cannot find type in this scope"; }
+    if code == E_UNDEFINED_STRUCT() { return "cannot find struct in this scope"; }
+    if code == E_UNDEFINED_FIELD() { return "no field on type"; }
+    if code == E_UNDEFINED_ENUM() { return "cannot find enum in this scope"; }
+    if code == E_UNDEFINED_VARIANT() { return "no variant on enum"; }
+    if code == E_UNDEFINED_METHOD() { return "no method found"; }
+    if code == E_UNDEFINED_TRAIT() { return "cannot find trait in this scope"; }
+    if code == E_DUPLICATE_DEFINITION() { return "duplicate definition"; }
+
+    // Type errors
+    if code == E_TYPE_MISMATCH() { return "mismatched types"; }
+    if code == E_WRONG_ARG_COUNT() { return "wrong number of arguments"; }
+    if code == E_WRONG_TYPE_ARG_COUNT() { return "wrong number of type arguments"; }
+    if code == E_TRAIT_NOT_IMPLEMENTED() { return "trait not implemented"; }
+    if code == E_INVALID_CAST() { return "invalid cast"; }
+    if code == E_CANNOT_INFER_TYPE() { return "cannot infer type"; }
+
+    // Semantic errors
+    if code == E_BREAK_OUTSIDE_LOOP() { return "break outside of loop"; }
+    if code == E_CONTINUE_OUTSIDE_LOOP() { return "continue outside of loop"; }
+    if code == E_RETURN_IN_CLOSURE() { return "return in closure"; }
+    if code == E_AWAIT_OUTSIDE_ASYNC() { return "await outside of async function"; }
+    if code == E_YIELD_OUTSIDE_GEN() { return "yield outside of generator"; }
+    if code == E_SELF_OUTSIDE_IMPL() { return "self outside of impl block"; }
+
+    // IO errors
+    if code == E_FILE_NOT_FOUND() { return "file not found"; }
+    if code == E_CANNOT_READ_FILE() { return "cannot read file"; }
+
+    "unknown error"
+}
+
+// =============================================================================
+// Source Snippet Extraction
+// =============================================================================
+
+// Get a specific line from source (1-indexed)
+fn get_source_line(source: i64, line_num: i64) -> i64 {
+    if source == 0 { return ""; }
+    if line_num < 1 { return ""; }
+
+    let len: i64 = string_len(source);
+    let current_line: i64 = 1;
+    let line_start: i64 = 0;
+    let i: i64 = 0;
+
+    // Find the start of the target line
+    while i < len {
+        if current_line == line_num {
+            line_start = i;
+            i = len; // Break
+        } else {
+            let c: i64 = string_char_at(source, i);
+            if c == 10 {
+                // Newline
+                current_line = current_line + 1;
+            }
+            i = i + 1;
+        }
+    }
+
+    if current_line < line_num {
+        return ""; // Line doesn't exist
+    }
+
+    // Find the end of the line
+    let line_end: i64 = line_start;
+    while line_end < len {
+        let c: i64 = string_char_at(source, line_end);
+        if c == 10 {
+            line_end = line_end; // Stop before newline
+            return string_slice(source, line_start, line_end);
+        }
+        line_end = line_end + 1;
+    }
+
+    // Last line (no trailing newline)
+    string_slice(source, line_start, len)
+}
+
+// Calculate the number of digits in a number (for alignment)
+fn digit_count(n: i64) -> i64 {
+    if n < 10 { return 1; }
+    if n < 100 { return 2; }
+    if n < 1000 { return 3; }
+    if n < 10000 { return 4; }
+    5 // Good enough for most files
+}
+
+// Create a string of spaces
+fn spaces(count: i64) -> i64 {
+    let sb: i64 = sb_new();
+    let i: i64 = 0;
+    while i < count {
+        sb_append(sb, " ");
+        i = i + 1;
+    }
+    sb_build(sb)
+}
+
+// Create caret underline (^^^)
+fn make_caret(col: i64, length: i64) -> i64 {
+    let sb: i64 = sb_new();
+    // Spaces before caret (col is 1-indexed)
+    let i: i64 = 1;
+    while i < col {
+        sb_append(sb, " ");
+        i = i + 1;
+    }
+    // Caret characters
+    i = 0;
+    while i < length {
+        sb_append(sb, "^");
+        i = i + 1;
+    }
+    sb_build(sb)
+}
+
+// =============================================================================
+// Main Error Formatting Function
+// =============================================================================
+
+// Format a complete error message with source snippet
+// code: error code (E0001, etc.)
+// file: source file path
+// line: line number (1-indexed)
+// col: column number (1-indexed)
+// length: length of the error span
+// message: detailed error message
+// source: the source code (for snippet extraction)
+fn format_error(code: i64, file: i64, line: i64, col: i64, length: i64, message: i64, source: i64) -> i64 {
+    let sb: i64 = sb_new();
+    let use_color: i64 = term_supports_color();
+
+    // Error header: error[E0001]: message
+    if use_color == 1 {
+        sb_append(sb, COLOR_BOLD_RED());
+        sb_append(sb, "error");
+        sb_append(sb, COLOR_RESET());
+        sb_append(sb, "[");
+        sb_append(sb, COLOR_BOLD_RED());
+        sb_append(sb, format_error_code(code));
+        sb_append(sb, COLOR_RESET());
+        sb_append(sb, "]");
+        sb_append(sb, COLOR_BOLD());
+        sb_append(sb, ": ");
+        sb_append(sb, message);
+        sb_append(sb, COLOR_RESET());
+    } else {
+        sb_append(sb, "error[");
+        sb_append(sb, format_error_code(code));
+        sb_append(sb, "]: ");
+        sb_append(sb, message);
+    }
+    sb_append(sb, "\n");
+
+    // Location line: --> file:line:col
+    let line_width: i64 = digit_count(line);
+    sb_append(sb, spaces(line_width));
+    if use_color == 1 {
+        sb_append(sb, COLOR_BOLD_BLUE());
+        sb_append(sb, " --> ");
+        sb_append(sb, COLOR_RESET());
+    } else {
+        sb_append(sb, " --> ");
+    }
+    sb_append(sb, file);
+    sb_append(sb, ":");
+    sb_append_i64(sb, line);
+    sb_append(sb, ":");
+    sb_append_i64(sb, col);
+    sb_append(sb, "\n");
+
+    // Empty line with pipe
+    sb_append(sb, spaces(line_width));
+    if use_color == 1 {
+        sb_append(sb, COLOR_BOLD_BLUE());
+        sb_append(sb, " |\n");
+        sb_append(sb, COLOR_RESET());
+    } else {
+        sb_append(sb, " |\n");
+    }
+
+    // Source line: line_num | source code
+    if use_color == 1 {
+        sb_append(sb, COLOR_BOLD_BLUE());
+        sb_append_i64(sb, line);
+        sb_append(sb, " | ");
+        sb_append(sb, COLOR_RESET());
+    } else {
+        sb_append_i64(sb, line);
+        sb_append(sb, " | ");
+    }
+    let source_line: i64 = get_source_line(source, line);
+    sb_append(sb, source_line);
+    sb_append(sb, "\n");
+
+    // Caret line: spaces | ^^^
+    sb_append(sb, spaces(line_width));
+    if use_color == 1 {
+        sb_append(sb, COLOR_BOLD_BLUE());
+        sb_append(sb, " | ");
+        sb_append(sb, COLOR_RESET());
+        sb_append(sb, COLOR_BOLD_RED());
+        sb_append(sb, make_caret(col, length));
+        sb_append(sb, COLOR_RESET());
+    } else {
+        sb_append(sb, " | ");
+        sb_append(sb, make_caret(col, length));
+    }
+    sb_append(sb, "\n");
+
+    sb_build(sb)
+}
+
+// Simplified error formatting when we only have a message (no source location)
+fn format_simple_error(code: i64, message: i64) -> i64 {
+    let sb: i64 = sb_new();
+    let use_color: i64 = term_supports_color();
+
+    if use_color == 1 {
+        sb_append(sb, COLOR_BOLD_RED());
+        sb_append(sb, "error");
+        sb_append(sb, COLOR_RESET());
+        sb_append(sb, "[");
+        sb_append(sb, COLOR_BOLD_RED());
+        sb_append(sb, format_error_code(code));
+        sb_append(sb, COLOR_RESET());
+        sb_append(sb, "]");
+        sb_append(sb, COLOR_BOLD());
+        sb_append(sb, ": ");
+        sb_append(sb, message);
+        sb_append(sb, COLOR_RESET());
+    } else {
+        sb_append(sb, "error[");
+        sb_append(sb, format_error_code(code));
+        sb_append(sb, "]: ");
+        sb_append(sb, message);
+    }
+
+    sb_build(sb)
+}
+
+// Format a warning message
+fn format_warning(code: i64, file: i64, line: i64, col: i64, length: i64, message: i64, source: i64) -> i64 {
+    let sb: i64 = sb_new();
+    let use_color: i64 = term_supports_color();
+
+    // Warning header
+    if use_color == 1 {
+        sb_append(sb, COLOR_BOLD());
+        sb_append(sb, COLOR_YELLOW());
+        sb_append(sb, "warning");
+        sb_append(sb, COLOR_RESET());
+        sb_append(sb, "[");
+        sb_append(sb, COLOR_YELLOW());
+        sb_append(sb, format_error_code(code));
+        sb_append(sb, COLOR_RESET());
+        sb_append(sb, "]");
+        sb_append(sb, COLOR_BOLD());
+        sb_append(sb, ": ");
+        sb_append(sb, message);
+        sb_append(sb, COLOR_RESET());
+    } else {
+        sb_append(sb, "warning[");
+        sb_append(sb, format_error_code(code));
+        sb_append(sb, "]: ");
+        sb_append(sb, message);
+    }
+    sb_append(sb, "\n");
+
+    // Location and source snippet (same format as error)
+    let line_width: i64 = digit_count(line);
+    sb_append(sb, spaces(line_width));
+    if use_color == 1 {
+        sb_append(sb, COLOR_BOLD_BLUE());
+        sb_append(sb, " --> ");
+        sb_append(sb, COLOR_RESET());
+    } else {
+        sb_append(sb, " --> ");
+    }
+    sb_append(sb, file);
+    sb_append(sb, ":");
+    sb_append_i64(sb, line);
+    sb_append(sb, ":");
+    sb_append_i64(sb, col);
+    sb_append(sb, "\n");
+
+    sb_append(sb, spaces(line_width));
+    if use_color == 1 {
+        sb_append(sb, COLOR_BOLD_BLUE());
+        sb_append(sb, " |\n");
+        sb_append(sb, COLOR_RESET());
+    } else {
+        sb_append(sb, " |\n");
+    }
+
+    if use_color == 1 {
+        sb_append(sb, COLOR_BOLD_BLUE());
+        sb_append_i64(sb, line);
+        sb_append(sb, " | ");
+        sb_append(sb, COLOR_RESET());
+    } else {
+        sb_append_i64(sb, line);
+        sb_append(sb, " | ");
+    }
+    sb_append(sb, get_source_line(source, line));
+    sb_append(sb, "\n");
+
+    sb_append(sb, spaces(line_width));
+    if use_color == 1 {
+        sb_append(sb, COLOR_BOLD_BLUE());
+        sb_append(sb, " | ");
+        sb_append(sb, COLOR_RESET());
+        sb_append(sb, COLOR_YELLOW());
+        sb_append(sb, make_caret(col, length));
+        sb_append(sb, COLOR_RESET());
+    } else {
+        sb_append(sb, " | ");
+        sb_append(sb, make_caret(col, length));
+    }
+    sb_append(sb, "\n");
+
+    sb_build(sb)
+}
+
+// =============================================================================
+// Helper functions for common error messages
+// =============================================================================
+
+// Format "cannot find value `name` in this scope"
+fn error_msg_undefined_var(name: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, "cannot find value `");
+    sb_append(sb, name);
+    sb_append(sb, "` in this scope");
+    sb_build(sb)
+}
+
+// Format "cannot find function `name` in this scope"
+fn error_msg_undefined_fn(name: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, "cannot find function `");
+    sb_append(sb, name);
+    sb_append(sb, "` in this scope");
+    sb_build(sb)
+}
+
+// Format "cannot find struct `name` in this scope"
+fn error_msg_undefined_struct(name: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, "cannot find struct `");
+    sb_append(sb, name);
+    sb_append(sb, "` in this scope");
+    sb_build(sb)
+}
+
+// Format "struct `Type` has no field `name`"
+fn error_msg_undefined_field(struct_name: i64, field_name: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, "struct `");
+    sb_append(sb, struct_name);
+    sb_append(sb, "` has no field `");
+    sb_append(sb, field_name);
+    sb_append(sb, "`");
+    sb_build(sb)
+}
+
+// Format "this function takes N argument(s) but M were supplied"
+fn error_msg_wrong_arg_count(fn_name: i64, expected: i64, found: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, "function `");
+    sb_append(sb, fn_name);
+    sb_append(sb, "` takes ");
+    sb_append_i64(sb, expected);
+    sb_append(sb, " argument");
+    if expected != 1 {
+        sb_append(sb, "s");
+    }
+    sb_append(sb, " but ");
+    sb_append_i64(sb, found);
+    if found == 1 {
+        sb_append(sb, " was");
+    } else {
+        sb_append(sb, " were");
+    }
+    sb_append(sb, " supplied");
+    sb_build(sb)
+}
+
+// Format "generic function `name` takes N type argument(s) but M were supplied"
+fn error_msg_wrong_type_arg_count(fn_name: i64, expected: i64, found: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, "generic function `");
+    sb_append(sb, fn_name);
+    sb_append(sb, "` takes ");
+    sb_append_i64(sb, expected);
+    sb_append(sb, " type argument");
+    if expected != 1 {
+        sb_append(sb, "s");
+    }
+    sb_append(sb, " but ");
+    sb_append_i64(sb, found);
+    if found == 1 {
+        sb_append(sb, " was");
+    } else {
+        sb_append(sb, " were");
+    }
+    sb_append(sb, " supplied");
+    sb_build(sb)
+}
+
+// Format "type `Type` does not implement trait `Trait`"
+fn error_msg_trait_not_impl(type_name: i64, trait_name: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, "type `");
+    sb_append(sb, type_name);
+    sb_append(sb, "` does not implement trait `");
+    sb_append(sb, trait_name);
+    sb_append(sb, "`");
+    sb_build(sb)
+}
+
+// Format "expected `expected`, found `found`"
+fn error_msg_expected_token(expected: i64, found: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, "expected `");
+    sb_append(sb, expected);
+    sb_append(sb, "`, found `");
+    sb_append(sb, found);
+    sb_append(sb, "`");
+    sb_build(sb)
+}
+
+// =============================================================================
+// High-level error reporting functions
+// These are the main interface for reporting errors
+// =============================================================================
+
+// Report an error with full source location
+fn report_error(code: i64, file: i64, line: i64, col: i64, length: i64, message: i64, source: i64) -> i64 {
+    let formatted: i64 = format_error(code, file, line, col, length, message, source);
+    println(formatted);
+    0
+}
+
+// Report an error from a token
+fn report_error_at_token(code: i64, tok: i64, message: i64, file: i64, source: i64) -> i64 {
+    let line: i64 = token_line(tok);
+    let col: i64 = token_col(tok);
+    let text: i64 = token_text(tok);
+    let length: i64 = string_len(text);
+    if length < 1 {
+        length = 1;
+    }
+    report_error(code, file, line, col, length, message, source)
+}
+
+// Report an error with just a message (no location)
+fn report_simple_error(code: i64, message: i64) -> i64 {
+    let formatted: i64 = format_simple_error(code, message);
+    println(formatted);
+    0
+}
+
+// Report a warning with full source location
+fn report_warning(code: i64, file: i64, line: i64, col: i64, length: i64, message: i64, source: i64) -> i64 {
+    let formatted: i64 = format_warning(code, file, line, col, length, message, source);
+    println(formatted);
+    0
+}
+
+// =============================================================================
+// Error summary
+// =============================================================================
+
+// Print error summary at end of compilation
+fn print_error_summary(error_count: i64, warning_count: i64) -> i64 {
+    let sb: i64 = sb_new();
+    let use_color: i64 = term_supports_color();
+
+    if error_count > 0 {
+        if use_color == 1 {
+            sb_append(sb, COLOR_BOLD_RED());
+            sb_append(sb, "error");
+            sb_append(sb, COLOR_RESET());
+        } else {
+            sb_append(sb, "error");
+        }
+        sb_append(sb, ": aborting due to ");
+        sb_append_i64(sb, error_count);
+        sb_append(sb, " previous error");
+        if error_count != 1 {
+            sb_append(sb, "s");
+        }
+        if warning_count > 0 {
+            sb_append(sb, "; ");
+            sb_append_i64(sb, warning_count);
+            sb_append(sb, " warning");
+            if warning_count != 1 {
+                sb_append(sb, "s");
+            }
+            sb_append(sb, " emitted");
+        }
+    } else {
+        if warning_count > 0 {
+            if use_color == 1 {
+                sb_append(sb, COLOR_YELLOW());
+                sb_append(sb, "warning");
+                sb_append(sb, COLOR_RESET());
+            } else {
+                sb_append(sb, "warning");
+            }
+            sb_append(sb, ": ");
+            sb_append_i64(sb, warning_count);
+            sb_append(sb, " warning");
+            if warning_count != 1 {
+                sb_append(sb, "s");
+            }
+            sb_append(sb, " emitted");
+        }
+    }
+
+    if error_count > 0 || warning_count > 0 {
+        println(sb_build(sb));
+    }
+    0
+}

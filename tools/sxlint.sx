@@ -1,0 +1,1500 @@
+// sxlint - Simplex Static Analysis Linter
+// Catches issues beyond compiler errors: unused variables, unreachable code, style issues
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0 - see LICENSE file
+// https://github.com/senuamedia/simplex-lang
+
+fn VERSION() -> i64 { string_from("0.10.0") }
+
+// ========================================
+// Lint Code Definitions
+// ========================================
+
+// Unused variables/imports (L001-L009)
+fn LINT_UNUSED_VAR() -> i64 { 1 }
+fn LINT_UNUSED_IMPORT() -> i64 { 2 }
+fn LINT_UNUSED_PARAM() -> i64 { 3 }
+fn LINT_UNUSED_FN() -> i64 { 4 }
+
+// Unreachable code (L010-L019)
+fn LINT_UNREACHABLE() -> i64 { 10 }
+fn LINT_UNREACHABLE_AFTER_RETURN() -> i64 { 11 }
+fn LINT_UNREACHABLE_AFTER_BREAK() -> i64 { 12 }
+fn LINT_UNREACHABLE_AFTER_CONTINUE() -> i64 { 13 }
+
+// Suspicious patterns (L020-L029)
+fn LINT_ASSIGN_IN_COND() -> i64 { 20 }
+fn LINT_EMPTY_BLOCK() -> i64 { 21 }
+fn LINT_REDUNDANT_COND() -> i64 { 22 }
+fn LINT_SELF_ASSIGN() -> i64 { 23 }
+fn LINT_ALWAYS_TRUE() -> i64 { 24 }
+fn LINT_ALWAYS_FALSE() -> i64 { 25 }
+
+// Style issues (L030-L039)
+fn LINT_NON_SNAKE_CASE_FN() -> i64 { 30 }
+fn LINT_NON_PASCAL_CASE_TYPE() -> i64 { 31 }
+fn LINT_MISSING_PUB_DOC() -> i64 { 32 }
+fn LINT_TODO_COMMENT() -> i64 { 33 }
+fn LINT_LONG_LINE() -> i64 { 34 }
+fn LINT_TRAILING_WHITESPACE() -> i64 { 35 }
+
+// Performance hints (L040-L049)
+fn LINT_STRING_CONCAT_LOOP() -> i64 { 40 }
+fn LINT_UNNECESSARY_CLONE() -> i64 { 41 }
+fn LINT_VEC_IN_LOOP() -> i64 { 42 }
+
+// Severity levels
+fn SEV_WARNING() -> i64 { 0 }
+fn SEV_ERROR() -> i64 { 1 }
+fn SEV_HINT() -> i64 { 2 }
+fn SEV_INFO() -> i64 { 3 }
+
+// ========================================
+// Lint Diagnostic Structure
+// ========================================
+
+// Diagnostic structure
+// Layout: code(0), severity(1), file(2), line(3), col(4), message(5), suggestion(6), source_line(7)
+fn diag_new(code: i64, severity: i64, file: i64, line: i64, col: i64, msg: i64) -> i64 {
+    let d: i64 = malloc(64);
+    store_i64(d, 0, code);
+    store_i64(d, 1, severity);
+    store_ptr(d, 2, file);
+    store_i64(d, 3, line);
+    store_i64(d, 4, col);
+    store_ptr(d, 5, msg);
+    store_ptr(d, 6, string_from(""));  // suggestion
+    store_ptr(d, 7, string_from(""));  // source line
+    d
+}
+
+fn diag_code(d: i64) -> i64 { load_i64(d, 0) }
+fn diag_severity(d: i64) -> i64 { load_i64(d, 1) }
+fn diag_file(d: i64) -> i64 { load_ptr(d, 2) }
+fn diag_line(d: i64) -> i64 { load_i64(d, 3) }
+fn diag_col(d: i64) -> i64 { load_i64(d, 4) }
+fn diag_message(d: i64) -> i64 { load_ptr(d, 5) }
+fn diag_suggestion(d: i64) -> i64 { load_ptr(d, 6) }
+fn diag_source_line(d: i64) -> i64 { load_ptr(d, 7) }
+
+fn diag_set_suggestion(d: i64, s: i64) -> i64 { store_ptr(d, 6, s); 0 }
+fn diag_set_source_line(d: i64, s: i64) -> i64 { store_ptr(d, 7, s); 0 }
+
+fn format_lint_code(code: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, string_from("L"));
+    if code < 10 {
+        sb_append(sb, string_from("00"));
+    } else {
+        if code < 100 {
+            sb_append(sb, string_from("0"));
+        }
+    }
+    sb_append(sb, int_to_string(code));
+    sb_to_string(sb)
+}
+
+fn severity_str(sev: i64) -> i64 {
+    if sev == SEV_ERROR() { return string_from("error"); }
+    if sev == SEV_HINT() { return string_from("hint"); }
+    if sev == SEV_INFO() { return string_from("info"); }
+    string_from("warning")
+}
+
+// ========================================
+// Linter Context
+// ========================================
+
+// Linter state
+// Layout: file(0), source(1), lines(2), diagnostics(3), vars_defined(4), vars_used(5),
+//         imports(6), imports_used(7), fns_defined(8), fns_called(9), current_fn(10),
+//         in_loop(11), after_return(12), config(13)
+fn linter_new(file: i64, source: i64) -> i64 {
+    let ctx: i64 = malloc(112);
+    store_ptr(ctx, 0, file);
+    store_ptr(ctx, 1, source);
+    store_ptr(ctx, 2, string_split(source, string_from("\n")));  // lines
+    store_ptr(ctx, 3, vec_new());   // diagnostics
+    store_ptr(ctx, 4, vec_new());   // vars_defined: vec of (name, line, col, fn_scope)
+    store_ptr(ctx, 5, vec_new());   // vars_used: vec of names
+    store_ptr(ctx, 6, vec_new());   // imports: vec of (path, line)
+    store_ptr(ctx, 7, vec_new());   // imports_used: vec of paths
+    store_ptr(ctx, 8, vec_new());   // fns_defined: vec of (name, line, is_pub)
+    store_ptr(ctx, 9, vec_new());   // fns_called: vec of names
+    store_ptr(ctx, 10, string_from(""));  // current function name
+    store_i64(ctx, 11, 0);          // in_loop depth
+    store_i64(ctx, 12, 0);          // after_return flag
+    store_ptr(ctx, 13, lint_config_new());  // config
+    ctx
+}
+
+fn linter_file(ctx: i64) -> i64 { load_ptr(ctx, 0) }
+fn linter_source(ctx: i64) -> i64 { load_ptr(ctx, 1) }
+fn linter_lines(ctx: i64) -> i64 { load_ptr(ctx, 2) }
+fn linter_diagnostics(ctx: i64) -> i64 { load_ptr(ctx, 3) }
+fn linter_vars_defined(ctx: i64) -> i64 { load_ptr(ctx, 4) }
+fn linter_vars_used(ctx: i64) -> i64 { load_ptr(ctx, 5) }
+fn linter_imports(ctx: i64) -> i64 { load_ptr(ctx, 6) }
+fn linter_imports_used(ctx: i64) -> i64 { load_ptr(ctx, 7) }
+fn linter_fns_defined(ctx: i64) -> i64 { load_ptr(ctx, 8) }
+fn linter_fns_called(ctx: i64) -> i64 { load_ptr(ctx, 9) }
+fn linter_current_fn(ctx: i64) -> i64 { load_ptr(ctx, 10) }
+fn linter_in_loop(ctx: i64) -> i64 { load_i64(ctx, 11) }
+fn linter_after_return(ctx: i64) -> i64 { load_i64(ctx, 12) }
+fn linter_config(ctx: i64) -> i64 { load_ptr(ctx, 13) }
+
+fn linter_set_current_fn(ctx: i64, name: i64) -> i64 { store_ptr(ctx, 10, name); 0 }
+fn linter_set_in_loop(ctx: i64, v: i64) -> i64 { store_i64(ctx, 11, v); 0 }
+fn linter_set_after_return(ctx: i64, v: i64) -> i64 { store_i64(ctx, 12, v); 0 }
+
+fn linter_get_line(ctx: i64, line_num: i64) -> i64 {
+    let lines: i64 = linter_lines(ctx);
+    if line_num < 1 { return string_from(""); }
+    if line_num > vec_len(lines) { return string_from(""); }
+    vec_get(lines, line_num - 1)
+}
+
+fn linter_add_diag(ctx: i64, d: i64) -> i64 {
+    let diags: i64 = linter_diagnostics(ctx);
+    vec_push(diags, d);
+    0
+}
+
+fn linter_report(ctx: i64, code: i64, sev: i64, line: i64, col: i64, msg: i64) -> i64 {
+    let d: i64 = diag_new(code, sev, linter_file(ctx), line, col, msg);
+    diag_set_source_line(d, linter_get_line(ctx, line));
+    linter_add_diag(ctx, d);
+    0
+}
+
+fn linter_report_with_suggestion(ctx: i64, code: i64, sev: i64, line: i64, col: i64, msg: i64, suggestion: i64) -> i64 {
+    let d: i64 = diag_new(code, sev, linter_file(ctx), line, col, msg);
+    diag_set_source_line(d, linter_get_line(ctx, line));
+    diag_set_suggestion(d, suggestion);
+    linter_add_diag(ctx, d);
+    0
+}
+
+// ========================================
+// Lint Configuration
+// ========================================
+
+// Config: which lints are enabled
+// Layout: check_unused(0), check_unreachable(1), check_suspicious(2),
+//         check_style(3), check_perf(4), max_line_len(5)
+fn lint_config_new() -> i64 {
+    let cfg: i64 = malloc(48);
+    store_i64(cfg, 0, 1);    // check_unused
+    store_i64(cfg, 1, 1);    // check_unreachable
+    store_i64(cfg, 2, 1);    // check_suspicious
+    store_i64(cfg, 3, 1);    // check_style
+    store_i64(cfg, 4, 1);    // check_perf
+    store_i64(cfg, 5, 120);  // max_line_len
+    cfg
+}
+
+fn config_check_unused(cfg: i64) -> i64 { load_i64(cfg, 0) }
+fn config_check_unreachable(cfg: i64) -> i64 { load_i64(cfg, 1) }
+fn config_check_suspicious(cfg: i64) -> i64 { load_i64(cfg, 2) }
+fn config_check_style(cfg: i64) -> i64 { load_i64(cfg, 3) }
+fn config_check_perf(cfg: i64) -> i64 { load_i64(cfg, 4) }
+fn config_max_line_len(cfg: i64) -> i64 { load_i64(cfg, 5) }
+
+fn config_set_check_unused(cfg: i64, v: i64) -> i64 { store_i64(cfg, 0, v); 0 }
+fn config_set_check_unreachable(cfg: i64, v: i64) -> i64 { store_i64(cfg, 1, v); 0 }
+fn config_set_check_suspicious(cfg: i64, v: i64) -> i64 { store_i64(cfg, 2, v); 0 }
+fn config_set_check_style(cfg: i64, v: i64) -> i64 { store_i64(cfg, 3, v); 0 }
+fn config_set_check_perf(cfg: i64, v: i64) -> i64 { store_i64(cfg, 4, v); 0 }
+fn config_set_max_line_len(cfg: i64, v: i64) -> i64 { store_i64(cfg, 5, v); 0 }
+
+// ========================================
+// Variable Tracking
+// ========================================
+
+// Variable definition entry
+// Layout: name(0), line(1), col(2), fn_scope(3), is_param(4)
+fn var_def_new(name: i64, line: i64, col: i64, fn_scope: i64, is_param: i64) -> i64 {
+    let v: i64 = malloc(40);
+    store_ptr(v, 0, name);
+    store_i64(v, 1, line);
+    store_i64(v, 2, col);
+    store_ptr(v, 3, fn_scope);
+    store_i64(v, 4, is_param);
+    v
+}
+
+fn var_def_name(v: i64) -> i64 { load_ptr(v, 0) }
+fn var_def_line(v: i64) -> i64 { load_i64(v, 1) }
+fn var_def_col(v: i64) -> i64 { load_i64(v, 2) }
+fn var_def_fn_scope(v: i64) -> i64 { load_ptr(v, 3) }
+fn var_def_is_param(v: i64) -> i64 { load_i64(v, 4) }
+
+fn linter_define_var(ctx: i64, name: i64, line: i64, col: i64, is_param: i64) -> i64 {
+    // Skip underscore-prefixed variables (intentionally unused)
+    if string_len(name) > 0 {
+        if string_char_at(name, 0) == 95 {  // '_'
+            return 0;
+        }
+    }
+    let vars: i64 = linter_vars_defined(ctx);
+    let fn_scope: i64 = linter_current_fn(ctx);
+    let v: i64 = var_def_new(name, line, col, fn_scope, is_param);
+    vec_push(vars, v);
+    0
+}
+
+fn linter_use_var(ctx: i64, name: i64) -> i64 {
+    let used: i64 = linter_vars_used(ctx);
+    vec_push(used, name);
+    0
+}
+
+fn linter_is_var_used(ctx: i64, name: i64) -> i64 {
+    let used: i64 = linter_vars_used(ctx);
+    let n: i64 = vec_len(used);
+    var i: i64 = 0;
+    while i < n {
+        let u: i64 = vec_get(used, i);
+        if string_eq(u, name) {
+            return 1;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+// ========================================
+// Import Tracking
+// ========================================
+
+// Import entry: path(0), line(1)
+fn import_entry_new(path: i64, line: i64) -> i64 {
+    let e: i64 = malloc(16);
+    store_ptr(e, 0, path);
+    store_i64(e, 1, line);
+    e
+}
+
+fn import_entry_path(e: i64) -> i64 { load_ptr(e, 0) }
+fn import_entry_line(e: i64) -> i64 { load_i64(e, 1) }
+
+fn linter_add_import(ctx: i64, path: i64, line: i64) -> i64 {
+    let imports: i64 = linter_imports(ctx);
+    let e: i64 = import_entry_new(path, line);
+    vec_push(imports, e);
+    0
+}
+
+fn linter_use_import(ctx: i64, path: i64) -> i64 {
+    let used: i64 = linter_imports_used(ctx);
+    vec_push(used, path);
+    0
+}
+
+fn linter_is_import_used(ctx: i64, path: i64) -> i64 {
+    let used: i64 = linter_imports_used(ctx);
+    let n: i64 = vec_len(used);
+    var i: i64 = 0;
+    while i < n {
+        let u: i64 = vec_get(used, i);
+        if string_eq(u, path) {
+            return 1;
+        }
+        // Also check if path starts with the import
+        if string_starts_with(path, u) {
+            return 1;
+        }
+        if string_starts_with(u, path) {
+            return 1;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+// ========================================
+// Function Tracking
+// ========================================
+
+// Function entry: name(0), line(1), is_pub(2), has_doc(3)
+fn fn_entry_new(name: i64, line: i64, is_pub: i64, has_doc: i64) -> i64 {
+    let e: i64 = malloc(32);
+    store_ptr(e, 0, name);
+    store_i64(e, 1, line);
+    store_i64(e, 2, is_pub);
+    store_i64(e, 3, has_doc);
+    e
+}
+
+fn fn_entry_name(e: i64) -> i64 { load_ptr(e, 0) }
+fn fn_entry_line(e: i64) -> i64 { load_i64(e, 1) }
+fn fn_entry_is_pub(e: i64) -> i64 { load_i64(e, 2) }
+fn fn_entry_has_doc(e: i64) -> i64 { load_i64(e, 3) }
+
+fn linter_define_fn(ctx: i64, name: i64, line: i64, is_pub: i64, has_doc: i64) -> i64 {
+    let fns: i64 = linter_fns_defined(ctx);
+    let e: i64 = fn_entry_new(name, line, is_pub, has_doc);
+    vec_push(fns, e);
+    0
+}
+
+fn linter_call_fn(ctx: i64, name: i64) -> i64 {
+    let called: i64 = linter_fns_called(ctx);
+    vec_push(called, name);
+    0
+}
+
+// ========================================
+// Style Checking Utilities
+// ========================================
+
+fn is_lowercase(c: i64) -> i64 {
+    if c >= 97 {  // 'a'
+        if c <= 122 {  // 'z'
+            return 1;
+        }
+    }
+    0
+}
+
+fn is_uppercase(c: i64) -> i64 {
+    if c >= 65 {  // 'A'
+        if c <= 90 {  // 'Z'
+            return 1;
+        }
+    }
+    0
+}
+
+fn is_digit(c: i64) -> i64 {
+    if c >= 48 {  // '0'
+        if c <= 57 {  // '9'
+            return 1;
+        }
+    }
+    0
+}
+
+// Check if name is snake_case (lowercase, underscores, digits)
+fn is_snake_case(name: i64) -> i64 {
+    let len: i64 = string_len(name);
+    if len == 0 { return 1; }
+
+    var i: i64 = 0;
+    while i < len {
+        let c: i64 = string_char_at(name, i);
+        if is_lowercase(c) == 0 {
+            if c != 95 {  // '_'
+                if is_digit(c) == 0 {
+                    return 0;
+                }
+            }
+        }
+        i = i + 1;
+    }
+    1
+}
+
+// Check if name is PascalCase (starts with uppercase)
+fn is_pascal_case(name: i64) -> i64 {
+    let len: i64 = string_len(name);
+    if len == 0 { return 1; }
+
+    let first: i64 = string_char_at(name, 0);
+    if is_uppercase(first) == 0 {
+        return 0;
+    }
+
+    // Check no underscores
+    var i: i64 = 1;
+    while i < len {
+        let c: i64 = string_char_at(name, i);
+        if c == 95 {  // '_'
+            return 0;
+        }
+        i = i + 1;
+    }
+    1
+}
+
+// ========================================
+// Source-Level Linting (Line by Line)
+// ========================================
+
+fn lint_source_lines(ctx: i64) -> i64 {
+    let cfg: i64 = linter_config(ctx);
+    let lines: i64 = linter_lines(ctx);
+    let n: i64 = vec_len(lines);
+    var i: i64 = 0;
+    var prev_line_doc: i64 = 0;  // Track if previous line was a doc comment
+
+    while i < n {
+        let line: i64 = vec_get(lines, i);
+        let line_num: i64 = i + 1;
+        let len: i64 = string_len(line);
+
+        // Check line length
+        if config_check_style(cfg) != 0 {
+            let max_len: i64 = config_max_line_len(cfg);
+            if len > max_len {
+                var msg: i64 = string_concat(string_from("line exceeds "), int_to_string(max_len));
+                msg = string_concat(msg, string_from(" characters ("));
+                msg = string_concat(msg, int_to_string(len));
+                msg = string_concat(msg, string_from(")"));
+                linter_report(ctx, LINT_LONG_LINE(), SEV_WARNING(), line_num, max_len + 1, msg);
+            }
+
+            // Check trailing whitespace
+            if len > 0 {
+                let last_char: i64 = string_char_at(line, len - 1);
+                if last_char == 32 {  // space
+                    linter_report_with_suggestion(ctx, LINT_TRAILING_WHITESPACE(), SEV_HINT(),
+                        line_num, len, string_from("trailing whitespace"),
+                        string_from("remove trailing spaces"));
+                }
+                if last_char == 9 {  // tab
+                    linter_report_with_suggestion(ctx, LINT_TRAILING_WHITESPACE(), SEV_HINT(),
+                        line_num, len, string_from("trailing tab"),
+                        string_from("remove trailing tabs"));
+                }
+            }
+        }
+
+        // Check for TODO/FIXME comments
+        let trimmed: i64 = string_trim(line);
+        if string_contains(trimmed, string_from("TODO")) {
+            if string_starts_with(trimmed, string_from("//")) {
+                linter_report(ctx, LINT_TODO_COMMENT(), SEV_INFO(), line_num, 1,
+                    string_from("TODO comment found"));
+            }
+        }
+        if string_contains(trimmed, string_from("FIXME")) {
+            if string_starts_with(trimmed, string_from("//")) {
+                linter_report(ctx, LINT_TODO_COMMENT(), SEV_INFO(), line_num, 1,
+                    string_from("FIXME comment found"));
+            }
+        }
+
+        // Track doc comments for pub items
+        if string_starts_with(trimmed, string_from("///")) {
+            prev_line_doc = 1;
+        } else {
+            // Check for pub items without doc comments
+            if config_check_style(cfg) != 0 {
+                if string_starts_with(trimmed, string_from("pub fn ")) {
+                    if prev_line_doc == 0 {
+                        let fn_name: i64 = extract_fn_name(trimmed);
+                        // Skip main function
+                        if string_eq(fn_name, string_from("main")) == false {
+                            var msg: i64 = string_concat(string_from("public function '"), fn_name);
+                            msg = string_concat(msg, string_from("' is missing documentation"));
+                            linter_report_with_suggestion(ctx, LINT_MISSING_PUB_DOC(), SEV_HINT(),
+                                line_num, 1, msg, string_from("add /// documentation comment above"));
+                        }
+                    }
+                }
+                if string_starts_with(trimmed, string_from("pub struct ")) {
+                    if prev_line_doc == 0 {
+                        linter_report_with_suggestion(ctx, LINT_MISSING_PUB_DOC(), SEV_HINT(),
+                            line_num, 1, string_from("public struct is missing documentation"),
+                            string_from("add /// documentation comment above"));
+                    }
+                }
+                if string_starts_with(trimmed, string_from("pub enum ")) {
+                    if prev_line_doc == 0 {
+                        linter_report_with_suggestion(ctx, LINT_MISSING_PUB_DOC(), SEV_HINT(),
+                            line_num, 1, string_from("public enum is missing documentation"),
+                            string_from("add /// documentation comment above"));
+                    }
+                }
+            }
+            prev_line_doc = 0;
+        }
+
+        // Detect use statements for import tracking
+        if string_starts_with(trimmed, string_from("use ")) {
+            let path: i64 = extract_use_path(trimmed);
+            linter_add_import(ctx, path, line_num);
+        }
+
+        i = i + 1;
+    }
+    0
+}
+
+fn extract_fn_name(line: i64) -> i64 {
+    // Extract function name from "fn name(" or "pub fn name("
+    var start: i64 = 0;
+    if string_starts_with(line, string_from("pub fn ")) {
+        start = 7;
+    } else {
+        if string_starts_with(line, string_from("fn ")) {
+            start = 3;
+        } else {
+            return string_from("");
+        }
+    }
+
+    let len: i64 = string_len(line);
+    var end: i64 = start;
+    while end < len {
+        let c: i64 = string_char_at(line, end);
+        if c == 40 {  // '('
+            return string_slice(line, start, end);
+        }
+        if c == 60 {  // '<' for generics
+            return string_slice(line, start, end);
+        }
+        if c == 32 {  // space
+            return string_slice(line, start, end);
+        }
+        end = end + 1;
+    }
+    string_slice(line, start, len)
+}
+
+fn extract_use_path(line: i64) -> i64 {
+    // Extract path from "use path::to::item;"
+    let start: i64 = 4;  // Skip "use "
+    let len: i64 = string_len(line);
+    var end: i64 = start;
+    while end < len {
+        let c: i64 = string_char_at(line, end);
+        if c == 59 {  // ';'
+            return string_trim(string_slice(line, start, end));
+        }
+        end = end + 1;
+    }
+    string_trim(string_slice(line, start, len))
+}
+
+// ========================================
+// AST-Based Linting
+// ========================================
+
+// Token types (from lexer)
+fn TK_EOF() -> i64 { 0 }
+fn TK_IDENT() -> i64 { 1 }
+fn TK_INT() -> i64 { 2 }
+fn TK_FLOAT() -> i64 { 3 }
+fn TK_STRING() -> i64 { 4 }
+fn TK_LPAREN() -> i64 { 6 }
+fn TK_RPAREN() -> i64 { 7 }
+fn TK_LBRACE() -> i64 { 8 }
+fn TK_RBRACE() -> i64 { 9 }
+fn TK_LBRACKET() -> i64 { 10 }
+fn TK_RBRACKET() -> i64 { 11 }
+fn TK_COMMA() -> i64 { 12 }
+fn TK_COLON() -> i64 { 13 }
+fn TK_SEMI() -> i64 { 14 }
+fn TK_EQ() -> i64 { 27 }
+fn TK_EQEQ() -> i64 { 28 }
+fn TK_KW_FN() -> i64 { 41 }
+fn TK_KW_LET() -> i64 { 42 }
+fn TK_KW_IF() -> i64 { 43 }
+fn TK_KW_WHILE() -> i64 { 45 }
+fn TK_KW_FOR() -> i64 { 46 }
+fn TK_KW_RETURN() -> i64 { 48 }
+fn TK_KW_BREAK() -> i64 { 67 }
+fn TK_KW_CONTINUE() -> i64 { 68 }
+fn TK_KW_PUB() -> i64 { 52 }
+fn TK_KW_TRUE() -> i64 { 50 }
+fn TK_KW_FALSE() -> i64 { 51 }
+fn TK_KW_STRUCT() -> i64 { 53 }
+fn TK_KW_ENUM() -> i64 { 49 }
+fn TK_KW_VAR() -> i64 { 89 }
+
+// Simple token-based linting (without full parser)
+fn lint_tokens(ctx: i64, source: i64) -> i64 {
+    let cfg: i64 = linter_config(ctx);
+    let lines: i64 = linter_lines(ctx);
+    let n: i64 = vec_len(lines);
+    var i: i64 = 0;
+
+    var in_fn: i64 = 0;
+    var fn_name: i64 = string_from("");
+    var brace_depth: i64 = 0;
+    var after_return: i64 = 0;
+    var after_break: i64 = 0;
+    var after_continue: i64 = 0;
+    var in_loop: i64 = 0;
+    var is_pub: i64 = 0;
+    var has_doc: i64 = 0;
+
+    while i < n {
+        let line: i64 = vec_get(lines, i);
+        let line_num: i64 = i + 1;
+        var trimmed: i64 = string_trim(line);
+
+        // Track doc comments
+        if string_starts_with(trimmed, string_from("///")) {
+            has_doc = 1;
+        } else {
+            // Check for function definitions
+            if string_starts_with(trimmed, string_from("pub ")) {
+                is_pub = 1;
+                trimmed = string_trim(string_slice(trimmed, 4, string_len(trimmed)));
+            }
+
+            if string_starts_with(trimmed, string_from("fn ")) {
+                fn_name = extract_fn_name(trimmed);
+                in_fn = 1;
+                after_return = 0;
+                after_break = 0;
+                after_continue = 0;
+
+                // Record function definition
+                linter_define_fn(ctx, fn_name, line_num, is_pub, has_doc);
+                linter_set_current_fn(ctx, fn_name);
+
+                // Check snake_case for function names
+                if config_check_style(cfg) != 0 {
+                    if is_snake_case(fn_name) == 0 {
+                        // Skip special functions like main, VERSION
+                        if string_eq(fn_name, string_from("main")) == false {
+                            if is_uppercase(string_char_at(fn_name, 0)) == 0 {
+                                var msg: i64 = string_concat(string_from("function '"), fn_name);
+                                msg = string_concat(msg, string_from("' should be snake_case"));
+                                linter_report_with_suggestion(ctx, LINT_NON_SNAKE_CASE_FN(), SEV_WARNING(),
+                                    line_num, 4, msg, string_from("rename to use snake_case"));
+                            }
+                        }
+                    }
+                }
+
+                // Extract parameters
+                lint_fn_params(ctx, line, line_num);
+
+                is_pub = 0;
+                has_doc = 0;
+            }
+
+            // Check for struct/enum definitions
+            if string_starts_with(trimmed, string_from("struct ")) {
+                let type_name: i64 = extract_type_name(trimmed, 7);
+                if config_check_style(cfg) != 0 {
+                    if is_pascal_case(type_name) == 0 {
+                        var msg: i64 = string_concat(string_from("struct '"), type_name);
+                        msg = string_concat(msg, string_from("' should be PascalCase"));
+                        linter_report_with_suggestion(ctx, LINT_NON_PASCAL_CASE_TYPE(), SEV_WARNING(),
+                            line_num, 8, msg, string_from("rename to use PascalCase"));
+                    }
+                }
+                is_pub = 0;
+                has_doc = 0;
+            }
+
+            if string_starts_with(trimmed, string_from("enum ")) {
+                let type_name: i64 = extract_type_name(trimmed, 5);
+                if config_check_style(cfg) != 0 {
+                    if is_pascal_case(type_name) == 0 {
+                        var msg: i64 = string_concat(string_from("enum '"), type_name);
+                        msg = string_concat(msg, string_from("' should be PascalCase"));
+                        linter_report_with_suggestion(ctx, LINT_NON_PASCAL_CASE_TYPE(), SEV_WARNING(),
+                            line_num, 6, msg, string_from("rename to use PascalCase"));
+                    }
+                }
+                is_pub = 0;
+                has_doc = 0;
+            }
+
+            // Track brace depth
+            var j: i64 = 0;
+            let line_len: i64 = string_len(line);
+            while j < line_len {
+                let c: i64 = string_char_at(line, j);
+                if c == 123 { brace_depth = brace_depth + 1; }  // '{'
+                if c == 125 { brace_depth = brace_depth - 1; }  // '}'
+                j = j + 1;
+            }
+
+            // Track loops
+            if string_starts_with(trimmed, string_from("while ")) {
+                in_loop = in_loop + 1;
+            }
+            if string_starts_with(trimmed, string_from("for ")) {
+                in_loop = in_loop + 1;
+            }
+
+            // Check for let/var bindings
+            if string_starts_with(trimmed, string_from("let ")) {
+                let var_name: i64 = extract_var_name(trimmed, 4);
+                linter_define_var(ctx, var_name, line_num, 5, 0);
+
+                // Check for unreachable after return/break/continue
+                if config_check_unreachable(cfg) != 0 {
+                    if after_return != 0 {
+                        linter_report(ctx, LINT_UNREACHABLE_AFTER_RETURN(), SEV_WARNING(),
+                            line_num, 1, string_from("unreachable code after return"));
+                    }
+                    if after_break != 0 {
+                        linter_report(ctx, LINT_UNREACHABLE_AFTER_BREAK(), SEV_WARNING(),
+                            line_num, 1, string_from("unreachable code after break"));
+                    }
+                    if after_continue != 0 {
+                        linter_report(ctx, LINT_UNREACHABLE_AFTER_CONTINUE(), SEV_WARNING(),
+                            line_num, 1, string_from("unreachable code after continue"));
+                    }
+                }
+            }
+
+            if string_starts_with(trimmed, string_from("var ")) {
+                let var_name: i64 = extract_var_name(trimmed, 4);
+                linter_define_var(ctx, var_name, line_num, 5, 0);
+            }
+
+            // Check for return/break/continue
+            if string_starts_with(trimmed, string_from("return")) {
+                after_return = 1;
+            }
+            if string_eq(trimmed, string_from("break;")) {
+                after_break = 1;
+            }
+            if string_eq(trimmed, string_from("continue;")) {
+                after_continue = 1;
+            }
+
+            // Check for suspicious patterns
+            if config_check_suspicious(cfg) != 0 {
+                lint_suspicious_patterns(ctx, trimmed, line_num);
+            }
+
+            // Check for performance issues
+            if config_check_perf(cfg) != 0 {
+                if in_loop > 0 {
+                    lint_perf_in_loop(ctx, trimmed, line_num);
+                }
+            }
+
+            // Track variable usage
+            lint_track_var_usage(ctx, line);
+
+            // Track function calls
+            lint_track_fn_calls(ctx, line);
+
+            // Reset flags after braces (simplified)
+            if string_contains(trimmed, string_from("}")) {
+                if in_loop > 0 {
+                    in_loop = in_loop - 1;
+                }
+                // Reset unreachable flags when exiting a block
+                if brace_depth < 2 {
+                    after_return = 0;
+                    after_break = 0;
+                    after_continue = 0;
+                }
+            }
+
+            if string_starts_with(trimmed, string_from("//")) == false {
+                has_doc = 0;
+            }
+        }
+
+        i = i + 1;
+    }
+    0
+}
+
+fn extract_type_name(line: i64, start: i64) -> i64 {
+    let len: i64 = string_len(line);
+    var end: i64 = start;
+    while end < len {
+        let c: i64 = string_char_at(line, end);
+        if c == 32 { return string_slice(line, start, end); }  // space
+        if c == 123 { return string_slice(line, start, end); }  // '{'
+        if c == 60 { return string_slice(line, start, end); }   // '<'
+        end = end + 1;
+    }
+    string_slice(line, start, len)
+}
+
+fn extract_var_name(line: i64, start: i64) -> i64 {
+    let len: i64 = string_len(line);
+    var end: i64 = start;
+    while end < len {
+        let c: i64 = string_char_at(line, end);
+        if c == 58 { return string_trim(string_slice(line, start, end)); }  // ':'
+        if c == 61 { return string_trim(string_slice(line, start, end)); }  // '='
+        if c == 59 { return string_trim(string_slice(line, start, end)); }  // ';'
+        end = end + 1;
+    }
+    string_trim(string_slice(line, start, len))
+}
+
+fn lint_fn_params(ctx: i64, line: i64, line_num: i64) -> i64 {
+    // Extract parameters from function signature
+    let paren_start: i64 = string_find(line, string_from("("), 0);
+    if paren_start < 0 { return 0; }
+
+    let paren_end: i64 = string_find(line, string_from(")"), paren_start);
+    if paren_end < 0 { return 0; }
+
+    let params_str: i64 = string_slice(line, paren_start + 1, paren_end);
+    if string_len(string_trim(params_str)) == 0 { return 0; }
+
+    // Split by comma and extract param names
+    let params: i64 = string_split(params_str, string_from(","));
+    let n: i64 = vec_len(params);
+    var i: i64 = 0;
+    while i < n {
+        let param: i64 = string_trim(vec_get(params, i));
+        let colon_pos: i64 = string_find(param, string_from(":"), 0);
+        if colon_pos > 0 {
+            let param_name: i64 = string_trim(string_slice(param, 0, colon_pos));
+            // Skip 'self' parameter
+            if string_eq(param_name, string_from("self")) == false {
+                linter_define_var(ctx, param_name, line_num, paren_start + 2, 1);
+            }
+        }
+        i = i + 1;
+    }
+    0
+}
+
+fn lint_suspicious_patterns(ctx: i64, line: i64, line_num: i64) -> i64 {
+    // Check for assignment in condition: if x = y
+    if string_starts_with(line, string_from("if ")) {
+        let cond_start: i64 = 3;
+        let cond_end: i64 = string_find(line, string_from("{"), 0);
+        if cond_end < 0 { cond_end = string_len(line); }
+        let cond: i64 = string_slice(line, cond_start, cond_end);
+
+        // Look for single = that's not == or !=
+        let eq_pos: i64 = string_find(cond, string_from("="), 0);
+        if eq_pos > 0 {
+            let before: i64 = string_char_at(cond, eq_pos - 1);
+            let after_pos: i64 = eq_pos + 1;
+            var after: i64 = 0;
+            if after_pos < string_len(cond) {
+                after = string_char_at(cond, after_pos);
+            }
+            // Not ==, !=, <=, >=
+            if before != 61 {  // '='
+                if before != 33 {  // '!'
+                    if before != 60 {  // '<'
+                        if before != 62 {  // '>'
+                            if after != 61 {
+                                linter_report_with_suggestion(ctx, LINT_ASSIGN_IN_COND(), SEV_WARNING(),
+                                    line_num, cond_start + eq_pos + 1,
+                                    string_from("possible assignment in condition (use == for comparison)"),
+                                    string_from("use '==' instead of '='"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check for redundant conditions: if true, if false
+        let trimmed_cond: i64 = string_trim(cond);
+        if string_eq(trimmed_cond, string_from("true")) {
+            linter_report_with_suggestion(ctx, LINT_ALWAYS_TRUE(), SEV_WARNING(),
+                line_num, cond_start + 1, string_from("condition is always true"),
+                string_from("remove the if statement or the condition"));
+        }
+        if string_eq(trimmed_cond, string_from("false")) {
+            linter_report_with_suggestion(ctx, LINT_ALWAYS_FALSE(), SEV_WARNING(),
+                line_num, cond_start + 1, string_from("condition is always false"),
+                string_from("remove the unreachable code block"));
+        }
+    }
+
+    // Check for empty blocks: if x { }
+    if string_contains(line, string_from("{ }")) {
+        linter_report_with_suggestion(ctx, LINT_EMPTY_BLOCK(), SEV_WARNING(),
+            line_num, string_find(line, string_from("{ }"), 0) + 1,
+            string_from("empty block"),
+            string_from("add a comment or remove the empty block"));
+    }
+    if string_contains(line, string_from("{}")) {
+        // Allow empty struct/enum definitions
+        if string_contains(line, string_from("struct ")) == false {
+            if string_contains(line, string_from("enum ")) == false {
+                linter_report_with_suggestion(ctx, LINT_EMPTY_BLOCK(), SEV_WARNING(),
+                    line_num, string_find(line, string_from("{}"), 0) + 1,
+                    string_from("empty block"),
+                    string_from("add a comment or remove the empty block"));
+            }
+        }
+    }
+
+    0
+}
+
+fn lint_perf_in_loop(ctx: i64, line: i64, line_num: i64) -> i64 {
+    // Check for string concatenation in loop
+    if string_contains(line, string_from("string_concat")) {
+        linter_report_with_suggestion(ctx, LINT_STRING_CONCAT_LOOP(), SEV_HINT(),
+            line_num, string_find(line, string_from("string_concat"), 0) + 1,
+            string_from("string concatenation in loop may be inefficient"),
+            string_from("consider using sb_new() and sb_append() instead"));
+    }
+
+    // Check for vec_new in loop
+    if string_contains(line, string_from("vec_new()")) {
+        linter_report_with_suggestion(ctx, LINT_VEC_IN_LOOP(), SEV_HINT(),
+            line_num, string_find(line, string_from("vec_new"), 0) + 1,
+            string_from("creating new vector in loop may be inefficient"),
+            string_from("consider moving vec_new() outside the loop"));
+    }
+
+    0
+}
+
+fn lint_track_var_usage(ctx: i64, line: i64) -> i64 {
+    // Simple variable usage tracking - look for identifiers
+    let len: i64 = string_len(line);
+    var i: i64 = 0;
+    var in_ident: i64 = 0;
+    var ident_start: i64 = 0;
+
+    while i < len {
+        let c: i64 = string_char_at(line, i);
+
+        // Check if start of identifier
+        if in_ident == 0 {
+            if is_lowercase(c) != 0 {
+                in_ident = 1;
+                ident_start = i;
+            } else {
+                if is_uppercase(c) != 0 {
+                    in_ident = 1;
+                    ident_start = i;
+                } else {
+                    if c == 95 {  // '_'
+                        in_ident = 1;
+                        ident_start = i;
+                    }
+                }
+            }
+        } else {
+            // Check if end of identifier
+            if is_lowercase(c) == 0 {
+                if is_uppercase(c) == 0 {
+                    if is_digit(c) == 0 {
+                        if c != 95 {
+                            // End of identifier
+                            let ident: i64 = string_slice(line, ident_start, i);
+                            // Skip keywords
+                            if is_keyword(ident) == 0 {
+                                linter_use_var(ctx, ident);
+                            }
+                            in_ident = 0;
+                        }
+                    }
+                }
+            }
+        }
+
+        i = i + 1;
+    }
+
+    // Handle identifier at end of line
+    if in_ident != 0 {
+        let ident: i64 = string_slice(line, ident_start, len);
+        if is_keyword(ident) == 0 {
+            linter_use_var(ctx, ident);
+        }
+    }
+
+    0
+}
+
+fn lint_track_fn_calls(ctx: i64, line: i64) -> i64 {
+    // Look for function calls: name(
+    let len: i64 = string_len(line);
+    var i: i64 = 0;
+
+    while i < len {
+        let c: i64 = string_char_at(line, i);
+        if c == 40 {  // '('
+            // Find start of identifier
+            var j: i64 = i - 1;
+            while j >= 0 {
+                let pc: i64 = string_char_at(line, j);
+                if is_lowercase(pc) == 0 {
+                    if is_uppercase(pc) == 0 {
+                        if is_digit(pc) == 0 {
+                            if pc != 95 {
+                                j = j + 1;
+                                j = -2;  // break with offset
+                            }
+                        }
+                    }
+                }
+                if j >= 0 { j = j - 1; }
+            }
+            if j == -2 { j = j + 2; }
+            if j < 0 { j = 0; }
+            if j < i {
+                let fn_name: i64 = string_slice(line, j, i);
+                if string_len(fn_name) > 0 {
+                    if is_keyword(fn_name) == 0 {
+                        linter_call_fn(ctx, fn_name);
+                        // Mark as import used if it contains ::
+                        if string_contains(fn_name, string_from("::")) {
+                            linter_use_import(ctx, fn_name);
+                        }
+                    }
+                }
+            }
+        }
+        i = i + 1;
+    }
+    0
+}
+
+fn is_keyword(name: i64) -> i64 {
+    if string_eq(name, string_from("fn")) { return 1; }
+    if string_eq(name, string_from("let")) { return 1; }
+    if string_eq(name, string_from("var")) { return 1; }
+    if string_eq(name, string_from("if")) { return 1; }
+    if string_eq(name, string_from("else")) { return 1; }
+    if string_eq(name, string_from("while")) { return 1; }
+    if string_eq(name, string_from("for")) { return 1; }
+    if string_eq(name, string_from("in")) { return 1; }
+    if string_eq(name, string_from("return")) { return 1; }
+    if string_eq(name, string_from("break")) { return 1; }
+    if string_eq(name, string_from("continue")) { return 1; }
+    if string_eq(name, string_from("true")) { return 1; }
+    if string_eq(name, string_from("false")) { return 1; }
+    if string_eq(name, string_from("struct")) { return 1; }
+    if string_eq(name, string_from("enum")) { return 1; }
+    if string_eq(name, string_from("impl")) { return 1; }
+    if string_eq(name, string_from("trait")) { return 1; }
+    if string_eq(name, string_from("pub")) { return 1; }
+    if string_eq(name, string_from("use")) { return 1; }
+    if string_eq(name, string_from("mod")) { return 1; }
+    if string_eq(name, string_from("self")) { return 1; }
+    if string_eq(name, string_from("match")) { return 1; }
+    if string_eq(name, string_from("type")) { return 1; }
+    if string_eq(name, string_from("const")) { return 1; }
+    if string_eq(name, string_from("async")) { return 1; }
+    if string_eq(name, string_from("await")) { return 1; }
+    0
+}
+
+// ========================================
+// Post-Analysis Checks
+// ========================================
+
+fn lint_check_unused(ctx: i64) -> i64 {
+    let cfg: i64 = linter_config(ctx);
+    if config_check_unused(cfg) == 0 { return 0; }
+
+    // Check unused variables
+    let vars: i64 = linter_vars_defined(ctx);
+    var n: i64 = vec_len(vars);
+    var i: i64 = 0;
+    while i < n {
+        let v: i64 = vec_get(vars, i);
+        let name: i64 = var_def_name(v);
+        let line: i64 = var_def_line(v);
+        let col: i64 = var_def_col(v);
+        let is_param: i64 = var_def_is_param(v);
+
+        if linter_is_var_used(ctx, name) == 0 {
+            var msg: i64 = string_concat(string_from("unused variable '"), name);
+            msg = string_concat(msg, string_from("'"));
+            var code: i64 = LINT_UNUSED_VAR();
+            if is_param != 0 {
+                code = LINT_UNUSED_PARAM();
+                msg = string_concat(string_from("unused parameter '"), name);
+                msg = string_concat(msg, string_from("'"));
+            }
+            linter_report_with_suggestion(ctx, code, SEV_WARNING(), line, col, msg,
+                string_from("prefix with '_' to silence or remove if not needed"));
+        }
+        i = i + 1;
+    }
+
+    // Check unused imports
+    let imports: i64 = linter_imports(ctx);
+    n = vec_len(imports);
+    i = 0;
+    while i < n {
+        let imp: i64 = vec_get(imports, i);
+        let path: i64 = import_entry_path(imp);
+        let line: i64 = import_entry_line(imp);
+
+        if linter_is_import_used(ctx, path) == 0 {
+            var msg: i64 = string_concat(string_from("unused import '"), path);
+            msg = string_concat(msg, string_from("'"));
+            linter_report_with_suggestion(ctx, LINT_UNUSED_IMPORT(), SEV_WARNING(), line, 1, msg,
+                string_from("remove the unused import"));
+        }
+        i = i + 1;
+    }
+
+    0
+}
+
+// ========================================
+// Output Formatting
+// ========================================
+
+fn format_diagnostic(d: i64) -> i64 {
+    let sb: i64 = sb_new();
+
+    // file:line:col: severity[code]: message
+    sb_append(sb, diag_file(d));
+    sb_append(sb, string_from(":"));
+    sb_append(sb, int_to_string(diag_line(d)));
+    sb_append(sb, string_from(":"));
+    sb_append(sb, int_to_string(diag_col(d)));
+    sb_append(sb, string_from(": "));
+    sb_append(sb, severity_str(diag_severity(d)));
+    sb_append(sb, string_from("["));
+    sb_append(sb, format_lint_code(diag_code(d)));
+    sb_append(sb, string_from("]: "));
+    sb_append(sb, diag_message(d));
+    sb_append(sb, string_from("\n"));
+
+    // Source line with caret
+    let source_line: i64 = diag_source_line(d);
+    if string_len(source_line) > 0 {
+        let line_num: i64 = diag_line(d);
+        let col: i64 = diag_col(d);
+
+        // Line number prefix
+        let line_str: i64 = int_to_string(line_num);
+        let pad_len: i64 = 4 - string_len(line_str);
+        var pad: i64 = 0;
+        while pad < pad_len {
+            sb_append(sb, string_from(" "));
+            pad = pad + 1;
+        }
+        sb_append(sb, string_from(" |\n"));
+
+        // Source line
+        pad = 0;
+        while pad < pad_len {
+            sb_append(sb, string_from(" "));
+            pad = pad + 1;
+        }
+        sb_append(sb, line_str);
+        sb_append(sb, string_from(" | "));
+        sb_append(sb, source_line);
+        sb_append(sb, string_from("\n"));
+
+        // Caret line
+        pad = 0;
+        while pad < pad_len {
+            sb_append(sb, string_from(" "));
+            pad = pad + 1;
+        }
+        sb_append(sb, string_from(" | "));
+        var caret_pad: i64 = 0;
+        while caret_pad < col - 1 {
+            sb_append(sb, string_from(" "));
+            caret_pad = caret_pad + 1;
+        }
+        sb_append(sb, string_from("^"));
+
+        // Add suggestion if present
+        let suggestion: i64 = diag_suggestion(d);
+        if string_len(suggestion) > 0 {
+            sb_append(sb, string_from(" "));
+            sb_append(sb, suggestion);
+        }
+        sb_append(sb, string_from("\n"));
+    }
+
+    sb_to_string(sb)
+}
+
+fn print_diagnostics(ctx: i64) -> i64 {
+    let diags: i64 = linter_diagnostics(ctx);
+    let n: i64 = vec_len(diags);
+    var i: i64 = 0;
+
+    while i < n {
+        let d: i64 = vec_get(diags, i);
+        let output: i64 = format_diagnostic(d);
+        print(output);
+        i = i + 1;
+    }
+
+    n
+}
+
+fn print_summary(ctx: i64) -> i64 {
+    let diags: i64 = linter_diagnostics(ctx);
+    let total: i64 = vec_len(diags);
+
+    var warnings: i64 = 0;
+    var errors: i64 = 0;
+    var hints: i64 = 0;
+
+    var i: i64 = 0;
+    while i < total {
+        let d: i64 = vec_get(diags, i);
+        let sev: i64 = diag_severity(d);
+        if sev == SEV_WARNING() { warnings = warnings + 1; }
+        if sev == SEV_ERROR() { errors = errors + 1; }
+        if sev == SEV_HINT() { hints = hints + 1; }
+        i = i + 1;
+    }
+
+    if total > 0 {
+        println("");
+        let sb: i64 = sb_new();
+        sb_append(sb, string_from("sxlint: "));
+        if errors > 0 {
+            sb_append(sb, int_to_string(errors));
+            sb_append(sb, string_from(" error(s), "));
+        }
+        sb_append(sb, int_to_string(warnings));
+        sb_append(sb, string_from(" warning(s), "));
+        sb_append(sb, int_to_string(hints));
+        sb_append(sb, string_from(" hint(s)"));
+        println(sb_to_string(sb));
+    } else {
+        println("sxlint: no issues found");
+    }
+
+    errors
+}
+
+// ========================================
+// Main Linting Function
+// ========================================
+
+fn lint_file(path: i64, config: i64) -> i64 {
+    let source: i64 = read_file(path);
+    if source == 0 {
+        println(string_concat(string_from("Error: Could not read file: "), path));
+        return 1;
+    }
+
+    let ctx: i64 = linter_new(path, source);
+
+    // Apply config if provided
+    if config != 0 {
+        store_ptr(ctx, 13, config);
+    }
+
+    // Run source-level linting
+    lint_source_lines(ctx);
+
+    // Run token-based linting
+    lint_tokens(ctx, source);
+
+    // Post-analysis checks
+    lint_check_unused(ctx);
+
+    // Output results
+    let count: i64 = print_diagnostics(ctx);
+
+    count
+}
+
+// ========================================
+// CLI Interface
+// ========================================
+
+fn show_help() -> i64 {
+    println("sxlint - Simplex Static Analysis Linter");
+    println("");
+    println("USAGE:");
+    println("    sxlint [OPTIONS] <FILES...>");
+    println("");
+    println("OPTIONS:");
+    println("    -W <lint>       Enable specific lint (e.g., -W unused)");
+    println("    -A <lint>       Disable specific lint (e.g., -A style)");
+    println("    --all           Enable all lints");
+    println("    --no-style      Disable style checks");
+    println("    --no-perf       Disable performance hints");
+    println("    --max-line <n>  Set max line length (default: 120)");
+    println("    -q, --quiet     Only show errors and warnings");
+    println("    -h, --help      Show this help");
+    println("    --version       Show version");
+    println("");
+    println("LINT CATEGORIES:");
+    println("    unused          Unused variables, imports, parameters");
+    println("    unreachable     Unreachable code detection");
+    println("    suspicious      Suspicious patterns (assignment in condition, etc.)");
+    println("    style           Style issues (naming conventions, docs)");
+    println("    perf            Performance hints");
+    println("");
+    println("EXAMPLES:");
+    println("    sxlint src/main.sx              Lint a single file");
+    println("    sxlint src/*.sx                 Lint multiple files");
+    println("    sxlint -A style src/main.sx    Lint without style checks");
+    0
+}
+
+fn show_version() -> i64 {
+    println(string_concat(string_from("sxlint "), VERSION()));
+    0
+}
+
+fn main() -> i64 {
+    let args: i64 = get_args();
+    let argc: i64 = vec_len(args);
+
+    if argc < 2 {
+        show_help();
+        return 1;
+    }
+
+    let config: i64 = lint_config_new();
+    let files: i64 = vec_new();
+    var quiet: i64 = 0;
+    var i: i64 = 1;
+
+    while i < argc {
+        let arg: i64 = vec_get(args, i);
+
+        if string_eq(arg, string_from("-h")) {
+            show_help();
+            return 0;
+        }
+        if string_eq(arg, string_from("--help")) {
+            show_help();
+            return 0;
+        }
+        if string_eq(arg, string_from("--version")) {
+            show_version();
+            return 0;
+        }
+        if string_eq(arg, string_from("-q")) {
+            quiet = 1;
+            i = i + 1;
+        } else {
+        if string_eq(arg, string_from("--quiet")) {
+            quiet = 1;
+            i = i + 1;
+        } else {
+        if string_eq(arg, string_from("--no-style")) {
+            config_set_check_style(config, 0);
+            i = i + 1;
+        } else {
+        if string_eq(arg, string_from("--no-perf")) {
+            config_set_check_perf(config, 0);
+            i = i + 1;
+        } else {
+        if string_eq(arg, string_from("--all")) {
+            config_set_check_unused(config, 1);
+            config_set_check_unreachable(config, 1);
+            config_set_check_suspicious(config, 1);
+            config_set_check_style(config, 1);
+            config_set_check_perf(config, 1);
+            i = i + 1;
+        } else {
+        if string_eq(arg, string_from("--max-line")) {
+            if i + 1 < argc {
+                i = i + 1;
+                let max_len: i64 = string_to_int(vec_get(args, i));
+                config_set_max_line_len(config, max_len);
+            }
+            i = i + 1;
+        } else {
+        if string_eq(arg, string_from("-W")) {
+            if i + 1 < argc {
+                i = i + 1;
+                let lint: i64 = vec_get(args, i);
+                if string_eq(lint, string_from("unused")) { config_set_check_unused(config, 1); }
+                if string_eq(lint, string_from("unreachable")) { config_set_check_unreachable(config, 1); }
+                if string_eq(lint, string_from("suspicious")) { config_set_check_suspicious(config, 1); }
+                if string_eq(lint, string_from("style")) { config_set_check_style(config, 1); }
+                if string_eq(lint, string_from("perf")) { config_set_check_perf(config, 1); }
+            }
+            i = i + 1;
+        } else {
+        if string_eq(arg, string_from("-A")) {
+            if i + 1 < argc {
+                i = i + 1;
+                let lint: i64 = vec_get(args, i);
+                if string_eq(lint, string_from("unused")) { config_set_check_unused(config, 0); }
+                if string_eq(lint, string_from("unreachable")) { config_set_check_unreachable(config, 0); }
+                if string_eq(lint, string_from("suspicious")) { config_set_check_suspicious(config, 0); }
+                if string_eq(lint, string_from("style")) { config_set_check_style(config, 0); }
+                if string_eq(lint, string_from("perf")) { config_set_check_perf(config, 0); }
+            }
+            i = i + 1;
+        } else {
+            // Assume it's a file
+            vec_push(files, arg);
+            i = i + 1;
+        }
+        }
+        }
+        }
+        }
+        }
+        }
+        }
+    }
+
+    if vec_len(files) == 0 {
+        println("Error: No input files specified");
+        return 1;
+    }
+
+    var total_issues: i64 = 0;
+    var total_errors: i64 = 0;
+
+    // Lint each file
+    i = 0;
+    while i < vec_len(files) {
+        let path: i64 = vec_get(files, i);
+
+        // Create context for this file
+        let source: i64 = read_file(path);
+        if source == 0 {
+            println(string_concat(string_from("Error: Could not read file: "), path));
+            i = i + 1;
+        } else {
+            let ctx: i64 = linter_new(path, source);
+            store_ptr(ctx, 13, config);
+
+            // Run all linting passes
+            lint_source_lines(ctx);
+            lint_tokens(ctx, source);
+            lint_check_unused(ctx);
+
+            // Print diagnostics
+            let count: i64 = print_diagnostics(ctx);
+            total_issues = total_issues + count;
+
+            // Count errors for exit code
+            let diags: i64 = linter_diagnostics(ctx);
+            var j: i64 = 0;
+            while j < vec_len(diags) {
+                let d: i64 = vec_get(diags, j);
+                if diag_severity(d) == SEV_ERROR() {
+                    total_errors = total_errors + 1;
+                }
+                j = j + 1;
+            }
+
+            i = i + 1;
+        }
+    }
+
+    // Print summary if not quiet and multiple files
+    if quiet == 0 {
+        if vec_len(files) > 1 {
+            println("");
+            let sb: i64 = sb_new();
+            sb_append(sb, string_from("Total: "));
+            sb_append(sb, int_to_string(total_issues));
+            sb_append(sb, string_from(" issue(s) in "));
+            sb_append(sb, int_to_string(vec_len(files)));
+            sb_append(sb, string_from(" file(s)"));
+            println(sb_to_string(sb));
+        } else {
+            if total_issues == 0 {
+                println("sxlint: no issues found");
+            }
+        }
+    }
+
+    // Return error code if any errors
+    if total_errors > 0 {
+        return 1;
+    }
+    0
+}

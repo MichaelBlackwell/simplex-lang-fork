@@ -248,10 +248,18 @@ fn token_new_loc(kind: i64, text: i64, pos: i64, line: i64, col: i64) -> i64 {
 }
 
 fn token_kind(tok: i64) -> i64 {
+    // Guard against null token pointer to prevent segfault
+    if tok == 0 {
+        return TokenKind::Eof;
+    }
     return load_i64(tok, 0);
 }
 
 fn token_text(tok: i64) -> i64 {
+    // Guard against null token pointer to prevent segfault
+    if tok == 0 {
+        return string_from("");
+    }
     return load_ptr(tok, 1);
 }
 

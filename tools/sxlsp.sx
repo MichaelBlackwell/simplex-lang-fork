@@ -23,29 +23,816 @@ fn cleanup_resources(store: i64) -> i64 {
 }
 
 // ========================================
-// Parser stubs (minimal implementation)
+// Token Types (from lexer.sx)
 // ========================================
 
-// Tokenize source code - returns empty token list for now
-fn tokenize(source: i64) -> i64 {
-    vec_new()
+fn TK_EOF() -> i64 { 0 }
+fn TK_IDENT() -> i64 { 1 }
+fn TK_INT() -> i64 { 2 }
+fn TK_FLOAT() -> i64 { 3 }
+fn TK_STRING() -> i64 { 4 }
+fn TK_FSTRING() -> i64 { 5 }
+fn TK_LPAREN() -> i64 { 6 }
+fn TK_RPAREN() -> i64 { 7 }
+fn TK_LBRACE() -> i64 { 8 }
+fn TK_RBRACE() -> i64 { 9 }
+fn TK_LBRACKET() -> i64 { 10 }
+fn TK_RBRACKET() -> i64 { 11 }
+fn TK_COMMA() -> i64 { 12 }
+fn TK_COLON() -> i64 { 13 }
+fn TK_SEMI() -> i64 { 14 }
+fn TK_ARROW() -> i64 { 15 }
+fn TK_DOUBLE_COLON() -> i64 { 16 }
+fn TK_DOTDOT() -> i64 { 17 }
+fn TK_EQ() -> i64 { 18 }
+fn TK_EQEQ() -> i64 { 19 }
+fn TK_NE() -> i64 { 20 }
+fn TK_LT() -> i64 { 21 }
+fn TK_GT() -> i64 { 22 }
+fn TK_LE() -> i64 { 23 }
+fn TK_GE() -> i64 { 24 }
+fn TK_PLUS() -> i64 { 25 }
+fn TK_MINUS() -> i64 { 26 }
+fn TK_STAR() -> i64 { 27 }
+fn TK_SLASH() -> i64 { 28 }
+fn TK_BANG() -> i64 { 29 }
+fn TK_DOT() -> i64 { 30 }
+fn TK_KW_FN() -> i64 { 31 }
+fn TK_KW_LET() -> i64 { 32 }
+fn TK_KW_IF() -> i64 { 33 }
+fn TK_KW_ELSE() -> i64 { 34 }
+fn TK_KW_WHILE() -> i64 { 35 }
+fn TK_KW_FOR() -> i64 { 36 }
+fn TK_KW_IN() -> i64 { 37 }
+fn TK_KW_RETURN() -> i64 { 38 }
+fn TK_KW_ENUM() -> i64 { 39 }
+fn TK_KW_TRUE() -> i64 { 40 }
+fn TK_KW_FALSE() -> i64 { 41 }
+fn TK_KW_PUB() -> i64 { 42 }
+fn TK_KW_STRUCT() -> i64 { 43 }
+fn TK_KW_IMPL() -> i64 { 44 }
+fn TK_KW_SELF() -> i64 { 45 }
+fn TK_KW_MATCH() -> i64 { 46 }
+fn TK_FAT_ARROW() -> i64 { 47 }
+fn TK_UNDERSCORE() -> i64 { 48 }
+fn TK_AMPAMP() -> i64 { 49 }
+fn TK_PIPEPIPE() -> i64 { 50 }
+fn TK_PERCENT() -> i64 { 51 }
+fn TK_AMP() -> i64 { 52 }
+fn TK_PIPE() -> i64 { 53 }
+fn TK_CARET() -> i64 { 54 }
+fn TK_LTLT() -> i64 { 55 }
+fn TK_GTGT() -> i64 { 56 }
+fn TK_KW_BREAK() -> i64 { 57 }
+fn TK_KW_LOOP() -> i64 { 58 }
+fn TK_KW_CONTINUE() -> i64 { 59 }
+fn TK_QUESTION() -> i64 { 60 }
+fn TK_KW_TRAIT() -> i64 { 61 }
+fn TK_KW_TYPE() -> i64 { 62 }
+fn TK_KW_USE() -> i64 { 63 }
+fn TK_KW_MOD() -> i64 { 64 }
+fn TK_KW_CONST() -> i64 { 65 }
+fn TK_KW_ASYNC() -> i64 { 66 }
+fn TK_KW_AWAIT() -> i64 { 67 }
+fn TK_KW_VAR() -> i64 { 68 }
+fn TK_KW_MUT() -> i64 { 69 }
+fn TK_HASH() -> i64 { 70 }
+
+// ========================================
+// Lexer Implementation
+// ========================================
+
+// Token structure: kind(0), text(1), line(2), col(3)
+fn token_new(kind: i64, text: i64, line: i64, col: i64) -> i64 {
+    let tok: i64 = malloc(32);
+    store_i64(tok, 0, kind);
+    store_ptr(tok, 1, text);
+    store_i64(tok, 2, line);
+    store_i64(tok, 3, col);
+    tok
 }
 
-// Parse tokens - returns a parse result with no errors
-fn parse_program(tokens: i64) -> i64 {
-    // Return a simple parse result: [ast, errors_count]
-    let result: i64 = vec_new();
-    vec_push(result, 0);  // ast placeholder
-    vec_push(result, 0);  // 0 errors
+fn token_kind(tok: i64) -> i64 { load_i64(tok, 0) }
+fn token_text(tok: i64) -> i64 { load_ptr(tok, 1) }
+fn token_line(tok: i64) -> i64 { load_i64(tok, 2) }
+fn token_col(tok: i64) -> i64 { load_i64(tok, 3) }
+
+// Lexer state: source(0), pos(1), len(2), line(3), col(4)
+fn lexer_new(source: i64) -> i64 {
+    let lex: i64 = malloc(40);
+    store_ptr(lex, 0, source);
+    store_i64(lex, 1, 0);
+    store_i64(lex, 2, string_len(source));
+    store_i64(lex, 3, 1);
+    store_i64(lex, 4, 1);
+    lex
+}
+
+fn lexer_at_end(lex: i64) -> bool {
+    load_i64(lex, 1) >= load_i64(lex, 2)
+}
+
+fn lexer_peek(lex: i64) -> i64 {
+    if lexer_at_end(lex) { return 0; }
+    string_char_at(load_ptr(lex, 0), load_i64(lex, 1))
+}
+
+fn lexer_advance(lex: i64) -> i64 {
+    let c: i64 = lexer_peek(lex);
+    if c != 0 {
+        store_i64(lex, 1, load_i64(lex, 1) + 1);
+        if c == 10 {
+            store_i64(lex, 3, load_i64(lex, 3) + 1);
+            store_i64(lex, 4, 1);
+        } else {
+            store_i64(lex, 4, load_i64(lex, 4) + 1);
+        }
+    }
+    c
+}
+
+fn is_whitespace(c: i64) -> bool {
+    c == 32 || c == 9 || c == 10 || c == 13
+}
+
+fn is_digit(c: i64) -> bool {
+    c >= 48 && c <= 57
+}
+
+fn is_alpha(c: i64) -> bool {
+    (c >= 97 && c <= 122) || (c >= 65 && c <= 90)
+}
+
+fn is_ident_start(c: i64) -> bool {
+    is_alpha(c) || c == 95
+}
+
+fn is_ident_continue(c: i64) -> bool {
+    is_ident_start(c) || is_digit(c)
+}
+
+fn lexer_skip_whitespace(lex: i64) -> i64 {
+    while is_whitespace(lexer_peek(lex)) {
+        lexer_advance(lex);
+    }
+    0
+}
+
+fn check_keyword(text: i64) -> i64 {
+    if string_eq(text, string_from("fn")) { return TK_KW_FN(); }
+    if string_eq(text, string_from("let")) { return TK_KW_LET(); }
+    if string_eq(text, string_from("if")) { return TK_KW_IF(); }
+    if string_eq(text, string_from("else")) { return TK_KW_ELSE(); }
+    if string_eq(text, string_from("while")) { return TK_KW_WHILE(); }
+    if string_eq(text, string_from("for")) { return TK_KW_FOR(); }
+    if string_eq(text, string_from("in")) { return TK_KW_IN(); }
+    if string_eq(text, string_from("return")) { return TK_KW_RETURN(); }
+    if string_eq(text, string_from("enum")) { return TK_KW_ENUM(); }
+    if string_eq(text, string_from("true")) { return TK_KW_TRUE(); }
+    if string_eq(text, string_from("false")) { return TK_KW_FALSE(); }
+    if string_eq(text, string_from("pub")) { return TK_KW_PUB(); }
+    if string_eq(text, string_from("struct")) { return TK_KW_STRUCT(); }
+    if string_eq(text, string_from("impl")) { return TK_KW_IMPL(); }
+    if string_eq(text, string_from("self")) { return TK_KW_SELF(); }
+    if string_eq(text, string_from("match")) { return TK_KW_MATCH(); }
+    if string_eq(text, string_from("break")) { return TK_KW_BREAK(); }
+    if string_eq(text, string_from("loop")) { return TK_KW_LOOP(); }
+    if string_eq(text, string_from("continue")) { return TK_KW_CONTINUE(); }
+    if string_eq(text, string_from("trait")) { return TK_KW_TRAIT(); }
+    if string_eq(text, string_from("type")) { return TK_KW_TYPE(); }
+    if string_eq(text, string_from("use")) { return TK_KW_USE(); }
+    if string_eq(text, string_from("mod")) { return TK_KW_MOD(); }
+    if string_eq(text, string_from("const")) { return TK_KW_CONST(); }
+    if string_eq(text, string_from("async")) { return TK_KW_ASYNC(); }
+    if string_eq(text, string_from("await")) { return TK_KW_AWAIT(); }
+    if string_eq(text, string_from("var")) { return TK_KW_VAR(); }
+    if string_eq(text, string_from("mut")) { return TK_KW_MUT(); }
+    if string_eq(text, string_from("_")) { return TK_UNDERSCORE(); }
+    TK_IDENT()
+}
+
+fn lexer_next_token(lex: i64) -> i64 {
+    lexer_skip_whitespace(lex);
+
+    if lexer_at_end(lex) {
+        return token_new(TK_EOF(), string_from(""), load_i64(lex, 3), load_i64(lex, 4));
+    }
+
+    let line: i64 = load_i64(lex, 3);
+    let col: i64 = load_i64(lex, 4);
+    let start: i64 = load_i64(lex, 1);
+    let c: i64 = lexer_advance(lex);
+
+    // Single char tokens
+    if c == 40 { return token_new(TK_LPAREN(), string_from("("), line, col); }
+    if c == 41 { return token_new(TK_RPAREN(), string_from(")"), line, col); }
+    if c == 123 { return token_new(TK_LBRACE(), string_from("{"), line, col); }
+    if c == 125 { return token_new(TK_RBRACE(), string_from("}"), line, col); }
+    if c == 91 { return token_new(TK_LBRACKET(), string_from("["), line, col); }
+    if c == 93 { return token_new(TK_RBRACKET(), string_from("]"), line, col); }
+    if c == 44 { return token_new(TK_COMMA(), string_from(","), line, col); }
+    if c == 59 { return token_new(TK_SEMI(), string_from(";"), line, col); }
+    if c == 43 { return token_new(TK_PLUS(), string_from("+"), line, col); }
+    if c == 42 { return token_new(TK_STAR(), string_from("*"), line, col); }
+    if c == 37 { return token_new(TK_PERCENT(), string_from("%"), line, col); }
+    if c == 94 { return token_new(TK_CARET(), string_from("^"), line, col); }
+    if c == 63 { return token_new(TK_QUESTION(), string_from("?"), line, col); }
+    if c == 35 { return token_new(TK_HASH(), string_from("#"), line, col); }
+
+    // Two char tokens
+    if c == 58 {
+        if lexer_peek(lex) == 58 { lexer_advance(lex); return token_new(TK_DOUBLE_COLON(), string_from("::"), line, col); }
+        return token_new(TK_COLON(), string_from(":"), line, col);
+    }
+    if c == 45 {
+        if lexer_peek(lex) == 62 { lexer_advance(lex); return token_new(TK_ARROW(), string_from("->"), line, col); }
+        return token_new(TK_MINUS(), string_from("-"), line, col);
+    }
+    if c == 61 {
+        if lexer_peek(lex) == 61 { lexer_advance(lex); return token_new(TK_EQEQ(), string_from("=="), line, col); }
+        if lexer_peek(lex) == 62 { lexer_advance(lex); return token_new(TK_FAT_ARROW(), string_from("=>"), line, col); }
+        return token_new(TK_EQ(), string_from("="), line, col);
+    }
+    if c == 33 {
+        if lexer_peek(lex) == 61 { lexer_advance(lex); return token_new(TK_NE(), string_from("!="), line, col); }
+        return token_new(TK_BANG(), string_from("!"), line, col);
+    }
+    if c == 60 {
+        if lexer_peek(lex) == 61 { lexer_advance(lex); return token_new(TK_LE(), string_from("<="), line, col); }
+        if lexer_peek(lex) == 60 { lexer_advance(lex); return token_new(TK_LTLT(), string_from("<<"), line, col); }
+        return token_new(TK_LT(), string_from("<"), line, col);
+    }
+    if c == 62 {
+        if lexer_peek(lex) == 61 { lexer_advance(lex); return token_new(TK_GE(), string_from(">="), line, col); }
+        if lexer_peek(lex) == 62 { lexer_advance(lex); return token_new(TK_GTGT(), string_from(">>"), line, col); }
+        return token_new(TK_GT(), string_from(">"), line, col);
+    }
+    if c == 38 {
+        if lexer_peek(lex) == 38 { lexer_advance(lex); return token_new(TK_AMPAMP(), string_from("&&"), line, col); }
+        return token_new(TK_AMP(), string_from("&"), line, col);
+    }
+    if c == 124 {
+        if lexer_peek(lex) == 124 { lexer_advance(lex); return token_new(TK_PIPEPIPE(), string_from("||"), line, col); }
+        return token_new(TK_PIPE(), string_from("|"), line, col);
+    }
+    if c == 46 {
+        if lexer_peek(lex) == 46 { lexer_advance(lex); return token_new(TK_DOTDOT(), string_from(".."), line, col); }
+        return token_new(TK_DOT(), string_from("."), line, col);
+    }
+
+    // Comments
+    if c == 47 {
+        if lexer_peek(lex) == 47 {
+            while lexer_peek(lex) != 10 && lexer_at_end(lex) == false { lexer_advance(lex); }
+            return lexer_next_token(lex);
+        }
+        return token_new(TK_SLASH(), string_from("/"), line, col);
+    }
+
+    // String literals
+    if c == 34 {
+        let text: i64 = string_from("");
+        while lexer_peek(lex) != 34 && lexer_at_end(lex) == false {
+            let sc: i64 = lexer_advance(lex);
+            if sc == 92 && lexer_at_end(lex) == false {
+                let esc: i64 = lexer_advance(lex);
+                if esc == 110 { text = string_concat(text, string_from_char(10)); }
+                else if esc == 116 { text = string_concat(text, string_from_char(9)); }
+                else if esc == 34 { text = string_concat(text, string_from_char(34)); }
+                else if esc == 92 { text = string_concat(text, string_from_char(92)); }
+                else { text = string_concat(text, string_from_char(esc)); }
+            } else {
+                text = string_concat(text, string_from_char(sc));
+            }
+        }
+        lexer_advance(lex);
+        return token_new(TK_STRING(), text, line, col);
+    }
+
+    // Identifiers and keywords
+    if is_ident_start(c) {
+        while is_ident_continue(lexer_peek(lex)) { lexer_advance(lex); }
+        let end: i64 = load_i64(lex, 1);
+        let text: i64 = string_slice(load_ptr(lex, 0), start, end);
+        let kind: i64 = check_keyword(text);
+        return token_new(kind, text, line, col);
+    }
+
+    // Numbers
+    if is_digit(c) {
+        while is_digit(lexer_peek(lex)) { lexer_advance(lex); }
+        if lexer_peek(lex) == 46 {
+            lexer_advance(lex);
+            if is_digit(lexer_peek(lex)) {
+                while is_digit(lexer_peek(lex)) { lexer_advance(lex); }
+                let end: i64 = load_i64(lex, 1);
+                let text: i64 = string_slice(load_ptr(lex, 0), start, end);
+                return token_new(TK_FLOAT(), text, line, col);
+            }
+        }
+        let end: i64 = load_i64(lex, 1);
+        let text: i64 = string_slice(load_ptr(lex, 0), start, end);
+        return token_new(TK_INT(), text, line, col);
+    }
+
+    token_new(TK_EOF(), string_from(""), line, col)
+}
+
+fn tokenize(source: i64) -> i64 {
+    let lex: i64 = lexer_new(source);
+    let tokens: i64 = vec_new();
+    while true {
+        let tok: i64 = lexer_next_token(lex);
+        vec_push(tokens, tok);
+        if token_kind(tok) == TK_EOF() { return tokens; }
+    }
+    tokens
+}
+
+// ========================================
+// AST Node Types
+// ========================================
+
+fn AST_FN() -> i64 { 0 }
+fn AST_ENUM() -> i64 { 1 }
+fn AST_STRUCT() -> i64 { 2 }
+fn AST_IMPL() -> i64 { 3 }
+fn AST_TRAIT() -> i64 { 4 }
+fn AST_USE() -> i64 { 5 }
+fn AST_LET() -> i64 { 6 }
+
+// ========================================
+// Symbol Table for LSP
+// ========================================
+
+// Symbol: name(0), kind(1), file(2), line(3), col(4), type_info(5), doc(6)
+fn symbol_new(name: i64, kind: i64, file: i64, line: i64, col: i64, type_info: i64, doc: i64) -> i64 {
+    let sym: i64 = malloc(56);
+    store_ptr(sym, 0, name);
+    store_i64(sym, 1, kind);
+    store_ptr(sym, 2, file);
+    store_i64(sym, 3, line);
+    store_i64(sym, 4, col);
+    store_ptr(sym, 5, type_info);
+    store_ptr(sym, 6, doc);
+    sym
+}
+
+fn symbol_name(sym: i64) -> i64 { load_ptr(sym, 0) }
+fn symbol_kind(sym: i64) -> i64 { load_i64(sym, 1) }
+fn symbol_file(sym: i64) -> i64 { load_ptr(sym, 2) }
+fn symbol_line(sym: i64) -> i64 { load_i64(sym, 3) }
+fn symbol_col(sym: i64) -> i64 { load_i64(sym, 4) }
+fn symbol_type_info(sym: i64) -> i64 { load_ptr(sym, 5) }
+fn symbol_doc(sym: i64) -> i64 { load_ptr(sym, 6) }
+
+// Symbol kinds
+fn SYM_FUNCTION() -> i64 { 0 }
+fn SYM_VARIABLE() -> i64 { 1 }
+fn SYM_TYPE() -> i64 { 2 }
+fn SYM_STRUCT() -> i64 { 3 }
+fn SYM_ENUM() -> i64 { 4 }
+fn SYM_TRAIT() -> i64 { 5 }
+fn SYM_FIELD() -> i64 { 6 }
+fn SYM_METHOD() -> i64 { 7 }
+
+// Symbol table: vec of symbols
+fn symtab_new() -> i64 { vec_new() }
+
+fn symtab_add(tab: i64, sym: i64) -> i64 {
+    vec_push(tab, sym);
+    0
+}
+
+fn symtab_find(tab: i64, name: i64) -> i64 {
+    let n: i64 = vec_len(tab);
+    let i: i64 = 0;
+    while i < n {
+        let sym: i64 = vec_get(tab, i);
+        if string_eq(symbol_name(sym), name) {
+            return sym;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+// ========================================
+// Parser for Symbol Extraction
+// ========================================
+
+// Parser state: tokens(0), pos(1), len(2), errors(3), symtab(4), uri(5), last_doc(6)
+fn parser_new(tokens: i64, symtab: i64, uri: i64) -> i64 {
+    let p: i64 = malloc(56);
+    store_ptr(p, 0, tokens);
+    store_i64(p, 1, 0);
+    store_i64(p, 2, vec_len(tokens));
+    store_ptr(p, 3, vec_new());  // errors list
+    store_ptr(p, 4, symtab);
+    store_ptr(p, 5, uri);
+    store_ptr(p, 6, string_from(""));  // last doc comment
+    p
+}
+
+fn parser_tokens(p: i64) -> i64 { load_ptr(p, 0) }
+fn parser_pos(p: i64) -> i64 { load_i64(p, 1) }
+fn parser_symtab(p: i64) -> i64 { load_ptr(p, 4) }
+fn parser_uri(p: i64) -> i64 { load_ptr(p, 5) }
+fn parser_errors(p: i64) -> i64 { load_ptr(p, 3) }
+
+fn parser_at_end(p: i64) -> bool {
+    load_i64(p, 1) >= load_i64(p, 2)
+}
+
+fn parser_current(p: i64) -> i64 {
+    if parser_at_end(p) { return 0; }
+    vec_get(load_ptr(p, 0), load_i64(p, 1))
+}
+
+fn parser_advance(p: i64) -> i64 {
+    let tok: i64 = parser_current(p);
+    store_i64(p, 1, load_i64(p, 1) + 1);
+    tok
+}
+
+fn parser_check(p: i64, kind: i64) -> bool {
+    if parser_at_end(p) { return false; }
+    let tok: i64 = parser_current(p);
+    if tok == 0 { return false; }
+    token_kind(tok) == kind
+}
+
+fn parser_match(p: i64, kind: i64) -> bool {
+    if parser_check(p, kind) {
+        parser_advance(p);
+        return true;
+    }
+    false
+}
+
+fn parser_add_error(p: i64, msg: i64, line: i64, col: i64) -> i64 {
+    let errors: i64 = load_ptr(p, 3);
+    let err: i64 = malloc(24);
+    store_ptr(err, 0, msg);
+    store_i64(err, 1, line);
+    store_i64(err, 2, col);
+    vec_push(errors, err);
+    0
+}
+
+// Skip until we find a sync point
+fn parser_sync(p: i64) -> i64 {
+    while parser_at_end(p) == false {
+        let tok: i64 = parser_current(p);
+        let kind: i64 = token_kind(tok);
+        if kind == TK_KW_FN() || kind == TK_KW_STRUCT() || kind == TK_KW_ENUM() ||
+           kind == TK_KW_IMPL() || kind == TK_KW_TRAIT() || kind == TK_KW_USE() ||
+           kind == TK_KW_PUB() || kind == TK_RBRACE() {
+            return 0;
+        }
+        parser_advance(p);
+    }
+    0
+}
+
+// Parse function signature and add to symbol table
+fn parse_fn_def(p: i64) -> i64 {
+    let is_pub: i64 = 0;
+    if parser_check(p, TK_KW_PUB()) {
+        parser_advance(p);
+        is_pub = 1;
+    }
+
+    if parser_match(p, TK_KW_FN()) == false {
+        return 0;
+    }
+
+    let name_tok: i64 = parser_current(p);
+    if token_kind(name_tok) != TK_IDENT() {
+        parser_add_error(p, string_from("Expected function name"), token_line(name_tok), token_col(name_tok));
+        parser_sync(p);
+        return 0;
+    }
+    parser_advance(p);
+
+    let name: i64 = token_text(name_tok);
+    let line: i64 = token_line(name_tok);
+    let col: i64 = token_col(name_tok);
+
+    // Build signature string
+    let sig: i64 = string_from("fn ");
+    sig = string_concat(sig, name);
+    sig = string_concat(sig, string_from("("));
+
+    // Parse parameters
+    if parser_match(p, TK_LPAREN()) {
+        let first: i64 = 1;
+        while parser_check(p, TK_RPAREN()) == false && parser_at_end(p) == false {
+            if first == 0 { sig = string_concat(sig, string_from(", ")); }
+            first = 0;
+
+            // Handle self parameter
+            if parser_check(p, TK_KW_SELF()) {
+                parser_advance(p);
+                sig = string_concat(sig, string_from("self"));
+            } else if parser_check(p, TK_IDENT()) {
+                let param_name: i64 = token_text(parser_advance(p));
+                sig = string_concat(sig, param_name);
+                if parser_match(p, TK_COLON()) {
+                    sig = string_concat(sig, string_from(": "));
+                    // Parse type
+                    if parser_check(p, TK_IDENT()) {
+                        sig = string_concat(sig, token_text(parser_advance(p)));
+                    }
+                }
+            }
+            parser_match(p, TK_COMMA());
+        }
+        parser_match(p, TK_RPAREN());
+    }
+    sig = string_concat(sig, string_from(")"));
+
+    // Parse return type
+    if parser_match(p, TK_ARROW()) {
+        sig = string_concat(sig, string_from(" -> "));
+        if parser_check(p, TK_IDENT()) {
+            sig = string_concat(sig, token_text(parser_advance(p)));
+        }
+    }
+
+    // Add symbol
+    let sym: i64 = symbol_new(name, SYM_FUNCTION(), parser_uri(p), line, col, sig, string_from(""));
+    symtab_add(parser_symtab(p), sym);
+
+    // Skip function body
+    if parser_match(p, TK_LBRACE()) {
+        let depth: i64 = 1;
+        while depth > 0 && parser_at_end(p) == false {
+            if parser_check(p, TK_LBRACE()) { depth = depth + 1; }
+            if parser_check(p, TK_RBRACE()) { depth = depth - 1; }
+            parser_advance(p);
+        }
+    }
+
+    1
+}
+
+// Parse struct definition
+fn parse_struct_def(p: i64) -> i64 {
+    if parser_check(p, TK_KW_PUB()) { parser_advance(p); }
+
+    if parser_match(p, TK_KW_STRUCT()) == false { return 0; }
+
+    let name_tok: i64 = parser_current(p);
+    if token_kind(name_tok) != TK_IDENT() {
+        parser_sync(p);
+        return 0;
+    }
+    parser_advance(p);
+
+    let name: i64 = token_text(name_tok);
+    let line: i64 = token_line(name_tok);
+    let col: i64 = token_col(name_tok);
+
+    // Add struct symbol
+    let sym: i64 = symbol_new(name, SYM_STRUCT(), parser_uri(p), line, col,
+                              string_concat(string_from("struct "), name), string_from(""));
+    symtab_add(parser_symtab(p), sym);
+
+    // Parse fields
+    if parser_match(p, TK_LBRACE()) {
+        while parser_check(p, TK_RBRACE()) == false && parser_at_end(p) == false {
+            if parser_check(p, TK_IDENT()) {
+                let field_tok: i64 = parser_advance(p);
+                let field_name: i64 = token_text(field_tok);
+                let field_type: i64 = string_from("");
+
+                if parser_match(p, TK_COLON()) {
+                    if parser_check(p, TK_IDENT()) {
+                        field_type = token_text(parser_advance(p));
+                    }
+                }
+
+                // Add field symbol (qualified name)
+                let qual_name: i64 = string_concat(name, string_from("."));
+                qual_name = string_concat(qual_name, field_name);
+                let field_sym: i64 = symbol_new(qual_name, SYM_FIELD(), parser_uri(p),
+                                                token_line(field_tok), token_col(field_tok),
+                                                field_type, string_from(""));
+                symtab_add(parser_symtab(p), field_sym);
+            }
+            parser_match(p, TK_COMMA());
+            if parser_check(p, TK_RBRACE()) == false && parser_check(p, TK_IDENT()) == false {
+                parser_advance(p);
+            }
+        }
+        parser_match(p, TK_RBRACE());
+    }
+
+    1
+}
+
+// Parse enum definition
+fn parse_enum_def(p: i64) -> i64 {
+    if parser_check(p, TK_KW_PUB()) { parser_advance(p); }
+
+    if parser_match(p, TK_KW_ENUM()) == false { return 0; }
+
+    let name_tok: i64 = parser_current(p);
+    if token_kind(name_tok) != TK_IDENT() {
+        parser_sync(p);
+        return 0;
+    }
+    parser_advance(p);
+
+    let name: i64 = token_text(name_tok);
+    let sym: i64 = symbol_new(name, SYM_ENUM(), parser_uri(p),
+                              token_line(name_tok), token_col(name_tok),
+                              string_concat(string_from("enum "), name), string_from(""));
+    symtab_add(parser_symtab(p), sym);
+
+    // Skip body
+    if parser_match(p, TK_LBRACE()) {
+        let depth: i64 = 1;
+        while depth > 0 && parser_at_end(p) == false {
+            if parser_check(p, TK_LBRACE()) { depth = depth + 1; }
+            if parser_check(p, TK_RBRACE()) { depth = depth - 1; }
+            parser_advance(p);
+        }
+    }
+
+    1
+}
+
+// Parse trait definition
+fn parse_trait_def(p: i64) -> i64 {
+    if parser_check(p, TK_KW_PUB()) { parser_advance(p); }
+
+    if parser_match(p, TK_KW_TRAIT()) == false { return 0; }
+
+    let name_tok: i64 = parser_current(p);
+    if token_kind(name_tok) != TK_IDENT() {
+        parser_sync(p);
+        return 0;
+    }
+    parser_advance(p);
+
+    let name: i64 = token_text(name_tok);
+    let sym: i64 = symbol_new(name, SYM_TRAIT(), parser_uri(p),
+                              token_line(name_tok), token_col(name_tok),
+                              string_concat(string_from("trait "), name), string_from(""));
+    symtab_add(parser_symtab(p), sym);
+
+    // Skip body
+    if parser_match(p, TK_LBRACE()) {
+        let depth: i64 = 1;
+        while depth > 0 && parser_at_end(p) == false {
+            if parser_check(p, TK_LBRACE()) { depth = depth + 1; }
+            if parser_check(p, TK_RBRACE()) { depth = depth - 1; }
+            parser_advance(p);
+        }
+    }
+
+    1
+}
+
+// Parse impl block
+fn parse_impl_def(p: i64) -> i64 {
+    if parser_match(p, TK_KW_IMPL()) == false { return 0; }
+
+    let type_name: i64 = string_from("");
+    if parser_check(p, TK_IDENT()) {
+        type_name = token_text(parser_advance(p));
+    }
+
+    // Skip "for Type" if present
+    if parser_match(p, TK_KW_FOR()) {
+        if parser_check(p, TK_IDENT()) {
+            parser_advance(p);
+        }
+    }
+
+    // Parse methods
+    if parser_match(p, TK_LBRACE()) {
+        while parser_check(p, TK_RBRACE()) == false && parser_at_end(p) == false {
+            if parser_check(p, TK_KW_PUB()) || parser_check(p, TK_KW_FN()) {
+                // Save current position
+                let old_pos: i64 = parser_pos(p);
+                parse_fn_def(p);
+            } else {
+                parser_advance(p);
+            }
+        }
+        parser_match(p, TK_RBRACE());
+    }
+
+    1
+}
+
+// Parse let statement for local variables
+fn parse_let_stmt(p: i64) -> i64 {
+    if parser_match(p, TK_KW_LET()) == false && parser_match(p, TK_KW_VAR()) == false {
+        return 0;
+    }
+
+    if parser_check(p, TK_IDENT()) {
+        let name_tok: i64 = parser_advance(p);
+        let name: i64 = token_text(name_tok);
+        let var_type: i64 = string_from("");
+
+        if parser_match(p, TK_COLON()) {
+            if parser_check(p, TK_IDENT()) {
+                var_type = token_text(parser_advance(p));
+            }
+        }
+
+        let sym: i64 = symbol_new(name, SYM_VARIABLE(), parser_uri(p),
+                                  token_line(name_tok), token_col(name_tok),
+                                  var_type, string_from(""));
+        symtab_add(parser_symtab(p), sym);
+    }
+
+    // Skip to semicolon or end of statement
+    while parser_at_end(p) == false {
+        if parser_check(p, TK_SEMI()) { parser_advance(p); return 1; }
+        if parser_check(p, TK_RBRACE()) { return 1; }
+        parser_advance(p);
+    }
+
+    1
+}
+
+// Parse use statement
+fn parse_use_stmt(p: i64) -> i64 {
+    if parser_match(p, TK_KW_USE()) == false { return 0; }
+
+    // Skip to semicolon
+    while parser_at_end(p) == false {
+        if parser_check(p, TK_SEMI()) { parser_advance(p); return 1; }
+        parser_advance(p);
+    }
+    1
+}
+
+// Parse top-level item
+fn parse_item(p: i64) -> i64 {
+    // Skip attributes
+    while parser_check(p, TK_HASH()) {
+        parser_advance(p);
+        if parser_match(p, TK_LBRACKET()) {
+            while parser_check(p, TK_RBRACKET()) == false && parser_at_end(p) == false {
+                parser_advance(p);
+            }
+            parser_match(p, TK_RBRACKET());
+        }
+    }
+
+    if parser_check(p, TK_KW_PUB()) || parser_check(p, TK_KW_FN()) {
+        return parse_fn_def(p);
+    }
+    if parser_check(p, TK_KW_STRUCT()) ||
+       (parser_check(p, TK_KW_PUB()) && parser_pos(p) + 1 < load_i64(p, 2)) {
+        // Check if next token after pub is struct
+        let tok: i64 = parser_current(p);
+        if parser_check(p, TK_KW_STRUCT()) { return parse_struct_def(p); }
+    }
+    if parser_check(p, TK_KW_STRUCT()) { return parse_struct_def(p); }
+    if parser_check(p, TK_KW_ENUM()) { return parse_enum_def(p); }
+    if parser_check(p, TK_KW_TRAIT()) { return parse_trait_def(p); }
+    if parser_check(p, TK_KW_IMPL()) { return parse_impl_def(p); }
+    if parser_check(p, TK_KW_USE()) { return parse_use_stmt(p); }
+    if parser_check(p, TK_KW_LET()) || parser_check(p, TK_KW_VAR()) { return parse_let_stmt(p); }
+
+    // Skip unknown token
+    if parser_at_end(p) == false {
+        parser_advance(p);
+    }
+    0
+}
+
+// Parse entire document and build symbol table
+fn parse_document(tokens: i64, uri: i64) -> i64 {
+    let symtab: i64 = symtab_new();
+    let p: i64 = parser_new(tokens, symtab, uri);
+
+    while parser_at_end(p) == false {
+        if parser_check(p, TK_EOF()) { break; }
+        parse_item(p);
+    }
+
+    // Return parse result: symtab(0), errors(1)
+    let result: i64 = malloc(16);
+    store_ptr(result, 0, symtab);
+    store_ptr(result, 1, parser_errors(p));
     result
 }
 
-// Get error count from parse result
-fn parse_result_errors(result: i64) -> i64 {
-    if vec_len(result) > 1 {
-        return vec_get(result, 1);
-    }
-    0
+fn parse_result_symtab(result: i64) -> i64 { load_ptr(result, 0) }
+fn parse_result_errors(result: i64) -> i64 { load_ptr(result, 1) }
+
+// Legacy function for compatibility
+fn parse_program(tokens: i64) -> i64 {
+    parse_document(tokens, string_from(""))
 }
 
 fn show_help() -> i64 {
@@ -295,28 +1082,8 @@ fn handle_shutdown(id: i64) -> i64 {
     0
 }
 
-// Handle textDocument/didOpen
-fn handle_did_open(store: i64, params: i64) -> i64 {
-    // Extract textDocument.uri and textDocument.text
-    let uri: i64 = json_get_string(params, string_from("uri"));
-    let text: i64 = json_get_string(params, string_from("text"));
-    doc_store_set(store, uri, text);
-
-    // Validate and publish diagnostics
-    publish_diagnostics(uri, text);
-    0
-}
-
-// Handle textDocument/didChange
-fn handle_did_change(store: i64, params: i64) -> i64 {
-    let uri: i64 = json_get_string(params, string_from("uri"));
-    // For full sync, content is in contentChanges[0].text
-    let text: i64 = json_get_string(params, string_from("text"));
-    doc_store_set(store, uri, text);
-
-    publish_diagnostics(uri, text);
-    0
-}
+// Note: handle_did_open and handle_did_change are now handle_did_open_cached
+// and handle_did_change_cached in the main loop section below
 
 // Handle textDocument/didClose
 fn handle_did_close(store: i64, params: i64) -> i64 {
@@ -360,8 +1127,163 @@ fn handle_completion(store: i64, id: i64, params: i64) -> i64 {
     0
 }
 
+// Get word at position in source
+fn get_word_at_position(source: i64, line: i64, col: i64) -> i64 {
+    // Find the start of the line
+    let lines: i64 = string_split(source, string_from("\n"));
+    if line >= vec_len(lines) {
+        return string_from("");
+    }
+
+    let line_text: i64 = vec_get(lines, line);
+    let line_len: i64 = string_len(line_text);
+
+    if col >= line_len {
+        return string_from("");
+    }
+
+    // Find word boundaries
+    let start: i64 = col;
+    while start > 0 {
+        let c: i64 = string_char_at(line_text, start - 1);
+        if is_ident_continue(c) == false {
+            break;
+        }
+        start = start - 1;
+    }
+
+    let end: i64 = col;
+    while end < line_len {
+        let c: i64 = string_char_at(line_text, end);
+        if is_ident_continue(c) == false {
+            break;
+        }
+        end = end + 1;
+    }
+
+    if start == end {
+        return string_from("");
+    }
+
+    string_slice(line_text, start, end)
+}
+
+// Global symbol cache: uri -> (symtab, tokens)
+fn symbol_cache_new() -> i64 { vec_new() }
+
+fn symbol_cache_get(cache: i64, uri: i64) -> i64 {
+    let n: i64 = vec_len(cache);
+    let i: i64 = 0;
+    while i < n {
+        let entry: i64 = vec_get(cache, i);
+        if string_eq(load_ptr(entry, 0), uri) {
+            return entry;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+fn symbol_cache_set(cache: i64, uri: i64, symtab: i64, tokens: i64) -> i64 {
+    let entry: i64 = symbol_cache_get(cache, uri);
+    if entry != 0 {
+        store_ptr(entry, 1, symtab);
+        store_ptr(entry, 2, tokens);
+        return 0;
+    }
+
+    entry = malloc(24);
+    store_ptr(entry, 0, uri);
+    store_ptr(entry, 1, symtab);
+    store_ptr(entry, 2, tokens);
+    vec_push(cache, entry);
+    0
+}
+
+// Parse document and cache symbols
+fn parse_and_cache(cache: i64, uri: i64, source: i64) -> i64 {
+    let tokens: i64 = tokenize(source);
+    let result: i64 = parse_document(tokens, uri);
+    let symtab: i64 = parse_result_symtab(result);
+    symbol_cache_set(cache, uri, symtab, tokens);
+    result
+}
+
 // Handle textDocument/hover
-fn handle_hover(store: i64, id: i64, params: i64) -> i64 {
+fn handle_hover(store: i64, cache: i64, id: i64, params: i64) -> i64 {
+    let uri: i64 = json_get_string(params, string_from("uri"));
+    let content: i64 = doc_store_get(store, uri);
+
+    // Get position (LSP uses 0-based lines)
+    let line: i64 = json_get_number(params, string_from("line"));
+    let character: i64 = json_get_number(params, string_from("character"));
+
+    // Get the word at the cursor position
+    let word: i64 = get_word_at_position(content, line, character);
+
+    if string_len(word) == 0 {
+        send_response(id, string_from("null"));
+        return 0;
+    }
+
+    // Look up in symbol table
+    let entry: i64 = symbol_cache_get(cache, uri);
+    if entry != 0 {
+        let symtab: i64 = load_ptr(entry, 1);
+        let sym: i64 = symtab_find(symtab, word);
+
+        if sym != 0 {
+            // Build hover content
+            let type_info: i64 = symbol_type_info(sym);
+            let kind: i64 = symbol_kind(sym);
+
+            let markdown: i64 = string_from("```simplex\\n");
+            markdown = string_concat(markdown, type_info);
+            markdown = string_concat(markdown, string_from("\\n```"));
+
+            // Add kind description
+            if kind == SYM_FUNCTION() {
+                markdown = string_concat(markdown, string_from("\\n\\n*Function*"));
+            } else if kind == SYM_STRUCT() {
+                markdown = string_concat(markdown, string_from("\\n\\n*Struct*"));
+            } else if kind == SYM_ENUM() {
+                markdown = string_concat(markdown, string_from("\\n\\n*Enum*"));
+            } else if kind == SYM_TRAIT() {
+                markdown = string_concat(markdown, string_from("\\n\\n*Trait*"));
+            } else if kind == SYM_VARIABLE() {
+                markdown = string_concat(markdown, string_from("\\n\\n*Variable*"));
+            } else if kind == SYM_FIELD() {
+                markdown = string_concat(markdown, string_from("\\n\\n*Field*"));
+            }
+
+            let result: i64 = string_from("{\"contents\":{\"kind\":\"markdown\",\"value\":\"");
+            result = string_concat(result, markdown);
+            result = string_concat(result, string_from("\"}}"));
+            send_response(id, result);
+            return 0;
+        }
+    }
+
+    // Check if it's a keyword
+    let kw_kind: i64 = check_keyword(word);
+    if kw_kind != TK_IDENT() {
+        let kw_doc: i64 = string_from("```simplex\\n");
+        kw_doc = string_concat(kw_doc, word);
+        kw_doc = string_concat(kw_doc, string_from("\\n```\\n\\n*Keyword*"));
+
+        let result: i64 = string_from("{\"contents\":{\"kind\":\"markdown\",\"value\":\"");
+        result = string_concat(result, kw_doc);
+        result = string_concat(result, string_from("\"}}"));
+        send_response(id, result);
+        return 0;
+    }
+
+    send_response(id, string_from("null"));
+    0
+}
+
+// Handle textDocument/definition
+fn handle_definition(store: i64, cache: i64, id: i64, params: i64) -> i64 {
     let uri: i64 = json_get_string(params, string_from("uri"));
     let content: i64 = doc_store_get(store, uri);
 
@@ -369,15 +1291,48 @@ fn handle_hover(store: i64, id: i64, params: i64) -> i64 {
     let line: i64 = json_get_number(params, string_from("line"));
     let character: i64 = json_get_number(params, string_from("character"));
 
-    // For now, provide generic hover info
-    let result: i64 = string_from("{\"contents\":{\"kind\":\"markdown\",\"value\":\"Simplex language element\"}}");
-    send_response(id, result);
-    0
-}
+    // Get the word at the cursor position
+    let word: i64 = get_word_at_position(content, line, character);
 
-// Handle textDocument/definition
-fn handle_definition(store: i64, id: i64, params: i64) -> i64 {
-    // Simplified: return null for now
+    if string_len(word) == 0 {
+        send_response(id, string_from("null"));
+        return 0;
+    }
+
+    // Look up in symbol table
+    let entry: i64 = symbol_cache_get(cache, uri);
+    if entry != 0 {
+        let symtab: i64 = load_ptr(entry, 1);
+        let sym: i64 = symtab_find(symtab, word);
+
+        if sym != 0 {
+            // Build location response
+            let sym_line: i64 = symbol_line(sym) - 1;  // LSP uses 0-based lines
+            let sym_col: i64 = symbol_col(sym) - 1;    // LSP uses 0-based columns
+            let sym_uri: i64 = symbol_file(sym);
+
+            // If no URI stored, use current document
+            if string_len(sym_uri) == 0 {
+                sym_uri = uri;
+            }
+
+            let result: i64 = string_from("{\"uri\":\"");
+            result = string_concat(result, sym_uri);
+            result = string_concat(result, string_from("\",\"range\":{\"start\":{\"line\":"));
+            result = string_concat(result, int_to_string(sym_line));
+            result = string_concat(result, string_from(",\"character\":"));
+            result = string_concat(result, int_to_string(sym_col));
+            result = string_concat(result, string_from("},\"end\":{\"line\":"));
+            result = string_concat(result, int_to_string(sym_line));
+            result = string_concat(result, string_from(",\"character\":"));
+            result = string_concat(result, int_to_string(sym_col + string_len(word)));
+            result = string_concat(result, string_from("}}}"));
+
+            send_response(id, result);
+            return 0;
+        }
+    }
+
     send_response(id, string_from("null"));
     0
 }
@@ -387,7 +1342,7 @@ fn handle_definition(store: i64, id: i64, params: i64) -> i64 {
 // ========================================
 
 // Parse source and publish diagnostics
-fn publish_diagnostics(uri: i64, source: i64) -> i64 {
+fn publish_diagnostics(cache: i64, uri: i64, source: i64) -> i64 {
     if source == 0 {
         return 0;
     }
@@ -395,21 +1350,47 @@ fn publish_diagnostics(uri: i64, source: i64) -> i64 {
         return 0;
     }
 
-    // Tokenize and parse
-    let tokens: i64 = tokenize(source);
-    let parse_result: i64 = parse_program(tokens);
+    // Tokenize and parse, caching results
+    let parse_result: i64 = parse_and_cache(cache, uri, source);
     let errors: i64 = parse_result_errors(parse_result);
 
     let diagnostics: i64 = string_from("[");
+    let first_diag: i64 = 1;
 
-    if errors > 0 {
-        // Report parse error
+    // Process each error
+    let n: i64 = vec_len(errors);
+    let i: i64 = 0;
+    while i < n {
+        let err: i64 = vec_get(errors, i);
+        let msg: i64 = load_ptr(err, 0);
+        let err_line: i64 = load_i64(err, 1) - 1;  // LSP uses 0-based
+        let err_col: i64 = load_i64(err, 2) - 1;
+
+        if err_line < 0 { err_line = 0; }
+        if err_col < 0 { err_col = 0; }
+
+        if first_diag == 0 {
+            diagnostics = string_concat(diagnostics, string_from(","));
+        }
+        first_diag = 0;
+
         diagnostics = string_concat(diagnostics, string_from("{"));
-        diagnostics = string_concat(diagnostics, string_from("\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":1}},"));
+        diagnostics = string_concat(diagnostics, string_from("\"range\":{\"start\":{\"line\":"));
+        diagnostics = string_concat(diagnostics, int_to_string(err_line));
+        diagnostics = string_concat(diagnostics, string_from(",\"character\":"));
+        diagnostics = string_concat(diagnostics, int_to_string(err_col));
+        diagnostics = string_concat(diagnostics, string_from("},\"end\":{\"line\":"));
+        diagnostics = string_concat(diagnostics, int_to_string(err_line));
+        diagnostics = string_concat(diagnostics, string_from(",\"character\":"));
+        diagnostics = string_concat(diagnostics, int_to_string(err_col + 1));
+        diagnostics = string_concat(diagnostics, string_from("}},"));
         diagnostics = string_concat(diagnostics, string_from("\"severity\":1,"));
         diagnostics = string_concat(diagnostics, string_from("\"source\":\"sxlsp\","));
-        diagnostics = string_concat(diagnostics, string_from("\"message\":\"Parse error in file\""));
-        diagnostics = string_concat(diagnostics, string_from("}"));
+        diagnostics = string_concat(diagnostics, string_from("\"message\":\""));
+        diagnostics = string_concat(diagnostics, msg);
+        diagnostics = string_concat(diagnostics, string_from("\"}"));
+
+        i = i + 1;
     }
 
     diagnostics = string_concat(diagnostics, string_from("]"));
@@ -427,8 +1408,30 @@ fn publish_diagnostics(uri: i64, source: i64) -> i64 {
 // Main Loop
 // ========================================
 
+// Handle textDocument/didOpen with cache
+fn handle_did_open_cached(store: i64, cache: i64, params: i64) -> i64 {
+    let uri: i64 = json_get_string(params, string_from("uri"));
+    let text: i64 = json_get_string(params, string_from("text"));
+    doc_store_set(store, uri, text);
+
+    // Validate and publish diagnostics
+    publish_diagnostics(cache, uri, text);
+    0
+}
+
+// Handle textDocument/didChange with cache
+fn handle_did_change_cached(store: i64, cache: i64, params: i64) -> i64 {
+    let uri: i64 = json_get_string(params, string_from("uri"));
+    let text: i64 = json_get_string(params, string_from("text"));
+    doc_store_set(store, uri, text);
+
+    publish_diagnostics(cache, uri, text);
+    0
+}
+
 fn run_server() -> i64 {
     let store: i64 = doc_store_new();
+    let cache: i64 = symbol_cache_new();
     let running: i64 = 1;
 
     while running == 1 {
@@ -464,10 +1467,10 @@ fn run_server() -> i64 {
             running = 0;
         } else {
         if string_eq(method, string_from("textDocument/didOpen")) {
-            handle_did_open(store, params);
+            handle_did_open_cached(store, cache, params);
         } else {
         if string_eq(method, string_from("textDocument/didChange")) {
-            handle_did_change(store, params);
+            handle_did_change_cached(store, cache, params);
         } else {
         if string_eq(method, string_from("textDocument/didClose")) {
             handle_did_close(store, params);
@@ -476,10 +1479,10 @@ fn run_server() -> i64 {
             handle_completion(store, id, params);
         } else {
         if string_eq(method, string_from("textDocument/hover")) {
-            handle_hover(store, id, params);
+            handle_hover(store, cache, id, params);
         } else {
         if string_eq(method, string_from("textDocument/definition")) {
-            handle_definition(store, id, params);
+            handle_definition(store, cache, id, params);
         } else {
             // Unknown method - send error for requests (those with id)
             if string_len(id) > 0 {
@@ -506,13 +1509,14 @@ fn run_server() -> i64 {
         }
         }
     }
-    
+
     // Cleanup resources for long-running mode
     cleanup_resources(store);
 
     0
 }
 
-// Start server
+// Entry point
+fn main() -> i64 {
     run_server()
 }

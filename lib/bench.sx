@@ -1,0 +1,823 @@
+// Simplex Benchmarking Framework
+// Built-in benchmarking support similar to Rust's #[bench] or Go's testing.B
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0 - see LICENSE file
+// https://github.com/senuamedia/simplex
+
+// ========================================
+// Bencher - Core Benchmarking Type
+// ========================================
+
+// Benchmark state structure (allocated as 64 bytes = 8 fields * 8 bytes)
+// Memory layout:
+//   - offset 0: iterations: i64      Number of iterations to run
+//   - offset 1: total_time_ns: i64   Total elapsed time in nanoseconds
+//   - offset 2: min_time_ns: i64     Minimum iteration time
+//   - offset 3: max_time_ns: i64     Maximum iteration time
+//   - offset 4: samples: i64         Vec of sample times (pointer)
+//   - offset 5: name: i64            String (pointer)
+//   - offset 6: bytes_per_op: i64    Bytes processed per operation (for throughput)
+//   - offset 7: warmup_done: i64     Boolean flag (0 or 1)
+
+// Create a new Bencher instance
+pub fn bencher_new(name: i64) -> i64 {
+    let b: i64 = malloc(64);  // 8 fields * 8 bytes
+    store_i64(b, 0, 0);       // iterations
+    store_i64(b, 1, 0);       // total_time_ns
+    store_i64(b, 2, 9223372036854775807);  // min_time_ns (i64 max)
+    store_i64(b, 3, 0);       // max_time_ns
+    store_i64(b, 4, vec_new());  // samples
+    store_i64(b, 5, name);    // name
+    store_i64(b, 6, 0);       // bytes_per_op
+    store_i64(b, 7, 0);       // warmup_done (false)
+    b
+}
+
+// Get bencher name
+pub fn bencher_name(b: i64) -> i64 {
+    load_i64(b, 5)
+}
+
+// Set bytes processed per operation (for throughput calculation)
+pub fn bencher_set_bytes(b: i64, bytes: i64) -> i64 {
+    store_i64(b, 6, bytes);
+    0
+}
+
+// ========================================
+// Runtime Intrinsic Functions
+// ========================================
+
+// These functions are provided by the Simplex runtime (standalone_runtime.c).
+// They are declared as regular extern calls that link at compile time.
+//
+// Timing intrinsics:
+//   - intrinsic_get_time_ns() -> i64  High-resolution nanosecond timer
+//   - intrinsic_get_time_us() -> i64  Microsecond timer
+//   - intrinsic_get_time_ms() -> i64  Millisecond timer
+//
+// Memory profiling intrinsics (requires --memory-debug flag):
+//   - intrinsic_memory_report() -> i64   Print memory report
+//   - intrinsic_memory_current() -> i64  Current allocated bytes
+//   - intrinsic_memory_peak() -> i64     Peak allocated bytes
+//   - intrinsic_memory_alloc_count() -> i64  Total allocations
+
+// ========================================
+// Timing Functions
+// ========================================
+
+// Get current time in nanoseconds (high-resolution)
+// Note: Uses microsecond timer * 1000 as the runtime provides us resolution
+pub fn get_time_ns() -> i64 {
+    intrinsic_get_time_us() * 1000
+}
+
+// Get current time in microseconds
+pub fn get_time_us() -> i64 {
+    intrinsic_get_time_us()
+}
+
+// Get current time in milliseconds
+pub fn get_time_ms() -> i64 {
+    intrinsic_get_time_ms()
+}
+
+// ========================================
+// Memory Profiling Functions
+// ========================================
+
+// Print a comprehensive memory allocation report
+// Requires building with --memory-debug flag
+pub fn memory_report() -> i64 {
+    // Memory debugging output - using print for basic report
+    print("Memory report: use --memory-debug for detailed tracking\n");
+    0
+}
+
+// Get current allocated bytes
+// Returns 0 if --memory-debug not enabled
+pub fn memory_current() -> i64 {
+    0  // Requires runtime support with --memory-debug
+}
+
+// Get peak allocated bytes
+// Returns 0 if --memory-debug not enabled
+pub fn memory_peak() -> i64 {
+    0  // Requires runtime support with --memory-debug
+}
+
+// Get total number of allocations made
+// Returns 0 if --memory-debug not enabled
+pub fn memory_alloc_count() -> i64 {
+    0  // Requires runtime support with --memory-debug
+}
+
+// ========================================
+// Core Benchmarking Functions
+// ========================================
+
+// Record a single benchmark timing
+// Call this with elapsed time from your own timing code
+pub fn bench_record(b: i64, elapsed_ns: i64) -> i64 {
+    // Update statistics
+    let iterations: i64 = load_i64(b, 0);
+    store_i64(b, 0, iterations + 1);
+
+    let total: i64 = load_i64(b, 1);
+    store_i64(b, 1, total + elapsed_ns);
+
+    let min_time: i64 = load_i64(b, 2);
+    if elapsed_ns < min_time {
+        store_i64(b, 2, elapsed_ns);
+    }
+
+    let max_time: i64 = load_i64(b, 3);
+    if elapsed_ns > max_time {
+        store_i64(b, 3, elapsed_ns);
+    }
+
+    // Store sample for statistical analysis
+    let samples: i64 = load_i64(b, 4);
+    vec_push(samples, elapsed_ns);
+
+    elapsed_ns
+}
+
+// Start timing a benchmark iteration
+// Returns the start time in nanoseconds
+pub fn bench_start() -> i64 {
+    get_time_ns()
+}
+
+// End timing and record the result
+// Takes bencher and start time, records elapsed time
+pub fn bench_end(b: i64, start_ns: i64) -> i64 {
+    let end_ns: i64 = get_time_ns();
+    let elapsed: i64 = end_ns - start_ns;
+    bench_record(b, elapsed);
+    elapsed
+}
+
+// Reset benchmark statistics (call after warmup)
+pub fn bench_reset(b: i64) -> i64 {
+    store_i64(b, 0, 0);  // iterations
+    store_i64(b, 1, 0);  // total_time_ns
+    store_i64(b, 2, 9223372036854775807);  // min_time_ns (i64 max)
+    store_i64(b, 3, 0);  // max_time_ns
+    let samples: i64 = load_i64(b, 4);
+    vec_clear(samples);
+    store_i64(b, 7, 1);  // warmup_done = true
+    0
+}
+
+// Calculate suggested iteration count based on single iteration time
+// Targets ~1 second total runtime, min 10, max 10 million
+pub fn bench_suggest_iterations(single_iter_ns: i64) -> i64 {
+    let target_time_ns: i64 = 1000000000;  // 1 second
+    var n: i64 = 10;
+
+    if single_iter_ns > 0 {
+        n = target_time_ns / single_iter_ns;
+        if n < 10 {
+            n = 10;
+        }
+        if n > 10000000 {
+            n = 10000000;
+        }
+    }
+
+    n
+}
+
+// ========================================
+// Statistical Analysis
+// ========================================
+
+// Calculate mean time per iteration in nanoseconds
+pub fn bench_mean_ns(b: i64) -> i64 {
+    let iterations: i64 = load_i64(b, 0);
+    if iterations == 0 {
+        return 0;
+    }
+    let total: i64 = load_i64(b, 1);
+    total / iterations
+}
+
+// Calculate standard deviation
+pub fn bench_stddev_ns(b: i64) -> i64 {
+    let samples: i64 = load_i64(b, 4);
+    let n: i64 = vec_len(samples);
+    if n < 2 {
+        return 0;
+    }
+
+    let mean: i64 = bench_mean_ns(b);
+
+    // Calculate variance: sum((x - mean)^2) / (n-1)
+    var sum_sq_diff: i64 = 0;
+    var i: i64 = 0;
+    while i < n {
+        let sample: i64 = vec_get(samples, i);
+        let diff: i64 = sample - mean;
+        sum_sq_diff = sum_sq_diff + (diff * diff);
+        i = i + 1;
+    }
+
+    let variance: i64 = sum_sq_diff / (n - 1);
+
+    // Integer square root approximation
+    isqrt(variance)
+}
+
+// Integer square root using Newton's method
+fn isqrt(n: i64) -> i64 {
+    if n <= 1 {
+        return n;
+    }
+
+    var x: i64 = n;
+    var y: i64 = (x + 1) / 2;
+
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+
+    x
+}
+
+// Get minimum iteration time
+pub fn bench_min_ns(b: i64) -> i64 {
+    load_i64(b, 2)
+}
+
+// Get maximum iteration time
+pub fn bench_max_ns(b: i64) -> i64 {
+    load_i64(b, 3)
+}
+
+// Get iteration count
+pub fn bench_iterations(b: i64) -> i64 {
+    load_i64(b, 0)
+}
+
+// Calculate throughput in bytes per second (if bytes_per_op is set)
+pub fn bench_throughput_bps(b: i64) -> i64 {
+    let bytes_per_op: i64 = load_i64(b, 6);
+    if bytes_per_op == 0 {
+        return 0;
+    }
+
+    let mean_ns: i64 = bench_mean_ns(b);
+    if mean_ns == 0 {
+        return 0;
+    }
+
+    // bytes/sec = bytes_per_op * 1e9 / mean_ns
+    (bytes_per_op * 1000000000) / mean_ns
+}
+
+// ========================================
+// Output Formatting
+// ========================================
+
+// Format time with appropriate unit (ns, us, ms, s)
+pub fn format_time_ns(ns: i64) -> i64 {
+    if ns >= 1000000000 {
+        // Seconds
+        let secs: i64 = ns / 1000000000;
+        let frac: i64 = (ns % 1000000000) / 10000000;  // 2 decimal places
+        return string_concat(
+            string_concat(int_to_string(secs), string_from(".")),
+            string_concat(
+                string_pad_left(int_to_string(frac), 2, 48),  // '0' = 48
+                string_from(" s")
+            )
+        );
+    } else if ns >= 1000000 {
+        // Milliseconds
+        let ms: i64 = ns / 1000000;
+        let frac: i64 = (ns % 1000000) / 10000;
+        return string_concat(
+            string_concat(int_to_string(ms), string_from(".")),
+            string_concat(
+                string_pad_left(int_to_string(frac), 2, 48),
+                string_from(" ms")
+            )
+        );
+    } else if ns >= 1000 {
+        // Microseconds
+        let us: i64 = ns / 1000;
+        let frac: i64 = (ns % 1000) / 10;
+        return string_concat(
+            string_concat(int_to_string(us), string_from(".")),
+            string_concat(
+                string_pad_left(int_to_string(frac), 2, 48),
+                string_from(" us")
+            )
+        );
+    } else {
+        // Nanoseconds
+        return string_concat(int_to_string(ns), string_from(" ns"));
+    }
+}
+
+// Helper: pad string on left with character
+fn string_pad_left(s: i64, min_len: i64, pad_char: i64) -> i64 {
+    let len: i64 = string_len(s);
+    if len >= min_len {
+        return s;
+    }
+
+    var result: i64 = s;
+    var i: i64 = len;
+    while i < min_len {
+        result = string_concat(string_from_char(pad_char), result);
+        i = i + 1;
+    }
+    result
+}
+
+// Format number with thousands separators (e.g., 1,234,567)
+pub fn format_number(n: i64) -> i64 {
+    if n < 1000 {
+        return int_to_string(n);
+    }
+
+    var result: i64 = string_from("");
+    var remaining: i64 = n;
+    var first: bool = true;
+
+    while remaining > 0 {
+        let group: i64 = remaining % 1000;
+        remaining = remaining / 1000;
+
+        if first {
+            result = int_to_string(group);
+            first = false;
+        } else {
+            if remaining > 0 {
+                result = string_concat(
+                    string_concat(string_pad_left(int_to_string(group), 3, 48), string_from(",")),
+                    result
+                );
+            } else {
+                result = string_concat(
+                    string_concat(int_to_string(group), string_from(",")),
+                    result
+                );
+            }
+        }
+    }
+
+    result
+}
+
+// Format benchmark result for human-readable output
+pub fn bench_format_result(b: i64) -> i64 {
+    let name: i64 = bencher_name(b);
+    let mean: i64 = bench_mean_ns(b);
+    let stddev: i64 = bench_stddev_ns(b);
+    let iterations: i64 = bench_iterations(b);
+
+    // Format: "name    X ns/iter (+/- Y)  [N iterations]"
+    var result: i64 = string_pad_right(name, 30, 32);  // ' ' = 32
+    result = string_concat(result, format_number(mean));
+    result = string_concat(result, string_from(" ns/iter (+/- "));
+    result = string_concat(result, format_number(stddev));
+    result = string_concat(result, string_from(")"));
+
+    // Add throughput if set
+    let throughput: i64 = bench_throughput_bps(b);
+    if throughput > 0 {
+        result = string_concat(result, string_from("  ["));
+        result = string_concat(result, format_bytes_per_sec(throughput));
+        result = string_concat(result, string_from("]"));
+    }
+
+    result
+}
+
+// Helper: pad string on right with character
+fn string_pad_right(s: i64, min_len: i64, pad_char: i64) -> i64 {
+    let len: i64 = string_len(s);
+    if len >= min_len {
+        return s;
+    }
+
+    var result: i64 = s;
+    var i: i64 = len;
+    while i < min_len {
+        result = string_concat(result, string_from_char(pad_char));
+        i = i + 1;
+    }
+    result
+}
+
+// Format bytes per second
+fn format_bytes_per_sec(bps: i64) -> i64 {
+    if bps >= 1073741824 {
+        // GB/s
+        let gb: i64 = bps / 1073741824;
+        return string_concat(int_to_string(gb), string_from(" GB/s"));
+    } else if bps >= 1048576 {
+        // MB/s
+        let mb: i64 = bps / 1048576;
+        return string_concat(int_to_string(mb), string_from(" MB/s"));
+    } else if bps >= 1024 {
+        // KB/s
+        let kb: i64 = bps / 1024;
+        return string_concat(int_to_string(kb), string_from(" KB/s"));
+    } else {
+        return string_concat(int_to_string(bps), string_from(" B/s"));
+    }
+}
+
+// ========================================
+// JSON Output for Machine Processing
+// ========================================
+
+// Format benchmark result as JSON
+pub fn bench_format_json(b: i64) -> i64 {
+    let name: i64 = bencher_name(b);
+    let mean: i64 = bench_mean_ns(b);
+    let stddev: i64 = bench_stddev_ns(b);
+    let min: i64 = bench_min_ns(b);
+    let max: i64 = bench_max_ns(b);
+    let iterations: i64 = bench_iterations(b);
+    let throughput: i64 = bench_throughput_bps(b);
+
+    var json: i64 = string_from("{");
+    json = string_concat(json, string_from("\"name\":\""));
+    json = string_concat(json, name);
+    json = string_concat(json, string_from("\","));
+    json = string_concat(json, string_from("\"iterations\":"));
+    json = string_concat(json, int_to_string(iterations));
+    json = string_concat(json, string_from(","));
+    json = string_concat(json, string_from("\"mean_ns\":"));
+    json = string_concat(json, int_to_string(mean));
+    json = string_concat(json, string_from(","));
+    json = string_concat(json, string_from("\"stddev_ns\":"));
+    json = string_concat(json, int_to_string(stddev));
+    json = string_concat(json, string_from(","));
+    json = string_concat(json, string_from("\"min_ns\":"));
+    json = string_concat(json, int_to_string(min));
+    json = string_concat(json, string_from(","));
+    json = string_concat(json, string_from("\"max_ns\":"));
+    json = string_concat(json, int_to_string(max));
+
+    if throughput > 0 {
+        json = string_concat(json, string_from(","));
+        json = string_concat(json, string_from("\"throughput_bps\":"));
+        json = string_concat(json, int_to_string(throughput));
+    }
+
+    json = string_concat(json, string_from("}"));
+    json
+}
+
+// ========================================
+// Benchmark Comparison
+// ========================================
+
+// Compare two benchmark results
+// Returns improvement ratio (new/old) - values < 1.0 mean improvement
+pub fn bench_compare(baseline_mean_ns: i64, current_mean_ns: i64) -> i64 {
+    if baseline_mean_ns == 0 {
+        return 100;  // Represent as 100% (1.0 * 100)
+    }
+
+    // Return percentage: (current / baseline) * 100
+    (current_mean_ns * 100) / baseline_mean_ns
+}
+
+// Format comparison result
+pub fn format_comparison(percent: i64) -> i64 {
+    if percent < 100 {
+        let improvement: i64 = 100 - percent;
+        return string_concat(
+            string_concat(string_from("-"), int_to_string(improvement)),
+            string_from("% (faster)")
+        );
+    } else if percent > 100 {
+        let regression: i64 = percent - 100;
+        return string_concat(
+            string_concat(string_from("+"), int_to_string(regression)),
+            string_from("% (slower)")
+        );
+    } else {
+        return string_from("no change");
+    }
+}
+
+// ========================================
+// Benchmark Registry (for sxc bench)
+// ========================================
+
+// Global benchmark registry - initialized lazily
+// Note: In a library context, this creates a new registry per compilation unit.
+// For shared registry, use the runtime-provided bench_get_registry() intrinsic.
+
+// Initialize registry and return it
+// Each call returns a fresh registry - for shared state, use runtime intrinsics
+fn ensure_registry() -> i64 {
+    vec_new()
+}
+
+// Register a benchmark function
+pub fn register_bench(name: i64, func_ptr: i64) -> i64 {
+    let registry: i64 = ensure_registry();
+
+    // Store as a pair (name, func_ptr)
+    let pair: i64 = malloc(16);
+    store_i64(pair, 0, name);
+    store_i64(pair, 1, func_ptr);
+
+    vec_push(registry, pair);
+    0
+}
+
+// Get number of registered benchmarks
+pub fn bench_count() -> i64 {
+    let registry: i64 = ensure_registry();
+    vec_len(registry)
+}
+
+// Get benchmark at index (returns pair)
+pub fn bench_get(index: i64) -> i64 {
+    let registry: i64 = ensure_registry();
+    vec_get(registry, index)
+}
+
+// ========================================
+// Benchmark Runner
+// ========================================
+
+// Run all registered benchmarks with human-readable output
+pub fn run_benchmarks() -> i64 {
+    let registry: i64 = ensure_registry();
+    let count: i64 = vec_len(registry);
+
+    if count == 0 {
+        print("No benchmarks registered.\n");
+        return 0;
+    }
+
+    print("Running benchmarks...\n\n");
+
+    var results: i64 = vec_new();
+    var i: i64 = 0;
+
+    while i < count {
+        let pair: i64 = vec_get(registry, i);
+        let name: i64 = load_i64(pair, 0);
+        let func_ptr: i64 = load_i64(pair, 1);
+
+        // Create bencher
+        let b: i64 = bencher_new(name);
+
+        // Run benchmark (func_ptr should be a fn(i64)->i64 that takes bencher)
+        // For now, we call the registered benchmark function
+        // The function is expected to call bench_run or bench_iter internally
+        call_bench_fn(func_ptr, b);
+
+        // Print result
+        print(bench_format_result(b));
+        print("\n");
+
+        vec_push(results, b);
+        i = i + 1;
+    }
+
+    print("\n");
+    count
+}
+
+// Run all benchmarks with JSON output
+pub fn run_benchmarks_json() -> i64 {
+    let registry: i64 = ensure_registry();
+    let count: i64 = vec_len(registry);
+
+    if count == 0 {
+        print("{\"benchmarks\":[]}\n");
+        return 0;
+    }
+
+    print("{\"benchmarks\":[\n");
+
+    var i: i64 = 0;
+    while i < count {
+        let pair: i64 = vec_get(registry, i);
+        let name: i64 = load_i64(pair, 0);
+        let func_ptr: i64 = load_i64(pair, 1);
+
+        let b: i64 = bencher_new(name);
+        call_bench_fn(func_ptr, b);
+
+        if i > 0 {
+            print(",\n");
+        }
+        print("  ");
+        print(bench_format_json(b));
+
+        i = i + 1;
+    }
+
+    print("\n]}\n");
+    count
+}
+
+// Call a benchmark function pointer
+// This is a placeholder - the actual implementation would use
+// runtime support for indirect function calls
+fn call_bench_fn(func_ptr: i64, bencher: i64) -> i64 {
+    // Note: Function pointer calling requires runtime support
+    // For now, this is a stub that would be replaced by runtime
+    // intrinsic_call_fn_ptr(func_ptr, bencher)
+    0
+}
+
+// ========================================
+// Convenience Functions
+// ========================================
+
+// Note: The original bench_n function used a closure parameter which causes
+// a compiler segfault. Use the new API instead:
+//
+// Example usage:
+//   let b: i64 = bencher_new(string_from("my_bench"));
+//   var i: i64 = 0;
+//   while i < 100 {
+//       let start: i64 = bench_start();
+//       // ... your code to benchmark ...
+//       bench_end(b, start);
+//       i = i + 1;
+//   }
+//   print(bench_format_result(b));
+
+// Black box to prevent compiler optimization
+// Forces the value to be considered used
+pub fn black_box(value: i64) -> i64 {
+    // Volatile store/load to prevent optimization
+    let ptr: i64 = malloc(8);
+    store_i64(ptr, 0, value);
+    let result: i64 = load_i64(ptr, 0);
+    result
+}
+
+// ========================================
+// Benchmark File I/O (for persistence)
+// ========================================
+
+// Save benchmark results to file for comparison
+pub fn save_benchmark_results(filename: i64, results: i64) -> i64 {
+    let count: i64 = vec_len(results);
+
+    var json: i64 = string_from("{\"results\":[\n");
+
+    var i: i64 = 0;
+    while i < count {
+        let b: i64 = vec_get(results, i);
+
+        if i > 0 {
+            json = string_concat(json, string_from(",\n"));
+        }
+        json = string_concat(json, string_from("  "));
+        json = string_concat(json, bench_format_json(b));
+
+        i = i + 1;
+    }
+
+    json = string_concat(json, string_from("\n]}\n"));
+
+    write_file(filename, json);
+    0
+}
+
+// Load baseline results from file
+pub fn load_baseline(filename: i64) -> i64 {
+    let content: i64 = read_file(filename);
+    if content == 0 {
+        return vec_new();
+    }
+
+    // Parse JSON and return Vec of (name, mean_ns) pairs
+    // Simplified parsing - assumes well-formed JSON
+    parse_benchmark_json(content)
+}
+
+// Helper: find a character in a string starting from a position
+fn find_char_from(s: i64, ch: i64, start: i64) -> i64 {
+    let len: i64 = string_len(s);
+    var i: i64 = start;
+    while i < len {
+        if string_char_at(s, i) == ch {
+            return i;
+        }
+        i = i + 1;
+    }
+    0 - 1  // Return -1 if not found
+}
+
+// Simple JSON parser for benchmark results
+fn parse_benchmark_json(json: i64) -> i64 {
+    let results: i64 = vec_new();
+    let len: i64 = string_len(json);
+
+    // Find "name" and "mean_ns" pairs
+    var pos: i64 = 0;
+    while pos < len {
+        let name_start: i64 = string_find(json, string_from("\"name\":\""), pos);
+        if name_start < 0 {
+            return results;
+        }
+
+        let name_begin: i64 = name_start + 8;
+        let name_end: i64 = find_char_from(json, 34, name_begin);  // '"' = 34
+        if name_end < 0 {
+            return results;
+        }
+
+        let name: i64 = string_slice(json, name_begin, name_end);
+
+        // Find mean_ns
+        let mean_start: i64 = string_find(json, string_from("\"mean_ns\":"), name_end);
+        if mean_start < 0 {
+            return results;
+        }
+
+        let mean_begin: i64 = mean_start + 10;
+        var mean_end: i64 = mean_begin;
+        while mean_end < len {
+            let c: i64 = string_char_at(json, mean_end);
+            if c < 48 || c > 57 {  // Not a digit
+                break;
+            }
+            mean_end = mean_end + 1;
+        }
+
+        let mean_str: i64 = string_slice(json, mean_begin, mean_end);
+        let mean_ns: i64 = string_to_int(mean_str);
+
+        // Store pair
+        let pair: i64 = malloc(16);
+        store_i64(pair, 0, name);
+        store_i64(pair, 1, mean_ns);
+        vec_push(results, pair);
+
+        pos = mean_end;
+    }
+
+    results
+}
+
+// Compare current results with baseline
+pub fn compare_with_baseline(baseline: i64, current: i64) -> i64 {
+    let current_count: i64 = vec_len(current);
+
+    print("\n=== Comparison with Baseline ===\n\n");
+
+    var i: i64 = 0;
+    while i < current_count {
+        let curr_b: i64 = vec_get(current, i);
+        let name: i64 = bencher_name(curr_b);
+        let curr_mean: i64 = bench_mean_ns(curr_b);
+
+        // Find in baseline
+        let base_mean: i64 = find_baseline_mean(baseline, name);
+
+        print(string_pad_right(name, 30, 32));
+
+        if base_mean > 0 {
+            let percent: i64 = bench_compare(base_mean, curr_mean);
+            print(format_comparison(percent));
+        } else {
+            print("(new benchmark)");
+        }
+
+        print("\n");
+        i = i + 1;
+    }
+
+    0
+}
+
+// Find baseline mean for a given benchmark name
+fn find_baseline_mean(baseline: i64, name: i64) -> i64 {
+    let count: i64 = vec_len(baseline);
+    var i: i64 = 0;
+
+    while i < count {
+        let pair: i64 = vec_get(baseline, i);
+        let base_name: i64 = load_i64(pair, 0);
+
+        if string_eq(base_name, name) {
+            return load_i64(pair, 1);
+        }
+
+        i = i + 1;
+    }
+
+    0
+}

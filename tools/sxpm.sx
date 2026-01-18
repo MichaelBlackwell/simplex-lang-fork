@@ -12,7 +12,7 @@ use lib::safety;
 use lib::platform;
 
 // Version - now uses centralized constant
-fn SXPM_VERSION() -> i64 { SXPM_VERSION() }
+fn SXPM_VERSION() -> i64 { version::SXPM_VERSION() }
 
 // ============================================================================
 // Help and Version
@@ -32,12 +32,17 @@ fn sxpm_show_help() {
     println("    test                 Run tests");
     println("    check                Type check without building");
     println("    clean                Remove build artifacts");
+    println("");
+    println("DEPENDENCY COMMANDS:");
     println("    add <package>        Add a dependency");
     println("    remove <package>     Remove a dependency");
-    println("    update               Update dependencies");
-    println("    search <query>       Search for packages");
+    println("    install              Install dependencies (generates simplex.lock)");
+    println("    update               Update dependencies and refresh lock file");
+    println("");
+    println("REGISTRY COMMANDS:");
+    println("    search <query>       Search for packages in registry");
     println("    info <package>       Show package information");
-    println("    install <package>    Install a package");
+    println("    publish              Publish package to registry");
     println("");
     println("MODEL COMMANDS:");
     println("    model list           List available/installed models");
@@ -50,6 +55,12 @@ fn sxpm_show_help() {
     println("    --version            Show version");
     println("    --release            Build in release mode");
     println("    -v, --verbose        Verbose output");
+    println("    --frozen             Use exact versions from simplex.lock");
+    println("    --dry-run            Preview publish without uploading");
+    println("");
+    println("ENVIRONMENT VARIABLES:");
+    println("    SIMPLEX_REGISTRY     Package registry URL");
+    println("    SIMPLEX_API_TOKEN    API token for publishing packages");
 }
 
 fn sxpm_show_version() {
@@ -125,17 +136,6 @@ fn template_test_sx(name: i64) -> i64 {
 /// Eliminated duplication across 5+ files
 fn get_os_name() -> i64 {
     platform::get_os_name()
-}
-    }
-    // Check for macOS via OSTYPE or uname
-    let ostype: i64 = cli_getenv("OSTYPE");
-    if ostype != 0 {
-        if string_starts_with(ostype, "darwin") {
-            return "macos";
-        }
-    }
-    // Default to linux (covers most Unix-like systems)
-    "linux"
 }
 
 /// Get the path separator for the current platform
@@ -1287,6 +1287,99 @@ fn cmd_remove(args: i64, argc: i64, arg_idx: i64) -> i64 {
 }
 
 // ============================================================================
+// Package Registry Configuration
+// ============================================================================
+
+// Registry URL - can be overridden via SIMPLEX_REGISTRY env
+fn get_registry_url() -> i64 {
+    let env_url: i64 = cli_getenv("SIMPLEX_REGISTRY");
+    if env_url != 0 && string_len(env_url) > 0 {
+        return env_url;
+    }
+    // Default to Simplex package registry
+    "https://registry.simplex-lang.org"
+}
+
+// Local registry cache directory
+fn get_registry_cache_dir() -> i64 {
+    let home: i64 = get_home_dir();
+    path_join(path_join(home, ".simplex"), "registry-cache")
+}
+
+// Get API endpoint for registry operations
+fn registry_api_url(endpoint: i64) -> i64 {
+    let base: i64 = get_registry_url();
+    let sb: i64 = sb_new();
+    sb_append(sb, base);
+    sb_append(sb, "/api/v1");
+    sb_append(sb, endpoint);
+    let result: i64 = sb_to_string(sb);
+    sb_free(sb);
+    result
+}
+
+// ============================================================================
+// SHA256 Checksum Support
+// ============================================================================
+
+// Compute SHA256 checksum of a file using external tool
+fn compute_file_sha256(path: i64) -> i64 {
+    let os: i64 = get_os_name();
+    let cmd: i64 = sb_new();
+
+    if string_eq(os, "macos") {
+        // macOS uses shasum
+        sb_append(cmd, "shasum -a 256 \"");
+        sb_append(cmd, path);
+        sb_append(cmd, "\" 2>/dev/null | cut -d' ' -f1");
+    } else if string_eq(os, "windows") {
+        // Windows uses certutil
+        sb_append(cmd, "certutil -hashfile \"");
+        sb_append(cmd, path);
+        sb_append(cmd, "\" SHA256 | findstr /v \"hash\"");
+    } else {
+        // Linux uses sha256sum
+        sb_append(cmd, "sha256sum \"");
+        sb_append(cmd, path);
+        sb_append(cmd, "\" 2>/dev/null | cut -d' ' -f1");
+    }
+
+    let cmd_str: i64 = sb_to_string(cmd);
+    sb_free(cmd);
+
+    // Execute and capture output
+    let result: i64 = process_capture(cmd_str);
+    if result == 0 || string_len(result) == 0 {
+        return "";
+    }
+
+    // Trim whitespace from result
+    string_trim(result)
+}
+
+// Verify file checksum matches expected
+fn verify_checksum(path: i64, expected: i64) -> bool {
+    if string_len(expected) == 0 {
+        // No checksum to verify
+        return true;
+    }
+
+    let actual: i64 = compute_file_sha256(path);
+    if string_len(actual) == 0 {
+        println("Warning: Could not compute checksum");
+        return true;  // Proceed without verification
+    }
+
+    // Handle sha256: prefix
+    var expected_hash: i64 = expected;
+    if string_starts_with(expected, "sha256:") {
+        expected_hash = string_slice(expected, 7, string_len(expected));
+    }
+
+    string_eq(actual, expected_hash)
+}
+
+// ============================================================================
 // Search, Info, Install Commands
 // ============================================================================
 
@@ -1300,8 +1393,82 @@ fn cmd_search(args: i64, argc: i64, arg_idx: i64) -> i64 {
     let query: i64 = vec_get(args, arg_idx);
     print("Searching for: ");
     println(query);
-    println("Registry search not yet implemented");
-    println("For now, use git dependencies or local paths");
+    println("");
+
+    // Try to search the registry
+    let search_url: i64 = registry_api_url("/search?q=");
+    let url: i64 = string_concat(search_url, query);
+
+    // Use curl to fetch search results
+    let cmd: i64 = sb_new();
+    sb_append(cmd, "curl -s \"");
+    sb_append(cmd, url);
+    sb_append(cmd, "\"");
+    let cmd_str: i64 = sb_to_string(cmd);
+    sb_free(cmd);
+
+    let response: i64 = process_capture(cmd_str);
+
+    if response == 0 || string_len(response) == 0 {
+        println("Could not connect to registry.");
+        println("");
+        println("Alternative package sources:");
+        println("  1. Git dependencies:");
+        println("     sxpm add my-pkg --git https://github.com/user/my-pkg");
+        println("");
+        println("  2. Local path dependencies:");
+        println("     sxpm add my-pkg --path ../my-pkg");
+        println("");
+        println("  3. Browse packages at: https://github.com/topics/simplex-lang");
+        return 0;
+    }
+
+    // Parse JSON response
+    let results: i64 = json_parse(response);
+    if results == 0 {
+        println("Invalid response from registry");
+        return 1;
+    }
+
+    let packages: i64 = json_get(results, "packages");
+    if json_is_array(packages) == false {
+        println("No packages found matching query.");
+        return 0;
+    }
+
+    let count: i64 = json_array_len(packages);
+    if count == 0 {
+        println("No packages found matching query.");
+        return 0;
+    }
+
+    print("Found ");
+    print(int_to_string(count));
+    println(" package(s):");
+    println("");
+
+    var i: i64 = 0;
+    while i < count {
+        let pkg: i64 = json_get_index(packages, i);
+        let name: i64 = json_as_string(json_get(pkg, "name"));
+        let version: i64 = json_as_string(json_get(pkg, "version"));
+        let desc: i64 = json_as_string(json_get(pkg, "description"));
+
+        print("  ");
+        print(name);
+        print(" (");
+        print(version);
+        println(")");
+
+        if string_len(desc) > 0 {
+            print("    ");
+            println(desc);
+        }
+        println("");
+
+        i = i + 1;
+    }
+
     0
 }
 
@@ -1313,9 +1480,121 @@ fn cmd_info(args: i64, argc: i64, arg_idx: i64) -> i64 {
     }
 
     let package_name: i64 = vec_get(args, arg_idx);
-    print("Package: ");
+
+    // Fetch package info from registry
+    let info_url: i64 = registry_api_url("/packages/");
+    let url: i64 = string_concat(info_url, package_name);
+
+    let cmd: i64 = sb_new();
+    sb_append(cmd, "curl -s \"");
+    sb_append(cmd, url);
+    sb_append(cmd, "\"");
+    let cmd_str: i64 = sb_to_string(cmd);
+    sb_free(cmd);
+
+    let response: i64 = process_capture(cmd_str);
+
+    if response == 0 || string_len(response) == 0 {
+        print("Package '");
+        print(package_name);
+        println("' not found in registry.");
+        println("");
+        println("Try searching with: sxpm search <query>");
+        return 1;
+    }
+
+    let pkg: i64 = json_parse(response);
+    if pkg == 0 {
+        println("Invalid response from registry");
+        return 1;
+    }
+
+    // Check for error response
+    let error: i64 = json_get(pkg, "error");
+    if json_is_string(error) {
+        print("Error: ");
+        println(json_as_string(error));
+        return 1;
+    }
+
+    println("Package Information:");
+    println("====================");
+    println("");
+
+    print("Name:        ");
+    println(json_as_string(json_get(pkg, "name")));
+
+    print("Version:     ");
+    println(json_as_string(json_get(pkg, "version")));
+
+    let desc: i64 = json_as_string(json_get(pkg, "description"));
+    if string_len(desc) > 0 {
+        print("Description: ");
+        println(desc);
+    }
+
+    let license: i64 = json_as_string(json_get(pkg, "license"));
+    if string_len(license) > 0 {
+        print("License:     ");
+        println(license);
+    }
+
+    let repo: i64 = json_as_string(json_get(pkg, "repository"));
+    if string_len(repo) > 0 {
+        print("Repository:  ");
+        println(repo);
+    }
+
+    let homepage: i64 = json_as_string(json_get(pkg, "homepage"));
+    if string_len(homepage) > 0 {
+        print("Homepage:    ");
+        println(homepage);
+    }
+
+    // Show available versions
+    let versions: i64 = json_get(pkg, "versions");
+    if json_is_array(versions) {
+        println("");
+        println("Available versions:");
+        var i: i64 = 0;
+        let count: i64 = json_array_len(versions);
+        while i < count && i < 10 {
+            print("  - ");
+            println(json_as_string(json_get_index(versions, i)));
+            i = i + 1;
+        }
+        if count > 10 {
+            print("  ... and ");
+            print(int_to_string(count - 10));
+            println(" more");
+        }
+    }
+
+    // Show dependencies
+    let deps: i64 = json_get(pkg, "dependencies");
+    if json_is_object(deps) {
+        let keys: i64 = json_keys(deps);
+        if vec_len(keys) > 0 {
+            println("");
+            println("Dependencies:");
+            var j: i64 = 0;
+            while j < vec_len(keys) {
+                let dep_name: i64 = vec_get(keys, j);
+                let dep_ver: i64 = json_as_string(json_get(deps, dep_name));
+                print("  ");
+                print(dep_name);
+                print(": ");
+                println(dep_ver);
+                j = j + 1;
+            }
+        }
+    }
+
+    println("");
+    println("Install with: sxpm add ");
+    print("              ");
     println(package_name);
-    println("Registry info not yet implemented");
+
     0
 }
 
@@ -1328,12 +1607,340 @@ fn cmd_install(args: i64, argc: i64, arg_idx: i64) -> i64 {
         return 1;
     }
 
-    println("Installing dependencies...");
-    let result: i64 = resolve_dependencies(manifest, true);
-    if result == 0 {
-        println("Dependencies installed successfully");
+    var verbose: bool = false;
+    var frozen: bool = false;
+
+    // Parse options
+    var i: i64 = arg_idx;
+    while i < argc {
+        let arg: i64 = vec_get(args, i);
+        if string_eq(arg, "-v") || string_eq(arg, "--verbose") {
+            verbose = true;
+        } else if string_eq(arg, "--frozen") {
+            frozen = true;
+        }
+        i = i + 1;
     }
-    result
+
+    println("Installing dependencies...");
+
+    // Check for lock file
+    let lockfile: i64 = load_lockfile(verbose);
+
+    if frozen {
+        // Frozen install - must have lock file
+        if lockfile == 0 {
+            println("Error: --frozen requires simplex.lock file");
+            println("Run 'sxpm install' first to generate lock file");
+            return 1;
+        }
+        println("Using frozen dependencies from simplex.lock");
+    }
+
+    // Resolve and fetch dependencies
+    let result: i64 = resolve_with_lockfile(manifest, verbose);
+    if result != 0 {
+        println("Error: failed to resolve dependencies");
+        return result;
+    }
+
+    // Verify checksums if using lock file
+    if lockfile != 0 {
+        let verify_result: i64 = verify_lockfile_checksums(lockfile, verbose);
+        if verify_result != 0 {
+            println("Error: checksum verification failed");
+            return verify_result;
+        }
+    }
+
+    println("");
+    println("Dependencies installed successfully");
+
+    // Show lock file status
+    if check_file_exists("simplex.lock") {
+        println("Lock file: simplex.lock (up to date)");
+    }
+
+    0
+}
+
+// ============================================================================
+// Package Publishing
+// ============================================================================
+
+fn cmd_publish(args: i64, argc: i64, arg_idx: i64) -> i64 {
+    // Load manifest
+    let manifest: i64 = manifest_load("simplex.json");
+    if manifest == 0 {
+        println("Error: simplex.json not found");
+        println("Run 'sxpm init' to create a package");
+        return 1;
+    }
+
+    // Validate manifest
+    let errors: i64 = manifest_validate(manifest);
+    if vec_len(errors) > 0 {
+        println("Error: invalid simplex.json:");
+        var i: i64 = 0;
+        while i < vec_len(errors) {
+            print("  - ");
+            println(vec_get(errors, i));
+            i = i + 1;
+        }
+        return 1;
+    }
+
+    let name: i64 = manifest_name(manifest);
+    let version: i64 = manifest_version(manifest);
+
+    var dry_run: bool = false;
+    var verbose: bool = false;
+
+    // Parse options
+    var i: i64 = arg_idx;
+    while i < argc {
+        let arg: i64 = vec_get(args, i);
+        if string_eq(arg, "--dry-run") {
+            dry_run = true;
+        } else if string_eq(arg, "-v") || string_eq(arg, "--verbose") {
+            verbose = true;
+        }
+        i = i + 1;
+    }
+
+    println("Publishing package to registry...");
+    println("");
+    print("  Package: ");
+    println(name);
+    print("  Version: ");
+    println(version);
+
+    // Check for required fields
+    let description: i64 = json_as_string(json_get(manifest, "description"));
+    if string_len(description) == 0 {
+        println("");
+        println("Warning: Package has no description");
+        println("Consider adding a 'description' field to simplex.json");
+    }
+
+    let license: i64 = json_as_string(json_get(manifest, "license"));
+    if string_len(license) == 0 {
+        println("");
+        println("Warning: Package has no license specified");
+        println("Consider adding a 'license' field to simplex.json");
+    }
+
+    // Check for README
+    var readme_path: i64 = "";
+    if check_file_exists("README.md") {
+        readme_path = "README.md";
+    } else if check_file_exists("readme.md") {
+        readme_path = "readme.md";
+    } else if check_file_exists("README.txt") {
+        readme_path = "README.txt";
+    }
+
+    if string_len(readme_path) == 0 {
+        println("");
+        println("Warning: No README file found");
+        println("Consider adding a README.md for package documentation");
+    }
+
+    // Create package tarball
+    println("");
+    println("Creating package archive...");
+
+    let tarball_name: i64 = sb_new();
+    sb_append(tarball_name, name);
+    sb_append(tarball_name, "-");
+    sb_append(tarball_name, version);
+    sb_append(tarball_name, ".tar.gz");
+    let tarball_path: i64 = sb_to_string(tarball_name);
+    sb_free(tarball_name);
+
+    // Build list of files to include
+    let files_to_pack: i64 = vec_new();
+    vec_push(files_to_pack, "simplex.json");
+
+    // Include source files
+    if check_file_exists("src") {
+        vec_push(files_to_pack, "src");
+    }
+
+    // Include README if present
+    if string_len(readme_path) > 0 {
+        vec_push(files_to_pack, readme_path);
+    }
+
+    // Include LICENSE if present
+    if check_file_exists("LICENSE") {
+        vec_push(files_to_pack, "LICENSE");
+    } else if check_file_exists("LICENSE.md") {
+        vec_push(files_to_pack, "LICENSE.md");
+    } else if check_file_exists("LICENSE.txt") {
+        vec_push(files_to_pack, "LICENSE.txt");
+    }
+
+    // Build tar command
+    let tar_cmd: i64 = sb_new();
+    sb_append(tar_cmd, "tar -czf \"");
+    sb_append(tar_cmd, tarball_path);
+    sb_append(tar_cmd, "\"");
+
+    i = 0;
+    while i < vec_len(files_to_pack) {
+        sb_append(tar_cmd, " \"");
+        sb_append(tar_cmd, vec_get(files_to_pack, i));
+        sb_append(tar_cmd, "\"");
+        i = i + 1;
+    }
+
+    let tar_cmd_str: i64 = sb_to_string(tar_cmd);
+    sb_free(tar_cmd);
+
+    if verbose {
+        print("  Running: ");
+        println(tar_cmd_str);
+    }
+
+    let tar_result: i64 = process_run(tar_cmd_str);
+    if tar_result != 0 {
+        println("Error: Failed to create package archive");
+        return 1;
+    }
+
+    // Compute checksum
+    let checksum: i64 = compute_file_sha256(tarball_path);
+    print("  Checksum: sha256:");
+    println(checksum);
+
+    // Get file size
+    let size_cmd: i64 = sb_new();
+    let os: i64 = get_os_name();
+    if string_eq(os, "macos") {
+        sb_append(size_cmd, "stat -f%z \"");
+    } else {
+        sb_append(size_cmd, "stat --printf='%s' \"");
+    }
+    sb_append(size_cmd, tarball_path);
+    sb_append(size_cmd, "\"");
+    let size_str: i64 = process_capture(sb_to_string(size_cmd));
+    sb_free(size_cmd);
+
+    print("  Size: ");
+    print(string_trim(size_str));
+    println(" bytes");
+
+    if dry_run {
+        println("");
+        println("Dry run complete. Package not published.");
+        println("");
+        print("Archive created: ");
+        println(tarball_path);
+        println("");
+        println("To publish for real, run: sxpm publish");
+
+        // Clean up tarball
+        process_run(get_rm_command(tarball_path));
+        return 0;
+    }
+
+    // Upload to registry
+    println("");
+    println("Uploading to registry...");
+
+    // Check for API token
+    let api_token: i64 = cli_getenv("SIMPLEX_API_TOKEN");
+    if api_token == 0 || string_len(api_token) == 0 {
+        println("");
+        println("Error: No API token found");
+        println("");
+        println("To publish packages, you need an API token.");
+        println("Set the SIMPLEX_API_TOKEN environment variable:");
+        println("  export SIMPLEX_API_TOKEN=your_token_here");
+        println("");
+        println("Get your token at: https://registry.simplex-lang.org/tokens");
+
+        // Clean up tarball
+        process_run(get_rm_command(tarball_path));
+        return 1;
+    }
+
+    // Build upload request
+    let upload_url: i64 = registry_api_url("/packages");
+    let upload_cmd: i64 = sb_new();
+    sb_append(upload_cmd, "curl -s -X POST ");
+    sb_append(upload_cmd, "-H \"Authorization: Bearer ");
+    sb_append(upload_cmd, api_token);
+    sb_append(upload_cmd, "\" ");
+    sb_append(upload_cmd, "-H \"Content-Type: multipart/form-data\" ");
+    sb_append(upload_cmd, "-F \"package=@");
+    sb_append(upload_cmd, tarball_path);
+    sb_append(upload_cmd, "\" ");
+    sb_append(upload_cmd, "-F \"name=");
+    sb_append(upload_cmd, name);
+    sb_append(upload_cmd, "\" ");
+    sb_append(upload_cmd, "-F \"version=");
+    sb_append(upload_cmd, version);
+    sb_append(upload_cmd, "\" ");
+    sb_append(upload_cmd, "-F \"checksum=sha256:");
+    sb_append(upload_cmd, checksum);
+    sb_append(upload_cmd, "\" ");
+    sb_append(upload_cmd, "\"");
+    sb_append(upload_cmd, upload_url);
+    sb_append(upload_cmd, "\"");
+
+    let upload_cmd_str: i64 = sb_to_string(upload_cmd);
+    sb_free(upload_cmd);
+
+    if verbose {
+        println("  Uploading...");
+    }
+
+    let response: i64 = process_capture(upload_cmd_str);
+
+    // Clean up tarball
+    process_run(get_rm_command(tarball_path));
+
+    // Parse response
+    if response == 0 || string_len(response) == 0 {
+        println("Error: No response from registry");
+        println("Check your network connection and try again");
+        return 1;
+    }
+
+    let result: i64 = json_parse(response);
+    if result == 0 {
+        println("Error: Invalid response from registry");
+        if verbose {
+            print("Response: ");
+            println(response);
+        }
+        return 1;
+    }
+
+    // Check for error in response
+    let error: i64 = json_get(result, "error");
+    if json_is_string(error) {
+        println("");
+        print("Error: ");
+        println(json_as_string(error));
+        return 1;
+    }
+
+    // Success!
+    println("");
+    print("Successfully published ");
+    print(name);
+    print(" v");
+    println(version);
+    println("");
+    print("View at: ");
+    print(get_registry_url());
+    print("/packages/");
+    println(name);
+
+    0
 }
 
 // ============================================================================
@@ -1802,23 +2409,64 @@ fn fetch_dependencies(manifest: i64, verbose: bool) -> i64 {
 }
 
 // ============================================================================
-// Lock File Generation
+// Lock File Generation (TOML format with SHA256 checksums)
 // ============================================================================
 
-// Generate simplex.lock from resolved dependency graph
+// Determine source type for a dependency
+fn get_source_type(path: i64) -> i64 {
+    if string_eq(path, ".") {
+        return "root";
+    } else if string_starts_with(path, ".simplex/deps") {
+        return "registry";
+    } else {
+        return "path";
+    }
+}
+
+// Compute checksum for a package directory
+fn compute_package_checksum(path: i64) -> i64 {
+    // For root package, skip checksum
+    if string_eq(path, ".") {
+        return "";
+    }
+
+    // Hash the simplex.json file as the package identifier
+    let manifest_path: i64 = path_join(path, "simplex.json");
+    if check_file_exists(manifest_path) {
+        return compute_file_sha256(manifest_path);
+    }
+
+    ""
+}
+
+// Generate simplex.lock from resolved dependency graph (TOML format)
 fn generate_lockfile(graph: DepGraph, verbose: bool) -> i64 {
     if verbose {
         println("Generating simplex.lock...");
     }
 
     let sb: i64 = sb_new();
-    sb_append(sb, "{\n");
-    sb_append(sb, "  \"version\": 1,\n");
-    sb_append(sb, "  \"packages\": {\n");
+
+    // Header comment
+    sb_append(sb, "# simplex.lock - DO NOT EDIT MANUALLY\n");
+    sb_append(sb, "# Generated by sxpm ");
+    sb_append(sb, SXPM_VERSION());
+    sb_append(sb, "\n");
+    sb_append(sb, "# This file pins exact dependency versions for reproducible builds.\n");
+    sb_append(sb, "\n");
+
+    // Metadata section
+    sb_append(sb, "[metadata]\n");
+    sb_append(sb, "version = 1\n");
+    sb_append(sb, "generated = \"");
+    // Add timestamp (simplified - just date)
+    let timestamp: i64 = process_capture("date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown");
+    sb_append(sb, string_trim(timestamp));
+    sb_append(sb, "\"\n");
+    sb_append(sb, "\n");
 
     let keys: i64 = hashmap_keys(graph.nodes);
     var i: i64 = 0;
-    var first: bool = true;
 
     while i < vec_len(keys) {
         let name: i64 = vec_get(keys, i);
@@ -1827,55 +2475,59 @@ fn generate_lockfile(graph: DepGraph, verbose: bool) -> i64 {
         if node_opt != 0 {
             let node: DepNode = node_opt;
 
-            if first == false {
-                sb_append(sb, ",\n");
-            }
-            first = false;
+            // Skip root package in lock file output
+            if string_eq(node.path, ".") == false {
+                sb_append(sb, "[[package]]\n");
 
-            sb_append(sb, "    \"");
-            sb_append(sb, name);
-            sb_append(sb, "\": {\n");
+                sb_append(sb, "name = \"");
+                sb_append(sb, name);
+                sb_append(sb, "\"\n");
 
-            sb_append(sb, "      \"version\": \"");
-            sb_append(sb, node.version);
-            sb_append(sb, "\",\n");
+                sb_append(sb, "version = \"");
+                sb_append(sb, node.version);
+                sb_append(sb, "\"\n");
 
-            sb_append(sb, "      \"source\": \"");
-            if string_eq(node.path, ".") {
-                sb_append(sb, "root");
-            } else if string_starts_with(node.path, ".simplex/deps") {
-                sb_append(sb, "registry");
-            } else {
-                sb_append(sb, "path");
-            }
-            sb_append(sb, "\",\n");
-
-            sb_append(sb, "      \"path\": \"");
-            sb_append(sb, node.path);
-            sb_append(sb, "\",\n");
-
-            // Dependencies list
-            sb_append(sb, "      \"dependencies\": [");
-            var j: i64 = 0;
-            while j < vec_len(node.deps) {
-                if j > 0 {
-                    sb_append(sb, ", ");
+                // Compute and add checksum
+                let checksum: i64 = compute_package_checksum(node.path);
+                if string_len(checksum) > 0 {
+                    sb_append(sb, "checksum = \"sha256:");
+                    sb_append(sb, checksum);
+                    sb_append(sb, "\"\n");
                 }
-                sb_append(sb, "\"");
-                sb_append(sb, vec_get(node.deps, j));
-                sb_append(sb, "\"");
-                j = j + 1;
-            }
-            sb_append(sb, "]\n");
 
-            sb_append(sb, "    }");
+                sb_append(sb, "source = \"");
+                sb_append(sb, get_source_type(node.path));
+                sb_append(sb, "\"\n");
+
+                // Add path for non-registry sources
+                if string_eq(get_source_type(node.path), "path") {
+                    sb_append(sb, "path = \"");
+                    sb_append(sb, node.path);
+                    sb_append(sb, "\"\n");
+                }
+
+                // Dependencies list
+                if vec_len(node.deps) > 0 {
+                    sb_append(sb, "dependencies = [");
+                    var j: i64 = 0;
+                    while j < vec_len(node.deps) {
+                        if j > 0 {
+                            sb_append(sb, ", ");
+                        }
+                        sb_append(sb, "\"");
+                        sb_append(sb, vec_get(node.deps, j));
+                        sb_append(sb, "\"");
+                        j = j + 1;
+                    }
+                    sb_append(sb, "]\n");
+                }
+
+                sb_append(sb, "\n");
+            }
         }
 
         i = i + 1;
     }
-
-    sb_append(sb, "\n  }\n");
-    sb_append(sb, "}\n");
 
     let lockfile_content: i64 = sb_to_string(sb);
     sb_free(sb);
@@ -1889,7 +2541,131 @@ fn generate_lockfile(graph: DepGraph, verbose: bool) -> i64 {
     0
 }
 
-// Load existing lock file
+// ============================================================================
+// TOML Lock File Parsing
+// ============================================================================
+
+// Parsed package entry from lock file
+struct LockedPackage {
+    name: i64,
+    version: i64,
+    checksum: i64,
+    source: i64,
+    path: i64,
+    dependencies: i64   // Vec of dependency names
+}
+
+fn locked_package_new() -> LockedPackage {
+    LockedPackage {
+        name: "",
+        version: "",
+        checksum: "",
+        source: "",
+        path: "",
+        dependencies: vec_new()
+    }
+}
+
+// Parse a TOML-style lock file into a list of packages
+fn parse_lockfile_toml(content: i64) -> i64 {
+    let packages: i64 = vec_new();
+    var current: LockedPackage = locked_package_new();
+    var in_package: bool = false;
+
+    // Split content by lines
+    let lines: i64 = string_split(content, "\n");
+    var i: i64 = 0;
+
+    while i < vec_len(lines) {
+        let line: i64 = string_trim(vec_get(lines, i));
+
+        // Skip comments and empty lines
+        if string_len(line) == 0 || string_starts_with(line, "#") {
+            i = i + 1;
+            continue;
+        }
+
+        // Check for [[package]] header
+        if string_eq(line, "[[package]]") {
+            // Save previous package if any
+            if in_package && string_len(current.name) > 0 {
+                vec_push(packages, current);
+            }
+            current = locked_package_new();
+            in_package = true;
+            i = i + 1;
+            continue;
+        }
+
+        // Skip [metadata] section
+        if string_eq(line, "[metadata]") {
+            in_package = false;
+            i = i + 1;
+            continue;
+        }
+
+        // Parse key = value lines within [[package]]
+        if in_package {
+            let eq_pos: i64 = string_find(line, "=");
+            if eq_pos > 0 {
+                let key: i64 = string_trim(string_slice(line, 0, eq_pos));
+                var value: i64 = string_trim(string_slice(line, eq_pos + 1, string_len(line)));
+
+                // Remove quotes from value
+                if string_starts_with(value, "\"") && string_ends_with(value, "\"") {
+                    value = string_slice(value, 1, string_len(value) - 1);
+                }
+
+                if string_eq(key, "name") {
+                    current.name = value;
+                } else if string_eq(key, "version") {
+                    current.version = value;
+                } else if string_eq(key, "checksum") {
+                    current.checksum = value;
+                } else if string_eq(key, "source") {
+                    current.source = value;
+                } else if string_eq(key, "path") {
+                    current.path = value;
+                } else if string_eq(key, "dependencies") {
+                    // Parse array: ["dep1", "dep2"]
+                    if string_starts_with(value, "[") {
+                        value = string_slice(value, 1, string_len(value));
+                    }
+                    if string_ends_with(value, "]") {
+                        value = string_slice(value, 0, string_len(value) - 1);
+                    }
+                    let deps: i64 = string_split(value, ",");
+                    var j: i64 = 0;
+                    while j < vec_len(deps) {
+                        var dep: i64 = string_trim(vec_get(deps, j));
+                        // Remove quotes
+                        if string_starts_with(dep, "\"") {
+                            dep = string_slice(dep, 1, string_len(dep));
+                        }
+                        if string_ends_with(dep, "\"") {
+                            dep = string_slice(dep, 0, string_len(dep) - 1);
+                        }
+                        if string_len(dep) > 0 {
+                            vec_push(current.dependencies, dep);
+                        }
+                        j = j + 1;
+                    }
+                }
+            }
+        }
+
+        i = i + 1;
+    }
+
+    // Save last package
+    if in_package && string_len(current.name) > 0 {
+        vec_push(packages, current);
+    }
+
+    packages
+}
+
+// Load existing lock file (TOML format)
 fn load_lockfile(verbose: bool) -> i64 {
     if check_file_exists("simplex.lock") == false {
         return 0;
@@ -1900,17 +2676,15 @@ fn load_lockfile(verbose: bool) -> i64 {
         return 0;
     }
 
-    let lock: i64 = json_parse(content);
-    if lock == 0 {
-        println("Warning: Could not parse simplex.lock");
-        return 0;
-    }
+    let packages: i64 = parse_lockfile_toml(content);
 
     if verbose {
-        println("Loaded simplex.lock");
+        print("Loaded simplex.lock (");
+        print(int_to_string(vec_len(packages)));
+        println(" packages)");
     }
 
-    lock
+    packages
 }
 
 // Check if lock file is up to date with manifest
@@ -1919,20 +2693,26 @@ fn lockfile_is_current(manifest: i64, lockfile: i64) -> bool {
         return false;
     }
 
-    let packages: i64 = json_get(lockfile, "packages");
-    if json_is_object(packages) == false {
-        return false;
+    // lockfile is now a Vec of LockedPackage
+    let packages: i64 = lockfile;
+
+    // Build a set of locked package names
+    let locked_names: i64 = hashmap_new();
+    var i: i64 = 0;
+    while i < vec_len(packages) {
+        let pkg: LockedPackage = vec_get(packages, i);
+        hashmap_insert(locked_names, pkg.name, 1);
+        i = i + 1;
     }
 
     // Check all dependencies in manifest are in lockfile
     let deps: i64 = manifest_dependencies(manifest);
-    var i: i64 = 0;
+    i = 0;
     while i < vec_len(deps) {
         let dep: i64 = vec_get(deps, i);
         let name: i64 = dep_name(dep);
 
-        let locked_pkg: i64 = json_get(packages, name);
-        if json_is_object(locked_pkg) == false {
+        if hashmap_contains(locked_names, name) == 0 {
             return false;
         }
 
@@ -1971,38 +2751,46 @@ fn resolve_with_lockfile(manifest: i64, verbose: bool) -> i64 {
 
 // Fetch dependencies based on lock file
 fn fetch_from_lockfile(lockfile: i64, verbose: bool) -> i64 {
-    let packages: i64 = json_get(lockfile, "packages");
-    if json_is_object(packages) == false {
-        return 1;
-    }
+    let packages: i64 = lockfile;
 
-    let n: i64 = json_object_len(packages);
     var i: i64 = 0;
-    while i < n {
-        let name: i64 = json_object_key_at(packages, i);
-        let pkg: i64 = json_object_value_at(packages, i);
+    while i < vec_len(packages) {
+        let pkg: LockedPackage = vec_get(packages, i);
 
-        if json_is_object(pkg) {
-            let source: i64 = json_as_string(json_get(pkg, "source"));
-            let path: i64 = json_as_string(json_get(pkg, "path"));
+        // Determine path based on source
+        var path: i64 = pkg.path;
+        if string_len(path) == 0 {
+            if string_eq(pkg.source, "registry") {
+                path = path_join(".simplex/deps", pkg.name);
+            }
+        }
 
-            // Skip root package
-            if string_eq(source, "root") {
-                i = i + 1;
-                continue;
+        // Skip if no path to check
+        if string_len(path) == 0 {
+            i = i + 1;
+            continue;
+        }
+
+        // Check if path exists
+        if check_file_exists(path) == false {
+            if verbose {
+                print("  Fetching: ");
+                print(pkg.name);
+                print(" v");
+                println(pkg.version);
             }
 
-            // Check if path exists
-            if check_file_exists(path) == false {
-                if verbose {
-                    print("  Fetching: ");
-                    println(name);
+            // For registry packages, download from registry
+            if string_eq(pkg.source, "registry") {
+                let result: i64 = download_from_registry(pkg.name, pkg.version, path, verbose);
+                if result != 0 {
+                    print("Warning: Could not download '");
+                    print(pkg.name);
+                    println("' from registry");
                 }
-
-                // For registry/git packages, we would need to re-fetch
-                // For now, just warn
+            } else {
                 print("Warning: dependency '");
-                print(name);
+                print(pkg.name);
                 print("' not found at: ");
                 println(path);
             }
@@ -2012,6 +2800,120 @@ fn fetch_from_lockfile(lockfile: i64, verbose: bool) -> i64 {
     }
 
     0
+}
+
+// Verify checksums from lock file
+fn verify_lockfile_checksums(lockfile: i64, verbose: bool) -> i64 {
+    let packages: i64 = lockfile;
+    var errors: i64 = 0;
+
+    var i: i64 = 0;
+    while i < vec_len(packages) {
+        let pkg: LockedPackage = vec_get(packages, i);
+
+        // Skip packages without checksums
+        if string_len(pkg.checksum) == 0 {
+            i = i + 1;
+            continue;
+        }
+
+        // Determine path
+        var path: i64 = pkg.path;
+        if string_len(path) == 0 {
+            if string_eq(pkg.source, "registry") {
+                path = path_join(".simplex/deps", pkg.name);
+            }
+        }
+
+        if string_len(path) == 0 {
+            i = i + 1;
+            continue;
+        }
+
+        // Verify checksum
+        let manifest_path: i64 = path_join(path, "simplex.json");
+        if check_file_exists(manifest_path) {
+            if verify_checksum(manifest_path, pkg.checksum) == false {
+                print("Error: Checksum mismatch for '");
+                print(pkg.name);
+                println("'");
+                print("  Expected: ");
+                println(pkg.checksum);
+                let actual: i64 = compute_file_sha256(manifest_path);
+                print("  Actual:   sha256:");
+                println(actual);
+                errors = errors + 1;
+            } else if verbose {
+                print("  Verified: ");
+                println(pkg.name);
+            }
+        }
+
+        i = i + 1;
+    }
+
+    errors
+}
+
+// Download package from registry
+fn download_from_registry(name: i64, version: i64, dest_path: i64, verbose: bool) -> i64 {
+    // Construct download URL
+    let download_url: i64 = registry_api_url("/packages/");
+    let sb: i64 = sb_new();
+    sb_append(sb, download_url);
+    sb_append(sb, name);
+    sb_append(sb, "/");
+    sb_append(sb, version);
+    sb_append(sb, "/download");
+    let url: i64 = sb_to_string(sb);
+    sb_free(sb);
+
+    if verbose {
+        print("    Downloading from: ");
+        println(url);
+    }
+
+    // Create destination directory
+    mkdir_p(path_join(".simplex", "deps"));
+
+    // Download tarball
+    let tarball_path: i64 = string_concat(dest_path, ".tar.gz");
+    let download_cmd: i64 = sb_new();
+    sb_append(download_cmd, "curl -sL -o \"");
+    sb_append(download_cmd, tarball_path);
+    sb_append(download_cmd, "\" \"");
+    sb_append(download_cmd, url);
+    sb_append(download_cmd, "\"");
+    let cmd_str: i64 = sb_to_string(download_cmd);
+    sb_free(download_cmd);
+
+    let result: i64 = process_run(cmd_str);
+    if result != 0 {
+        return result;
+    }
+
+    // Check if tarball was downloaded
+    if check_file_exists(tarball_path) == false {
+        return 1;
+    }
+
+    // Extract tarball
+    mkdir_p(dest_path);
+    let extract_cmd: i64 = sb_new();
+    sb_append(extract_cmd, "tar -xzf \"");
+    sb_append(extract_cmd, tarball_path);
+    sb_append(extract_cmd, "\" -C \"");
+    sb_append(extract_cmd, dest_path);
+    sb_append(extract_cmd, "\" --strip-components=1");
+    let extract_str: i64 = sb_to_string(extract_cmd);
+    sb_free(extract_cmd);
+
+    result = process_run(extract_str);
+
+    // Clean up tarball
+    process_run(get_rm_command(tarball_path));
+
+    result
 }
 
 // ============================================================================
@@ -2632,6 +3534,8 @@ fn main() -> i64 {
         result = cmd_info(args, argc, 2);
     } else if string_eq(cmd, "install") {
         result = cmd_install(args, argc, 2);
+    } else if string_eq(cmd, "publish") {
+        result = cmd_publish(args, argc, 2);
     } else if string_eq(cmd, "model") {
         result = cmd_model(args, argc, 2);
     } else {

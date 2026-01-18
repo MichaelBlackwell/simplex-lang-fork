@@ -1,6 +1,6 @@
 # Neural IR and Differentiable Execution
 
-**Version 0.9.0**
+**Version 0.10.0**
 
 ---
 
@@ -266,7 +266,7 @@ neural_gate learnable_branch(x: f64) -> bool
 
 ---
 
-## Self-Learning Annealing (v0.9.0)
+## Self-Learning Annealing
 
 ![Meta-Gradient Annealing](../diagrams/meta-gradient-annealing.svg)
 

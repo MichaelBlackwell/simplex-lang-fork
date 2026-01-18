@@ -10442,19 +10442,20 @@ int64_t http_server_tls(int64_t server_ptr, int64_t cert_path_ptr, int64_t key_p
 }
 
 // Add route to server
-void http_server_route(int64_t server_ptr, int64_t method_ptr, int64_t path_ptr, int64_t handler_fn) {
+int64_t http_server_route(int64_t server_ptr, int64_t method_ptr, int64_t path_ptr, int64_t handler_fn) {
     HttpServer* server = (HttpServer*)server_ptr;
     SxString* method = (SxString*)method_ptr;
     SxString* path = (SxString*)path_ptr;
-    
-    if (!server || !method || !path || !method->data || !path->data) return;
-    
+
+    if (!server || !method || !path || !method->data || !path->data) return 0;
+
     HttpRoute* route = malloc(sizeof(HttpRoute));
     route->method = strdup(method->data);
     route->path = strdup(path->data);
     route->handler_fn = handler_fn;
     route->next = server->routes;
     server->routes = route;
+    return 1;
 }
 
 // Create server response
@@ -10466,39 +10467,41 @@ int64_t http_server_response_new(void) {
 }
 
 // Set response status
-void http_server_response_status(int64_t resp_ptr, int64_t code, int64_t text_ptr) {
+int64_t http_server_response_status(int64_t resp_ptr, int64_t code, int64_t text_ptr) {
     HttpServerResponse* resp = (HttpServerResponse*)resp_ptr;
     SxString* text = (SxString*)text_ptr;
-    
-    if (!resp) return;
-    
+
+    if (!resp) return 0;
+
     resp->status_code = (int)code;
     if (resp->status_text) free(resp->status_text);
     resp->status_text = text && text->data ? strdup(text->data) : strdup("OK");
+    return 1;
 }
 
 // Add response header
-void http_server_response_header(int64_t resp_ptr, int64_t name_ptr, int64_t value_ptr) {
+int64_t http_server_response_header(int64_t resp_ptr, int64_t name_ptr, int64_t value_ptr) {
     HttpServerResponse* resp = (HttpServerResponse*)resp_ptr;
     SxString* name = (SxString*)name_ptr;
     SxString* value = (SxString*)value_ptr;
-    
-    if (!resp || !name || !value || !name->data || !value->data) return;
-    
+
+    if (!resp || !name || !value || !name->data || !value->data) return 0;
+
     HttpHeader* h = malloc(sizeof(HttpHeader));
     h->name = strdup(name->data);
     h->value = strdup(value->data);
     h->next = resp->headers;
     resp->headers = h;
+    return 1;
 }
 
 // Set response body
-void http_server_response_body(int64_t resp_ptr, int64_t body_ptr) {
+int64_t http_server_response_body(int64_t resp_ptr, int64_t body_ptr) {
     HttpServerResponse* resp = (HttpServerResponse*)resp_ptr;
     SxString* body = (SxString*)body_ptr;
-    
-    if (!resp) return;
-    
+
+    if (!resp) return 0;
+
     if (resp->body) free(resp->body);
     if (body && body->data) {
         resp->body = strdup(body->data);
@@ -10507,6 +10510,7 @@ void http_server_response_body(int64_t resp_ptr, int64_t body_ptr) {
         resp->body = NULL;
         resp->body_len = 0;
     }
+    return 1;
 }
 
 // Build HTTP response string
@@ -10775,20 +10779,21 @@ int64_t http_server_run(int64_t server_ptr, int64_t max_requests) {
 }
 
 // Stop server
-void http_server_stop(int64_t server_ptr) {
+int64_t http_server_stop(int64_t server_ptr) {
     HttpServer* server = (HttpServer*)server_ptr;
     if (server) server->running = 0;
+    return 1;
 }
 
 // Close server
-void http_server_close(int64_t server_ptr) {
+int64_t http_server_close(int64_t server_ptr) {
     HttpServer* server = (HttpServer*)server_ptr;
-    if (!server) return;
-    
+    if (!server) return 0;
+
     if (server->listen_fd >= 0) {
         close(server->listen_fd);
     }
-    
+
     // Free routes
     HttpRoute* route = server->routes;
     while (route) {
@@ -10798,12 +10803,13 @@ void http_server_close(int64_t server_ptr) {
         free(route);
         route = next;
     }
-    
+
     if (server->tls_ctx) {
         tls_context_free(server->tls_ctx);
     }
-    
+
     free(server);
+    return 1;
 }
 
 // Get server port

@@ -174,7 +174,7 @@ Sync Strategies:
 
 ### i64 Encoding Pattern
 
-The Edge Hive uses i64 handles for all complex types, enabling compatibility with Simplex 0.9.0:
+The Edge Hive uses i64 handles for all complex types, enabling compatibility with Simplex:
 
 ```simplex
 // Belief entry: [type, key_hash, value, confidence, timestamp]
@@ -418,7 +418,7 @@ fn hive_get_preference(hive: i64, key: i64) -> i64
 
 ## Implementation Status
 
-### Completed (v0.9.0)
+### Completed (v0.10.0)
 
 - Core type system and constants
 - Device profile detection with platform-specific hardware queries
@@ -449,7 +449,7 @@ fn hive_get_preference(hive: i64, key: i64) -> i64
   - Inference statistics tracking (tokens/sec, cache hits)
   - Battery-aware model degradation
 
-### Planned (v0.9.1+)
+### Planned (v0.10.1+)
 
 - Secure peer-to-peer sync protocol (end-to-end encrypted)
 - Health sensor integration
@@ -544,7 +544,7 @@ edge-hive/
 
 ## Version History
 
-- **v0.9.0**: Complete Edge Hive implementation
+- **v0.10.0**: Complete Edge Hive implementation
   - Core architecture with device detection and adaptive footprint
   - Belief store with CRDT merge and confidence decay
   - Specialist system with confidence-based routing

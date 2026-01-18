@@ -1,6 +1,6 @@
 # Simplex Standard Library Reference
 
-**Version 0.9.0**
+**Version 0.10.0**
 
 The Simplex standard library provides core functionality for I/O, collections, networking, and more. All modules are written in pure Simplex.
 
@@ -51,6 +51,7 @@ The Simplex standard library is organized around the **actor model**. Concurrenc
 | `std::sync::oneshot` | Single-value, single-use channels |
 | `std::dual` | Dual numbers for automatic differentiation |
 | `std::anneal` | Self-learning annealing optimization |
+| `std::bench` | Benchmarking framework |
 | `simplex_http` | Actor-based HTTP server |
 | `simplex_learning` | Real-time learning library |
 | `simplex_inference` | High-performance inference via llama.cpp |
@@ -92,7 +93,7 @@ trait Seek {
 }
 ```
 
-### Asynchronous Traits (v0.9.0)
+### Asynchronous Traits
 
 ```simplex
 /// Asynchronous read trait for non-blocking I/O
@@ -116,15 +117,15 @@ trait AsyncWrite {
 ```simplex
 type BufReader<R: Read>           // Buffered synchronous reader
 type BufWriter<W: Write>          // Buffered synchronous writer
-type BufReader<R: AsyncRead>      // Buffered async reader (v0.9.0)
-type BufWriter<W: AsyncWrite>     // Buffered async writer (v0.9.0)
+type BufReader<R: AsyncRead>      // Buffered async reader
+type BufWriter<W: AsyncWrite>     // Buffered async writer
 type Cursor<T>                    // In-memory buffer
 type Stdin                        // Standard input
 type Stdout                       // Standard output
 type Stderr                       // Standard error
 ```
 
-### IoError (v0.9.0)
+### IoError
 
 ```simplex
 enum IoError {
@@ -507,7 +508,7 @@ impl SocketAddr {
 }
 ```
 
-### Async TCP (v0.9.0)
+### Async TCP
 
 ```simplex
 /// TCP listener for accepting incoming connections
@@ -602,7 +603,7 @@ fn resolve(host: &str, port: u16) -> Result<Vec<SocketAddr>, IoError>
 
 ---
 
-## std::env (v0.9.0 - Expanded)
+## std::env
 
 Environment variables and directory operations.
 
@@ -668,7 +669,7 @@ let cwd = current_dir()?
 
 ---
 
-## std::signal (v0.9.0)
+## std::signal
 
 OS signal handling with async support.
 
@@ -743,7 +744,7 @@ print("Shutting down gracefully...")
 
 ---
 
-## std::runtime (v0.9.0)
+## std::runtime
 
 Async runtime primitives for spawning and managing tasks.
 
@@ -823,7 +824,7 @@ fn main() {
 
 ---
 
-## std::http (v0.9.0)
+## std::http
 
 Actor-based HTTP server with native Hive integration. No threads - concurrency through actors.
 
@@ -1193,7 +1194,7 @@ fn write<W: Write>(writer: &mut W, fmt: &str, values: Vec<FormatValue>) -> Resul
 
 ---
 
-## std::compress (v0.9.0)
+## std::compress
 
 Compression and decompression utilities using zlib.
 
@@ -1279,7 +1280,7 @@ assert_eq(data, &decompressed[..])
 
 ---
 
-## std::sync::mpsc (v0.9.0)
+## std::sync::mpsc
 
 Multi-producer, single-consumer channel for async message passing.
 
@@ -1376,7 +1377,7 @@ while let Some(value) = rx.recv().await {
 
 ---
 
-## std::sync::oneshot (v0.9.0)
+## std::sync::oneshot
 
 Single-value, single-use channels for one-time communication.
 
@@ -1468,7 +1469,7 @@ print("Received: {message}")
 
 ---
 
-## std::crypto (v0.9.0)
+## std::crypto
 
 Cryptographic functions including hashing and password verification.
 
@@ -1860,7 +1861,7 @@ fn diff::hessian<F, const N: usize>(f: F, x: [f64; N]) -> [[f64; N]; N];
 
 ---
 
-## std::anneal (v0.9.0)
+## std::anneal
 
 Self-learning annealing where optimization schedules are learned through meta-gradients.
 
@@ -1967,7 +1968,154 @@ fn fixed::cosine(t0: f64, t_min: f64, step: i64, total_steps: i64) -> f64
 
 ---
 
-## simplex_inference (v0.9.0)
+## std::bench (v0.10.0)
+
+Benchmarking framework for performance testing. Used by `sxc bench` command.
+
+### Core Types
+
+```simplex
+use std::bench::{Bencher, BenchResult, black_box}
+
+/// Benchmark runner that measures function execution time
+type Bencher {
+    iterations: u64,
+    elapsed: Duration,
+}
+
+impl Bencher {
+    /// Run the benchmarked function repeatedly
+    fn iter<T, F: Fn() -> T>(&mut self, f: F)
+
+    /// Run with explicit iteration count
+    fn iter_custom<F: Fn(u64)>(&mut self, f: F)
+
+    /// Get total elapsed time
+    fn elapsed(&self) -> Duration
+
+    /// Get iterations per second
+    fn ops_per_sec(&self) -> f64
+}
+
+/// Benchmark result
+type BenchResult {
+    name: String,
+    ns_per_iter: u64,
+    variance: u64,
+    throughput: Option<Throughput>,
+}
+
+/// Throughput measurement
+enum Throughput {
+    Bytes(u64),      // Bytes per iteration
+    Elements(u64),   // Elements per iteration
+}
+```
+
+### Preventing Optimization
+
+```simplex
+/// Prevent compiler from optimizing away benchmark code
+fn black_box<T>(x: T) -> T
+
+/// Use black_box to ensure computation isn't elided
+#[bench]
+fn bench_computation(b: &Bencher) {
+    b.iter(|| {
+        let result = expensive_computation()
+        black_box(result)  // Prevent optimization
+    })
+}
+```
+
+### Benchmark Attributes
+
+```simplex
+/// Standard benchmark
+#[bench]
+fn bench_basic(b: &Bencher) { ... }
+
+/// Benchmark with throughput measurement
+#[bench]
+fn bench_with_throughput(b: &Bencher) {
+    let data = vec![0u8; 1024]
+    b.throughput(Throughput::Bytes(1024))
+    b.iter(|| {
+        process(&data)
+    })
+}
+
+/// Ignored benchmark
+#[bench]
+#[ignore]
+fn bench_slow(b: &Bencher) { ... }
+```
+
+### Example: Complete Benchmark File
+
+```simplex
+// benchmarks/collections.sx
+use std::bench::{Bencher, black_box, Throughput}
+use std::collections::{Vec, Map, Set}
+
+#[bench]
+fn bench_vec_push_1000(b: &Bencher) {
+    b.iter(|| {
+        let mut v: Vec<i64> = Vec::with_capacity(1000)
+        for i in 0..1000 {
+            v.push(black_box(i))
+        }
+        v
+    })
+}
+
+#[bench]
+fn bench_map_lookup(b: &Bencher) {
+    // Setup: create map once
+    let mut m: Map<String, i64> = Map::new()
+    for i in 0..10000 {
+        m.insert(format("key_{i}"), i)
+    }
+
+    b.iter(|| {
+        // Benchmark: lookup operations
+        for i in 0..1000 {
+            black_box(m.get(&format("key_{i}")))
+        }
+    })
+}
+
+#[bench]
+fn bench_set_intersection(b: &Bencher) {
+    let s1: Set<i64> = (0..1000).collect()
+    let s2: Set<i64> = (500..1500).collect()
+
+    b.throughput(Throughput::Elements(500))  // Expected intersection size
+    b.iter(|| {
+        black_box(s1.intersection(&s2))
+    })
+}
+```
+
+### Running Benchmarks
+
+```bash
+# Run all benchmarks in file
+sxc bench benchmarks/collections.sx
+
+# Filter by name
+sxc bench benchmarks/ --filter vec
+
+# Save results
+sxc bench benchmarks/ --output results.json
+
+# Compare against baseline
+sxc bench benchmarks/ --compare baseline.json
+```
+
+---
+
+## simplex_inference
 
 High-performance inference library with native llama.cpp bindings.
 
@@ -2058,7 +2206,7 @@ enum ModelTier {
 
 ---
 
-## simplex_training (v0.9.0)
+## simplex_training
 
 Self-optimizing training pipelines with learnable schedules.
 

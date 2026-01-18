@@ -5,6 +5,9 @@
 // Licensed under AGPL-3.0 - see LICENSE file
 // https://github.com/senuamedia/simplex-lang
 
+// Required for Dl_info and dladdr on Linux
+#define _GNU_SOURCE
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,6 +21,426 @@
 #include <dirent.h>
 #include <pthread.h>
 #include <math.h>
+#include <dlfcn.h>
+
+// ========================================
+// Memory Allocation Tracking (Debug Mode)
+// ========================================
+// Enable with -DSX_MEMORY_DEBUG=1 compile flag
+// Tracks all heap allocations with source location info
+
+#ifdef SX_MEMORY_DEBUG
+
+#include <execinfo.h>
+
+// Maximum number of allocations to track
+#define SX_ALLOC_MAX_ENTRIES 65536
+
+// Allocation entry for tracking
+typedef struct {
+    void* ptr;              // Allocated pointer
+    size_t size;            // Allocation size
+    void* caller[4];        // Call stack (up to 4 frames)
+    int64_t timestamp_us;   // Allocation timestamp
+    int active;             // Is this entry active (not freed)?
+} SxAllocEntry;
+
+// Allocation statistics
+typedef struct {
+    int64_t total_allocs;       // Total number of allocations
+    int64_t total_frees;        // Total number of frees
+    int64_t current_bytes;      // Currently allocated bytes
+    int64_t peak_bytes;         // Peak allocated bytes
+    int64_t total_bytes;        // Total bytes ever allocated
+    SxAllocEntry* entries;      // Allocation tracking table
+    int entry_count;            // Number of entries used
+    pthread_mutex_t lock;       // Thread safety
+    int initialized;            // Has been initialized
+} SxMemoryStats;
+
+static SxMemoryStats sx_mem_stats = {0};
+
+// Get current timestamp in microseconds
+static int64_t sx_mem_timestamp(void) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (int64_t)tv.tv_sec * 1000000 + (int64_t)tv.tv_usec;
+}
+
+// Initialize memory tracking
+static void sx_mem_init(void) {
+    if (sx_mem_stats.initialized) return;
+
+    pthread_mutex_init(&sx_mem_stats.lock, NULL);
+    sx_mem_stats.entries = (SxAllocEntry*)calloc(SX_ALLOC_MAX_ENTRIES, sizeof(SxAllocEntry));
+    sx_mem_stats.entry_count = 0;
+    sx_mem_stats.initialized = 1;
+
+    // Register cleanup at exit
+    // Note: We don't free entries on exit to allow memory_report() to work
+}
+
+// Find an entry by pointer
+static SxAllocEntry* sx_mem_find(void* ptr) {
+    for (int i = 0; i < sx_mem_stats.entry_count; i++) {
+        if (sx_mem_stats.entries[i].ptr == ptr && sx_mem_stats.entries[i].active) {
+            return &sx_mem_stats.entries[i];
+        }
+    }
+    return NULL;
+}
+
+// Track an allocation
+static void sx_mem_track_alloc(void* ptr, size_t size) {
+    if (!ptr) return;
+    if (!sx_mem_stats.initialized) sx_mem_init();
+
+    pthread_mutex_lock(&sx_mem_stats.lock);
+
+    // Find a slot (either unused or reuse an inactive one)
+    SxAllocEntry* entry = NULL;
+
+    // Try to find an inactive slot to reuse
+    for (int i = 0; i < sx_mem_stats.entry_count; i++) {
+        if (!sx_mem_stats.entries[i].active) {
+            entry = &sx_mem_stats.entries[i];
+            break;
+        }
+    }
+
+    // If no inactive slot, use a new one
+    if (!entry && sx_mem_stats.entry_count < SX_ALLOC_MAX_ENTRIES) {
+        entry = &sx_mem_stats.entries[sx_mem_stats.entry_count++];
+    }
+
+    if (entry) {
+        entry->ptr = ptr;
+        entry->size = size;
+        entry->timestamp_us = sx_mem_timestamp();
+        entry->active = 1;
+
+        // Capture call stack
+        void* stack[6];
+        int frames = backtrace(stack, 6);
+        // Skip first 2 frames (this function and sx_malloc/etc)
+        for (int i = 0; i < 4 && (i + 2) < frames; i++) {
+            entry->caller[i] = stack[i + 2];
+        }
+    }
+
+    // Update statistics
+    sx_mem_stats.total_allocs++;
+    sx_mem_stats.current_bytes += size;
+    sx_mem_stats.total_bytes += size;
+    if (sx_mem_stats.current_bytes > sx_mem_stats.peak_bytes) {
+        sx_mem_stats.peak_bytes = sx_mem_stats.current_bytes;
+    }
+
+    pthread_mutex_unlock(&sx_mem_stats.lock);
+}
+
+// Track a free
+static void sx_mem_track_free(void* ptr) {
+    if (!ptr) return;
+    if (!sx_mem_stats.initialized) return;
+
+    pthread_mutex_lock(&sx_mem_stats.lock);
+
+    SxAllocEntry* entry = sx_mem_find(ptr);
+    if (entry) {
+        sx_mem_stats.current_bytes -= entry->size;
+        sx_mem_stats.total_frees++;
+        entry->active = 0;
+    }
+
+    pthread_mutex_unlock(&sx_mem_stats.lock);
+}
+
+// Track a realloc
+static void sx_mem_track_realloc(void* old_ptr, void* new_ptr, size_t new_size) {
+    if (!sx_mem_stats.initialized) sx_mem_init();
+
+    if (old_ptr) {
+        sx_mem_track_free(old_ptr);
+    }
+    if (new_ptr) {
+        sx_mem_track_alloc(new_ptr, new_size);
+    }
+}
+
+// Print memory report - called from Simplex code
+int64_t intrinsic_memory_report(void) {
+    if (!sx_mem_stats.initialized) {
+        printf("\n=== Memory Report ===\n");
+        printf("Memory tracking not initialized.\n");
+        return 0;
+    }
+
+    pthread_mutex_lock(&sx_mem_stats.lock);
+
+    printf("\n");
+    printf("=============================================\n");
+    printf("          MEMORY ALLOCATION REPORT           \n");
+    printf("=============================================\n\n");
+
+    printf("Summary:\n");
+    printf("  Total allocations:    %lld\n", (long long)sx_mem_stats.total_allocs);
+    printf("  Total frees:          %lld\n", (long long)sx_mem_stats.total_frees);
+    printf("  Outstanding allocs:   %lld\n", (long long)(sx_mem_stats.total_allocs - sx_mem_stats.total_frees));
+    printf("\n");
+    printf("  Current memory:       %lld bytes (%.2f KB)\n",
+           (long long)sx_mem_stats.current_bytes,
+           (double)sx_mem_stats.current_bytes / 1024.0);
+    printf("  Peak memory:          %lld bytes (%.2f KB)\n",
+           (long long)sx_mem_stats.peak_bytes,
+           (double)sx_mem_stats.peak_bytes / 1024.0);
+    printf("  Total allocated:      %lld bytes (%.2f KB)\n",
+           (long long)sx_mem_stats.total_bytes,
+           (double)sx_mem_stats.total_bytes / 1024.0);
+
+    // Count allocations by size bucket
+    int small = 0, medium = 0, large = 0, huge = 0;
+    size_t small_bytes = 0, medium_bytes = 0, large_bytes = 0, huge_bytes = 0;
+
+    for (int i = 0; i < sx_mem_stats.entry_count; i++) {
+        if (sx_mem_stats.entries[i].active) {
+            size_t sz = sx_mem_stats.entries[i].size;
+            if (sz <= 64) {
+                small++;
+                small_bytes += sz;
+            } else if (sz <= 1024) {
+                medium++;
+                medium_bytes += sz;
+            } else if (sz <= 65536) {
+                large++;
+                large_bytes += sz;
+            } else {
+                huge++;
+                huge_bytes += sz;
+            }
+        }
+    }
+
+    printf("\nAllocation Buckets (active):\n");
+    printf("  Small  (<=64B):       %d allocs, %zu bytes\n", small, small_bytes);
+    printf("  Medium (<=1KB):       %d allocs, %zu bytes\n", medium, medium_bytes);
+    printf("  Large  (<=64KB):      %d allocs, %zu bytes\n", large, large_bytes);
+    printf("  Huge   (>64KB):       %d allocs, %zu bytes\n", huge, huge_bytes);
+
+    // Show top allocation hot spots
+    printf("\nTop Allocation Sites (by current bytes):\n");
+
+    // Simple approach: find unique callers and sum their bytes
+    typedef struct {
+        void* caller;
+        int count;
+        size_t bytes;
+    } HotSpot;
+
+    HotSpot hotspots[32];
+    int hs_count = 0;
+
+    for (int i = 0; i < sx_mem_stats.entry_count && hs_count < 32; i++) {
+        if (!sx_mem_stats.entries[i].active) continue;
+
+        void* caller = sx_mem_stats.entries[i].caller[0];
+        if (!caller) continue;
+
+        // Find or create hotspot entry
+        int found = 0;
+        for (int j = 0; j < hs_count; j++) {
+            if (hotspots[j].caller == caller) {
+                hotspots[j].count++;
+                hotspots[j].bytes += sx_mem_stats.entries[i].size;
+                found = 1;
+                break;
+            }
+        }
+        if (!found && hs_count < 32) {
+            hotspots[hs_count].caller = caller;
+            hotspots[hs_count].count = 1;
+            hotspots[hs_count].bytes = sx_mem_stats.entries[i].size;
+            hs_count++;
+        }
+    }
+
+    // Sort by bytes (simple bubble sort)
+    for (int i = 0; i < hs_count - 1; i++) {
+        for (int j = 0; j < hs_count - i - 1; j++) {
+            if (hotspots[j].bytes < hotspots[j + 1].bytes) {
+                HotSpot tmp = hotspots[j];
+                hotspots[j] = hotspots[j + 1];
+                hotspots[j + 1] = tmp;
+            }
+        }
+    }
+
+    // Print top 10
+    int to_show = hs_count < 10 ? hs_count : 10;
+    for (int i = 0; i < to_show; i++) {
+        Dl_info info;
+        const char* name = "???";
+        if (dladdr(hotspots[i].caller, &info) && info.dli_sname) {
+            name = info.dli_sname;
+            // Remove leading underscore on macOS
+            if (name[0] == '_') name++;
+        }
+        printf("  %2d. %-30s  %5d allocs  %8zu bytes\n",
+               i + 1, name, hotspots[i].count, hotspots[i].bytes);
+    }
+
+    printf("\n=============================================\n\n");
+
+    pthread_mutex_unlock(&sx_mem_stats.lock);
+    return 0;
+}
+
+// Get memory stats for programmatic access
+int64_t intrinsic_memory_current(void) {
+    return sx_mem_stats.initialized ? sx_mem_stats.current_bytes : 0;
+}
+
+int64_t intrinsic_memory_peak(void) {
+    return sx_mem_stats.initialized ? sx_mem_stats.peak_bytes : 0;
+}
+
+int64_t intrinsic_memory_alloc_count(void) {
+    return sx_mem_stats.initialized ? sx_mem_stats.total_allocs : 0;
+}
+
+#else // !SX_MEMORY_DEBUG
+
+// Stub implementations when memory tracking is disabled
+int64_t intrinsic_memory_report(void) {
+    printf("Memory tracking not enabled. Rebuild with --memory-debug flag.\n");
+    return 0;
+}
+
+int64_t intrinsic_memory_current(void) { return 0; }
+int64_t intrinsic_memory_peak(void) { return 0; }
+int64_t intrinsic_memory_alloc_count(void) { return 0; }
+
+#endif // SX_MEMORY_DEBUG
+
+// ========================================
+// Source-Level Stack Trace Support
+// ========================================
+
+// Structure to hold resolved source location info
+typedef struct {
+    const char* function;      // Function name (may be NULL)
+    const char* filename;      // Source filename (may be NULL)
+    int line;                  // Line number (0 if unknown)
+    void* address;             // Raw address
+    const char* object;        // Shared object path (may be NULL)
+} SxSourceLocation;
+
+// Demangle Simplex function names (they use a simple mangling scheme)
+// Format: _SX_<module>_<function> or just function name
+static const char* sx_demangle_name(const char* mangled) {
+    if (!mangled) return NULL;
+
+    // Check for Simplex mangled name prefix
+    if (strncmp(mangled, "_SX_", 4) == 0) {
+        // Find the function name part after module prefix
+        const char* p = mangled + 4;
+        const char* last_underscore = NULL;
+        while (*p) {
+            if (*p == '_') last_underscore = p;
+            p++;
+        }
+        if (last_underscore && last_underscore > mangled + 4) {
+            return last_underscore + 1;
+        }
+        return mangled + 4;  // Return without _SX_ prefix
+    }
+
+    // Check for underscore-prefixed C symbol (macOS)
+    if (mangled[0] == '_' && mangled[1] != '_') {
+        return mangled + 1;
+    }
+
+    return mangled;
+}
+
+// Try to resolve source location using dladdr
+static int sx_resolve_address(void* addr, SxSourceLocation* loc) {
+    if (!loc) return 0;
+
+    memset(loc, 0, sizeof(SxSourceLocation));
+    loc->address = addr;
+
+    Dl_info info;
+    if (dladdr(addr, &info)) {
+        loc->function = sx_demangle_name(info.dli_sname);
+        loc->object = info.dli_fname;
+        return 1;
+    }
+
+    return 0;
+}
+
+// Check if address is in Simplex user code (not runtime/libc)
+static int sx_is_user_code(const SxSourceLocation* loc) {
+    if (!loc) return 0;
+
+    // Skip if no function name
+    if (!loc->function) return 0;
+
+    // Skip common runtime/system functions
+    const char* skip_prefixes[] = {
+        "intrinsic_",
+        "_start",
+        "main",  // We'll show main specially
+        "__libc_",
+        "_dl_",
+        "libdyld",
+        "start",
+        NULL
+    };
+
+    for (int i = 0; skip_prefixes[i]; i++) {
+        if (strncmp(loc->function, skip_prefixes[i], strlen(skip_prefixes[i])) == 0) {
+            // Allow "main" to be shown
+            if (strcmp(skip_prefixes[i], "main") == 0 && strcmp(loc->function, "main") == 0) {
+                return 1;
+            }
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+// Format a source location for display
+static void sx_format_location(const SxSourceLocation* loc, char* buffer, size_t bufsize) {
+    if (!loc || !buffer || bufsize == 0) return;
+
+    if (loc->function && loc->filename && loc->line > 0) {
+        // Full info: function (file:line)
+        snprintf(buffer, bufsize, "%s (%s:%d)",
+                 loc->function, loc->filename, loc->line);
+    } else if (loc->function && loc->filename) {
+        // Function and file, no line
+        snprintf(buffer, bufsize, "%s (%s)", loc->function, loc->filename);
+    } else if (loc->function) {
+        // Just function name
+        if (loc->object) {
+            // Extract just the filename from object path
+            const char* objname = strrchr(loc->object, '/');
+            objname = objname ? objname + 1 : loc->object;
+            snprintf(buffer, bufsize, "%s [%s]", loc->function, objname);
+        } else {
+            snprintf(buffer, bufsize, "%s", loc->function);
+        }
+    } else {
+        // Just address
+        snprintf(buffer, bufsize, "0x%llx", (unsigned long long)(uintptr_t)loc->address);
+    }
+}
+
+// Global to track if we're in a recursive panic
+static _Atomic int sx_in_panic = 0;
 
 // ========================================
 // Safe Memory Allocation Helpers
@@ -43,6 +466,9 @@ static void* sx_malloc(size_t size) {
         fprintf(stderr, "FATAL: Out of memory (malloc %zu bytes)\n", size);
         abort();
     }
+#ifdef SX_MEMORY_DEBUG
+    sx_mem_track_alloc(ptr, size);
+#endif
     return ptr;
 }
 
@@ -52,6 +478,9 @@ static void* sx_calloc(size_t count, size_t size) {
         fprintf(stderr, "FATAL: Out of memory (calloc %zu x %zu bytes)\n", count, size);
         abort();
     }
+#ifdef SX_MEMORY_DEBUG
+    sx_mem_track_alloc(ptr, count * size);
+#endif
     return ptr;
 }
 
@@ -59,10 +488,18 @@ static void* sx_calloc(size_t count, size_t size) {
 // Caller must handle NULL return
 static void* sx_realloc_safe(void* ptr, size_t size) {
     if (size == 0) {
+#ifdef SX_MEMORY_DEBUG
+        sx_mem_track_free(ptr);
+#endif
         free(ptr);
         return NULL;
     }
     void* new_ptr = realloc(ptr, size);
+#ifdef SX_MEMORY_DEBUG
+    if (new_ptr) {
+        sx_mem_track_realloc(ptr, new_ptr, size);
+    }
+#endif
     // Note: if new_ptr is NULL, original ptr is still valid
     return new_ptr;
 }
@@ -74,6 +511,9 @@ static void* sx_realloc(void* ptr, size_t size) {
         fprintf(stderr, "FATAL: Out of memory (realloc %zu bytes)\n", size);
         abort();
     }
+#ifdef SX_MEMORY_DEBUG
+    sx_mem_track_realloc(ptr, new_ptr, size);
+#endif
     return new_ptr;
 }
 
@@ -84,7 +524,18 @@ static char* sx_strdup(const char* s) {
         fprintf(stderr, "FATAL: Out of memory (strdup)\n");
         abort();
     }
+#ifdef SX_MEMORY_DEBUG
+    sx_mem_track_alloc(dup, strlen(s) + 1);
+#endif
     return dup;
+}
+
+// Tracked free wrapper
+static void sx_free(void* ptr) {
+#ifdef SX_MEMORY_DEBUG
+    sx_mem_track_free(ptr);
+#endif
+    free(ptr);
 }
 
 // ========================================
@@ -1343,6 +1794,37 @@ int64_t intrinsic_get_time_us(void) {
     return (int64_t)tv.tv_sec * 1000000 + (int64_t)tv.tv_usec;
 }
 
+// High-resolution nanosecond timing (for benchmarking)
+int64_t intrinsic_get_time_ns(void) {
+#ifdef __APPLE__
+    // macOS: use clock_gettime with CLOCK_MONOTONIC
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+#else
+    // Linux and other POSIX systems
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+#endif
+}
+
+// ========================================
+// Benchmarking Support
+// ========================================
+
+// Call a benchmark function with a bencher argument
+// This is used by the benchmarking framework to call registered benchmarks
+int64_t call_bench_fn(int64_t func_ptr, int64_t bencher) {
+    // func_ptr is a function pointer to a fn(bencher: i64) -> i64
+    typedef int64_t (*BenchFn)(int64_t);
+    BenchFn fn = (BenchFn)func_ptr;
+    if (fn) {
+        return fn(bencher);
+    }
+    return 0;
+}
+
 // Arena allocator for efficient memory management
 typedef struct {
     char* base;
@@ -1510,44 +1992,316 @@ int64_t intrinsic_sb_len(StringBuilder* sb) {
     return sb ? sb->len : 0;
 }
 
-// Print stack trace
+// ========================================
+// Enhanced Stack Trace with Source Locations
+// ========================================
+
+// Debug info source mapping table (populated by compiler-generated metadata)
+// This table maps function addresses to source file/line info
+typedef struct {
+    void* func_start;          // Start address of function
+    void* func_end;            // End address of function
+    const char* filename;      // Source filename
+    const char* funcname;      // Function name as written in source
+    int start_line;            // Starting line number
+} SxDebugEntry;
+
+// Global debug info table (populated at runtime by compiled code)
+static SxDebugEntry* sx_debug_table = NULL;
+static size_t sx_debug_table_size = 0;
+static size_t sx_debug_table_capacity = 0;
+
+// Register debug info for a function (called by compiler-generated code)
+void sx_register_debug_info(void* func_start, void* func_end,
+                            const char* filename, const char* funcname,
+                            int start_line) {
+    if (sx_debug_table_size >= sx_debug_table_capacity) {
+        size_t new_cap = sx_debug_table_capacity == 0 ? 64 : sx_debug_table_capacity * 2;
+        SxDebugEntry* new_table = realloc(sx_debug_table, new_cap * sizeof(SxDebugEntry));
+        if (!new_table) return;  // Silently fail - debug info is optional
+        sx_debug_table = new_table;
+        sx_debug_table_capacity = new_cap;
+    }
+
+    SxDebugEntry* entry = &sx_debug_table[sx_debug_table_size++];
+    entry->func_start = func_start;
+    entry->func_end = func_end;
+    entry->filename = filename;
+    entry->funcname = funcname;
+    entry->start_line = start_line;
+}
+
+// Lookup debug info for an address
+static const SxDebugEntry* sx_lookup_debug_info(void* addr) {
+    for (size_t i = 0; i < sx_debug_table_size; i++) {
+        SxDebugEntry* entry = &sx_debug_table[i];
+        if (addr >= entry->func_start && addr < entry->func_end) {
+            return entry;
+        }
+    }
+    return NULL;
+}
+
+// Try addr2line for DWARF debug info (when -g was used)
+static int sx_addr2line(void* addr, const char* object, char* funcname, size_t funcsize,
+                        char* filename, size_t filesize, int* line) {
+#ifdef __APPLE__
+    // Use atos on macOS for better symbol resolution
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "atos -o '%s' -l 0x0 %p 2>/dev/null", object, addr);
+
+    FILE* fp = popen(cmd, "r");
+    if (!fp) return 0;
+
+    char output[1024];
+    if (fgets(output, sizeof(output), fp)) {
+        pclose(fp);
+
+        // Parse atos output format: "funcname (in binary) (filename:line)"
+        // or "funcname (in binary) + offset"
+        char* paren = strchr(output, '(');
+        if (paren && paren > output) {
+            // Extract function name
+            size_t namelen = paren - output;
+            if (namelen > 0 && output[namelen-1] == ' ') namelen--;
+            if (namelen >= funcsize) namelen = funcsize - 1;
+            strncpy(funcname, output, namelen);
+            funcname[namelen] = '\0';
+
+            // Look for filename:line pattern
+            char* file_start = strrchr(output, '(');
+            if (file_start) {
+                file_start++;
+                char* colon = strchr(file_start, ':');
+                if (colon) {
+                    char* end = strchr(colon, ')');
+                    if (end) {
+                        // Extract filename
+                        size_t flen = colon - file_start;
+                        if (flen >= filesize) flen = filesize - 1;
+                        strncpy(filename, file_start, flen);
+                        filename[flen] = '\0';
+
+                        // Extract line number
+                        *line = atoi(colon + 1);
+                        return 1;
+                    }
+                }
+            }
+
+            // Got function name but no file/line
+            return 1;
+        }
+    }
+    pclose(fp);
+    return 0;
+#else
+    // Use addr2line on Linux
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "addr2line -f -e '%s' %p 2>/dev/null", object, addr);
+
+    FILE* fp = popen(cmd, "r");
+    if (!fp) return 0;
+
+    char func_line[256];
+    char file_line[512];
+
+    if (fgets(func_line, sizeof(func_line), fp) &&
+        fgets(file_line, sizeof(file_line), fp)) {
+        pclose(fp);
+
+        // Remove newlines
+        func_line[strcspn(func_line, "\n")] = '\0';
+        file_line[strcspn(file_line, "\n")] = '\0';
+
+        // Check for unknown function
+        if (strcmp(func_line, "??") != 0) {
+            strncpy(funcname, func_line, funcsize - 1);
+            funcname[funcsize - 1] = '\0';
+        }
+
+        // Parse file:line
+        if (strcmp(file_line, "??:0") != 0 && strcmp(file_line, "??:?") != 0) {
+            char* colon = strrchr(file_line, ':');
+            if (colon) {
+                *colon = '\0';
+                strncpy(filename, file_line, filesize - 1);
+                filename[filesize - 1] = '\0';
+                *line = atoi(colon + 1);
+                return 1;
+            }
+        }
+
+        return funcname[0] != '\0';
+    }
+
+    pclose(fp);
+    return 0;
+#endif
+}
+
+// Resolve full source location for an address
+static void sx_resolve_full_location(void* addr, SxSourceLocation* loc) {
+    if (!loc) return;
+
+    memset(loc, 0, sizeof(SxSourceLocation));
+    loc->address = addr;
+
+    // First try our debug info table (fastest, most accurate for Simplex code)
+    const SxDebugEntry* debug = sx_lookup_debug_info(addr);
+    if (debug) {
+        loc->function = debug->funcname;
+        loc->filename = debug->filename;
+        loc->line = debug->start_line;
+        return;
+    }
+
+    // Try dladdr for basic symbol info
+    Dl_info info;
+    if (dladdr(addr, &info)) {
+        loc->function = sx_demangle_name(info.dli_sname);
+        loc->object = info.dli_fname;
+
+        // Try addr2line/atos for full source info (if compiled with -g)
+        static char funcbuf[256];
+        static char filebuf[512];
+        int line = 0;
+
+        if (info.dli_fname && sx_addr2line(addr, info.dli_fname,
+                                           funcbuf, sizeof(funcbuf),
+                                           filebuf, sizeof(filebuf), &line)) {
+            if (funcbuf[0]) {
+                loc->function = sx_demangle_name(funcbuf);
+            }
+            if (filebuf[0]) {
+                // Simplify path - show just the relative path from project root if possible
+                const char* simplified = filebuf;
+                const char* src = strstr(filebuf, "/src/");
+                if (src) {
+                    simplified = src + 1;  // Keep "src/..."
+                } else {
+                    // Just use filename
+                    const char* lastslash = strrchr(filebuf, '/');
+                    if (lastslash) simplified = lastslash + 1;
+                }
+                loc->filename = simplified;
+                loc->line = line;
+            }
+        }
+    }
+}
+
+// Print enhanced stack trace with source locations
 int64_t intrinsic_print_stack_trace(void) {
     void* buffer[64];
     int nptrs = backtrace(buffer, 64);
-    char** symbols = backtrace_symbols(buffer, nptrs);
 
-    if (symbols == NULL) {
+    if (nptrs <= 0) {
         fprintf(stderr, "  (stack trace unavailable)\n");
         return 0;
     }
 
-    fprintf(stderr, "Stack trace:\n");
-    for (int i = 1; i < nptrs; i++) {  // Skip the first entry (this function)
-        fprintf(stderr, "  %s\n", symbols[i]);
+    int printed = 0;
+
+    // Skip frames: [0] = this function, [1] = panic function
+    for (int i = 2; i < nptrs && printed < 20; i++) {
+        SxSourceLocation loc;
+        sx_resolve_full_location(buffer[i], &loc);
+
+        // Skip runtime internals unless they're the only thing we have
+        if (loc.function) {
+            // Skip intrinsic_ functions
+            if (strncmp(loc.function, "intrinsic_", 10) == 0) {
+                continue;
+            }
+
+            // Skip system startup functions
+            if (strcmp(loc.function, "start") == 0 ||
+                strcmp(loc.function, "_start") == 0 ||
+                strncmp(loc.function, "__libc", 6) == 0 ||
+                strncmp(loc.function, "_dl_", 4) == 0) {
+                continue;
+            }
+        }
+
+        // Format and print the location
+        char formatted[1024];
+        sx_format_location(&loc, formatted, sizeof(formatted));
+
+        fprintf(stderr, "  at %s\n", formatted);
+        printed++;
+
+        // Stop at main
+        if (loc.function && strcmp(loc.function, "main") == 0) {
+            break;
+        }
     }
-    free(symbols);
+
+    // If we printed nothing useful, fall back to addresses
+    if (printed == 0) {
+        for (int i = 2; i < nptrs && i < 10; i++) {
+            fprintf(stderr, "  at 0x%llx\n", (unsigned long long)(uintptr_t)buffer[i]);
+        }
+    }
+
     return 0;
 }
 
 // Panic function for unrecoverable errors
 int64_t intrinsic_panic(SxString* message) {
+    // Prevent recursive panics
+    int expected = 0;
+    if (!atomic_compare_exchange_strong(&sx_in_panic, &expected, 1)) {
+        fprintf(stderr, "PANIC (recursive): ");
+        if (message && message->data) {
+            fprintf(stderr, "%s\n", message->data);
+        }
+        abort();
+    }
+
+    fprintf(stderr, "\n");
     if (message && message->data) {
         fprintf(stderr, "PANIC: %s\n", message->data);
     } else {
         fprintf(stderr, "PANIC: (no message)\n");
     }
     intrinsic_print_stack_trace();
+    fprintf(stderr, "\n");
     exit(1);
 }
 
 // Panic with file and line info
 int64_t intrinsic_panic_at(SxString* message, SxString* file, int64_t line) {
+    // Prevent recursive panics
+    int expected = 0;
+    if (!atomic_compare_exchange_strong(&sx_in_panic, &expected, 1)) {
+        fprintf(stderr, "PANIC (recursive) at %s:%lld: %s\n",
+                file ? file->data : "unknown",
+                (long long)line,
+                message ? message->data : "(no message)");
+        abort();
+    }
+
+    fprintf(stderr, "\n");
     fprintf(stderr, "PANIC at %s:%lld: %s\n",
             file ? file->data : "unknown",
-            line,
+            (long long)line,
             message ? message->data : "(no message)");
     intrinsic_print_stack_trace();
+    fprintf(stderr, "\n");
     exit(1);
+}
+
+// Dump current stack trace without panicking (for debugging)
+int64_t intrinsic_dump_stack(void) {
+    fprintf(stderr, "Stack trace (debug):\n");
+    intrinsic_print_stack_trace();
+    return 0;
+}
+
+// Get debug info table size (for testing/debugging)
+int64_t intrinsic_debug_info_count(void) {
+    return (int64_t)sx_debug_table_size;
 }
 
 // Performance diagnostics

@@ -1,0 +1,155 @@
+// Example Benchmarks for Simplex
+// Run with: sxc bench examples/bench_example.sx
+//
+// This demonstrates the benchmarking framework usage.
+
+// Import benchmarking library (included automatically by sxc bench)
+// use bench;
+
+// External declarations for bench library functions
+extern fn bencher_new(name: i64) -> i64;
+extern fn bench_run(b: i64, closure: fn() -> i64) -> i64;
+extern fn bench_format_result(b: i64) -> i64;
+extern fn bench_mean_ns(b: i64) -> i64;
+extern fn bench_stddev_ns(b: i64) -> i64;
+extern fn black_box(value: i64) -> i64;
+extern fn get_time_ns() -> i64;
+extern fn memory_report() -> i64;
+
+// ========================================
+// Benchmark: Vector Push Operations
+// ========================================
+
+fn bench_vec_push_work() -> i64 {
+    let v: i64 = vec_new();
+    var i: i64 = 0;
+    while i < 1000 {
+        vec_push(v, i);
+        i = i + 1;
+    }
+    black_box(vec_len(v));
+    0
+}
+
+fn run_bench_vec_push() -> i64 {
+    let b: i64 = bencher_new(string_from("bench_vec_push"));
+    bench_run(b, bench_vec_push_work);
+    print(bench_format_result(b));
+    print("\n");
+    0
+}
+
+// ========================================
+// Benchmark: String Concatenation
+// ========================================
+
+fn bench_string_concat_work() -> i64 {
+    var s: i64 = string_from("");
+    var i: i64 = 0;
+    while i < 100 {
+        s = string_concat(s, string_from("x"));
+        i = i + 1;
+    }
+    black_box(string_len(s));
+    0
+}
+
+fn run_bench_string_concat() -> i64 {
+    let b: i64 = bencher_new(string_from("bench_string_concat"));
+    bench_run(b, bench_string_concat_work);
+    print(bench_format_result(b));
+    print("\n");
+    0
+}
+
+// ========================================
+// Benchmark: Integer Arithmetic
+// ========================================
+
+fn bench_arithmetic_work() -> i64 {
+    var sum: i64 = 0;
+    var i: i64 = 0;
+    while i < 10000 {
+        sum = sum + i * 2 - i / 2;
+        i = i + 1;
+    }
+    black_box(sum);
+    0
+}
+
+fn run_bench_arithmetic() -> i64 {
+    let b: i64 = bencher_new(string_from("bench_arithmetic"));
+    bench_run(b, bench_arithmetic_work);
+    print(bench_format_result(b));
+    print("\n");
+    0
+}
+
+// ========================================
+// Benchmark: Fibonacci (Recursive)
+// ========================================
+
+fn fib(n: i64) -> i64 {
+    if n <= 1 {
+        return n;
+    }
+    fib(n - 1) + fib(n - 2)
+}
+
+fn bench_fib_work() -> i64 {
+    let result: i64 = fib(20);
+    black_box(result);
+    0
+}
+
+fn run_bench_fib() -> i64 {
+    let b: i64 = bencher_new(string_from("bench_fib_20"));
+    bench_run(b, bench_fib_work);
+    print(bench_format_result(b));
+    print("\n");
+    0
+}
+
+// ========================================
+// Benchmark: Memory Allocation
+// ========================================
+
+fn bench_malloc_work() -> i64 {
+    var i: i64 = 0;
+    while i < 100 {
+        let ptr: i64 = malloc(1024);  // 1KB allocation
+        black_box(ptr);
+        // Note: In real code, you'd free this
+        i = i + 1;
+    }
+    0
+}
+
+fn run_bench_malloc() -> i64 {
+    let b: i64 = bencher_new(string_from("bench_malloc_1kb"));
+    bench_run(b, bench_malloc_work);
+    print(bench_format_result(b));
+    print("\n");
+    0
+}
+
+// ========================================
+// Main: Run All Benchmarks
+// ========================================
+
+fn main() -> i64 {
+    print("Running benchmarks...\n\n");
+
+    run_bench_vec_push();
+    run_bench_string_concat();
+    run_bench_arithmetic();
+    run_bench_fib();
+    run_bench_malloc();
+
+    print("\nBenchmarks complete.\n");
+
+    // Optionally show memory report (requires --memory-debug)
+    // memory_report();
+
+    0
+}
