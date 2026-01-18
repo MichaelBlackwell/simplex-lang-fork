@@ -61,7 +61,7 @@ By the end of this tutorial, you'll understand:
 |---------|-------|-------------------|
 | [11](11-capstone.md) | Capstone Project | Build a complete AI-powered document processor |
 
-### Part 5: Advanced Topics (v0.8.0+)
+### Part 5: Advanced Topics (v0.10.0)
 
 | Chapter | Topic | What You'll Learn |
 |---------|-------|-------------------|
@@ -118,6 +118,31 @@ As you work through the tutorials, you might find these helpful:
 
 ---
 
+## Developer Tools (v0.10.0)
+
+Simplex 0.10.0 includes a comprehensive developer toolchain:
+
+| Tool | Command | Purpose |
+|------|---------|---------|
+| Formatter | `sxfmt` | Automatically format code to follow style guidelines |
+| Linter | `sxlint` | Static analysis to catch bugs and code smells |
+| Benchmarking | `sxc bench` | Measure and track performance |
+| Coverage | `sxc test --coverage` | Understand test coverage |
+| Error Help | `sxc explain` | Get detailed explanations for compiler errors |
+
+Quick start:
+
+```bash
+sxfmt .                      # Format all files
+sxlint .                     # Lint all files
+sxc test --coverage          # Run tests with coverage
+sxc explain E0423            # Explain an error code
+```
+
+For a complete guide, see [Chapter 11: Developer Tools](11-capstone.md#developer-tools-v0100).
+
+---
+
 ## Getting Help
 
 If you get stuck:
@@ -125,6 +150,7 @@ If you get stuck:
 ```bash
 simplex help              # Built-in help
 simplex help <command>    # Help for specific command
+sxc explain <error-code>  # Explain compiler errors (v0.10.0)
 ```
 
 ---

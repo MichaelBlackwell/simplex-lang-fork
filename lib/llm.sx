@@ -1,0 +1,775 @@
+// Simplex LLM Standard Library
+// High-performance bindings for Large/Small Language Model inference
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0 - see LICENSE file
+//
+// Architecture:
+// - Zero-copy model loading via mmap
+// - Direct C FFI to llama.cpp/ggml
+// - SIMD-optimized tensor operations
+// - Efficient token buffer management
+//
+// Supported Formats:
+// - GGUF (primary) - llama.cpp ecosystem
+// - Safetensors (read-only) - HuggingFace compatibility
+// - ONNX (future) - cross-framework deployment
+
+// ============================================================================
+// GGUF FILE FORMAT STRUCTURES
+// ============================================================================
+
+// GGUF magic number: 0x46554747 ("GGUF" in little-endian)
+const GGUF_MAGIC: u32 = 0x46554747;
+const GGUF_VERSION: u32 = 3;
+
+// GGUF value types for metadata
+enum GGUFValueType {
+    UInt8 = 0,
+    Int8 = 1,
+    UInt16 = 2,
+    Int16 = 3,
+    UInt32 = 4,
+    Int32 = 5,
+    Float32 = 6,
+    Bool = 7,
+    String = 8,
+    Array = 9,
+    UInt64 = 10,
+    Int64 = 11,
+    Float64 = 12
+}
+
+// GGUF tensor types (quantization formats)
+enum GGMLType {
+    F32 = 0,      // 32-bit float
+    F16 = 1,      // 16-bit float
+    Q4_0 = 2,     // 4-bit quantization type 0
+    Q4_1 = 3,     // 4-bit quantization type 1
+    Q5_0 = 6,     // 5-bit quantization type 0
+    Q5_1 = 7,     // 5-bit quantization type 1
+    Q8_0 = 8,     // 8-bit quantization type 0
+    Q8_1 = 9,     // 8-bit quantization type 1
+    Q2_K = 10,    // 2-bit K-quant
+    Q3_K = 11,    // 3-bit K-quant
+    Q4_K = 12,    // 4-bit K-quant (recommended)
+    Q5_K = 13,    // 5-bit K-quant
+    Q6_K = 14,    // 6-bit K-quant
+    Q8_K = 15,    // 8-bit K-quant
+    IQ2_XXS = 16, // 2-bit imatrix quant
+    IQ2_XS = 17,
+    IQ3_XXS = 18,
+    IQ1_S = 19,   // 1.5-bit quantization
+    IQ4_NL = 20,
+    IQ3_S = 21,
+    IQ2_S = 22,
+    IQ4_XS = 23,
+    I8 = 24,      // 8-bit integer
+    I16 = 25,     // 16-bit integer
+    I32 = 26,     // 32-bit integer
+    I64 = 27,     // 64-bit integer
+    F64 = 28,     // 64-bit float
+    BF16 = 29     // bfloat16
+}
+
+// GGUF file header (read directly from file)
+struct GGUFHeader {
+    magic: u32,           // Must be GGUF_MAGIC
+    version: u32,         // Format version (currently 3)
+    tensor_count: u64,    // Number of tensors
+    metadata_kv_count: u64 // Number of metadata key-value pairs
+}
+
+// Metadata key-value pair
+struct GGUFMetadata {
+    key: String,
+    value_type: GGUFValueType,
+    value: GGUFValue
+}
+
+// Metadata value (tagged union)
+enum GGUFValue {
+    UInt8(u8),
+    Int8(i8),
+    UInt16(u16),
+    Int16(i16),
+    UInt32(u32),
+    Int32(i32),
+    UInt64(u64),
+    Int64(i64),
+    Float32(f32),
+    Float64(f64),
+    Bool(bool),
+    String(String),
+    Array(Vec<GGUFValue>)
+}
+
+// Tensor descriptor
+struct GGUFTensor {
+    name: String,
+    n_dims: u32,
+    dims: Vec<u64>,
+    tensor_type: GGMLType,
+    offset: u64          // Offset in file to tensor data
+}
+
+// ============================================================================
+// MODEL LOADING (ZERO-COPY MMAP)
+// ============================================================================
+
+// Memory-mapped GGUF file
+struct GGUFFile {
+    path: String,
+    mmap_handle: i64,    // Native mmap handle
+    mmap_ptr: *const u8, // Pointer to mapped memory
+    mmap_size: u64,      // Size of mapped region
+    header: GGUFHeader,
+    metadata: Vec<GGUFMetadata>,
+    tensors: Vec<GGUFTensor>,
+    tensor_data_offset: u64 // Offset where tensor data starts
+}
+
+// Open a GGUF file with memory mapping (zero-copy)
+fn gguf_open(path: String) -> Result<GGUFFile, LLMError> {
+    // Validate file exists and is readable
+    let fd: i64 = llm_native_open(path);
+    if fd < 0 {
+        return Err(LLMError::FileNotFound(path));
+    }
+
+    // Get file size
+    let size: u64 = llm_native_file_size(fd);
+    if size < 24 {  // Minimum header size
+        llm_native_close(fd);
+        return Err(LLMError::InvalidFormat("File too small for GGUF"));
+    }
+
+    // Memory map the file (read-only, shared)
+    let mmap_ptr: *const u8 = llm_native_mmap(fd, size, false);
+    if mmap_ptr == 0 as *const u8 {
+        llm_native_close(fd);
+        return Err(LLMError::MMapFailed(path));
+    }
+
+    // Read and validate header
+    let header: GGUFHeader = gguf_read_header(mmap_ptr);
+    if header.magic != GGUF_MAGIC {
+        llm_native_munmap(mmap_ptr, size);
+        llm_native_close(fd);
+        return Err(LLMError::InvalidFormat("Bad magic number"));
+    }
+
+    // Parse metadata
+    let (metadata, offset) = gguf_parse_metadata(mmap_ptr, 24, header.metadata_kv_count);
+
+    // Parse tensor descriptors
+    let (tensors, tensor_data_offset) = gguf_parse_tensors(mmap_ptr, offset, header.tensor_count);
+
+    Ok(GGUFFile {
+        path: path,
+        mmap_handle: fd,
+        mmap_ptr: mmap_ptr,
+        mmap_size: size,
+        header: header,
+        metadata: metadata,
+        tensors: tensors,
+        tensor_data_offset: tensor_data_offset
+    })
+}
+
+// Close a GGUF file and release mmap
+fn gguf_close(file: GGUFFile) {
+    llm_native_munmap(file.mmap_ptr, file.mmap_size);
+    llm_native_close(file.mmap_handle);
+}
+
+// Get tensor data pointer (zero-copy access)
+fn gguf_tensor_data(file: &GGUFFile, tensor: &GGUFTensor) -> *const u8 {
+    let offset: u64 = file.tensor_data_offset + tensor.offset;
+    (file.mmap_ptr as u64 + offset) as *const u8
+}
+
+// Get metadata value by key
+fn gguf_get_metadata(file: &GGUFFile, key: String) -> Option<GGUFValue> {
+    for kv in file.metadata.iter() {
+        if string_eq(kv.key, key) {
+            return Some(kv.value);
+        }
+    }
+    None
+}
+
+// Get model architecture from metadata
+fn gguf_architecture(file: &GGUFFile) -> String {
+    match gguf_get_metadata(file, "general.architecture") {
+        Some(GGUFValue::String(s)) => s,
+        _ => string_from("unknown")
+    }
+}
+
+// Get context length from metadata
+fn gguf_context_length(file: &GGUFFile) -> u64 {
+    let arch = gguf_architecture(file);
+    let key = string_concat(arch, string_from(".context_length"));
+    match gguf_get_metadata(file, key) {
+        Some(GGUFValue::UInt32(n)) => n as u64,
+        Some(GGUFValue::UInt64(n)) => n,
+        _ => 4096  // Default context length
+    }
+}
+
+// ============================================================================
+// TOKENIZER
+// ============================================================================
+
+// Token ID type
+type TokenId = i32;
+
+// Special token IDs
+struct SpecialTokens {
+    bos: TokenId,    // Beginning of sequence
+    eos: TokenId,    // End of sequence
+    pad: TokenId,    // Padding
+    unk: TokenId,    // Unknown
+    sep: TokenId,    // Separator
+    cls: TokenId,    // Classification
+    mask: TokenId    // Mask token
+}
+
+// Tokenizer loaded from GGUF
+struct Tokenizer {
+    vocab_size: u32,
+    tokens: Vec<String>,       // Token ID -> String
+    token_scores: Vec<f32>,    // Token scores for BPE
+    token_to_id: HashMap<String, TokenId>,
+    special: SpecialTokens,
+    model_type: TokenizerType
+}
+
+enum TokenizerType {
+    BPE,        // Byte-Pair Encoding (GPT-2, LLaMA)
+    SPM,        // SentencePiece (T5, LLaMA)
+    WordPiece,  // WordPiece (BERT)
+    Unigram     // Unigram (XLNet)
+}
+
+// Load tokenizer from GGUF file
+fn tokenizer_from_gguf(file: &GGUFFile) -> Result<Tokenizer, LLMError> {
+    // Get vocab size
+    let vocab_size: u32 = match gguf_get_metadata(file, "tokenizer.ggml.tokens") {
+        Some(GGUFValue::Array(arr)) => arr.len() as u32,
+        _ => return Err(LLMError::MissingTokenizer)
+    };
+
+    // Extract token strings
+    let tokens: Vec<String> = gguf_get_string_array(file, "tokenizer.ggml.tokens");
+
+    // Extract token scores
+    let token_scores: Vec<f32> = gguf_get_f32_array(file, "tokenizer.ggml.scores");
+
+    // Build reverse lookup
+    let mut token_to_id: HashMap<String, TokenId> = HashMap::new();
+    for i in 0..tokens.len() {
+        token_to_id.insert(tokens[i], i as TokenId);
+    }
+
+    // Get special tokens
+    let special = SpecialTokens {
+        bos: gguf_get_i32(file, "tokenizer.ggml.bos_token_id", 1),
+        eos: gguf_get_i32(file, "tokenizer.ggml.eos_token_id", 2),
+        pad: gguf_get_i32(file, "tokenizer.ggml.padding_token_id", 0),
+        unk: gguf_get_i32(file, "tokenizer.ggml.unknown_token_id", 0),
+        sep: gguf_get_i32(file, "tokenizer.ggml.separator_token_id", -1),
+        cls: gguf_get_i32(file, "tokenizer.ggml.cls_token_id", -1),
+        mask: gguf_get_i32(file, "tokenizer.ggml.mask_token_id", -1)
+    };
+
+    // Detect tokenizer type
+    let model_type = match gguf_get_metadata(file, "tokenizer.ggml.model") {
+        Some(GGUFValue::String(s)) if string_eq(s, "gpt2") => TokenizerType::BPE,
+        Some(GGUFValue::String(s)) if string_eq(s, "llama") => TokenizerType::SPM,
+        _ => TokenizerType::BPE
+    };
+
+    Ok(Tokenizer {
+        vocab_size: vocab_size,
+        tokens: tokens,
+        token_scores: token_scores,
+        token_to_id: token_to_id,
+        special: special,
+        model_type: model_type
+    })
+}
+
+// Tokenize text to token IDs
+fn tokenize(tokenizer: &Tokenizer, text: String) -> Vec<TokenId> {
+    // Use native tokenizer for performance
+    llm_native_tokenize(tokenizer, text)
+}
+
+// Decode token IDs to text
+fn detokenize(tokenizer: &Tokenizer, tokens: &Vec<TokenId>) -> String {
+    llm_native_detokenize(tokenizer, tokens)
+}
+
+// ============================================================================
+// INFERENCE ENGINE
+// ============================================================================
+
+// Inference context configuration
+struct InferenceConfig {
+    n_ctx: u32,           // Context size (tokens)
+    n_batch: u32,         // Batch size for prompt processing
+    n_threads: u32,       // CPU threads for computation
+    n_gpu_layers: u32,    // Layers to offload to GPU
+    rope_freq_base: f32,  // RoPE frequency base
+    rope_freq_scale: f32, // RoPE frequency scale
+    use_mmap: bool,       // Use memory mapping
+    use_mlock: bool,      // Lock model in RAM
+    flash_attn: bool,     // Use flash attention
+    offload_kqv: bool     // Offload KQV to GPU
+}
+
+fn inference_config_default() -> InferenceConfig {
+    InferenceConfig {
+        n_ctx: 4096,
+        n_batch: 512,
+        n_threads: 4,
+        n_gpu_layers: 0,
+        rope_freq_base: 10000.0,
+        rope_freq_scale: 1.0,
+        use_mmap: true,
+        use_mlock: false,
+        flash_attn: true,
+        offload_kqv: true
+    }
+}
+
+// Loaded model ready for inference
+struct Model {
+    handle: i64,           // Native model handle (llama_model*)
+    config: InferenceConfig,
+    architecture: String,
+    vocab_size: u32,
+    n_ctx_train: u32,      // Training context length
+    n_embd: u32,           // Embedding dimension
+    n_layer: u32,          // Number of layers
+    n_head: u32,           // Number of attention heads
+    n_head_kv: u32,        // Number of KV heads (for GQA)
+    tokenizer: Tokenizer
+}
+
+// Load a model from GGUF file
+fn model_load(path: String, config: InferenceConfig) -> Result<Model, LLMError> {
+    // Load via native llama.cpp
+    let handle: i64 = llm_native_model_load(path, config);
+    if handle == 0 {
+        return Err(LLMError::LoadFailed(path));
+    }
+
+    // Get model metadata from native
+    let architecture: String = llm_native_model_arch(handle);
+    let vocab_size: u32 = llm_native_model_vocab_size(handle);
+    let n_ctx_train: u32 = llm_native_model_n_ctx_train(handle);
+    let n_embd: u32 = llm_native_model_n_embd(handle);
+    let n_layer: u32 = llm_native_model_n_layer(handle);
+    let n_head: u32 = llm_native_model_n_head(handle);
+    let n_head_kv: u32 = llm_native_model_n_head_kv(handle);
+
+    // Load tokenizer from model
+    let tokenizer: Tokenizer = llm_native_model_tokenizer(handle);
+
+    Ok(Model {
+        handle: handle,
+        config: config,
+        architecture: architecture,
+        vocab_size: vocab_size,
+        n_ctx_train: n_ctx_train,
+        n_embd: n_embd,
+        n_layer: n_layer,
+        n_head: n_head,
+        n_head_kv: n_head_kv,
+        tokenizer: tokenizer
+    })
+}
+
+// Unload a model
+fn model_unload(model: Model) {
+    llm_native_model_free(model.handle);
+}
+
+// Inference context (maintains KV cache)
+struct Context {
+    handle: i64,           // Native context handle (llama_context*)
+    model: &Model,
+    n_ctx: u32,            // Actual context size
+    n_past: u32,           // Tokens processed so far
+    kv_cache_used: u32     // KV cache slots used
+}
+
+// Create inference context from model
+fn context_new(model: &Model) -> Result<Context, LLMError> {
+    let handle: i64 = llm_native_context_new(model.handle, model.config);
+    if handle == 0 {
+        return Err(LLMError::ContextFailed);
+    }
+
+    Ok(Context {
+        handle: handle,
+        model: model,
+        n_ctx: model.config.n_ctx,
+        n_past: 0,
+        kv_cache_used: 0
+    })
+}
+
+// Free context
+fn context_free(ctx: Context) {
+    llm_native_context_free(ctx.handle);
+}
+
+// Clear KV cache (reset context)
+fn context_clear(ctx: &mut Context) {
+    llm_native_kv_cache_clear(ctx.handle);
+    ctx.n_past = 0;
+    ctx.kv_cache_used = 0;
+}
+
+// ============================================================================
+// TOKEN PROCESSING (BATCH API)
+// ============================================================================
+
+// Batch of tokens for efficient processing
+struct TokenBatch {
+    tokens: Vec<TokenId>,     // Token IDs
+    positions: Vec<i32>,      // Position in sequence
+    seq_ids: Vec<i32>,        // Sequence ID (for multi-sequence)
+    logits_mask: Vec<bool>    // Which tokens need logits computed
+}
+
+// Create batch for single sequence
+fn batch_new(tokens: Vec<TokenId>, seq_id: i32) -> TokenBatch {
+    let n = tokens.len();
+    let mut positions: Vec<i32> = Vec::with_capacity(n);
+    let mut seq_ids: Vec<i32> = Vec::with_capacity(n);
+    let mut logits_mask: Vec<bool> = Vec::with_capacity(n);
+
+    for i in 0..n {
+        positions.push(i as i32);
+        seq_ids.push(seq_id);
+        logits_mask.push(i == n - 1);  // Only compute logits for last token
+    }
+
+    TokenBatch {
+        tokens: tokens,
+        positions: positions,
+        seq_ids: seq_ids,
+        logits_mask: logits_mask
+    }
+}
+
+// Process a batch through the model
+fn decode(ctx: &mut Context, batch: &TokenBatch) -> Result<(), LLMError> {
+    let result: i32 = llm_native_decode(ctx.handle, batch);
+    if result != 0 {
+        return Err(LLMError::DecodeFailed(result));
+    }
+
+    ctx.n_past = ctx.n_past + batch.tokens.len() as u32;
+    ctx.kv_cache_used = ctx.n_past;
+    Ok(())
+}
+
+// Get logits for token at position (after decode)
+fn get_logits(ctx: &Context, pos: i32) -> &[f32] {
+    llm_native_get_logits(ctx.handle, pos)
+}
+
+// Get all logits (for batch processing)
+fn get_logits_all(ctx: &Context) -> &[f32] {
+    llm_native_get_logits_all(ctx.handle)
+}
+
+// ============================================================================
+// SAMPLING
+// ============================================================================
+
+// Sampling parameters
+struct SamplingParams {
+    temperature: f32,      // Temperature (0.0 = greedy, 1.0 = normal)
+    top_k: i32,            // Top-K sampling (-1 = disabled)
+    top_p: f32,            // Top-P (nucleus) sampling (1.0 = disabled)
+    min_p: f32,            // Min-P sampling (0.0 = disabled)
+    repeat_penalty: f32,   // Repetition penalty (1.0 = disabled)
+    repeat_last_n: i32,    // How many tokens to consider for penalty
+    frequency_penalty: f32, // Frequency penalty
+    presence_penalty: f32,  // Presence penalty
+    mirostat: i32,         // Mirostat mode (0 = disabled, 1 or 2)
+    mirostat_tau: f32,     // Mirostat target entropy
+    mirostat_eta: f32,     // Mirostat learning rate
+    seed: u64              // Random seed (-1 = random)
+}
+
+fn sampling_params_default() -> SamplingParams {
+    SamplingParams {
+        temperature: 0.7,
+        top_k: 40,
+        top_p: 0.95,
+        min_p: 0.05,
+        repeat_penalty: 1.1,
+        repeat_last_n: 64,
+        frequency_penalty: 0.0,
+        presence_penalty: 0.0,
+        mirostat: 0,
+        mirostat_tau: 5.0,
+        mirostat_eta: 0.1,
+        seed: 0  // 0 = random
+    }
+}
+
+fn sampling_params_greedy() -> SamplingParams {
+    SamplingParams {
+        temperature: 0.0,
+        top_k: 1,
+        top_p: 1.0,
+        min_p: 0.0,
+        repeat_penalty: 1.0,
+        repeat_last_n: 0,
+        frequency_penalty: 0.0,
+        presence_penalty: 0.0,
+        mirostat: 0,
+        mirostat_tau: 0.0,
+        mirostat_eta: 0.0,
+        seed: 0
+    }
+}
+
+// Sampler chain (composable samplers)
+struct Sampler {
+    handle: i64  // Native sampler chain handle
+}
+
+// Create sampler from params
+fn sampler_new(params: SamplingParams) -> Sampler {
+    let handle: i64 = llm_native_sampler_new(params);
+    Sampler { handle: handle }
+}
+
+// Free sampler
+fn sampler_free(sampler: Sampler) {
+    llm_native_sampler_free(sampler.handle);
+}
+
+// Sample next token from logits
+fn sample(sampler: &Sampler, ctx: &Context, pos: i32) -> TokenId {
+    llm_native_sample(sampler.handle, ctx.handle, pos)
+}
+
+// ============================================================================
+// HIGH-LEVEL INFERENCE API
+// ============================================================================
+
+// Generation result
+struct GenerationResult {
+    text: String,
+    tokens: Vec<TokenId>,
+    finish_reason: FinishReason
+}
+
+enum FinishReason {
+    Stop,       // Hit stop sequence
+    Length,     // Hit max length
+    EOS         // Hit end of sequence token
+}
+
+// Streaming callback type
+type StreamCallback = fn(String) -> bool;  // Returns false to stop
+
+// Generate text completion
+fn generate(
+    ctx: &mut Context,
+    prompt: String,
+    max_tokens: u32,
+    params: SamplingParams
+) -> GenerationResult {
+    generate_stream(ctx, prompt, max_tokens, params, |_| true)
+}
+
+// Generate with streaming callback
+fn generate_stream(
+    ctx: &mut Context,
+    prompt: String,
+    max_tokens: u32,
+    params: SamplingParams,
+    callback: StreamCallback
+) -> GenerationResult {
+    // Tokenize prompt
+    let prompt_tokens: Vec<TokenId> = tokenize(&ctx.model.tokenizer, prompt);
+
+    // Process prompt
+    let prompt_batch = batch_new(prompt_tokens.clone(), 0);
+    decode(ctx, &prompt_batch).expect("Prompt decode failed");
+
+    // Create sampler
+    let sampler = sampler_new(params);
+
+    // Generate tokens
+    let mut output_tokens: Vec<TokenId> = Vec::new();
+    let mut finish_reason = FinishReason::Length;
+
+    for _ in 0..max_tokens {
+        // Sample next token
+        let next_token = sample(&sampler, ctx, -1);
+
+        // Check for EOS
+        if next_token == ctx.model.tokenizer.special.eos {
+            finish_reason = FinishReason::EOS;
+            break;
+        }
+
+        // Decode token to text
+        let token_text = detokenize(&ctx.model.tokenizer, &vec![next_token]);
+
+        // Stream callback
+        if !callback(token_text) {
+            finish_reason = FinishReason::Stop;
+            break;
+        }
+
+        // Add to output
+        output_tokens.push(next_token);
+
+        // Process token for next iteration
+        let token_batch = TokenBatch {
+            tokens: vec![next_token],
+            positions: vec![ctx.n_past as i32],
+            seq_ids: vec![0],
+            logits_mask: vec![true]
+        };
+        decode(ctx, &token_batch).expect("Token decode failed");
+    }
+
+    sampler_free(sampler);
+
+    GenerationResult {
+        text: detokenize(&ctx.model.tokenizer, &output_tokens),
+        tokens: output_tokens,
+        finish_reason: finish_reason
+    }
+}
+
+// ============================================================================
+// EMBEDDINGS
+// ============================================================================
+
+// Embedding vector
+struct Embedding {
+    data: Vec<f32>,
+    dim: u32
+}
+
+// Get embeddings for text
+fn embed(ctx: &mut Context, text: String) -> Embedding {
+    // Tokenize
+    let tokens: Vec<TokenId> = tokenize(&ctx.model.tokenizer, text);
+
+    // Add BOS token
+    let mut input_tokens = vec![ctx.model.tokenizer.special.bos];
+    input_tokens.extend(tokens);
+
+    // Process through model
+    let batch = batch_new(input_tokens, 0);
+    decode(ctx, &batch).expect("Embed decode failed");
+
+    // Get embeddings from native
+    let data: Vec<f32> = llm_native_get_embeddings(ctx.handle);
+    let dim = ctx.model.n_embd;
+
+    Embedding {
+        data: data,
+        dim: dim
+    }
+}
+
+// Compute cosine similarity between embeddings
+fn embedding_similarity(a: &Embedding, b: &Embedding) -> f32 {
+    assert_eq!(a.dim, b.dim);
+
+    // SIMD-optimized dot product and norms
+    llm_native_cosine_similarity(a.data.as_ptr(), b.data.as_ptr(), a.dim as i32)
+}
+
+// ============================================================================
+// ERRORS
+// ============================================================================
+
+enum LLMError {
+    FileNotFound(String),
+    InvalidFormat(String),
+    MMapFailed(String),
+    LoadFailed(String),
+    ContextFailed,
+    DecodeFailed(i32),
+    MissingTokenizer,
+    OutOfMemory,
+    GpuError(String)
+}
+
+// ============================================================================
+// NATIVE FFI DECLARATIONS (implemented in C)
+// ============================================================================
+
+// File operations
+extern fn llm_native_open(path: String) -> i64;
+extern fn llm_native_close(fd: i64);
+extern fn llm_native_file_size(fd: i64) -> u64;
+
+// Memory mapping
+extern fn llm_native_mmap(fd: i64, size: u64, writable: bool) -> *const u8;
+extern fn llm_native_munmap(ptr: *const u8, size: u64);
+
+// Model operations (llama.cpp)
+extern fn llm_native_model_load(path: String, config: InferenceConfig) -> i64;
+extern fn llm_native_model_free(handle: i64);
+extern fn llm_native_model_arch(handle: i64) -> String;
+extern fn llm_native_model_vocab_size(handle: i64) -> u32;
+extern fn llm_native_model_n_ctx_train(handle: i64) -> u32;
+extern fn llm_native_model_n_embd(handle: i64) -> u32;
+extern fn llm_native_model_n_layer(handle: i64) -> u32;
+extern fn llm_native_model_n_head(handle: i64) -> u32;
+extern fn llm_native_model_n_head_kv(handle: i64) -> u32;
+extern fn llm_native_model_tokenizer(handle: i64) -> Tokenizer;
+
+// Context operations
+extern fn llm_native_context_new(model: i64, config: InferenceConfig) -> i64;
+extern fn llm_native_context_free(handle: i64);
+extern fn llm_native_kv_cache_clear(handle: i64);
+
+// Tokenization
+extern fn llm_native_tokenize(tokenizer: &Tokenizer, text: String) -> Vec<TokenId>;
+extern fn llm_native_detokenize(tokenizer: &Tokenizer, tokens: &Vec<TokenId>) -> String;
+
+// Decode/inference
+extern fn llm_native_decode(ctx: i64, batch: &TokenBatch) -> i32;
+extern fn llm_native_get_logits(ctx: i64, pos: i32) -> &[f32];
+extern fn llm_native_get_logits_all(ctx: i64) -> &[f32];
+extern fn llm_native_get_embeddings(ctx: i64) -> Vec<f32>;
+
+// Sampling
+extern fn llm_native_sampler_new(params: SamplingParams) -> i64;
+extern fn llm_native_sampler_free(handle: i64);
+extern fn llm_native_sample(sampler: i64, ctx: i64, pos: i32) -> TokenId;
+
+// SIMD utilities
+extern fn llm_native_cosine_similarity(a: *const f32, b: *const f32, dim: i32) -> f32;
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+fn gguf_read_header(ptr: *const u8) -> GGUFHeader;
+fn gguf_parse_metadata(ptr: *const u8, offset: u64, count: u64) -> (Vec<GGUFMetadata>, u64);
+fn gguf_parse_tensors(ptr: *const u8, offset: u64, count: u64) -> (Vec<GGUFTensor>, u64);
+fn gguf_get_string_array(file: &GGUFFile, key: String) -> Vec<String>;
+fn gguf_get_f32_array(file: &GGUFFile, key: String) -> Vec<f32>;
+fn gguf_get_i32(file: &GGUFFile, key: String, default: i32) -> i32;

@@ -1,0 +1,54 @@
+# Docker Compose configuration for Simplex Playground
+#
+# For local development:
+#   docker-compose up
+#
+# For production with nginx reverse proxy:
+#   docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+version: '3.8'
+
+services:
+  playground:
+    build:
+      context: ..
+      dockerfile: playground/Dockerfile
+    container_name: simplex-playground
+    ports:
+      - "8080:8080"
+    environment:
+      - SXC_PATH=/usr/local/bin/sxc
+      - RUNTIME_PATH=/usr/local/lib/simplex/standalone_runtime.c
+      - TEMP_BASE=/tmp/simplex-playground
+      - COMPILE_TIMEOUT=30
+      - RUN_TIMEOUT=10
+      - MAX_OUTPUT_SIZE=65536
+      - MAX_CODE_SIZE=102400
+      - MAX_MEMORY=268435456
+      - RATE_LIMIT_REQUESTS=20
+      - RATE_LIMIT_WINDOW=60
+    volumes:
+      # Mount temp directory for debugging (optional)
+      # - ./tmp:/tmp/simplex-playground
+      []
+    restart: unless-stopped
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+    # Network isolation for user code
+    networks:
+      - playground-internal
+
+networks:
+  playground-internal:
+    driver: bridge
+    internal: false  # Allow internet access for the server, user code is sandboxed

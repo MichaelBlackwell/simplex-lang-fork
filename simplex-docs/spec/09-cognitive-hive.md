@@ -1,6 +1,6 @@
 # Cognitive Hive AI Architecture
 
-**Version 0.9.0**
+**Version 0.10.0**
 
 **The future of AI is not one giant mind, but a swarm of specialists.**
 
@@ -8,7 +8,7 @@ Simplex embraces the Cognitive Hive AI (CHAI) philosophy as a core architectural
 
 ---
 
-## v0.9.0 Enhancements
+## Recent Enhancements
 
 ### High-Performance Inference via llama.cpp
 
@@ -1337,7 +1337,7 @@ hive ResilientHive {
 | `learner` | Online learning for adaptive specialists (v0.7.0) |
 | `coordinator` | Orchestrate federated learning across hive (v0.7.0) |
 
-### v0.9.0 Architecture Summary
+### Architecture Summary
 
 ```
 Per-Hive SLM Architecture:
@@ -1346,14 +1346,14 @@ Per-Hive SLM Architecture:
   - Specialist Anima for individual memory
   - Three-tier hierarchy: Divine → Hive → Specialist
 
-High-Performance Inference (v0.9.0):
+High-Performance Inference:
   - Native llama.cpp bindings via simplex-inference
   - Continuous batching for throughput optimization
   - Prompt caching for repeated context
   - Response caching for deterministic queries
   - GPU offloading (CUDA, Metal) support
 
-Self-Learning Optimization (v0.9.0):
+Self-Learning Optimization:
   - LearnableSchedule for temperature control
   - MetaOptimizer learns hyperparameters via gradients
   - Soft acceptance for differentiable annealing

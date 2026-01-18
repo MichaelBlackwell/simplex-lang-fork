@@ -1,6 +1,6 @@
 # Simplex Overview and Philosophy
 
-**Version 0.9.0**
+**Version 0.10.0**
 
 ---
 
@@ -10,7 +10,23 @@ Simplex is built on a singular premise: modern software runs on distributed, eph
 
 ---
 
-## What's New in v0.9.0
+## What's New in v0.10.0
+
+### Developer Tooling
+
+v0.10.0 introduces a comprehensive suite of developer tools:
+
+- **sxfmt**: Code formatter with configurable style rules
+- **sxlint**: Static analysis and linting with extensible rules
+- **sxc bench**: Integrated benchmarking framework
+- **sxc test --coverage**: Code coverage reporting
+- **sxc explain**: Detailed error explanations with examples
+- **Incremental compilation**: Faster rebuilds via dependency tracking
+- **Source-level stack traces**: Debug symbols for production error reports
+
+See [Compiler Toolchain](10-compiler-toolchain.md) for detailed documentation.
+
+### Previous Release: v0.9.0
 
 ### Self-Learning Annealing
 
@@ -74,7 +90,7 @@ let pipeline = InferencePipeline::builder()
 
 - **AI-native**: Artificial intelligence primitives built into the language semantics
 - **Differentiable**: Native dual numbers enable automatic differentiation (v0.8.0)
-- **Self-optimizing**: Hyperparameters learn themselves via meta-gradients (v0.9.0)
+- **Self-optimizing**: Hyperparameters learn themselves via meta-gradients
 - **Distributed-first**: Programs naturally decompose across swarms of virtual machines
 - **Fault-tolerant**: Any worker can die at any time; the system continues
 - **Resumable**: Computations checkpoint and resume transparently

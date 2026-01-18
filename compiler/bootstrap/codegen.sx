@@ -8,6 +8,9 @@
 // Licensed under AGPL-3.0 - see LICENSE file
 // https://github.com/senuamedia/simplex-lang
 
+// Dependencies: error.sx (E_* error codes, error_msg_*, report_simple_error)
+// These functions are provided when compiled together with error.sx
+
 // AST tags - duplicated from parser.sx for standalone compilation
 // Item tags
 fn TAG_FN() -> i64 { 0 }
@@ -178,9 +181,10 @@ fn get_target_triple() -> i64 {
 
 // Codegen state
 fn codegen_new() -> i64 {
-    // Allocate codegen: output_sb(0), temp_counter(1), label_counter(2), enums(3), locals(4), strings(5), terminated(6), structs(7), var_types(8), loop_stack(9), loop_depth(10), pre_alloca_queue(11), module_name(12), generic_fns(13), instantiated(14), pending_instantiations(15), assoc_types(16), current_impl_type(17), const_params(18), type_params(19), generic_struct_templates(20), trait_impls(21), is_async_fn(22), async_state_counter(23), async_await_points(24), async_fn_name(25), default_methods(26), trait_defs(27), vtables(28), type_aliases(29), closures(30), closure_counter(31)
+    // Allocate codegen: output_sb(0), temp_counter(1), label_counter(2), enums(3), locals(4), strings(5), terminated(6), structs(7), var_types(8), loop_stack(9), loop_depth(10), pre_alloca_queue(11), module_name(12), generic_fns(13), instantiated(14), pending_instantiations(15), assoc_types(16), current_impl_type(17), const_params(18), type_params(19), generic_struct_templates(20), trait_impls(21), is_async_fn(22), async_state_counter(23), async_await_points(24), async_fn_name(25), default_methods(26), trait_defs(27), vtables(28), type_aliases(29), closures(30), closure_counter(31), defined_fns(32), messages(33)
+    // Debug info slots: debug_enabled(34), debug_file(35), debug_dir(36), debug_metadata_id(37), debug_subprograms(38), current_subprogram(39), current_line(40)
     // Note: slot 0 is now a StringBuilder for O(n) instead of O(n²) string building
-    let cg: i64 = malloc(256);
+    let cg: i64 = malloc(328);
     store_ptr(cg, 0, sb_new_cap(65536));
     store_i64(cg, 1, 0);
     store_i64(cg, 2, 0);
@@ -213,7 +217,121 @@ fn codegen_new() -> i64 {
     store_ptr(cg, 29, vec_new()); // type_aliases: vec of (alias_name, target_type) pairs
     store_ptr(cg, 30, vec_new()); // closures: vec of (name, params, body, captures) for inline closures
     store_i64(cg, 31, 0);         // closure_counter: for unique closure function names
+    store_ptr(cg, 32, vec_new()); // defined_fns: vec of function names defined by user (to avoid redefinition)
+    store_ptr(cg, 33, vec_new()); // messages: vec of nullary message constructor names (for actor messages without args)
+    // Debug info slots
+    store_i64(cg, 34, 0);         // debug_enabled: 1 if -g flag was set
+    store_ptr(cg, 35, 0);         // debug_file: source filename for DIFile
+    store_ptr(cg, 36, 0);         // debug_dir: source directory for DIFile
+    store_i64(cg, 37, 0);         // debug_metadata_id: next metadata node ID
+    store_ptr(cg, 38, vec_new()); // debug_subprograms: vec of (fn_name, metadata_id, line) for DISubprogram
+    store_i64(cg, 39, 0);         // current_subprogram: metadata ID of current function's DISubprogram
+    store_i64(cg, 40, 1);         // current_line: current source line number for debug locations
     cg
+}
+
+// User-defined function tracking (to prevent duplicate stdlib declarations)
+fn cg_defined_fns(cg: i64) -> i64 {
+    load_ptr(cg, 32)
+}
+
+fn cg_add_defined_fn(cg: i64, name: i64) -> i64 {
+    vec_push(cg_defined_fns(cg), name);
+    0
+}
+
+// Message constructor registry (for nullary actor messages like Get)
+fn cg_messages(cg: i64) -> i64 {
+    load_ptr(cg, 33)
+}
+
+fn cg_register_message(cg: i64, name: i64) -> i64 {
+    vec_push(cg_messages(cg), name);
+    0
+}
+
+fn cg_is_message(cg: i64, name: i64) -> i64 {
+    let msgs: i64 = cg_messages(cg);
+    let n: i64 = vec_len(msgs);
+    let i: i64 = 0;
+    while i < n {
+        let msg: i64 = vec_get(msgs, i);
+        if string_eq(msg, name) {
+            return 1;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+fn cg_has_defined_fn(cg: i64, name: i64) -> bool {
+    let defined: i64 = cg_defined_fns(cg);
+    let n: i64 = vec_len(defined);
+    let i: i64 = 0;
+    while i < n {
+        if string_eq(vec_get(defined, i), name) {
+            return true;
+        }
+        i = i + 1;
+    }
+    false
+}
+
+// ========================================
+// DWARF Debug Info Generation (0.10.0)
+// ========================================
+
+// Debug info accessors
+fn cg_debug_enabled(cg: i64) -> i64 { load_i64(cg, 34) }
+fn cg_set_debug_enabled(cg: i64, v: i64) -> i64 { store_i64(cg, 34, v); 0 }
+
+fn cg_debug_file(cg: i64) -> i64 { load_ptr(cg, 35) }
+fn cg_set_debug_file(cg: i64, f: i64) -> i64 { store_ptr(cg, 35, f); 0 }
+
+fn cg_debug_dir(cg: i64) -> i64 { load_ptr(cg, 36) }
+fn cg_set_debug_dir(cg: i64, d: i64) -> i64 { store_ptr(cg, 36, d); 0 }
+
+fn cg_debug_metadata_id(cg: i64) -> i64 { load_i64(cg, 37) }
+fn cg_next_debug_metadata_id(cg: i64) -> i64 {
+    let id: i64 = load_i64(cg, 37);
+    store_i64(cg, 37, id + 1);
+    id
+}
+
+fn cg_debug_subprograms(cg: i64) -> i64 { load_ptr(cg, 38) }
+
+fn cg_current_subprogram(cg: i64) -> i64 { load_i64(cg, 39) }
+fn cg_set_current_subprogram(cg: i64, id: i64) -> i64 { store_i64(cg, 39, id); 0 }
+
+fn cg_current_line(cg: i64) -> i64 { load_i64(cg, 40) }
+fn cg_set_current_line(cg: i64, line: i64) -> i64 { store_i64(cg, 40, line); 0 }
+
+// Register a subprogram for debug info
+// Returns the metadata ID assigned to this subprogram
+fn cg_register_subprogram(cg: i64, fn_name: i64, line: i64) -> i64 {
+    let id: i64 = cg_next_debug_metadata_id(cg);
+    let subprograms: i64 = cg_debug_subprograms(cg);
+    let entry: i64 = malloc(24);
+    store_ptr(entry, 0, fn_name);
+    store_i64(entry, 1, id);
+    store_i64(entry, 2, line);
+    vec_push(subprograms, entry);
+    id
+}
+
+// Look up subprogram metadata ID by function name
+fn cg_lookup_subprogram(cg: i64, fn_name: i64) -> i64 {
+    let subprograms: i64 = cg_debug_subprograms(cg);
+    let n: i64 = vec_len(subprograms);
+    let i: i64 = 0;
+    while i < n {
+        let entry: i64 = vec_get(subprograms, i);
+        if string_eq(load_ptr(entry, 0), fn_name) {
+            return load_i64(entry, 1);
+        }
+        i = i + 1;
+    }
+    0  // Not found
 }
 
 // Async state accessors
@@ -934,16 +1052,16 @@ fn check_trait_bounds(cg: i64, type_params: i64, type_args: i64) -> i64 {
                             remaining = string_from("");
                         }
                         if cg_type_implements_trait(cg, concrete_type, trait_name) == 0 {
-                            println(string_concat("Error: type '", string_concat(concrete_type,
-                                string_concat("' does not implement trait '", string_concat(trait_name, "'")))));
+                            let msg: i64 = error_msg_trait_not_impl(concrete_type, trait_name);
+                            report_simple_error(E_TRAIT_NOT_IMPLEMENTED(), msg);
                             return 0;
                         }
                     }
                 } else {
                     // Single bound
                     if cg_type_implements_trait(cg, concrete_type, bound) == 0 {
-                        println(string_concat("Error: type '", string_concat(concrete_type,
-                            string_concat("' does not implement trait '", string_concat(bound, "'")))));
+                        let msg: i64 = error_msg_trait_not_impl(concrete_type, bound);
+                        report_simple_error(E_TRAIT_NOT_IMPLEMENTED(), msg);
                         return 0;
                     }
                 }
@@ -956,88 +1074,65 @@ fn check_trait_bounds(cg: i64, type_params: i64, type_args: i64) -> i64 {
 
 // ========================================
 // Improved Type Error Messages (Phase 21 completion)
+// Updated for 0.10.0 with Rust/Elm-style error formatting
 // ========================================
 
 // Format a type mismatch error with context
 fn type_error_mismatch(expected: i64, found: i64, context: i64) -> i64 {
-    let msg: i64 = string_from("Type error: expected '");
-    msg = string_concat(msg, expected);
-    msg = string_concat(msg, "', found '");
-    msg = string_concat(msg, found);
-    msg = string_concat(msg, "'");
+    let sb: i64 = sb_new();
+    sb_append(sb, "expected `");
+    sb_append(sb, expected);
+    sb_append(sb, "`, found `");
+    sb_append(sb, found);
+    sb_append(sb, "`");
     if context != 0 {
-        msg = string_concat(msg, " in ");
-        msg = string_concat(msg, context);
+        sb_append(sb, " in ");
+        sb_append(sb, context);
     }
-    println(msg);
+    let msg: i64 = sb_build(sb);
+    report_simple_error(E_TYPE_MISMATCH(), msg);
     0
 }
 
 // Format an argument count mismatch error
 fn error_arg_count(fn_name: i64, expected: i64, found: i64) -> i64 {
-    let sb: i64 = sb_new();
-    sb_append(sb, "Error: function '");
-    sb_append(sb, fn_name);
-    sb_append(sb, "' expects ");
-    sb_append_i64(sb, expected);
-    sb_append(sb, " argument(s), found ");
-    sb_append_i64(sb, found);
-    println(sb_build(sb));
+    let msg: i64 = error_msg_wrong_arg_count(fn_name, expected, found);
+    report_simple_error(E_WRONG_ARG_COUNT(), msg);
     0
 }
 
 // Format an undefined variable error
 fn error_undefined_var(name: i64) -> i64 {
-    let sb: i64 = sb_new();
-    sb_append(sb, "Error: undefined variable '");
-    sb_append(sb, name);
-    sb_append(sb, "'");
-    println(sb_build(sb));
+    let msg: i64 = error_msg_undefined_var(name);
+    report_simple_error(E_UNDEFINED_VARIABLE(), msg);
     0
 }
 
 // Format an undefined function error
 fn error_undefined_fn(name: i64) -> i64 {
-    let sb: i64 = sb_new();
-    sb_append(sb, "Error: undefined function '");
-    sb_append(sb, name);
-    sb_append(sb, "'");
-    println(sb_build(sb));
+    let msg: i64 = error_msg_undefined_fn(name);
+    report_simple_error(E_UNDEFINED_FUNCTION(), msg);
     0
 }
 
 // Format an undefined struct error
 fn error_undefined_struct(name: i64) -> i64 {
-    let sb: i64 = sb_new();
-    sb_append(sb, "Error: undefined struct '");
-    sb_append(sb, name);
-    sb_append(sb, "'");
-    println(sb_build(sb));
+    let msg: i64 = error_msg_undefined_struct(name);
+    report_simple_error(E_UNDEFINED_STRUCT(), msg);
     0
 }
 
 // Format an undefined field error
 fn error_undefined_field(struct_name: i64, field_name: i64) -> i64 {
-    let sb: i64 = sb_new();
-    sb_append(sb, "Error: struct '");
-    sb_append(sb, struct_name);
-    sb_append(sb, "' has no field '");
-    sb_append(sb, field_name);
-    sb_append(sb, "'");
-    println(sb_build(sb));
+    let msg: i64 = error_msg_undefined_field(struct_name, field_name);
+    report_simple_error(E_UNDEFINED_FIELD(), msg);
     0
 }
 
 // Format a generic instantiation error
 fn error_generic_instantiation(fn_name: i64, expected: i64, found: i64) -> i64 {
-    let sb: i64 = sb_new();
-    sb_append(sb, "Error: generic function '");
-    sb_append(sb, fn_name);
-    sb_append(sb, "' expects ");
-    sb_append_i64(sb, expected);
-    sb_append(sb, " type argument(s), found ");
-    sb_append_i64(sb, found);
-    println(sb_build(sb));
+    let msg: i64 = error_msg_wrong_type_arg_count(fn_name, expected, found);
+    report_simple_error(E_WRONG_TYPE_ARG_COUNT(), msg);
     0
 }
 
@@ -1592,6 +1687,51 @@ fn emit_line(cg: i64, s: i64) -> i64 {
     0
 }
 
+// Emit a line with debug location metadata attached
+// Used for instructions that should have source location info
+fn emit_line_dbg(cg: i64, s: i64, line: i64) -> i64 {
+    let sb: i64 = cg_output(cg);
+    sb_append(sb, s);
+    // Add !dbg metadata if debug info is enabled and we're in a function
+    if cg_debug_enabled(cg) != 0 {
+        let sp: i64 = cg_current_subprogram(cg);
+        if sp > 0 {
+            // Emit inline DILocation: !dbg !DILocation(line: N, scope: !M)
+            sb_append(sb, ", !dbg !DILocation(line: ");
+            sb_append(sb, int_to_string(line));
+            sb_append(sb, ", scope: !");
+            sb_append(sb, int_to_string(sp));
+            sb_append(sb, ")");
+        }
+    }
+    sb_append(sb, "\n");
+    0
+}
+
+// Emit debug location suffix for an instruction (without newline)
+fn emit_dbg_loc(cg: i64, line: i64) -> i64 {
+    if cg_debug_enabled(cg) != 0 {
+        let sp: i64 = cg_current_subprogram(cg);
+        if sp > 0 {
+            emit(cg, ", !dbg !DILocation(line: ");
+            emit(cg, int_to_string(line));
+            emit(cg, ", scope: !");
+            emit(cg, int_to_string(sp));
+            emit(cg, ")");
+        }
+    }
+    0
+}
+
+// Emit a stdlib function declaration only if not user-defined
+// This prevents LLVM redefinition errors when user defines functions with stdlib names
+fn emit_stdlib_decl(cg: i64, fn_name: i64, decl: i64) -> i64 {
+    if cg_has_defined_fn(cg, fn_name) == false {
+        emit_line(cg, decl);
+    }
+    0
+}
+
 // Register an enum
 fn register_enum(cg: i64, name: i64, variants: i64) -> i64 {
     let enums: i64 = cg_enums(cg);
@@ -2072,6 +2212,20 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
             emit(cg, int_to_string(malloc_t));
             emit_line(cg, " to i64");
             return string_concat("%t", int_to_string(result_t));
+        }
+
+        // Check if this is a nullary message constructor (e.g., Get for actor messages)
+        // Nullary messages are used with ask(actor, Get) - they need to be called as functions
+        if cg_is_message(cg, name) == 1 {
+            // Generate a function call to the message constructor
+            let t: i64 = cg_next_temp(cg);
+            let temp: i64 = string_concat("%t", int_to_string(t));
+            emit(cg, "  ");
+            emit(cg, temp);
+            emit(cg, " = call i64 @\"");
+            emit(cg, name);
+            emit_line(cg, "\"()");
+            return temp;
         }
 
         let unique_name: i64 = lookup_local(cg, name);
@@ -5592,6 +5746,10 @@ fn gen_match(cg: i64, expr: i64) -> i64 {
 
 // Generate block
 fn gen_block(cg: i64, block: i64) -> i64 {
+    // Guard against null block to prevent segfault
+    if block == 0 {
+        return string_from("0");
+    }
     let stmts: i64 = load_ptr(block, 1);
     let result: i64 = load_ptr(block, 2);
 
@@ -5612,6 +5770,10 @@ fn gen_block(cg: i64, block: i64) -> i64 {
 
 // Generate statement
 fn gen_stmt(cg: i64, stmt: i64) -> i64 {
+    // Guard against null statement to prevent segfault
+    if stmt == 0 {
+        return string_from("0");
+    }
     let tag: i64 = load_i64(stmt, 0);
 
     // Let statement
@@ -5865,15 +6027,16 @@ fn gen_async_fn(cg: i64, fn_def: i64) -> i64 {
         j = j + 1;
     }
 
-    // State dispatch switch
-    emit_line(cg, "  switch i64 %state, label %state_0 [");
-    emit_line(cg, "    i64 0, label %state_0");
-    emit_line(cg, "  ]");
+    // Generate body to a temporary buffer first so we can collect await points
+    // before emitting the state dispatch switch
+    let saved_output: i64 = load_ptr(cg, 0);
+    let body_buffer: i64 = sb_new();
+    store_ptr(cg, 0, body_buffer);
 
-    // State 0 - start of function
+    // State 0 - start of function (emitted to body buffer)
     emit_line(cg, "state_0:");
 
-    // Generate body
+    // Generate body (emits to body_buffer, collects await points)
     cg_set_terminated(cg, false);
     let result: i64 = gen_block(cg, body);
 
@@ -5897,6 +6060,35 @@ fn gen_async_fn(cg: i64, fn_def: i64) -> i64 {
 
     emit_line(cg, "}");
     emit_line(cg, "");
+
+    // Now body generation is complete - restore original output and emit proper switch
+    let body_code: i64 = sb_to_string(body_buffer);
+    store_ptr(cg, 0, saved_output);
+
+    // State dispatch switch - now includes all await points
+    let await_points: i64 = cg_async_await_points(cg);
+    let num_points: i64 = vec_len(await_points);
+
+    emit_line(cg, "  switch i64 %state, label %state_0 [");
+    emit_line(cg, "    i64 0, label %state_0");
+
+    // Add cases for each await resume point
+    let k: i64 = 0;
+    while k < num_points {
+        let point: i64 = vec_get(await_points, k);
+        let state_num: i64 = load_i64(point, 0);
+        let label: i64 = load_ptr(point, 1);
+        emit(cg, "    i64 ");
+        emit(cg, int_to_string(state_num));
+        emit(cg, ", label %");
+        emit_line(cg, label);
+        k = k + 1;
+    }
+
+    emit_line(cg, "  ]");
+
+    // Now emit the body code we generated earlier
+    emit(cg, body_code);
 
     // Reset async context
     cg_set_async_fn(cg, 0);
@@ -5924,6 +6116,30 @@ fn gen_fn(cg: i64, fn_def: i64) -> i64 {
     // Handle async functions
     if is_async != 0 {
         return gen_async_fn(cg, fn_def);
+    }
+
+    // Handle extern function declarations (no body)
+    // Emit LLVM 'declare' statement instead of 'define' with body
+    if body == 0 {
+        emit(cg, "declare ");
+        if ret_ty != 0 {
+            emit(cg, "i64");
+        } else {
+            emit(cg, "void");
+        }
+        emit(cg, " @\"");
+        emit(cg, name);
+        emit(cg, "\"(");
+        // Parameters - emit types only for declarations
+        let n: i64 = vec_len(params);
+        let i: i64 = 0;
+        while i < n {
+            if i > 0 { emit(cg, ", "); }
+            emit(cg, "i64");
+            i = i + 1;
+        }
+        emit_line(cg, ")");
+        return 0;
     }
 
     // Rename main to simplex_main
@@ -5956,7 +6172,32 @@ fn gen_fn(cg: i64, fn_def: i64) -> i64 {
         emit(cg, pname);
         i = i + 1;
     }
-    emit_line(cg, ") {");
+    emit(cg, ")");
+
+    // Add !dbg metadata reference if debug info is enabled
+    if cg_debug_enabled(cg) != 0 {
+        let sp_id: i64 = cg_lookup_subprogram(cg, name);
+        if sp_id > 0 {
+            // Calculate actual metadata ID (11 + index in subprograms list)
+            let subprograms: i64 = cg_debug_subprograms(cg);
+            let sp_idx: i64 = 0;
+            let found: i64 = 0;
+            while sp_idx < vec_len(subprograms) {
+                let entry: i64 = vec_get(subprograms, sp_idx);
+                if string_eq(load_ptr(entry, 0), name) {
+                    found = 1;
+                    break;
+                }
+                sp_idx = sp_idx + 1;
+            }
+            if found == 1 {
+                emit(cg, " !dbg !");
+                emit(cg, int_to_string(11 + sp_idx));
+                cg_set_current_subprogram(cg, 11 + sp_idx);
+            }
+        }
+    }
+    emit_line(cg, " {");
     emit_line(cg, "entry:");
 
     // Pre-allocate ALL local variables in the entry block to avoid
@@ -6461,6 +6702,99 @@ fn gen_actor(cg: i64, item: i64) -> i64 {
                 emit_line(cg, "  ret i64 0");
             }
 
+            emit_line(cg, "}");
+            emit_line(cg, "");
+
+            i = i + 1;
+        }
+    }
+
+    // Generate message constructor functions for send/ask calls
+    // Each message type (Add, Get, etc.) needs a constructor function
+    if handlers != 0 {
+        let n: i64 = vec_len(handlers);
+        let i: i64 = 0;
+        while i < n {
+            let handler: i64 = vec_get(handlers, i);
+            let msg_name: i64 = load_ptr(handler, 0);
+            let params: i64 = load_ptr(handler, 1);
+
+            // Register nullary messages (no params) so gen_expr can generate calls for them
+            // instead of treating them as variable references
+            let is_nullary: i64 = 1;
+            if params != 0 {
+                if vec_len(params) > 0 {
+                    is_nullary = 0;
+                }
+            }
+            if is_nullary == 1 {
+                cg_register_message(cg, msg_name);
+            }
+
+            // Generate message constructor: MsgName(params...) -> i64
+            // Returns a pointer to message struct: [tag, param0, param1, ...]
+            emit(cg, "define i64 @\"");
+            emit(cg, msg_name);
+            emit(cg, "\"(");
+
+            // Add parameters to function signature
+            if params != 0 {
+                let pn: i64 = vec_len(params);
+                let pi: i64 = 0;
+                while pi < pn {
+                    if pi > 0 {
+                        emit(cg, ", ");
+                    }
+                    let param: i64 = vec_get(params, pi);
+                    let pname: i64 = load_ptr(param, 0);
+                    emit(cg, "i64 %");
+                    emit(cg, pname);
+                    pi = pi + 1;
+                }
+            }
+            emit_line(cg, ") {");
+            emit_line(cg, "entry:");
+
+            // Calculate message struct size: 8 bytes for tag + 8 bytes per param
+            let param_count: i64 = 0;
+            if params != 0 {
+                param_count = vec_len(params);
+            }
+            let msg_size: i64 = 8 + (param_count * 8);
+
+            // Allocate message struct
+            emit(cg, "  %msg = call ptr @malloc(i64 ");
+            emit(cg, int_to_string(msg_size));
+            emit_line(cg, ")");
+
+            // Store message tag (index of this handler)
+            emit(cg, "  store i64 ");
+            emit(cg, int_to_string(i));
+            emit_line(cg, ", ptr %msg");
+
+            // Store each parameter at offset 8 + (pi * 8)
+            if params != 0 {
+                let pn: i64 = vec_len(params);
+                let pi: i64 = 0;
+                while pi < pn {
+                    let param: i64 = vec_get(params, pi);
+                    let pname: i64 = load_ptr(param, 0);
+                    let offset: i64 = 8 + (pi * 8);
+                    emit(cg, "  %slot");
+                    emit(cg, int_to_string(pi));
+                    emit(cg, " = getelementptr i8, ptr %msg, i64 ");
+                    emit_line(cg, int_to_string(offset));
+                    emit(cg, "  store i64 %");
+                    emit(cg, pname);
+                    emit(cg, ", ptr %slot");
+                    emit_line(cg, int_to_string(pi));
+                    pi = pi + 1;
+                }
+            }
+
+            // Return message pointer as i64
+            emit_line(cg, "  %ret = ptrtoint ptr %msg to i64");
+            emit_line(cg, "  ret i64 %ret");
             emit_line(cg, "}");
             emit_line(cg, "");
 
@@ -7571,18 +7905,19 @@ fn gen_header(cg: i64) -> i64 {
     emit_line(cg, "declare i64 @\"result_ok_or\"(i64, i64)");
 
     // Phase 1 Stdlib: Vec extensions
+    // Use emit_stdlib_decl to skip declarations for user-defined functions (fixes vec_set redefinition bug)
     emit_line(cg, "; Phase 1 Stdlib: Vec extensions");
-    emit_line(cg, "declare i64 @\"vec_sum\"(i64)");
-    emit_line(cg, "declare i64 @\"vec_find\"(i64, i64)");
-    emit_line(cg, "declare i8 @\"vec_contains\"(i64, i64)");
-    emit_line(cg, "declare i64 @\"vec_reverse\"(i64)");
-    emit_line(cg, "declare i64 @\"vec_clone\"(i64)");
-    emit_line(cg, "declare i64 @\"vec_first\"(i64)");
-    emit_line(cg, "declare i64 @\"vec_last\"(i64)");
-    emit_line(cg, "declare i64 @\"vec_pop\"(i64)");
-    emit_line(cg, "declare void @\"vec_set\"(i64, i64, i64)");
-    emit_line(cg, "declare void @\"vec_clear\"(i64)");
-    emit_line(cg, "declare void @\"vec_remove\"(i64, i64)");
+    emit_stdlib_decl(cg, "vec_sum", "declare i64 @\"vec_sum\"(i64)");
+    emit_stdlib_decl(cg, "vec_find", "declare i64 @\"vec_find\"(i64, i64)");
+    emit_stdlib_decl(cg, "vec_contains", "declare i8 @\"vec_contains\"(i64, i64)");
+    emit_stdlib_decl(cg, "vec_reverse", "declare i64 @\"vec_reverse\"(i64)");
+    emit_stdlib_decl(cg, "vec_clone", "declare i64 @\"vec_clone\"(i64)");
+    emit_stdlib_decl(cg, "vec_first", "declare i64 @\"vec_first\"(i64)");
+    emit_stdlib_decl(cg, "vec_last", "declare i64 @\"vec_last\"(i64)");
+    emit_stdlib_decl(cg, "vec_pop", "declare i64 @\"vec_pop\"(i64)");
+    emit_stdlib_decl(cg, "vec_set", "declare void @\"vec_set\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "vec_clear", "declare void @\"vec_clear\"(i64)");
+    emit_stdlib_decl(cg, "vec_remove", "declare void @\"vec_remove\"(i64, i64)");
 
     // Phase 1 Stdlib: HashMap (string keys)
     emit_line(cg, "; Phase 1 Stdlib: HashMap");
@@ -7630,6 +7965,73 @@ fn gen_header(cg: i64) -> i64 {
     emit_line(cg, "declare i64 @\"json_object_key_at\"(i64, i64)");
     emit_line(cg, "declare i64 @\"json_object_value_at\"(i64, i64)");
     emit_line(cg, "declare void @\"json_object_set_sx\"(i64, i64, i64)");
+
+    // Phase 3: HTTP Client/Server API
+    emit_line(cg, "; Phase 3: HTTP Client/Server");
+    emit_line(cg, "declare i64 @\"http_request_new\"(i64, i64)");
+    emit_line(cg, "declare void @\"http_request_header\"(i64, i64, i64)");
+    emit_line(cg, "declare void @\"http_request_body\"(i64, i64)");
+    emit_line(cg, "declare i64 @\"http_request_send\"(i64)");
+    emit_line(cg, "declare void @\"http_request_free\"(i64)");
+    emit_line(cg, "declare i64 @\"http_response_status\"(i64)");
+    emit_line(cg, "declare i64 @\"http_response_body\"(i64)");
+    emit_line(cg, "declare i64 @\"http_response_header\"(i64, i64)");
+    emit_line(cg, "declare void @\"http_response_free\"(i64)");
+    emit_line(cg, "declare i64 @\"http_server_new\"(i64)");
+    emit_line(cg, "declare void @\"http_server_route\"(i64, i64, i64, i64)");
+    emit_line(cg, "declare i64 @\"http_server_start\"(i64)");
+    emit_line(cg, "declare void @\"http_server_stop\"(i64)");
+    emit_line(cg, "declare void @\"http_server_free\"(i64)");
+
+    // Phase 3: SQL Database API
+    emit_line(cg, "; Phase 3: SQL Database");
+    emit_line(cg, "declare i64 @\"sql_open\"(i64)");
+    emit_line(cg, "declare void @\"sql_close\"(i64)");
+    emit_line(cg, "declare i64 @\"sql_exec\"(i64, i64)");
+    emit_line(cg, "declare i64 @\"sql_query\"(i64, i64)");
+    emit_line(cg, "declare i64 @\"sql_prepare\"(i64, i64)");
+    emit_line(cg, "declare i64 @\"sql_bind_int\"(i64, i64, i64)");
+    emit_line(cg, "declare i64 @\"sql_bind_text\"(i64, i64, i64)");
+    emit_line(cg, "declare i64 @\"sql_bind_float\"(i64, i64, double)");
+    emit_line(cg, "declare i64 @\"sql_bind_null\"(i64, i64)");
+    emit_line(cg, "declare i64 @\"sql_bind_blob\"(i64, i64, i64, i64)");
+    emit_line(cg, "declare i64 @\"sql_step\"(i64)");
+    emit_line(cg, "declare i64 @\"sql_column_int\"(i64, i64)");
+    emit_line(cg, "declare i64 @\"sql_column_text\"(i64, i64)");
+    emit_line(cg, "declare double @\"sql_column_float\"(i64, i64)");
+    emit_line(cg, "declare i64 @\"sql_column_blob\"(i64, i64)");
+    emit_line(cg, "declare i64 @\"sql_column_blob_len\"(i64, i64)");
+    emit_line(cg, "declare i64 @\"sql_column_is_null\"(i64, i64)");
+    emit_line(cg, "declare void @\"sql_finalize\"(i64)");
+    emit_line(cg, "declare i64 @\"sql_begin\"(i64)");
+    emit_line(cg, "declare i64 @\"sql_commit\"(i64)");
+    emit_line(cg, "declare i64 @\"sql_rollback\"(i64)");
+    emit_line(cg, "declare i64 @\"sql_last_insert_id\"(i64)");
+
+    // Phase 3: UUID API
+    emit_line(cg, "; Phase 3: UUID");
+    emit_line(cg, "declare i64 @\"uuid_v4\"()");
+    emit_line(cg, "declare i64 @\"uuid_nil\"()");
+    emit_line(cg, "declare i64 @\"uuid_is_nil\"(i64)");
+    emit_line(cg, "declare i64 @\"uuid_is_valid\"(i64)");
+
+    // Phase 3: TOML API
+    emit_line(cg, "; Phase 3: TOML");
+    emit_line(cg, "declare i64 @\"toml_parse\"(i64)");
+    emit_line(cg, "declare i64 @\"toml_get\"(i64, i64)");
+    emit_line(cg, "declare i64 @\"toml_get_string\"(i64, i64)");
+    emit_line(cg, "declare i64 @\"toml_get_int\"(i64, i64)");
+    emit_line(cg, "declare double @\"toml_get_float\"(i64, i64)");
+    emit_line(cg, "declare i64 @\"toml_get_bool\"(i64, i64)");
+    emit_line(cg, "declare i64 @\"toml_get_array\"(i64, i64)");
+    emit_line(cg, "declare i64 @\"toml_get_table\"(i64, i64)");
+    emit_line(cg, "declare void @\"toml_set_string\"(i64, i64, i64)");
+    emit_line(cg, "declare void @\"toml_set_int\"(i64, i64, i64)");
+    emit_line(cg, "declare void @\"toml_set_float\"(i64, i64, double)");
+    emit_line(cg, "declare void @\"toml_set_bool\"(i64, i64, i64)");
+    emit_line(cg, "declare i64 @\"toml_stringify\"(i64)");
+    emit_line(cg, "declare i64 @\"toml_table_new\"()");
+    emit_line(cg, "declare void @\"toml_free\"(i64)");
 
     // Phase G: AI Features
     emit_line(cg, "; Phase G: AI Features");
@@ -7735,11 +8137,24 @@ fn gen_program_with_module(items: i64, module_name: i64) -> i64 {
     let cg: i64 = codegen_new();
     cg_set_module_name(cg, module_name);
     register_builtin_enums(cg);  // Phase 36: Pre-register Option and Result
+
+    // Pre-pass: collect all user-defined function names to prevent stdlib declaration conflicts
+    let n: i64 = vec_len(items);
+    let i: i64 = 0;
+    while i < n {
+        let item: i64 = vec_get(items, i);
+        let tag: i64 = load_i64(item, 0);
+        if tag == TAG_FN() {
+            let fn_name: i64 = load_ptr(item, 1);
+            cg_add_defined_fn(cg, fn_name);
+        }
+        i = i + 1;
+    }
+
     gen_header(cg);
 
     // First pass: register enums and structs
-    let n: i64 = vec_len(items);
-    let i: i64 = 0;
+    i = 0;
     while i < n {
         let item: i64 = vec_get(items, i);
         let tag: i64 = load_i64(item, 0);
@@ -7804,6 +8219,173 @@ fn gen_program_with_module(items: i64, module_name: i64) -> i64 {
 // Backward-compatible wrapper using default module name
 fn gen_program(items: i64) -> i64 {
     gen_program_with_module(items, string_from("mod"))
+}
+
+// Generate program with DWARF debug info
+// filename: source file name (e.g., "main.sx")
+// directory: source directory (e.g., "/path/to")
+fn gen_program_with_debug(items: i64, module_name: i64, filename: i64, directory: i64) -> i64 {
+    let cg: i64 = codegen_new();
+    cg_set_module_name(cg, module_name);
+    cg_set_debug_enabled(cg, 1);
+    cg_set_debug_file(cg, filename);
+    cg_set_debug_dir(cg, directory);
+    register_builtin_enums(cg);
+
+    // Pre-pass: collect all user-defined function names
+    let n: i64 = vec_len(items);
+    let i: i64 = 0;
+    while i < n {
+        let item: i64 = vec_get(items, i);
+        let tag: i64 = load_i64(item, 0);
+        if tag == TAG_FN() {
+            let fn_name: i64 = load_ptr(item, 1);
+            cg_add_defined_fn(cg, fn_name);
+            // Register subprogram for debug info (line 1 as placeholder)
+            cg_register_subprogram(cg, fn_name, 1);
+        }
+        i = i + 1;
+    }
+
+    gen_header(cg);
+
+    // First pass: register enums and structs
+    i = 0;
+    while i < n {
+        let item: i64 = vec_get(items, i);
+        let tag: i64 = load_i64(item, 0);
+        if tag == TAG_ENUM() {
+            gen_enum(cg, item);
+        }
+        if tag == TAG_STRUCT() {
+            gen_struct(cg, item);
+        }
+        i = i + 1;
+    }
+
+    // Second pass: generate functions with debug info
+    i = 0;
+    while i < n {
+        let item: i64 = vec_get(items, i);
+        let tag: i64 = load_i64(item, 0);
+        if tag == TAG_FN() {
+            gen_fn(cg, item);
+        }
+        if tag == TAG_IMPL() {
+            gen_impl(cg, item);
+        }
+        if tag == TAG_IMPL_TRAIT() {
+            gen_impl_trait(cg, item);
+        }
+        i = i + 1;
+    }
+
+    // Third pass: generate pending generic instantiations
+    let pending: i64 = cg_pending_instantiations(cg);
+    let processed: i64 = 0;
+    while processed < vec_len(pending) {
+        let entry: i64 = vec_get(pending, processed);
+        let mangled_name: i64 = load_ptr(entry, 0);
+        let fn_def: i64 = load_ptr(entry, 1);
+        let type_args: i64 = load_ptr(entry, 2);
+        gen_fn_instantiation(cg, fn_def, mangled_name, type_args);
+        processed = processed + 1;
+    }
+
+    // Emit string constants
+    let strings: i64 = cg_strings(cg);
+    let str_count: i64 = vec_len(strings);
+    if str_count > 0 {
+        emit_line(cg, "");
+        emit_line(cg, "; String constants");
+        i = 0;
+        while i < str_count {
+            let value: i64 = vec_get(strings, i);
+            emit_string_constant(cg, i, value);
+            i = i + 1;
+        }
+    }
+
+    // Emit debug info metadata footer
+    gen_debug_info_footer(cg);
+
+    // Convert StringBuilder to String for final output
+    sb_to_string(cg_output(cg))
+}
+
+// Generate DWARF debug info metadata footer
+fn gen_debug_info_footer(cg: i64) -> i64 {
+    if cg_debug_enabled(cg) == 0 {
+        return 0;
+    }
+
+    emit_line(cg, "");
+    emit_line(cg, "; DWARF Debug Info");
+    emit_line(cg, "!llvm.dbg.cu = !{!0}");
+    emit_line(cg, "!llvm.module.flags = !{!1, !2}");
+    emit_line(cg, "!llvm.ident = !{!3}");
+    emit_line(cg, "");
+
+    // !0 = DICompileUnit
+    emit(cg, "!0 = distinct !DICompileUnit(language: DW_LANG_C, file: !4, producer: \"sxc ");
+    emit(cg, "0.10.0");
+    emit_line(cg, "\", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug, enums: !5)");
+
+    // !1 = Module flag for DWARF Version
+    emit_line(cg, "!1 = !{i32 7, !\"Dwarf Version\", i32 4}");
+
+    // !2 = Module flag for Debug Info Version
+    emit_line(cg, "!2 = !{i32 2, !\"Debug Info Version\", i32 3}");
+
+    // !3 = llvm.ident
+    emit_line(cg, "!3 = !{!\"Simplex Compiler 0.10.0\"}");
+
+    // !4 = DIFile
+    emit(cg, "!4 = !DIFile(filename: \"");
+    emit(cg, cg_debug_file(cg));
+    emit(cg, "\", directory: \"");
+    emit(cg, cg_debug_dir(cg));
+    emit_line(cg, "\")");
+
+    // !5 = Empty tuple for enums
+    emit_line(cg, "!5 = !{}");
+
+    // !6 = DIBasicType for i64 (used for all types in bootstrap compiler)
+    emit_line(cg, "!6 = !DIBasicType(name: \"i64\", size: 64, encoding: DW_ATE_signed)");
+
+    // !7 = DISubroutineType (void function type)
+    emit_line(cg, "!7 = !DISubroutineType(types: !8)");
+    emit_line(cg, "!8 = !{null}");
+
+    // !9 = DISubroutineType (function returning i64)
+    emit_line(cg, "!9 = !DISubroutineType(types: !10)");
+    emit_line(cg, "!10 = !{!6}");
+
+    // Generate DISubprogram entries for each function
+    let subprograms: i64 = cg_debug_subprograms(cg);
+    let n: i64 = vec_len(subprograms);
+    let i: i64 = 0;
+    let metadata_base: i64 = 11;  // Start DISubprogram metadata at !11
+
+    while i < n {
+        let entry: i64 = vec_get(subprograms, i);
+        let fn_name: i64 = load_ptr(entry, 0);
+        let line: i64 = load_i64(entry, 2);
+
+        emit(cg, "!");
+        emit(cg, int_to_string(metadata_base + i));
+        emit(cg, " = distinct !DISubprogram(name: \"");
+        emit(cg, fn_name);
+        emit(cg, "\", scope: !4, file: !4, line: ");
+        emit(cg, int_to_string(line));
+        emit(cg, ", type: !9, isLocal: false, isDefinition: true, scopeLine: ");
+        emit(cg, int_to_string(line));
+        emit_line(cg, ", isOptimized: false, unit: !0, retainedNodes: !5)");
+
+        i = i + 1;
+    }
+
+    0
 }
 
 // Helper functions for intrinsic emission with type conversions

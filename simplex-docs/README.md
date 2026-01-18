@@ -1,6 +1,6 @@
 # Simplex Language Documentation
 
-**Version 0.9.9**
+**Version 0.10.0**
 
 Simplex (Latin for "simple") is a programming language designed for the AI era. It combines the fault-tolerance of Erlang, the memory safety of Rust, the distributed computing model of Ray, and the content-addressable code of Unison into a cohesive system built for intelligent, distributed workloads.
 
@@ -105,7 +105,7 @@ Start the tutorial: [Tutorial Index](tutorial/README.md)
 
 ---
 
-## Key Features (v0.9.0)
+## Key Features (v0.10.0)
 
 ### NEW in v0.9.0: Edge Hive
 
@@ -397,6 +397,8 @@ Simplex uses the following terminology for its module system:
 | 0.7.0 | 2026-01-09 | Real-Time Learning: simplex-learning library, streaming optimizers, federated learning |
 | 0.8.0 | 2026-01-10 | Dual Numbers: native forward-mode AD, zero-overhead compilation, multidual for gradients |
 | 0.9.0 | 2026-01-11 | Self-Learning Annealing, Edge Hive, test restructure (156 tests), simplex-training library |
+| 0.9.9 | 2026-01-18 | Runtime stability, 175 ABI fixes, device ID collision fix |
+| 0.10.0 | 2026-01-18 | Developer Experience: sxfmt, sxlint, benchmarking, profiling, coverage, playground, Tree-sitter |
 
 ---
 

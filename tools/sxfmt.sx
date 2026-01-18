@@ -1,0 +1,3172 @@
+// sxfmt - Simplex Code Formatter
+// Automatic code formatter with a single canonical style (like gofmt/rustfmt)
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0 - see LICENSE file
+// https://github.com/senuamedia/simplex-lang
+//
+// Usage:
+//   sxfmt file.sx              Format file in place
+//   sxfmt --check file.sx      Check if file is formatted (exit 1 if not)
+//   sxfmt --diff file.sx       Show diff of what would change
+//
+// Formatting Rules (Single Canonical Style):
+// - 4 space indentation
+// - Opening brace on same line: `fn foo() {`
+// - No trailing whitespace
+// - Single space after keywords: `if x {`, `fn foo(`
+// - No space inside parentheses: `foo(a, b)` not `foo( a, b )`
+// - One blank line between top-level items
+// - Max line length 100 chars (soft wrap)
+// - Align struct fields
+
+fn VERSION() -> i64 { string_from("0.1.0") }
+fn INDENT_WIDTH() -> i64 { 4 }
+fn MAX_LINE_LENGTH() -> i64 { 100 }
+
+// ========================================
+// Token Types (as constant functions)
+// ========================================
+
+fn TK_Eof() -> i64 { 0 }
+fn TK_Ident() -> i64 { 1 }
+fn TK_Int() -> i64 { 2 }
+fn TK_Float() -> i64 { 3 }
+fn TK_String() -> i64 { 4 }
+fn TK_FString() -> i64 { 5 }
+fn TK_LParen() -> i64 { 6 }
+fn TK_RParen() -> i64 { 7 }
+fn TK_LBrace() -> i64 { 8 }
+fn TK_RBrace() -> i64 { 9 }
+fn TK_LBracket() -> i64 { 10 }
+fn TK_RBracket() -> i64 { 11 }
+fn TK_Comma() -> i64 { 12 }
+fn TK_Colon() -> i64 { 13 }
+fn TK_Semi() -> i64 { 14 }
+fn TK_Arrow() -> i64 { 15 }
+fn TK_DoubleColon() -> i64 { 16 }
+fn TK_DotDot() -> i64 { 17 }
+fn TK_Eq() -> i64 { 18 }
+fn TK_EqEq() -> i64 { 19 }
+fn TK_Ne() -> i64 { 20 }
+fn TK_Lt() -> i64 { 21 }
+fn TK_Gt() -> i64 { 22 }
+fn TK_Le() -> i64 { 23 }
+fn TK_Ge() -> i64 { 24 }
+fn TK_Plus() -> i64 { 25 }
+fn TK_Minus() -> i64 { 26 }
+fn TK_Star() -> i64 { 27 }
+fn TK_Slash() -> i64 { 28 }
+fn TK_Bang() -> i64 { 29 }
+fn TK_Dot() -> i64 { 30 }
+fn TK_KwFn() -> i64 { 31 }
+fn TK_KwLet() -> i64 { 32 }
+fn TK_KwIf() -> i64 { 33 }
+fn TK_KwElse() -> i64 { 34 }
+fn TK_KwWhile() -> i64 { 35 }
+fn TK_KwFor() -> i64 { 36 }
+fn TK_KwIn() -> i64 { 37 }
+fn TK_KwReturn() -> i64 { 38 }
+fn TK_KwEnum() -> i64 { 39 }
+fn TK_KwTrue() -> i64 { 40 }
+fn TK_KwFalse() -> i64 { 41 }
+fn TK_KwPub() -> i64 { 42 }
+fn TK_KwStruct() -> i64 { 43 }
+fn TK_KwImpl() -> i64 { 44 }
+fn TK_KwSelf() -> i64 { 45 }
+fn TK_KwMatch() -> i64 { 46 }
+fn TK_FatArrow() -> i64 { 47 }
+fn TK_Underscore() -> i64 { 48 }
+fn TK_AmpAmp() -> i64 { 49 }
+fn TK_PipePipe() -> i64 { 50 }
+fn TK_Percent() -> i64 { 51 }
+fn TK_Amp() -> i64 { 52 }
+fn TK_Pipe() -> i64 { 53 }
+fn TK_Caret() -> i64 { 54 }
+fn TK_LtLt() -> i64 { 55 }
+fn TK_GtGt() -> i64 { 56 }
+fn TK_KwBreak() -> i64 { 57 }
+fn TK_KwLoop() -> i64 { 58 }
+fn TK_KwContinue() -> i64 { 59 }
+fn TK_Question() -> i64 { 60 }
+fn TK_KwTrait() -> i64 { 61 }
+fn TK_KwType() -> i64 { 62 }
+fn TK_KwUse() -> i64 { 63 }
+fn TK_KwMod() -> i64 { 64 }
+fn TK_KwConst() -> i64 { 65 }
+fn TK_KwAsync() -> i64 { 66 }
+fn TK_KwAwait() -> i64 { 67 }
+fn TK_KwYield() -> i64 { 68 }
+fn TK_KwDyn() -> i64 { 69 }
+fn TK_KwActor() -> i64 { 70 }
+fn TK_KwReceive() -> i64 { 71 }
+fn TK_KwInit() -> i64 { 72 }
+fn TK_KwSpecialist() -> i64 { 73 }
+fn TK_KwInfer() -> i64 { 74 }
+fn TK_KwHive() -> i64 { 75 }
+fn TK_KwAnima() -> i64 { 76 }
+fn TK_KwVar() -> i64 { 77 }
+fn TK_KwMut() -> i64 { 78 }
+fn TK_KwSpawn() -> i64 { 79 }
+fn TK_KwWhere() -> i64 { 80 }
+fn TK_At() -> i64 { 81 }
+fn TK_KwConfidence() -> i64 { 82 }
+fn TK_KwDerivative() -> i64 { 83 }
+fn TK_Hash() -> i64 { 84 }
+fn TK_Comment() -> i64 { 85 }
+fn TK_BlockComment() -> i64 { 86 }
+fn TK_Newline() -> i64 { 87 }
+fn TK_Whitespace() -> i64 { 88 }
+
+// ========================================
+// Lexer State with Comment Preservation
+// ========================================
+
+fn lexer_new(source: i64) -> i64 {
+    let lexer: i64 = malloc(48);
+    store_ptr(lexer, 0, source);
+    store_i64(lexer, 1, 0);  // pos
+    let len: i64 = string_len(source);
+    store_i64(lexer, 2, len);
+    store_i64(lexer, 3, 1);  // line
+    store_i64(lexer, 4, 1);  // col
+    store_ptr(lexer, 5, vec_new());  // comments buffer
+    return lexer;
+}
+
+fn lexer_pos(lexer: i64) -> i64 { load_i64(lexer, 1) }
+fn lexer_len(lexer: i64) -> i64 { load_i64(lexer, 2) }
+fn lexer_line(lexer: i64) -> i64 { load_i64(lexer, 3) }
+fn lexer_col(lexer: i64) -> i64 { load_i64(lexer, 4) }
+fn lexer_source(lexer: i64) -> i64 { load_ptr(lexer, 0) }
+
+fn lexer_at_end(lexer: i64) -> bool {
+    let pos: i64 = lexer_pos(lexer);
+    let len: i64 = lexer_len(lexer);
+    return pos >= len;
+}
+
+fn lexer_peek(lexer: i64) -> i64 {
+    if lexer_at_end(lexer) { return 0; }
+    let src: i64 = lexer_source(lexer);
+    let pos: i64 = lexer_pos(lexer);
+    return string_char_at(src, pos);
+}
+
+fn lexer_peek_next(lexer: i64) -> i64 {
+    let pos: i64 = lexer_pos(lexer);
+    let len: i64 = lexer_len(lexer);
+    if pos + 1 >= len { return 0; }
+    return string_char_at(lexer_source(lexer), pos + 1);
+}
+
+fn lexer_advance(lexer: i64) -> i64 {
+    let c: i64 = lexer_peek(lexer);
+    if c != 0 {
+        let pos: i64 = lexer_pos(lexer);
+        store_i64(lexer, 1, pos + 1);
+        if c == 10 {
+            store_i64(lexer, 3, load_i64(lexer, 3) + 1);
+            store_i64(lexer, 4, 1);
+        } else {
+            store_i64(lexer, 4, load_i64(lexer, 4) + 1);
+        }
+    }
+    return c;
+}
+
+fn is_whitespace(c: i64) -> bool {
+    if c == 32 { return true; }
+    if c == 9 { return true; }
+    if c == 13 { return true; }
+    return false;
+}
+
+fn is_newline(c: i64) -> bool { c == 10 }
+
+fn is_digit(c: i64) -> bool {
+    if c >= 48 {
+        if c <= 57 { return true; }
+    }
+    return false;
+}
+
+fn is_alpha(c: i64) -> bool {
+    if c >= 97 {
+        if c <= 122 { return true; }
+    }
+    if c >= 65 {
+        if c <= 90 { return true; }
+    }
+    return false;
+}
+
+fn is_ident_start(c: i64) -> bool {
+    if is_alpha(c) { return true; }
+    if c == 95 { return true; }
+    return false;
+}
+
+fn is_ident_continue(c: i64) -> bool {
+    if is_ident_start(c) { return true; }
+    if is_digit(c) { return true; }
+    return false;
+}
+
+// ========================================
+// Token Structure with Comment Tracking
+// ========================================
+
+// Token: kind(0), text(1), line(2), col(3), leading_comments(4), trailing_comment(5)
+fn token_new(kind: i64, text: i64, line: i64, col: i64) -> i64 {
+    let tok: i64 = malloc(48);
+    store_i64(tok, 0, kind);
+    store_ptr(tok, 1, text);
+    store_i64(tok, 2, line);
+    store_i64(tok, 3, col);
+    store_ptr(tok, 4, vec_new());  // leading comments
+    store_ptr(tok, 5, 0);          // trailing comment (single line)
+    return tok;
+}
+
+fn token_kind(tok: i64) -> i64 {
+    if tok == 0 { return TK_Eof(); }
+    return load_i64(tok, 0);
+}
+
+fn token_text(tok: i64) -> i64 {
+    if tok == 0 { return string_from(""); }
+    return load_ptr(tok, 1);
+}
+
+fn token_line(tok: i64) -> i64 { load_i64(tok, 2) }
+fn token_col(tok: i64) -> i64 { load_i64(tok, 3) }
+fn token_leading_comments(tok: i64) -> i64 { load_ptr(tok, 4) }
+fn token_trailing_comment(tok: i64) -> i64 { load_ptr(tok, 5) }
+
+fn token_set_leading_comments(tok: i64, comments: i64) -> i64 {
+    store_ptr(tok, 4, comments);
+    return 0;
+}
+
+fn token_set_trailing_comment(tok: i64, comment: i64) -> i64 {
+    store_ptr(tok, 5, comment);
+    return 0;
+}
+
+// ========================================
+// Check Keyword
+// ========================================
+
+fn check_keyword(text: i64) -> i64 {
+    if string_eq(text, "fn") { return TK_KwFn(); }
+    if string_eq(text, "let") { return TK_KwLet(); }
+    if string_eq(text, "if") { return TK_KwIf(); }
+    if string_eq(text, "else") { return TK_KwElse(); }
+    if string_eq(text, "while") { return TK_KwWhile(); }
+    if string_eq(text, "return") { return TK_KwReturn(); }
+    if string_eq(text, "enum") { return TK_KwEnum(); }
+    if string_eq(text, "true") { return TK_KwTrue(); }
+    if string_eq(text, "false") { return TK_KwFalse(); }
+    if string_eq(text, "pub") { return TK_KwPub(); }
+    if string_eq(text, "struct") { return TK_KwStruct(); }
+    if string_eq(text, "for") { return TK_KwFor(); }
+    if string_eq(text, "in") { return TK_KwIn(); }
+    if string_eq(text, "impl") { return TK_KwImpl(); }
+    if string_eq(text, "self") { return TK_KwSelf(); }
+    if string_eq(text, "match") { return TK_KwMatch(); }
+    if string_eq(text, "break") { return TK_KwBreak(); }
+    if string_eq(text, "loop") { return TK_KwLoop(); }
+    if string_eq(text, "continue") { return TK_KwContinue(); }
+    if string_eq(text, "trait") { return TK_KwTrait(); }
+    if string_eq(text, "type") { return TK_KwType(); }
+    if string_eq(text, "use") { return TK_KwUse(); }
+    if string_eq(text, "mod") { return TK_KwMod(); }
+    if string_eq(text, "const") { return TK_KwConst(); }
+    if string_eq(text, "async") { return TK_KwAsync(); }
+    if string_eq(text, "await") { return TK_KwAwait(); }
+    if string_eq(text, "yield") { return TK_KwYield(); }
+    if string_eq(text, "dyn") { return TK_KwDyn(); }
+    if string_eq(text, "actor") { return TK_KwActor(); }
+    if string_eq(text, "receive") { return TK_KwReceive(); }
+    if string_eq(text, "init") { return TK_KwInit(); }
+    if string_eq(text, "specialist") { return TK_KwSpecialist(); }
+    if string_eq(text, "infer") { return TK_KwInfer(); }
+    if string_eq(text, "hive") { return TK_KwHive(); }
+    if string_eq(text, "anima") { return TK_KwAnima(); }
+    if string_eq(text, "var") { return TK_KwVar(); }
+    if string_eq(text, "mut") { return TK_KwMut(); }
+    if string_eq(text, "spawn") { return TK_KwSpawn(); }
+    if string_eq(text, "where") { return TK_KwWhere(); }
+    if string_eq(text, "confidence") { return TK_KwConfidence(); }
+    if string_eq(text, "derivative") { return TK_KwDerivative(); }
+    if string_eq(text, "_") { return TK_Underscore(); }
+    return TK_Ident();
+}
+
+// ========================================
+// Lexer with Comment Preservation
+// ========================================
+
+// Read a line comment: // ...
+fn lexer_read_line_comment(lexer: i64) -> i64 {
+    let start: i64 = lexer_pos(lexer);
+    // Skip //
+    lexer_advance(lexer);
+    lexer_advance(lexer);
+    // Read until end of line
+    while lexer_peek(lexer) != 10 {
+        if lexer_at_end(lexer) { break; }
+        lexer_advance(lexer);
+    }
+    let end: i64 = lexer_pos(lexer);
+    return string_slice(lexer_source(lexer), start, end);
+}
+
+// Read a block comment: /* ... */
+fn lexer_read_block_comment(lexer: i64) -> i64 {
+    let start: i64 = lexer_pos(lexer);
+    // Skip /*
+    lexer_advance(lexer);
+    lexer_advance(lexer);
+    // Read until */
+    while true {
+        if lexer_at_end(lexer) { break; }
+        let c: i64 = lexer_peek(lexer);
+        if c == 42 {  // *
+            if lexer_peek_next(lexer) == 47 {  // /
+                lexer_advance(lexer);
+                lexer_advance(lexer);
+                break;
+            }
+        }
+        lexer_advance(lexer);
+    }
+    let end: i64 = lexer_pos(lexer);
+    return string_slice(lexer_source(lexer), start, end);
+}
+
+// Lexer: read next token with comment preservation
+fn lexer_next_token(lexer: i64) -> i64 {
+    let leading_comments: i64 = vec_new();
+    let newlines_before: i64 = 0;
+
+    // Collect leading whitespace and comments
+    while true {
+        if lexer_at_end(lexer) {
+            let tok: i64 = token_new(TK_Eof(), string_from(""), lexer_line(lexer), lexer_col(lexer));
+            token_set_leading_comments(tok, leading_comments);
+            return tok;
+        }
+
+        let c: i64 = lexer_peek(lexer);
+
+        // Newlines - track count for blank line decisions
+        if c == 10 {
+            lexer_advance(lexer);
+            newlines_before = newlines_before + 1;
+            continue;
+        }
+
+        // Whitespace (non-newline)
+        if is_whitespace(c) {
+            lexer_advance(lexer);
+            continue;
+        }
+
+        // Line comment
+        if c == 47 {  // '/'
+            let next: i64 = lexer_peek_next(lexer);
+            if next == 47 {  // '//'
+                let comment: i64 = lexer_read_line_comment(lexer);
+                // Store comment with newline info
+                let comment_info: i64 = malloc(16);
+                store_ptr(comment_info, 0, comment);
+                store_i64(comment_info, 1, newlines_before);
+                vec_push(leading_comments, comment_info);
+                newlines_before = 0;
+                continue;
+            }
+            if next == 42 {  // '/*'
+                let comment: i64 = lexer_read_block_comment(lexer);
+                let comment_info: i64 = malloc(16);
+                store_ptr(comment_info, 0, comment);
+                store_i64(comment_info, 1, newlines_before);
+                vec_push(leading_comments, comment_info);
+                newlines_before = 0;
+                continue;
+            }
+        }
+
+        // Not whitespace/comment - break to handle token
+        break;
+    }
+
+    let start_line: i64 = lexer_line(lexer);
+    let start_col: i64 = lexer_col(lexer);
+    let start_pos: i64 = lexer_pos(lexer);
+    let c: i64 = lexer_advance(lexer);
+
+    // Single character tokens
+    if c == 40 {
+        let tok: i64 = token_new(TK_LParen(), string_from("("), start_line, start_col);
+        token_set_leading_comments(tok, leading_comments);
+        return tok;
+    }
+    if c == 41 {
+        let tok: i64 = token_new(TK_RParen(), string_from(")"), start_line, start_col);
+        token_set_leading_comments(tok, leading_comments);
+        return tok;
+    }
+    if c == 123 {
+        let tok: i64 = token_new(TK_LBrace(), string_from("{"), start_line, start_col);
+        token_set_leading_comments(tok, leading_comments);
+        return tok;
+    }
+    if c == 125 {
+        let tok: i64 = token_new(TK_RBrace(), string_from("}"), start_line, start_col);
+        token_set_leading_comments(tok, leading_comments);
+        return tok;
+    }
+    if c == 91 {
+        let tok: i64 = token_new(TK_LBracket(), string_from("["), start_line, start_col);
+        token_set_leading_comments(tok, leading_comments);
+        return tok;
+    }
+    if c == 93 {
+        let tok: i64 = token_new(TK_RBracket(), string_from("]"), start_line, start_col);
+        token_set_leading_comments(tok, leading_comments);
+        return tok;
+    }
+    if c == 44 {
+        let tok: i64 = token_new(TK_Comma(), string_from(","), start_line, start_col);
+        token_set_leading_comments(tok, leading_comments);
+        return tok;
+    }
+    if c == 59 {
+        let tok: i64 = token_new(TK_Semi(), string_from(";"), start_line, start_col);
+        token_set_leading_comments(tok, leading_comments);
+        return tok;
+    }
+    if c == 43 {
+        let tok: i64 = token_new(TK_Plus(), string_from("+"), start_line, start_col);
+        token_set_leading_comments(tok, leading_comments);
+        return tok;
+    }
+    if c == 42 {
+        let tok: i64 = token_new(TK_Star(), string_from("*"), start_line, start_col);
+        token_set_leading_comments(tok, leading_comments);
+        return tok;
+    }
+    if c == 37 {
+        let tok: i64 = token_new(TK_Percent(), string_from("%"), start_line, start_col);
+        token_set_leading_comments(tok, leading_comments);
+        return tok;
+    }
+    if c == 63 {
+        let tok: i64 = token_new(TK_Question(), string_from("?"), start_line, start_col);
+        token_set_leading_comments(tok, leading_comments);
+        return tok;
+    }
+    if c == 64 {
+        let tok: i64 = token_new(TK_At(), string_from("@"), start_line, start_col);
+        token_set_leading_comments(tok, leading_comments);
+        return tok;
+    }
+    if c == 35 {
+        let tok: i64 = token_new(TK_Hash(), string_from("#"), start_line, start_col);
+        token_set_leading_comments(tok, leading_comments);
+        return tok;
+    }
+    if c == 94 {
+        let tok: i64 = token_new(TK_Caret(), string_from("^"), start_line, start_col);
+        token_set_leading_comments(tok, leading_comments);
+        return tok;
+    }
+
+    // Two character tokens
+    if c == 38 {  // &
+        if lexer_peek(lexer) == 38 {
+            lexer_advance(lexer);
+            let tok: i64 = token_new(TK_AmpAmp(), string_from("&&"), start_line, start_col);
+            token_set_leading_comments(tok, leading_comments);
+            return tok;
+        }
+        let tok: i64 = token_new(TK_Amp(), string_from("&"), start_line, start_col);
+        token_set_leading_comments(tok, leading_comments);
+        return tok;
+    }
+    if c == 124 {  // |
+        if lexer_peek(lexer) == 124 {
+            lexer_advance(lexer);
+            let tok: i64 = token_new(TK_PipePipe(), string_from("||"), start_line, start_col);
+            token_set_leading_comments(tok, leading_comments);
+            return tok;
+        }
+        let tok: i64 = token_new(TK_Pipe(), string_from("|"), start_line, start_col);
+        token_set_leading_comments(tok, leading_comments);
+        return tok;
+    }
+    if c == 46 {  // .
+        if lexer_peek(lexer) == 46 {
+            lexer_advance(lexer);
+            let tok: i64 = token_new(TK_DotDot(), string_from(".."), start_line, start_col);
+            token_set_leading_comments(tok, leading_comments);
+            return tok;
+        }
+        let tok: i64 = token_new(TK_Dot(), string_from("."), start_line, start_col);
+        token_set_leading_comments(tok, leading_comments);
+        return tok;
+    }
+    if c == 58 {  // :
+        if lexer_peek(lexer) == 58 {
+            lexer_advance(lexer);
+            let tok: i64 = token_new(TK_DoubleColon(), string_from("::"), start_line, start_col);
+            token_set_leading_comments(tok, leading_comments);
+            return tok;
+        }
+        let tok: i64 = token_new(TK_Colon(), string_from(":"), start_line, start_col);
+        token_set_leading_comments(tok, leading_comments);
+        return tok;
+    }
+    if c == 45 {  // -
+        if lexer_peek(lexer) == 62 {
+            lexer_advance(lexer);
+            let tok: i64 = token_new(TK_Arrow(), string_from("->"), start_line, start_col);
+            token_set_leading_comments(tok, leading_comments);
+            return tok;
+        }
+        let tok: i64 = token_new(TK_Minus(), string_from("-"), start_line, start_col);
+        token_set_leading_comments(tok, leading_comments);
+        return tok;
+    }
+    if c == 61 {  // =
+        if lexer_peek(lexer) == 61 {
+            lexer_advance(lexer);
+            let tok: i64 = token_new(TK_EqEq(), string_from("=="), start_line, start_col);
+            token_set_leading_comments(tok, leading_comments);
+            return tok;
+        }
+        if lexer_peek(lexer) == 62 {
+            lexer_advance(lexer);
+            let tok: i64 = token_new(TK_FatArrow(), string_from("=>"), start_line, start_col);
+            token_set_leading_comments(tok, leading_comments);
+            return tok;
+        }
+        let tok: i64 = token_new(TK_Eq(), string_from("="), start_line, start_col);
+        token_set_leading_comments(tok, leading_comments);
+        return tok;
+    }
+    if c == 33 {  // !
+        if lexer_peek(lexer) == 61 {
+            lexer_advance(lexer);
+            let tok: i64 = token_new(TK_Ne(), string_from("!="), start_line, start_col);
+            token_set_leading_comments(tok, leading_comments);
+            return tok;
+        }
+        let tok: i64 = token_new(TK_Bang(), string_from("!"), start_line, start_col);
+        token_set_leading_comments(tok, leading_comments);
+        return tok;
+    }
+    if c == 60 {  // <
+        if lexer_peek(lexer) == 61 {
+            lexer_advance(lexer);
+            let tok: i64 = token_new(TK_Le(), string_from("<="), start_line, start_col);
+            token_set_leading_comments(tok, leading_comments);
+            return tok;
+        }
+        if lexer_peek(lexer) == 60 {
+            lexer_advance(lexer);
+            let tok: i64 = token_new(TK_LtLt(), string_from("<<"), start_line, start_col);
+            token_set_leading_comments(tok, leading_comments);
+            return tok;
+        }
+        let tok: i64 = token_new(TK_Lt(), string_from("<"), start_line, start_col);
+        token_set_leading_comments(tok, leading_comments);
+        return tok;
+    }
+    if c == 62 {  // >
+        if lexer_peek(lexer) == 61 {
+            lexer_advance(lexer);
+            let tok: i64 = token_new(TK_Ge(), string_from(">="), start_line, start_col);
+            token_set_leading_comments(tok, leading_comments);
+            return tok;
+        }
+        if lexer_peek(lexer) == 62 {
+            lexer_advance(lexer);
+            let tok: i64 = token_new(TK_GtGt(), string_from(">>"), start_line, start_col);
+            token_set_leading_comments(tok, leading_comments);
+            return tok;
+        }
+        let tok: i64 = token_new(TK_Gt(), string_from(">"), start_line, start_col);
+        token_set_leading_comments(tok, leading_comments);
+        return tok;
+    }
+    if c == 47 {  // /
+        let tok: i64 = token_new(TK_Slash(), string_from("/"), start_line, start_col);
+        token_set_leading_comments(tok, leading_comments);
+        return tok;
+    }
+
+    // f-strings: f"..."
+    if c == 102 {  // 'f'
+        if lexer_peek(lexer) == 34 {  // '"'
+            lexer_advance(lexer);
+            let text: i64 = string_from("f\"");
+            while lexer_peek(lexer) != 34 {
+                if lexer_at_end(lexer) { break; }
+                let sc: i64 = lexer_advance(lexer);
+                if sc == 92 {  // backslash
+                    text = string_concat(text, string_from_char(sc));
+                    if lexer_at_end(lexer) == false {
+                        let esc: i64 = lexer_advance(lexer);
+                        text = string_concat(text, string_from_char(esc));
+                    }
+                } else {
+                    text = string_concat(text, string_from_char(sc));
+                }
+            }
+            lexer_advance(lexer);  // closing "
+            text = string_concat(text, string_from("\""));
+            let tok: i64 = token_new(TK_FString(), text, start_line, start_col);
+            token_set_leading_comments(tok, leading_comments);
+            return tok;
+        }
+    }
+
+    // Identifiers and keywords
+    if is_ident_start(c) {
+        while is_ident_continue(lexer_peek(lexer)) {
+            lexer_advance(lexer);
+        }
+        let end_pos: i64 = lexer_pos(lexer);
+        let text: i64 = string_slice(lexer_source(lexer), start_pos, end_pos);
+        let kind: i64 = check_keyword(text);
+        let tok: i64 = token_new(kind, text, start_line, start_col);
+        token_set_leading_comments(tok, leading_comments);
+        return tok;
+    }
+
+    // Numbers (int or float)
+    if is_digit(c) {
+        while is_digit(lexer_peek(lexer)) {
+            lexer_advance(lexer);
+        }
+        // Check for decimal point
+        if lexer_peek(lexer) == 46 {
+            let saved_pos: i64 = lexer_pos(lexer);
+            lexer_advance(lexer);
+            if is_digit(lexer_peek(lexer)) {
+                while is_digit(lexer_peek(lexer)) {
+                    lexer_advance(lexer);
+                }
+                let end_pos: i64 = lexer_pos(lexer);
+                let text: i64 = string_slice(lexer_source(lexer), start_pos, end_pos);
+                let tok: i64 = token_new(TK_Float(), text, start_line, start_col);
+                token_set_leading_comments(tok, leading_comments);
+                return tok;
+            } else {
+                store_i64(lexer, 1, saved_pos);
+            }
+        }
+        let end_pos: i64 = lexer_pos(lexer);
+        let text: i64 = string_slice(lexer_source(lexer), start_pos, end_pos);
+        let tok: i64 = token_new(TK_Int(), text, start_line, start_col);
+        token_set_leading_comments(tok, leading_comments);
+        return tok;
+    }
+
+    // String literals
+    if c == 34 {  // "
+        let text: i64 = string_from("\"");
+        while lexer_peek(lexer) != 34 {
+            if lexer_at_end(lexer) { break; }
+            let sc: i64 = lexer_advance(lexer);
+            if sc == 92 {  // backslash
+                text = string_concat(text, string_from_char(sc));
+                if lexer_at_end(lexer) == false {
+                    let esc: i64 = lexer_advance(lexer);
+                    text = string_concat(text, string_from_char(esc));
+                }
+            } else {
+                text = string_concat(text, string_from_char(sc));
+            }
+        }
+        lexer_advance(lexer);  // closing "
+        text = string_concat(text, string_from("\""));
+        let tok: i64 = token_new(TK_String(), text, start_line, start_col);
+        token_set_leading_comments(tok, leading_comments);
+        return tok;
+    }
+
+    // Unknown - return EOF
+    let tok: i64 = token_new(TK_Eof(), string_from(""), start_line, start_col);
+    token_set_leading_comments(tok, leading_comments);
+    return tok;
+}
+
+// Tokenize source with comment preservation
+fn tokenize(source: i64) -> i64 {
+    let lexer: i64 = lexer_new(source);
+    let tokens: i64 = vec_new();
+
+    let loop_count: i64 = 0;
+    while true {
+        loop_count = loop_count + 1;
+
+        let tok: i64 = lexer_next_token(lexer);
+
+        vec_push(tokens, tok);
+        if token_kind(tok) == TK_Eof() {
+            return tokens;
+        }
+        if loop_count > 1000 {
+            return tokens;
+        }
+    }
+    return tokens;
+}
+
+// ========================================
+// Formatter State
+// ========================================
+
+// Formatter: output(0), indent_level(1), line_col(2), at_line_start(3)
+fn fmt_new() -> i64 {
+    let fmt: i64 = malloc(32);
+    store_ptr(fmt, 0, string_from(""));  // output
+    store_i64(fmt, 1, 0);  // indent_level
+    store_i64(fmt, 2, 0);  // current column
+    store_i64(fmt, 3, 1);  // at_line_start (true)
+    return fmt;
+}
+
+fn fmt_output(fmt: i64) -> i64 { load_ptr(fmt, 0) }
+fn fmt_indent_level(fmt: i64) -> i64 { load_i64(fmt, 1) }
+fn fmt_col(fmt: i64) -> i64 { load_i64(fmt, 2) }
+fn fmt_at_line_start(fmt: i64) -> bool { load_i64(fmt, 3) != 0 }
+
+fn fmt_push_indent(fmt: i64) -> i64 {
+    store_i64(fmt, 1, fmt_indent_level(fmt) + 1);
+    return 0;
+}
+
+fn fmt_pop_indent(fmt: i64) -> i64 {
+    let level: i64 = fmt_indent_level(fmt);
+    if level > 0 {
+        store_i64(fmt, 1, level - 1);
+    }
+    return 0;
+}
+
+fn fmt_write(fmt: i64, text: i64) -> i64 {
+    // Add indentation if at line start
+    if fmt_at_line_start(fmt) {
+        let indent: i64 = string_from("");
+        let spaces: i64 = fmt_indent_level(fmt) * INDENT_WIDTH();
+        let i: i64 = 0;
+        while i < spaces {
+            indent = string_concat(indent, string_from(" "));
+            i = i + 1;
+        }
+        store_ptr(fmt, 0, string_concat(fmt_output(fmt), indent));
+        store_i64(fmt, 2, spaces);
+        store_i64(fmt, 3, 0);
+    }
+    store_ptr(fmt, 0, string_concat(fmt_output(fmt), text));
+    store_i64(fmt, 2, fmt_col(fmt) + string_len(text));
+    return 0;
+}
+
+fn fmt_newline(fmt: i64) -> i64 {
+    store_ptr(fmt, 0, string_concat(fmt_output(fmt), string_from("\n")));
+    store_i64(fmt, 2, 0);
+    store_i64(fmt, 3, 1);  // at line start
+    return 0;
+}
+
+fn fmt_blank_line(fmt: i64) -> i64 {
+    fmt_newline(fmt);
+    return 0;
+}
+
+fn fmt_space(fmt: i64) -> i64 {
+    fmt_write(fmt, string_from(" "));
+    return 0;
+}
+
+// ========================================
+// Comment Output
+// ========================================
+
+fn fmt_write_leading_comments(fmt: i64, tok: i64) -> i64 {
+    let comments: i64 = token_leading_comments(tok);
+    if comments == 0 { return 0; }
+
+    let n: i64 = vec_len(comments);
+    let i: i64 = 0;
+    while i < n {
+        let comment_info: i64 = vec_get(comments, i);
+        let comment_text: i64 = load_ptr(comment_info, 0);
+        let newlines_before: i64 = load_i64(comment_info, 1);
+
+        // Add blank line if there were multiple newlines before comment
+        if newlines_before > 1 {
+            if fmt_at_line_start(fmt) == false {
+                fmt_newline(fmt);
+            }
+        }
+
+        fmt_write(fmt, comment_text);
+        fmt_newline(fmt);
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn fmt_write_trailing_comment(fmt: i64, tok: i64) -> i64 {
+    let comment: i64 = token_trailing_comment(tok);
+    if comment == 0 { return 0; }
+    if string_len(comment) == 0 { return 0; }
+
+    fmt_space(fmt);
+    fmt_write(fmt, comment);
+    return 0;
+}
+
+// ========================================
+// Token Stream Processing
+// ========================================
+
+// Parser state for formatter
+fn parser_new(tokens: i64) -> i64 {
+    let p: i64 = malloc(24);
+    store_ptr(p, 0, tokens);
+    store_i64(p, 1, 0);  // pos
+    store_i64(p, 2, vec_len(tokens));  // len
+    return p;
+}
+
+fn parser_pos(p: i64) -> i64 { load_i64(p, 1) }
+fn parser_len(p: i64) -> i64 { load_i64(p, 2) }
+fn parser_tokens(p: i64) -> i64 { load_ptr(p, 0) }
+
+fn parser_at_end(p: i64) -> bool {
+    return parser_pos(p) >= parser_len(p);
+}
+
+fn parser_current(p: i64) -> i64 {
+    if parser_at_end(p) { return 0; }
+    return vec_get(parser_tokens(p), parser_pos(p));
+}
+
+fn parser_peek(p: i64, n: i64) -> i64 {
+    let pos: i64 = parser_pos(p) + n;
+    if pos >= parser_len(p) { return 0; }
+    return vec_get(parser_tokens(p), pos);
+}
+
+fn parser_advance(p: i64) -> i64 {
+    let tok: i64 = parser_current(p);
+    store_i64(p, 1, parser_pos(p) + 1);
+    return tok;
+}
+
+fn parser_check(p: i64, kind: i64) -> bool {
+    let tok: i64 = parser_current(p);
+    if tok == 0 { return false; }
+    return token_kind(tok) == kind;
+}
+
+fn parser_match(p: i64, kind: i64) -> bool {
+    if parser_check(p, kind) {
+        parser_advance(p);
+        return true;
+    }
+    return false;
+}
+
+// ========================================
+// Formatting Functions
+// ========================================
+
+// Format token with leading comments
+fn fmt_token(fmt: i64, tok: i64) -> i64 {
+    fmt_write_leading_comments(fmt, tok);
+    fmt_write(fmt, token_text(tok));
+    return 0;
+}
+
+// Format function parameters
+fn fmt_params(fmt: i64, p: i64) -> i64 {
+    let tok: i64 = parser_advance(p);  // (
+    fmt_token(fmt, tok);
+
+    let first: bool = true;
+    while parser_check(p, TK_RParen()) == false {
+        if parser_at_end(p) { break; }
+
+        if first == false {
+            tok = parser_advance(p);  // ,
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+        }
+        first = false;
+
+        // Handle &self, &mut self, self, or name: type
+        if parser_check(p, TK_Amp()) {
+            tok = parser_advance(p);  // &
+            fmt_token(fmt, tok);
+            if parser_check(p, TK_KwMut()) {
+                tok = parser_advance(p);  // mut
+                fmt_token(fmt, tok);
+                fmt_space(fmt);
+            }
+        }
+
+        if parser_check(p, TK_KwSelf()) {
+            tok = parser_advance(p);  // self
+            fmt_token(fmt, tok);
+        } else if parser_check(p, TK_Ident()) {
+            tok = parser_advance(p);  // name
+            fmt_token(fmt, tok);
+        }
+
+        // : type
+        if parser_check(p, TK_Colon()) {
+            tok = parser_advance(p);  // :
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_type(fmt, p);
+        }
+    }
+
+    tok = parser_advance(p);  // )
+    fmt_token(fmt, tok);
+    return 0;
+}
+
+// Format type
+fn fmt_type(fmt: i64, p: i64) -> i64 {
+    // Handle & reference
+    if parser_check(p, TK_Amp()) {
+        let tok: i64 = parser_advance(p);
+        fmt_token(fmt, tok);
+        if parser_check(p, TK_KwMut()) {
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+        }
+        fmt_type(fmt, p);
+        return 0;
+    }
+
+    // Handle ( tuple type
+    if parser_check(p, TK_LParen()) {
+        let tok: i64 = parser_advance(p);
+        fmt_token(fmt, tok);
+        let first: bool = true;
+        while parser_check(p, TK_RParen()) == false {
+            if parser_at_end(p) { break; }
+            if first == false {
+                tok = parser_advance(p);  // ,
+                fmt_token(fmt, tok);
+                fmt_space(fmt);
+            }
+            first = false;
+            fmt_type(fmt, p);
+        }
+        tok = parser_advance(p);  // )
+        fmt_token(fmt, tok);
+        return 0;
+    }
+
+    // Handle dyn Trait
+    if parser_check(p, TK_KwDyn()) {
+        let tok: i64 = parser_advance(p);
+        fmt_token(fmt, tok);
+        fmt_space(fmt);
+    }
+
+    // Handle Self
+    if parser_check(p, TK_KwSelf()) {
+        let tok: i64 = parser_advance(p);
+        fmt_token(fmt, tok);
+        if parser_check(p, TK_DoubleColon()) {
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+            tok = parser_advance(p);  // AssocType
+            fmt_token(fmt, tok);
+        }
+        return 0;
+    }
+
+    // Identifier type
+    if parser_check(p, TK_Ident()) {
+        let tok: i64 = parser_advance(p);
+        fmt_token(fmt, tok);
+
+        // Generic type args <T, U>
+        if parser_check(p, TK_Lt()) {
+            tok = parser_advance(p);  // <
+            fmt_token(fmt, tok);
+            let first: bool = true;
+            while parser_check(p, TK_Gt()) == false {
+                if parser_check(p, TK_GtGt()) { break; }
+                if parser_at_end(p) { break; }
+                if first == false {
+                    tok = parser_advance(p);  // ,
+                    fmt_token(fmt, tok);
+                    fmt_space(fmt);
+                }
+                first = false;
+                fmt_type(fmt, p);
+            }
+            // Handle > or >>
+            if parser_check(p, TK_Gt()) {
+                tok = parser_advance(p);
+                fmt_token(fmt, tok);
+            } else if parser_check(p, TK_GtGt()) {
+                // Output single >
+                fmt_write(fmt, string_from(">"));
+                // Don't advance - caller will handle
+            }
+        }
+    }
+    return 0;
+}
+
+// Format block { stmts }
+fn fmt_block(fmt: i64, p: i64) -> i64 {
+    let tok: i64 = parser_advance(p);  // {
+    fmt_token(fmt, tok);
+    fmt_newline(fmt);
+    fmt_push_indent(fmt);
+
+    while parser_check(p, TK_RBrace()) == false {
+        if parser_at_end(p) { break; }
+        fmt_stmt(fmt, p);
+    }
+
+    fmt_pop_indent(fmt);
+    tok = parser_advance(p);  // }
+    fmt_write_leading_comments(fmt, tok);
+    fmt_write(fmt, token_text(tok));
+    return 0;
+}
+
+// Format expression
+fn fmt_expr(fmt: i64, p: i64) -> i64 {
+    let tok: i64 = parser_current(p);
+    if tok == 0 { return 0; }
+    let kind: i64 = token_kind(tok);
+
+    // Primary expressions
+    if kind == TK_Int() {
+        tok = parser_advance(p);
+        fmt_token(fmt, tok);
+        return 0;
+    }
+    if kind == TK_Float() {
+        tok = parser_advance(p);
+        fmt_token(fmt, tok);
+        return 0;
+    }
+    if kind == TK_String() {
+        tok = parser_advance(p);
+        fmt_token(fmt, tok);
+        return 0;
+    }
+    if kind == TK_FString() {
+        tok = parser_advance(p);
+        fmt_token(fmt, tok);
+        return 0;
+    }
+    if kind == TK_KwTrue() {
+        tok = parser_advance(p);
+        fmt_token(fmt, tok);
+        return 0;
+    }
+    if kind == TK_KwFalse() {
+        tok = parser_advance(p);
+        fmt_token(fmt, tok);
+        return 0;
+    }
+    if kind == TK_KwSelf() {
+        tok = parser_advance(p);
+        fmt_token(fmt, tok);
+        // Handle postfix operations
+        fmt_expr_postfix(fmt, p);
+        return 0;
+    }
+
+    // Unary operators
+    if kind == TK_Minus() {
+        tok = parser_advance(p);
+        fmt_token(fmt, tok);
+        fmt_expr(fmt, p);
+        return 0;
+    }
+    if kind == TK_Bang() {
+        tok = parser_advance(p);
+        fmt_token(fmt, tok);
+        fmt_expr(fmt, p);
+        return 0;
+    }
+    if kind == TK_Amp() {
+        tok = parser_advance(p);
+        fmt_token(fmt, tok);
+        if parser_check(p, TK_KwMut()) {
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+        }
+        fmt_expr(fmt, p);
+        return 0;
+    }
+    if kind == TK_Star() {
+        tok = parser_advance(p);
+        fmt_token(fmt, tok);
+        fmt_expr(fmt, p);
+        return 0;
+    }
+
+    // Array literal [...]
+    if kind == TK_LBracket() {
+        tok = parser_advance(p);  // [
+        fmt_token(fmt, tok);
+        let first: bool = true;
+        while parser_check(p, TK_RBracket()) == false {
+            if parser_at_end(p) { break; }
+            if first == false {
+                tok = parser_advance(p);  // ,
+                fmt_token(fmt, tok);
+                fmt_space(fmt);
+            }
+            first = false;
+            fmt_expr(fmt, p);
+        }
+        tok = parser_advance(p);  // ]
+        fmt_token(fmt, tok);
+        // Handle postfix operations
+        fmt_expr_postfix(fmt, p);
+        return 0;
+    }
+
+    // Parenthesized expression or tuple (...)
+    if kind == TK_LParen() {
+        tok = parser_advance(p);  // (
+        fmt_token(fmt, tok);
+
+        // Check for closure: () => or (params) =>
+        // First check if empty parens
+        if parser_check(p, TK_RParen()) {
+            tok = parser_advance(p);  // )
+            fmt_token(fmt, tok);
+            if parser_check(p, TK_FatArrow()) {
+                // Closure: () => expr
+                fmt_space(fmt);
+                tok = parser_advance(p);  // =>
+                fmt_token(fmt, tok);
+                fmt_space(fmt);
+                fmt_expr(fmt, p);
+            }
+            // Otherwise it's an empty tuple
+            fmt_expr_postfix(fmt, p);
+            return 0;
+        }
+
+        // Parse first element
+        fmt_expr(fmt, p);
+
+        // Check if there's a comma (tuple) or closing paren
+        if parser_check(p, TK_Comma()) {
+            // Tuple
+            while parser_check(p, TK_Comma()) {
+                tok = parser_advance(p);  // ,
+                fmt_token(fmt, tok);
+                fmt_space(fmt);
+                if parser_check(p, TK_RParen()) { break; }
+                fmt_expr(fmt, p);
+            }
+        }
+
+        tok = parser_advance(p);  // )
+        fmt_token(fmt, tok);
+
+        // Check for closure: (expr) => body
+        if parser_check(p, TK_FatArrow()) {
+            fmt_space(fmt);
+            tok = parser_advance(p);  // =>
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_expr(fmt, p);
+            return 0;
+        }
+
+        // Handle postfix operations
+        fmt_expr_postfix(fmt, p);
+        return 0;
+    }
+
+    // Control flow expressions
+    if kind == TK_KwIf() {
+        fmt_if_expr(fmt, p);
+        return 0;
+    }
+    if kind == TK_KwWhile() {
+        fmt_while_expr(fmt, p);
+        return 0;
+    }
+    if kind == TK_KwFor() {
+        fmt_for_expr(fmt, p);
+        return 0;
+    }
+    if kind == TK_KwLoop() {
+        fmt_loop_expr(fmt, p);
+        return 0;
+    }
+    if kind == TK_KwMatch() {
+        fmt_match_expr(fmt, p);
+        return 0;
+    }
+    if kind == TK_KwReturn() {
+        tok = parser_advance(p);
+        fmt_token(fmt, tok);
+        // Check for expression after return
+        if parser_check(p, TK_Semi()) == false {
+            if parser_check(p, TK_RBrace()) == false {
+                fmt_space(fmt);
+                fmt_expr(fmt, p);
+            }
+        }
+        return 0;
+    }
+    if kind == TK_KwBreak() {
+        tok = parser_advance(p);
+        fmt_token(fmt, tok);
+        // Check for value after break
+        if parser_check(p, TK_Semi()) == false {
+            if parser_check(p, TK_RBrace()) == false {
+                if parser_check(p, TK_Comma()) == false {
+                    fmt_space(fmt);
+                    fmt_expr(fmt, p);
+                }
+            }
+        }
+        return 0;
+    }
+    if kind == TK_KwContinue() {
+        tok = parser_advance(p);
+        fmt_token(fmt, tok);
+        return 0;
+    }
+    if kind == TK_KwYield() {
+        tok = parser_advance(p);
+        fmt_token(fmt, tok);
+        fmt_space(fmt);
+        fmt_expr(fmt, p);
+        return 0;
+    }
+    if kind == TK_KwSpawn() {
+        tok = parser_advance(p);
+        fmt_token(fmt, tok);
+        fmt_space(fmt);
+        tok = parser_advance(p);  // TypeName
+        fmt_token(fmt, tok);
+        return 0;
+    }
+    if kind == TK_KwInfer() {
+        tok = parser_advance(p);
+        fmt_token(fmt, tok);
+        tok = parser_advance(p);  // (
+        fmt_token(fmt, tok);
+        fmt_expr(fmt, p);
+        tok = parser_advance(p);  // )
+        fmt_token(fmt, tok);
+        return 0;
+    }
+
+    // Block expression
+    if kind == TK_LBrace() {
+        fmt_block(fmt, p);
+        return 0;
+    }
+
+    // Identifier (possibly with path, call, field access, etc.)
+    if kind == TK_Ident() {
+        tok = parser_advance(p);
+        fmt_token(fmt, tok);
+
+        // Handle path: Name::Variant or Name::method()
+        while parser_check(p, TK_DoubleColon()) {
+            tok = parser_advance(p);  // ::
+            fmt_token(fmt, tok);
+
+            // Check for turbofish <T>
+            if parser_check(p, TK_Lt()) {
+                tok = parser_advance(p);  // <
+                fmt_token(fmt, tok);
+                let first: bool = true;
+                while parser_check(p, TK_Gt()) == false {
+                    if parser_at_end(p) { break; }
+                    if first == false {
+                        tok = parser_advance(p);  // ,
+                        fmt_token(fmt, tok);
+                        fmt_space(fmt);
+                    }
+                    first = false;
+                    fmt_type(fmt, p);
+                }
+                tok = parser_advance(p);  // >
+                fmt_token(fmt, tok);
+            }
+
+            if parser_check(p, TK_Ident()) {
+                tok = parser_advance(p);
+                fmt_token(fmt, tok);
+            }
+        }
+
+        // Handle postfix operations (calls, field access, indexing, etc.)
+        fmt_expr_postfix(fmt, p);
+        return 0;
+    }
+
+    // Underscore (pattern)
+    if kind == TK_Underscore() {
+        tok = parser_advance(p);
+        fmt_token(fmt, tok);
+        return 0;
+    }
+
+    // Skip unknown tokens
+    if kind != TK_Eof() {
+        tok = parser_advance(p);
+        fmt_token(fmt, tok);
+    }
+    return 0;
+}
+
+// Format postfix operations: calls, field access, indexing, method calls
+fn fmt_expr_postfix(fmt: i64, p: i64) -> i64 {
+    while true {
+        let tok: i64 = parser_current(p);
+        if tok == 0 { return 0; }
+        let kind: i64 = token_kind(tok);
+
+        // Function call: foo(args)
+        if kind == TK_LParen() {
+            tok = parser_advance(p);  // (
+            fmt_token(fmt, tok);
+            let first: bool = true;
+            while parser_check(p, TK_RParen()) == false {
+                if parser_at_end(p) { break; }
+                if first == false {
+                    tok = parser_advance(p);  // ,
+                    fmt_token(fmt, tok);
+                    fmt_space(fmt);
+                }
+                first = false;
+                fmt_expr(fmt, p);
+            }
+            tok = parser_advance(p);  // )
+            fmt_token(fmt, tok);
+            continue;
+        }
+
+        // Field access or method call: foo.bar or foo.bar()
+        if kind == TK_Dot() {
+            tok = parser_advance(p);  // .
+            fmt_token(fmt, tok);
+
+            // Check for await
+            if parser_check(p, TK_KwAwait()) {
+                tok = parser_advance(p);
+                fmt_token(fmt, tok);
+                continue;
+            }
+
+            // Regular field/method
+            if parser_check(p, TK_Ident()) {
+                tok = parser_advance(p);
+                fmt_token(fmt, tok);
+            } else if parser_check(p, TK_Int()) {
+                // Tuple field: t.0
+                tok = parser_advance(p);
+                fmt_token(fmt, tok);
+            }
+            continue;
+        }
+
+        // Indexing: foo[idx]
+        if kind == TK_LBracket() {
+            tok = parser_advance(p);  // [
+            fmt_token(fmt, tok);
+            fmt_expr(fmt, p);
+            tok = parser_advance(p);  // ]
+            fmt_token(fmt, tok);
+            continue;
+        }
+
+        // Try operator: expr?
+        if kind == TK_Question() {
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+            continue;
+        }
+
+        // Binary operators - handle with spacing
+        if kind == TK_Plus() {
+            fmt_space(fmt);
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_expr(fmt, p);
+            continue;
+        }
+        if kind == TK_Minus() {
+            fmt_space(fmt);
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_expr(fmt, p);
+            continue;
+        }
+        if kind == TK_Star() {
+            fmt_space(fmt);
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_expr(fmt, p);
+            continue;
+        }
+        if kind == TK_Slash() {
+            fmt_space(fmt);
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_expr(fmt, p);
+            continue;
+        }
+        if kind == TK_Percent() {
+            fmt_space(fmt);
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_expr(fmt, p);
+            continue;
+        }
+        if kind == TK_EqEq() {
+            fmt_space(fmt);
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_expr(fmt, p);
+            continue;
+        }
+        if kind == TK_Ne() {
+            fmt_space(fmt);
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_expr(fmt, p);
+            continue;
+        }
+        if kind == TK_Lt() {
+            fmt_space(fmt);
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_expr(fmt, p);
+            continue;
+        }
+        if kind == TK_Gt() {
+            fmt_space(fmt);
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_expr(fmt, p);
+            continue;
+        }
+        if kind == TK_Le() {
+            fmt_space(fmt);
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_expr(fmt, p);
+            continue;
+        }
+        if kind == TK_Ge() {
+            fmt_space(fmt);
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_expr(fmt, p);
+            continue;
+        }
+        if kind == TK_AmpAmp() {
+            fmt_space(fmt);
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_expr(fmt, p);
+            continue;
+        }
+        if kind == TK_PipePipe() {
+            fmt_space(fmt);
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_expr(fmt, p);
+            continue;
+        }
+        if kind == TK_Amp() {
+            fmt_space(fmt);
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_expr(fmt, p);
+            continue;
+        }
+        if kind == TK_Pipe() {
+            fmt_space(fmt);
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_expr(fmt, p);
+            continue;
+        }
+        if kind == TK_Caret() {
+            fmt_space(fmt);
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_expr(fmt, p);
+            continue;
+        }
+        if kind == TK_LtLt() {
+            fmt_space(fmt);
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_expr(fmt, p);
+            continue;
+        }
+        if kind == TK_GtGt() {
+            fmt_space(fmt);
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_expr(fmt, p);
+            continue;
+        }
+        if kind == TK_DotDot() {
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+            fmt_expr(fmt, p);
+            continue;
+        }
+
+        // No more postfix - done
+        return 0;
+    }
+    return 0;
+}
+
+// Format if expression
+fn fmt_if_expr(fmt: i64, p: i64) -> i64 {
+    let tok: i64 = parser_advance(p);  // if
+    fmt_token(fmt, tok);
+    fmt_space(fmt);
+
+    // Check for if-let
+    if parser_check(p, TK_KwLet()) {
+        tok = parser_advance(p);  // let
+        fmt_token(fmt, tok);
+        fmt_space(fmt);
+        fmt_pattern(fmt, p);
+        fmt_space(fmt);
+        tok = parser_advance(p);  // =
+        fmt_token(fmt, tok);
+        fmt_space(fmt);
+        fmt_expr(fmt, p);
+    } else {
+        // Regular condition
+        fmt_expr(fmt, p);
+    }
+
+    fmt_space(fmt);
+    fmt_block(fmt, p);
+
+    // else/else-if
+    if parser_check(p, TK_KwElse()) {
+        fmt_space(fmt);
+        tok = parser_advance(p);  // else
+        fmt_token(fmt, tok);
+        fmt_space(fmt);
+
+        if parser_check(p, TK_KwIf()) {
+            fmt_if_expr(fmt, p);
+        } else {
+            fmt_block(fmt, p);
+        }
+    }
+    return 0;
+}
+
+// Format while expression
+fn fmt_while_expr(fmt: i64, p: i64) -> i64 {
+    let tok: i64 = parser_advance(p);  // while
+    fmt_token(fmt, tok);
+    fmt_space(fmt);
+
+    // Check for while-let
+    if parser_check(p, TK_KwLet()) {
+        tok = parser_advance(p);  // let
+        fmt_token(fmt, tok);
+        fmt_space(fmt);
+        fmt_pattern(fmt, p);
+        fmt_space(fmt);
+        tok = parser_advance(p);  // =
+        fmt_token(fmt, tok);
+        fmt_space(fmt);
+        fmt_expr(fmt, p);
+    } else {
+        fmt_expr(fmt, p);
+    }
+
+    fmt_space(fmt);
+    fmt_block(fmt, p);
+    return 0;
+}
+
+// Format for expression
+fn fmt_for_expr(fmt: i64, p: i64) -> i64 {
+    let tok: i64 = parser_advance(p);  // for
+    fmt_token(fmt, tok);
+    fmt_space(fmt);
+    tok = parser_advance(p);  // variable
+    fmt_token(fmt, tok);
+    fmt_space(fmt);
+    tok = parser_advance(p);  // in
+    fmt_token(fmt, tok);
+    fmt_space(fmt);
+    fmt_expr(fmt, p);  // start..end
+    fmt_space(fmt);
+    fmt_block(fmt, p);
+    return 0;
+}
+
+// Format loop expression
+fn fmt_loop_expr(fmt: i64, p: i64) -> i64 {
+    let tok: i64 = parser_advance(p);  // loop
+    fmt_token(fmt, tok);
+    fmt_space(fmt);
+    fmt_block(fmt, p);
+    return 0;
+}
+
+// Format match expression
+fn fmt_match_expr(fmt: i64, p: i64) -> i64 {
+    let tok: i64 = parser_advance(p);  // match
+    fmt_token(fmt, tok);
+    fmt_space(fmt);
+    fmt_expr(fmt, p);  // scrutinee
+    fmt_space(fmt);
+    tok = parser_advance(p);  // {
+    fmt_token(fmt, tok);
+    fmt_newline(fmt);
+    fmt_push_indent(fmt);
+
+    // Match arms
+    while parser_check(p, TK_RBrace()) == false {
+        if parser_at_end(p) { break; }
+
+        // Pattern
+        fmt_pattern(fmt, p);
+
+        // Optional guard: if cond
+        if parser_check(p, TK_KwIf()) {
+            fmt_space(fmt);
+            tok = parser_advance(p);  // if
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_expr(fmt, p);
+        }
+
+        fmt_space(fmt);
+        tok = parser_advance(p);  // =>
+        fmt_token(fmt, tok);
+        fmt_space(fmt);
+
+        // Arm body - block or expression
+        if parser_check(p, TK_LBrace()) {
+            fmt_block(fmt, p);
+        } else {
+            fmt_expr(fmt, p);
+        }
+
+        // Optional comma
+        if parser_check(p, TK_Comma()) {
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+        }
+        fmt_newline(fmt);
+    }
+
+    fmt_pop_indent(fmt);
+    tok = parser_advance(p);  // }
+    fmt_token(fmt, tok);
+    return 0;
+}
+
+// Format pattern (for match arms, if-let, while-let)
+fn fmt_pattern(fmt: i64, p: i64) -> i64 {
+    let tok: i64 = parser_current(p);
+    if tok == 0 { return 0; }
+    let kind: i64 = token_kind(tok);
+
+    // Wildcard
+    if kind == TK_Underscore() {
+        tok = parser_advance(p);
+        fmt_token(fmt, tok);
+        return 0;
+    }
+
+    // Identifier or path
+    if kind == TK_Ident() {
+        tok = parser_advance(p);
+        fmt_token(fmt, tok);
+
+        // Path: Name::Variant
+        while parser_check(p, TK_DoubleColon()) {
+            tok = parser_advance(p);  // ::
+            fmt_token(fmt, tok);
+            if parser_check(p, TK_Ident()) {
+                tok = parser_advance(p);
+                fmt_token(fmt, tok);
+            }
+        }
+
+        // Destructuring: Variant(binding) or Struct { field, ... }
+        if parser_check(p, TK_LParen()) {
+            tok = parser_advance(p);  // (
+            fmt_token(fmt, tok);
+            let first: bool = true;
+            while parser_check(p, TK_RParen()) == false {
+                if parser_at_end(p) { break; }
+                if first == false {
+                    tok = parser_advance(p);  // ,
+                    fmt_token(fmt, tok);
+                    fmt_space(fmt);
+                }
+                first = false;
+                fmt_pattern(fmt, p);
+            }
+            tok = parser_advance(p);  // )
+            fmt_token(fmt, tok);
+        } else if parser_check(p, TK_LBrace()) {
+            fmt_space(fmt);
+            tok = parser_advance(p);  // {
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            let first: bool = true;
+            while parser_check(p, TK_RBrace()) == false {
+                if parser_at_end(p) { break; }
+                if parser_check(p, TK_DotDot()) {
+                    tok = parser_advance(p);
+                    fmt_token(fmt, tok);
+                    break;
+                }
+                if first == false {
+                    tok = parser_advance(p);  // ,
+                    fmt_token(fmt, tok);
+                    fmt_space(fmt);
+                }
+                first = false;
+                tok = parser_advance(p);  // field name
+                fmt_token(fmt, tok);
+                if parser_check(p, TK_Colon()) {
+                    tok = parser_advance(p);  // :
+                    fmt_token(fmt, tok);
+                    fmt_space(fmt);
+                    fmt_pattern(fmt, p);
+                }
+            }
+            fmt_space(fmt);
+            tok = parser_advance(p);  // }
+            fmt_token(fmt, tok);
+        }
+
+        // Or pattern: Pattern | Pattern
+        if parser_check(p, TK_Pipe()) {
+            fmt_space(fmt);
+            tok = parser_advance(p);  // |
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_pattern(fmt, p);
+        }
+
+        return 0;
+    }
+
+    // Tuple pattern: (a, b)
+    if kind == TK_LParen() {
+        tok = parser_advance(p);  // (
+        fmt_token(fmt, tok);
+        let first: bool = true;
+        while parser_check(p, TK_RParen()) == false {
+            if parser_at_end(p) { break; }
+            if first == false {
+                tok = parser_advance(p);  // ,
+                fmt_token(fmt, tok);
+                fmt_space(fmt);
+            }
+            first = false;
+            fmt_pattern(fmt, p);
+        }
+        tok = parser_advance(p);  // )
+        fmt_token(fmt, tok);
+        return 0;
+    }
+
+    // Literal patterns
+    if kind == TK_Int() {
+        tok = parser_advance(p);
+        fmt_token(fmt, tok);
+        return 0;
+    }
+    if kind == TK_String() {
+        tok = parser_advance(p);
+        fmt_token(fmt, tok);
+        return 0;
+    }
+    if kind == TK_KwTrue() {
+        tok = parser_advance(p);
+        fmt_token(fmt, tok);
+        return 0;
+    }
+    if kind == TK_KwFalse() {
+        tok = parser_advance(p);
+        fmt_token(fmt, tok);
+        return 0;
+    }
+
+    return 0;
+}
+
+// Format statement
+fn fmt_stmt(fmt: i64, p: i64) -> i64 {
+    let tok: i64 = parser_current(p);
+    if tok == 0 { return 0; }
+
+    // Write leading comments
+    fmt_write_leading_comments(fmt, tok);
+
+    let kind: i64 = token_kind(tok);
+
+    // Let statement
+    if kind == TK_KwLet() {
+        tok = parser_advance(p);
+        fmt_write(fmt, token_text(tok));
+        fmt_space(fmt);
+        tok = parser_advance(p);  // name
+        fmt_token(fmt, tok);
+
+        // Optional type annotation
+        if parser_check(p, TK_Colon()) {
+            tok = parser_advance(p);  // :
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_type(fmt, p);
+        }
+
+        // Optional initializer
+        if parser_check(p, TK_Eq()) {
+            fmt_space(fmt);
+            tok = parser_advance(p);  // =
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_expr(fmt, p);
+        }
+
+        // Optional semicolon
+        if parser_check(p, TK_Semi()) {
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+        }
+        fmt_newline(fmt);
+        return 0;
+    }
+
+    // Var statement (mutable)
+    if kind == TK_KwVar() {
+        tok = parser_advance(p);
+        fmt_write(fmt, token_text(tok));
+        fmt_space(fmt);
+        tok = parser_advance(p);  // name
+        fmt_token(fmt, tok);
+
+        // Optional type annotation
+        if parser_check(p, TK_Colon()) {
+            tok = parser_advance(p);  // :
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_type(fmt, p);
+        }
+
+        // Optional initializer
+        if parser_check(p, TK_Eq()) {
+            fmt_space(fmt);
+            tok = parser_advance(p);  // =
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_expr(fmt, p);
+        }
+
+        // Optional semicolon
+        if parser_check(p, TK_Semi()) {
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+        }
+        fmt_newline(fmt);
+        return 0;
+    }
+
+    // Control flow as statements
+    if kind == TK_KwIf() {
+        fmt_if_expr(fmt, p);
+        fmt_newline(fmt);
+        return 0;
+    }
+    if kind == TK_KwWhile() {
+        fmt_while_expr(fmt, p);
+        fmt_newline(fmt);
+        return 0;
+    }
+    if kind == TK_KwFor() {
+        fmt_for_expr(fmt, p);
+        fmt_newline(fmt);
+        return 0;
+    }
+    if kind == TK_KwLoop() {
+        fmt_loop_expr(fmt, p);
+        fmt_newline(fmt);
+        return 0;
+    }
+    if kind == TK_KwMatch() {
+        fmt_match_expr(fmt, p);
+        fmt_newline(fmt);
+        return 0;
+    }
+
+    // Return statement
+    if kind == TK_KwReturn() {
+        tok = parser_advance(p);
+        fmt_write(fmt, token_text(tok));
+
+        // Optional return value
+        if parser_check(p, TK_Semi()) == false {
+            if parser_check(p, TK_RBrace()) == false {
+                fmt_space(fmt);
+                fmt_expr(fmt, p);
+            }
+        }
+
+        // Optional semicolon
+        if parser_check(p, TK_Semi()) {
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+        }
+        fmt_newline(fmt);
+        return 0;
+    }
+
+    // Break statement
+    if kind == TK_KwBreak() {
+        tok = parser_advance(p);
+        fmt_write(fmt, token_text(tok));
+
+        // Optional break value
+        if parser_check(p, TK_Semi()) == false {
+            if parser_check(p, TK_RBrace()) == false {
+                fmt_space(fmt);
+                fmt_expr(fmt, p);
+            }
+        }
+
+        if parser_check(p, TK_Semi()) {
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+        }
+        fmt_newline(fmt);
+        return 0;
+    }
+
+    // Continue statement
+    if kind == TK_KwContinue() {
+        tok = parser_advance(p);
+        fmt_write(fmt, token_text(tok));
+        if parser_check(p, TK_Semi()) {
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+        }
+        fmt_newline(fmt);
+        return 0;
+    }
+
+    // Expression statement (including assignments)
+    fmt_expr(fmt, p);
+
+    // Check for assignment
+    if parser_check(p, TK_Eq()) {
+        fmt_space(fmt);
+        tok = parser_advance(p);  // =
+        fmt_token(fmt, tok);
+        fmt_space(fmt);
+        fmt_expr(fmt, p);
+    }
+
+    // Optional semicolon
+    if parser_check(p, TK_Semi()) {
+        tok = parser_advance(p);
+        fmt_token(fmt, tok);
+    }
+    fmt_newline(fmt);
+    return 0;
+}
+
+// Format function definition
+fn fmt_fn(fmt: i64, p: i64) -> i64 {
+    let tok: i64 = parser_advance(p);  // fn
+    fmt_token(fmt, tok);
+    fmt_space(fmt);
+
+    tok = parser_advance(p);  // name
+    fmt_token(fmt, tok);
+
+    // Type parameters <T, U>
+    if parser_check(p, TK_Lt()) {
+        tok = parser_advance(p);  // <
+        fmt_token(fmt, tok);
+        let first: bool = true;
+        while parser_check(p, TK_Gt()) == false {
+            if parser_at_end(p) { break; }
+            if first == false {
+                tok = parser_advance(p);  // ,
+                fmt_token(fmt, tok);
+                fmt_space(fmt);
+            }
+            first = false;
+            tok = parser_advance(p);  // type param
+            fmt_token(fmt, tok);
+        }
+        tok = parser_advance(p);  // >
+        fmt_token(fmt, tok);
+    }
+
+    // Parameters
+    fmt_params(fmt, p);
+
+    // Return type
+    if parser_check(p, TK_Arrow()) {
+        fmt_space(fmt);
+        tok = parser_advance(p);  // ->
+        fmt_token(fmt, tok);
+        fmt_space(fmt);
+        fmt_type(fmt, p);
+    }
+
+    // Where clause
+    if parser_check(p, TK_KwWhere()) {
+        fmt_newline(fmt);
+        fmt_push_indent(fmt);
+        tok = parser_advance(p);  // where
+        fmt_token(fmt, tok);
+        fmt_space(fmt);
+        // Parse where predicates
+        while parser_check(p, TK_LBrace()) == false {
+            if parser_at_end(p) { break; }
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+            if token_kind(tok) == TK_Comma() {
+                fmt_space(fmt);
+            }
+        }
+        fmt_pop_indent(fmt);
+    }
+
+    fmt_space(fmt);
+    fmt_block(fmt, p);
+    return 0;
+}
+
+// Format enum definition
+fn fmt_enum(fmt: i64, p: i64) -> i64 {
+    let tok: i64 = parser_advance(p);  // enum
+    fmt_token(fmt, tok);
+    fmt_space(fmt);
+    tok = parser_advance(p);  // name
+    fmt_token(fmt, tok);
+    fmt_space(fmt);
+    tok = parser_advance(p);  // {
+    fmt_token(fmt, tok);
+    fmt_newline(fmt);
+    fmt_push_indent(fmt);
+
+    while parser_check(p, TK_RBrace()) == false {
+        if parser_at_end(p) { break; }
+        tok = parser_current(p);
+        fmt_write_leading_comments(fmt, tok);
+        tok = parser_advance(p);  // variant name
+        fmt_write(fmt, token_text(tok));
+
+        // Variant with payload: Variant(Type)
+        if parser_check(p, TK_LParen()) {
+            tok = parser_advance(p);  // (
+            fmt_token(fmt, tok);
+            let first: bool = true;
+            while parser_check(p, TK_RParen()) == false {
+                if parser_at_end(p) { break; }
+                if first == false {
+                    tok = parser_advance(p);  // ,
+                    fmt_token(fmt, tok);
+                    fmt_space(fmt);
+                }
+                first = false;
+                fmt_type(fmt, p);
+            }
+            tok = parser_advance(p);  // )
+            fmt_token(fmt, tok);
+        }
+
+        // Optional comma
+        if parser_check(p, TK_Comma()) {
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+        }
+        fmt_newline(fmt);
+    }
+
+    fmt_pop_indent(fmt);
+    tok = parser_advance(p);  // }
+    fmt_token(fmt, tok);
+    return 0;
+}
+
+// Format struct definition
+fn fmt_struct(fmt: i64, p: i64) -> i64 {
+    let tok: i64 = parser_advance(p);  // struct
+    fmt_token(fmt, tok);
+    fmt_space(fmt);
+    tok = parser_advance(p);  // name
+    fmt_token(fmt, tok);
+
+    // Type parameters
+    if parser_check(p, TK_Lt()) {
+        tok = parser_advance(p);  // <
+        fmt_token(fmt, tok);
+        let first: bool = true;
+        while parser_check(p, TK_Gt()) == false {
+            if parser_at_end(p) { break; }
+            if first == false {
+                tok = parser_advance(p);  // ,
+                fmt_token(fmt, tok);
+                fmt_space(fmt);
+            }
+            first = false;
+            tok = parser_advance(p);  // type param
+            fmt_token(fmt, tok);
+        }
+        tok = parser_advance(p);  // >
+        fmt_token(fmt, tok);
+    }
+
+    fmt_space(fmt);
+    tok = parser_advance(p);  // {
+    fmt_token(fmt, tok);
+    fmt_newline(fmt);
+    fmt_push_indent(fmt);
+
+    // Fields - collect for alignment
+    let fields: i64 = vec_new();
+    let max_name_len: i64 = 0;
+
+    while parser_check(p, TK_RBrace()) == false {
+        if parser_at_end(p) { break; }
+        tok = parser_current(p);
+        let field_comments: i64 = token_leading_comments(tok);
+        tok = parser_advance(p);  // field name
+        let field_name: i64 = token_text(tok);
+        let name_len: i64 = string_len(field_name);
+        if name_len > max_name_len {
+            max_name_len = name_len;
+        }
+
+        tok = parser_advance(p);  // :
+        // Collect type tokens
+        let type_text: i64 = string_from("");
+        while parser_check(p, TK_Comma()) == false {
+            if parser_check(p, TK_RBrace()) { break; }
+            if parser_at_end(p) { break; }
+            tok = parser_advance(p);
+            type_text = string_concat(type_text, token_text(tok));
+        }
+
+        // Optional comma
+        let has_comma: bool = false;
+        if parser_check(p, TK_Comma()) {
+            parser_advance(p);
+            has_comma = true;
+        }
+
+        let field: i64 = malloc(32);
+        store_ptr(field, 0, field_name);
+        store_ptr(field, 1, type_text);
+        store_i64(field, 2, has_comma);
+        store_ptr(field, 3, field_comments);
+        vec_push(fields, field);
+    }
+
+    // Output fields with alignment
+    let n: i64 = vec_len(fields);
+    let i: i64 = 0;
+    while i < n {
+        let field: i64 = vec_get(fields, i);
+        let field_name: i64 = load_ptr(field, 0);
+        let type_text: i64 = load_ptr(field, 1);
+        let field_comments: i64 = load_ptr(field, 3);
+
+        // Write leading comments
+        let nc: i64 = vec_len(field_comments);
+        let j: i64 = 0;
+        while j < nc {
+            let comment_info: i64 = vec_get(field_comments, j);
+            let comment_text: i64 = load_ptr(comment_info, 0);
+            fmt_write(fmt, comment_text);
+            fmt_newline(fmt);
+            j = j + 1;
+        }
+
+        fmt_write(fmt, field_name);
+
+        // Pad to alignment
+        let pad_len: i64 = max_name_len - string_len(field_name);
+        let pad_i: i64 = 0;
+        while pad_i < pad_len {
+            fmt_write(fmt, string_from(" "));
+            pad_i = pad_i + 1;
+        }
+
+        fmt_write(fmt, string_from(": "));
+        fmt_write(fmt, type_text);
+        fmt_write(fmt, string_from(","));
+        fmt_newline(fmt);
+        i = i + 1;
+    }
+
+    fmt_pop_indent(fmt);
+    tok = parser_advance(p);  // }
+    fmt_token(fmt, tok);
+    return 0;
+}
+
+// Format impl block
+fn fmt_impl(fmt: i64, p: i64) -> i64 {
+    let tok: i64 = parser_advance(p);  // impl
+    fmt_token(fmt, tok);
+    fmt_space(fmt);
+    tok = parser_advance(p);  // TypeName or TraitName
+    fmt_token(fmt, tok);
+
+    // Check for "impl Trait for Type"
+    if parser_check(p, TK_KwFor()) {
+        fmt_space(fmt);
+        tok = parser_advance(p);  // for
+        fmt_token(fmt, tok);
+        fmt_space(fmt);
+        tok = parser_advance(p);  // TypeName
+        fmt_token(fmt, tok);
+    }
+
+    fmt_space(fmt);
+    tok = parser_advance(p);  // {
+    fmt_token(fmt, tok);
+    fmt_newline(fmt);
+    fmt_push_indent(fmt);
+
+    // Methods
+    while parser_check(p, TK_RBrace()) == false {
+        if parser_at_end(p) { break; }
+
+        // Skip pub
+        if parser_check(p, TK_KwPub()) {
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+        }
+
+        // Check for associated type: type Name = Type;
+        if parser_check(p, TK_KwType()) {
+            tok = parser_advance(p);  // type
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            tok = parser_advance(p);  // name
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            tok = parser_advance(p);  // =
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_type(fmt, p);
+            tok = parser_advance(p);  // ;
+            fmt_token(fmt, tok);
+            fmt_newline(fmt);
+            fmt_blank_line(fmt);
+            continue;
+        }
+
+        // async fn
+        if parser_check(p, TK_KwAsync()) {
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+        }
+
+        // fn
+        if parser_check(p, TK_KwFn()) {
+            fmt_fn(fmt, p);
+            fmt_newline(fmt);
+            // Blank line between methods unless at end
+            if parser_check(p, TK_RBrace()) == false {
+                fmt_blank_line(fmt);
+            }
+        }
+    }
+
+    fmt_pop_indent(fmt);
+    tok = parser_advance(p);  // }
+    fmt_token(fmt, tok);
+    return 0;
+}
+
+// Format trait definition
+fn fmt_trait(fmt: i64, p: i64) -> i64 {
+    let tok: i64 = parser_advance(p);  // trait
+    fmt_token(fmt, tok);
+    fmt_space(fmt);
+    tok = parser_advance(p);  // name
+    fmt_token(fmt, tok);
+    fmt_space(fmt);
+    tok = parser_advance(p);  // {
+    fmt_token(fmt, tok);
+    fmt_newline(fmt);
+    fmt_push_indent(fmt);
+
+    while parser_check(p, TK_RBrace()) == false {
+        if parser_at_end(p) { break; }
+
+        // Associated type: type Name;
+        if parser_check(p, TK_KwType()) {
+            tok = parser_advance(p);  // type
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            tok = parser_advance(p);  // name
+            fmt_token(fmt, tok);
+            tok = parser_advance(p);  // ;
+            fmt_token(fmt, tok);
+            fmt_newline(fmt);
+            continue;
+        }
+
+        // async fn
+        if parser_check(p, TK_KwAsync()) {
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+        }
+
+        // Method signature or default impl
+        if parser_check(p, TK_KwFn()) {
+            tok = parser_advance(p);  // fn
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            tok = parser_advance(p);  // name
+            fmt_token(fmt, tok);
+            fmt_params(fmt, p);
+
+            if parser_check(p, TK_Arrow()) {
+                fmt_space(fmt);
+                tok = parser_advance(p);  // ->
+                fmt_token(fmt, tok);
+                fmt_space(fmt);
+                fmt_type(fmt, p);
+            }
+
+            // Signature only (;) or default impl ({})
+            if parser_check(p, TK_Semi()) {
+                tok = parser_advance(p);
+                fmt_token(fmt, tok);
+                fmt_newline(fmt);
+            } else if parser_check(p, TK_LBrace()) {
+                fmt_space(fmt);
+                fmt_block(fmt, p);
+                fmt_newline(fmt);
+            }
+
+            // Blank line between methods
+            if parser_check(p, TK_RBrace()) == false {
+                fmt_blank_line(fmt);
+            }
+        }
+    }
+
+    fmt_pop_indent(fmt);
+    tok = parser_advance(p);  // }
+    fmt_token(fmt, tok);
+    return 0;
+}
+
+// Format use statement
+fn fmt_use(fmt: i64, p: i64) -> i64 {
+    let tok: i64 = parser_advance(p);  // use
+    fmt_token(fmt, tok);
+    fmt_space(fmt);
+
+    // Path segments
+    while true {
+        if parser_check(p, TK_Ident()) {
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+        }
+
+        if parser_check(p, TK_DoubleColon()) {
+            tok = parser_advance(p);  // ::
+            fmt_token(fmt, tok);
+
+            // Check for glob: *
+            if parser_check(p, TK_Star()) {
+                tok = parser_advance(p);
+                fmt_token(fmt, tok);
+                break;
+            }
+
+            // Check for nested imports: {A, B, C}
+            if parser_check(p, TK_LBrace()) {
+                tok = parser_advance(p);  // {
+                fmt_token(fmt, tok);
+                let first: bool = true;
+                while parser_check(p, TK_RBrace()) == false {
+                    if parser_at_end(p) { break; }
+                    if first == false {
+                        tok = parser_advance(p);  // ,
+                        fmt_token(fmt, tok);
+                        fmt_space(fmt);
+                    }
+                    first = false;
+                    tok = parser_advance(p);  // ident
+                    fmt_token(fmt, tok);
+                }
+                tok = parser_advance(p);  // }
+                fmt_token(fmt, tok);
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+
+    tok = parser_advance(p);  // ;
+    fmt_token(fmt, tok);
+    return 0;
+}
+
+// Format mod declaration
+fn fmt_mod(fmt: i64, p: i64) -> i64 {
+    let tok: i64 = parser_advance(p);  // mod
+    fmt_token(fmt, tok);
+    fmt_space(fmt);
+    tok = parser_advance(p);  // name
+    fmt_token(fmt, tok);
+    tok = parser_advance(p);  // ;
+    fmt_token(fmt, tok);
+    return 0;
+}
+
+// Format type alias
+fn fmt_type_alias(fmt: i64, p: i64) -> i64 {
+    let tok: i64 = parser_advance(p);  // type
+    fmt_token(fmt, tok);
+    fmt_space(fmt);
+    tok = parser_advance(p);  // name
+    fmt_token(fmt, tok);
+    fmt_space(fmt);
+    tok = parser_advance(p);  // =
+    fmt_token(fmt, tok);
+    fmt_space(fmt);
+    fmt_type(fmt, p);
+    tok = parser_advance(p);  // ;
+    fmt_token(fmt, tok);
+    return 0;
+}
+
+// Format actor definition
+fn fmt_actor(fmt: i64, p: i64) -> i64 {
+    let tok: i64 = parser_advance(p);  // actor
+    fmt_token(fmt, tok);
+    fmt_space(fmt);
+    tok = parser_advance(p);  // name
+    fmt_token(fmt, tok);
+    fmt_space(fmt);
+    tok = parser_advance(p);  // {
+    fmt_token(fmt, tok);
+    fmt_newline(fmt);
+    fmt_push_indent(fmt);
+
+    while parser_check(p, TK_RBrace()) == false {
+        if parser_at_end(p) { break; }
+
+        // var field: Type = init;
+        if parser_check(p, TK_KwVar()) {
+            tok = parser_advance(p);  // var
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            tok = parser_advance(p);  // name
+            fmt_token(fmt, tok);
+            tok = parser_advance(p);  // :
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_type(fmt, p);
+            if parser_check(p, TK_Eq()) {
+                fmt_space(fmt);
+                tok = parser_advance(p);  // =
+                fmt_token(fmt, tok);
+                fmt_space(fmt);
+                fmt_expr(fmt, p);
+            }
+            if parser_check(p, TK_Semi()) {
+                tok = parser_advance(p);
+                fmt_token(fmt, tok);
+            }
+            fmt_newline(fmt);
+            continue;
+        }
+
+        // init(params) { body }
+        if parser_check(p, TK_KwInit()) {
+            tok = parser_advance(p);  // init
+            fmt_token(fmt, tok);
+            fmt_params(fmt, p);
+            fmt_space(fmt);
+            fmt_block(fmt, p);
+            fmt_newline(fmt);
+            fmt_blank_line(fmt);
+            continue;
+        }
+
+        // receive MsgName(params) -> RetType { body }
+        if parser_check(p, TK_KwReceive()) {
+            tok = parser_advance(p);  // receive
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            tok = parser_advance(p);  // MsgName
+            fmt_token(fmt, tok);
+            if parser_check(p, TK_LParen()) {
+                fmt_params(fmt, p);
+            }
+            if parser_check(p, TK_Arrow()) {
+                fmt_space(fmt);
+                tok = parser_advance(p);  // ->
+                fmt_token(fmt, tok);
+                fmt_space(fmt);
+                fmt_type(fmt, p);
+            }
+            // Optional belief guard
+            if parser_check(p, TK_At()) {
+                fmt_space(fmt);
+                tok = parser_advance(p);  // @
+                fmt_token(fmt, tok);
+                fmt_space(fmt);
+                fmt_expr(fmt, p);
+            }
+            fmt_space(fmt);
+            fmt_block(fmt, p);
+            fmt_newline(fmt);
+            if parser_check(p, TK_RBrace()) == false {
+                fmt_blank_line(fmt);
+            }
+            continue;
+        }
+
+        // Unknown - skip
+        parser_advance(p);
+    }
+
+    fmt_pop_indent(fmt);
+    tok = parser_advance(p);  // }
+    fmt_token(fmt, tok);
+    return 0;
+}
+
+// Format specialist definition (similar to actor)
+fn fmt_specialist(fmt: i64, p: i64) -> i64 {
+    let tok: i64 = parser_advance(p);  // specialist
+    fmt_token(fmt, tok);
+    fmt_space(fmt);
+    tok = parser_advance(p);  // name
+    fmt_token(fmt, tok);
+    fmt_space(fmt);
+    tok = parser_advance(p);  // {
+    fmt_token(fmt, tok);
+    fmt_newline(fmt);
+    fmt_push_indent(fmt);
+
+    while parser_check(p, TK_RBrace()) == false {
+        if parser_at_end(p) { break; }
+
+        // var field: Type = init;
+        if parser_check(p, TK_KwVar()) {
+            tok = parser_advance(p);  // var
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            tok = parser_advance(p);  // name
+            fmt_token(fmt, tok);
+            tok = parser_advance(p);  // :
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_type(fmt, p);
+            if parser_check(p, TK_Eq()) {
+                fmt_space(fmt);
+                tok = parser_advance(p);  // =
+                fmt_token(fmt, tok);
+                fmt_space(fmt);
+                fmt_expr(fmt, p);
+            }
+            if parser_check(p, TK_Semi()) {
+                tok = parser_advance(p);
+                fmt_token(fmt, tok);
+            }
+            fmt_newline(fmt);
+            continue;
+        }
+
+        // receive handler
+        if parser_check(p, TK_KwReceive()) {
+            tok = parser_advance(p);  // receive
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            tok = parser_advance(p);  // MsgName
+            fmt_token(fmt, tok);
+            if parser_check(p, TK_LParen()) {
+                fmt_params(fmt, p);
+            }
+            if parser_check(p, TK_Arrow()) {
+                fmt_space(fmt);
+                tok = parser_advance(p);  // ->
+                fmt_token(fmt, tok);
+                fmt_space(fmt);
+                fmt_type(fmt, p);
+            }
+            if parser_check(p, TK_At()) {
+                fmt_space(fmt);
+                tok = parser_advance(p);  // @
+                fmt_token(fmt, tok);
+                fmt_space(fmt);
+                fmt_expr(fmt, p);
+            }
+            fmt_space(fmt);
+            fmt_block(fmt, p);
+            fmt_newline(fmt);
+            if parser_check(p, TK_RBrace()) == false {
+                fmt_blank_line(fmt);
+            }
+            continue;
+        }
+
+        // Config property: name: value,
+        if parser_check(p, TK_Ident()) {
+            tok = parser_advance(p);  // name
+            fmt_token(fmt, tok);
+            tok = parser_advance(p);  // :
+            fmt_token(fmt, tok);
+            fmt_space(fmt);
+            fmt_expr(fmt, p);
+            if parser_check(p, TK_Comma()) {
+                tok = parser_advance(p);
+                fmt_token(fmt, tok);
+            }
+            fmt_newline(fmt);
+            continue;
+        }
+
+        parser_advance(p);
+    }
+
+    fmt_pop_indent(fmt);
+    tok = parser_advance(p);  // }
+    fmt_token(fmt, tok);
+    return 0;
+}
+
+// Format hive definition
+fn fmt_hive(fmt: i64, p: i64) -> i64 {
+    let tok: i64 = parser_advance(p);  // hive
+    fmt_token(fmt, tok);
+    fmt_space(fmt);
+    tok = parser_advance(p);  // name
+    fmt_token(fmt, tok);
+    fmt_space(fmt);
+    tok = parser_advance(p);  // {
+    fmt_token(fmt, tok);
+    fmt_newline(fmt);
+    fmt_push_indent(fmt);
+
+    while parser_check(p, TK_RBrace()) == false {
+        if parser_at_end(p) { break; }
+
+        tok = parser_advance(p);  // property name
+        fmt_token(fmt, tok);
+
+        // mnemonic block (no colon)
+        if string_eq(token_text(tok), "mnemonic") {
+            if parser_check(p, TK_LBrace()) {
+                fmt_space(fmt);
+                tok = parser_advance(p);  // {
+                fmt_token(fmt, tok);
+                fmt_newline(fmt);
+                fmt_push_indent(fmt);
+                // Sub-blocks
+                while parser_check(p, TK_RBrace()) == false {
+                    if parser_at_end(p) { break; }
+                    tok = parser_advance(p);  // block name
+                    fmt_token(fmt, tok);
+                    tok = parser_advance(p);  // :
+                    fmt_token(fmt, tok);
+                    fmt_space(fmt);
+                    fmt_config_block(fmt, p);
+                    if parser_check(p, TK_Comma()) {
+                        tok = parser_advance(p);
+                        fmt_token(fmt, tok);
+                    }
+                    fmt_newline(fmt);
+                }
+                fmt_pop_indent(fmt);
+                tok = parser_advance(p);  // }
+                fmt_token(fmt, tok);
+                fmt_newline(fmt);
+                continue;
+            }
+        }
+
+        tok = parser_advance(p);  // :
+        fmt_token(fmt, tok);
+        fmt_space(fmt);
+
+        // Array or identifier value
+        if parser_check(p, TK_LBracket()) {
+            tok = parser_advance(p);  // [
+            fmt_token(fmt, tok);
+            let first: bool = true;
+            while parser_check(p, TK_RBracket()) == false {
+                if parser_at_end(p) { break; }
+                if first == false {
+                    tok = parser_advance(p);  // ,
+                    fmt_token(fmt, tok);
+                    fmt_space(fmt);
+                }
+                first = false;
+                tok = parser_advance(p);  // item
+                fmt_token(fmt, tok);
+            }
+            tok = parser_advance(p);  // ]
+            fmt_token(fmt, tok);
+        } else {
+            tok = parser_advance(p);  // value
+            fmt_token(fmt, tok);
+        }
+
+        if parser_check(p, TK_Comma()) {
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+        }
+        fmt_newline(fmt);
+    }
+
+    fmt_pop_indent(fmt);
+    tok = parser_advance(p);  // }
+    fmt_token(fmt, tok);
+    return 0;
+}
+
+// Format config block { key: value, ... }
+fn fmt_config_block(fmt: i64, p: i64) -> i64 {
+    let tok: i64 = parser_advance(p);  // {
+    fmt_token(fmt, tok);
+    fmt_newline(fmt);
+    fmt_push_indent(fmt);
+
+    while parser_check(p, TK_RBrace()) == false {
+        if parser_at_end(p) { break; }
+        tok = parser_advance(p);  // key
+        fmt_token(fmt, tok);
+        tok = parser_advance(p);  // :
+        fmt_token(fmt, tok);
+        fmt_space(fmt);
+
+        // Value: array or expression
+        if parser_check(p, TK_LBracket()) {
+            tok = parser_advance(p);  // [
+            fmt_token(fmt, tok);
+            let first: bool = true;
+            while parser_check(p, TK_RBracket()) == false {
+                if parser_at_end(p) { break; }
+                if first == false {
+                    tok = parser_advance(p);  // ,
+                    fmt_token(fmt, tok);
+                    fmt_space(fmt);
+                }
+                first = false;
+                tok = parser_advance(p);  // item
+                fmt_token(fmt, tok);
+            }
+            tok = parser_advance(p);  // ]
+            fmt_token(fmt, tok);
+        } else {
+            fmt_expr(fmt, p);
+        }
+
+        if parser_check(p, TK_Comma()) {
+            tok = parser_advance(p);
+            fmt_token(fmt, tok);
+        }
+        fmt_newline(fmt);
+    }
+
+    fmt_pop_indent(fmt);
+    tok = parser_advance(p);  // }
+    fmt_token(fmt, tok);
+    return 0;
+}
+
+// Format anima definition
+fn fmt_anima(fmt: i64, p: i64) -> i64 {
+    let tok: i64 = parser_advance(p);  // anima
+    fmt_token(fmt, tok);
+    fmt_space(fmt);
+    tok = parser_advance(p);  // name
+    fmt_token(fmt, tok);
+    fmt_space(fmt);
+    tok = parser_advance(p);  // {
+    fmt_token(fmt, tok);
+    fmt_newline(fmt);
+    fmt_push_indent(fmt);
+
+    while parser_check(p, TK_RBrace()) == false {
+        if parser_at_end(p) { break; }
+        tok = parser_advance(p);  // block name
+        fmt_token(fmt, tok);
+        fmt_space(fmt);
+        fmt_config_block(fmt, p);
+        fmt_newline(fmt);
+    }
+
+    fmt_pop_indent(fmt);
+    tok = parser_advance(p);  // }
+    fmt_token(fmt, tok);
+    return 0;
+}
+
+// Format attribute: #[attr]
+fn fmt_attribute(fmt: i64, p: i64) -> i64 {
+    let tok: i64 = parser_advance(p);  // #
+    fmt_token(fmt, tok);
+    tok = parser_advance(p);  // [
+    fmt_token(fmt, tok);
+    // Read until ]
+    let depth: i64 = 1;
+    while depth > 0 {
+        if parser_at_end(p) { break; }
+        tok = parser_current(p);
+        if token_kind(tok) == TK_LBracket() {
+            depth = depth + 1;
+        }
+        if token_kind(tok) == TK_RBracket() {
+            depth = depth - 1;
+        }
+        tok = parser_advance(p);
+        fmt_token(fmt, tok);
+    }
+    fmt_newline(fmt);
+    return 0;
+}
+
+// Format top-level item
+fn fmt_item(fmt: i64, p: i64) -> i64 {
+    let tok: i64 = parser_current(p);
+    if tok == 0 { return 0; }
+
+    // Write leading comments
+    fmt_write_leading_comments(fmt, tok);
+
+    let kind: i64 = token_kind(tok);
+
+    // Attributes #[...]
+    if kind == TK_Hash() {
+        fmt_attribute(fmt, p);
+        return fmt_item(fmt, p);
+    }
+
+    // pub keyword
+    if kind == TK_KwPub() {
+        tok = parser_advance(p);
+        fmt_write(fmt, token_text(tok));
+        fmt_space(fmt);
+        return fmt_item(fmt, p);
+    }
+
+    // async fn
+    if kind == TK_KwAsync() {
+        tok = parser_advance(p);
+        fmt_write(fmt, token_text(tok));
+        fmt_space(fmt);
+        if parser_check(p, TK_KwFn()) {
+            fmt_fn(fmt, p);
+        }
+        return 0;
+    }
+
+    if kind == TK_KwFn() {
+        fmt_fn(fmt, p);
+        return 0;
+    }
+    if kind == TK_KwEnum() {
+        fmt_enum(fmt, p);
+        return 0;
+    }
+    if kind == TK_KwStruct() {
+        fmt_struct(fmt, p);
+        return 0;
+    }
+    if kind == TK_KwImpl() {
+        fmt_impl(fmt, p);
+        return 0;
+    }
+    if kind == TK_KwTrait() {
+        fmt_trait(fmt, p);
+        return 0;
+    }
+    if kind == TK_KwUse() {
+        fmt_use(fmt, p);
+        return 0;
+    }
+    if kind == TK_KwMod() {
+        fmt_mod(fmt, p);
+        return 0;
+    }
+    if kind == TK_KwType() {
+        fmt_type_alias(fmt, p);
+        return 0;
+    }
+    if kind == TK_KwActor() {
+        fmt_actor(fmt, p);
+        return 0;
+    }
+    if kind == TK_KwSpecialist() {
+        fmt_specialist(fmt, p);
+        return 0;
+    }
+    if kind == TK_KwHive() {
+        fmt_hive(fmt, p);
+        return 0;
+    }
+    if kind == TK_KwAnima() {
+        fmt_anima(fmt, p);
+        return 0;
+    }
+
+    // Skip unknown
+    if kind != TK_Eof() {
+        parser_advance(p);
+    }
+    return 0;
+}
+
+// ========================================
+// Main Formatting Entry Point
+// ========================================
+
+fn format_source(source: i64) -> i64 {
+    let tokens: i64 = tokenize(source);
+
+    let p: i64 = parser_new(tokens);
+    let fmt: i64 = fmt_new();
+
+    let first_item: bool = true;
+    let loop_count: i64 = 0;
+    while parser_at_end(p) == false {
+        loop_count = loop_count + 1;
+
+        let tok: i64 = parser_current(p);
+        if token_kind(tok) == TK_Eof() {
+            break;
+        }
+
+        // Add blank line between top-level items (except first)
+        if first_item == false {
+            fmt_blank_line(fmt);
+        }
+        first_item = false;
+
+        fmt_item(fmt, p);
+        fmt_newline(fmt);
+
+        if loop_count > 100 {
+            break;
+        }
+    }
+
+    // Handle trailing comments
+    let tok: i64 = parser_current(p);
+    if tok != 0 {
+        fmt_write_leading_comments(fmt, tok);
+    }
+
+    return fmt_output(fmt);
+}
+
+// ========================================
+// CLI Main
+// ========================================
+
+fn show_help() -> i64 {
+    println("sxfmt - Simplex Code Formatter");
+    println("");
+    println("Usage:");
+    println("  sxfmt <file.sx>         Format file in place");
+    println("  sxfmt --check <file>    Check if formatted (exit 1 if not)");
+    println("  sxfmt --diff <file>     Show diff of changes");
+    println("  sxfmt --help            Show this help");
+    println("  sxfmt --version         Show version");
+    println("");
+    println("Formatting style:");
+    println("  - 4 space indentation");
+    println("  - Opening brace on same line");
+    println("  - No trailing whitespace");
+    println("  - Single space after keywords");
+    println("  - One blank line between items");
+    println("  - Aligned struct fields");
+    return 0;
+}
+
+fn show_version() -> i64 {
+    print("sxfmt ");
+    println(VERSION());
+    return 0;
+}
+
+fn main() -> i64 {
+    let args: i64 = get_args();
+    let argc: i64 = vec_len(args);
+
+    if argc < 2 {
+        show_help();
+        return 0;
+    }
+
+    let arg1: i64 = vec_get(args, 1);
+
+    if string_eq(arg1, string_from("--help")) {
+        show_help();
+        return 0;
+    }
+    if string_eq(arg1, string_from("-h")) {
+        show_help();
+        return 0;
+    }
+    if string_eq(arg1, string_from("--version")) {
+        show_version();
+        return 0;
+    }
+    if string_eq(arg1, string_from("-v")) {
+        show_version();
+        return 0;
+    }
+
+    // Check mode
+    if string_eq(arg1, string_from("--check")) {
+        if argc < 3 {
+            println("Error: --check requires a file argument");
+            return 1;
+        }
+        let file_path: i64 = vec_get(args, 2);
+        let source: i64 = read_file(file_path);
+        if source == 0 {
+            print("Error: Could not read file: ");
+            println(file_path);
+            return 1;
+        }
+        let formatted: i64 = format_source(source);
+        if string_eq(source, formatted) {
+            return 0;  // File is formatted
+        }
+        print(file_path);
+        println(" is not formatted");
+        return 1;
+    }
+
+    // Diff mode
+    if string_eq(arg1, string_from("--diff")) {
+        if argc < 3 {
+            println("Error: --diff requires a file argument");
+            return 1;
+        }
+        let file_path: i64 = vec_get(args, 2);
+        let source: i64 = read_file(file_path);
+        if source == 0 {
+            print("Error: Could not read file: ");
+            println(file_path);
+            return 1;
+        }
+
+        let formatted: i64 = format_source(source);
+        if string_eq(source, formatted) {
+            println("File is already formatted.");
+            return 0;
+        }
+
+        // Show formatted output (diff not implemented, just show result)
+        println("--- original");
+        println("+++ formatted");
+        println("");
+        println(formatted);
+        return 0;
+    }
+
+    // Format file in place
+    let file_path: i64 = arg1;
+    let source: i64 = read_file(file_path);
+    if source == 0 {
+        print("Error: Could not read file: ");
+        println(file_path);
+        return 1;
+    }
+
+    let formatted: i64 = format_source(source);
+
+    if string_eq(source, formatted) {
+        // Already formatted - no change needed
+        return 0;
+    }
+
+    // Write formatted output
+    let result: i64 = write_file(file_path, formatted);
+    if result != 0 {
+        print("Error: Could not write file: ");
+        println(file_path);
+        return 1;
+    }
+
+    print("Formatted: ");
+    println(file_path);
+    return 0;
+}

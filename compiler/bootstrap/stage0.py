@@ -5510,6 +5510,49 @@ class CodeGen:
             self.current_actor = None
             self.current_actor_self = None
 
+        # Generate message constructor functions for send/ask calls
+        # Each message type (Add, Get, etc.) needs a constructor function
+        for i, handler in enumerate(handlers):
+            msg_name = handler['name']
+            params = handler['params']
+
+            # Register nullary messages for identifier lookup
+            if not params:
+                if not hasattr(self, 'message_constructors'):
+                    self.message_constructors = set()
+                self.message_constructors.add(msg_name)
+
+            # Generate message constructor: MsgName(params...) -> i64
+            # Returns a pointer to message struct: [tag, param0, param1, ...]
+            params_str = ', '.join(f"i64 %{p['name']}" for p in params)
+            self.emit(f'; Message constructor: {msg_name}')
+            self.emit(f'define i64 @"{msg_name}"({params_str}) {{')
+            self.emit('entry:')
+
+            # Calculate message struct size: 8 bytes for tag + 8 bytes per param
+            msg_size = 8 + len(params) * 8
+
+            # Allocate message struct
+            msg_ptr = self.new_temp()
+            self.emit(f'  {msg_ptr} = call ptr @malloc(i64 {msg_size})')
+
+            # Store message tag (index of this handler)
+            self.emit(f'  store i64 {i}, ptr {msg_ptr}')
+
+            # Store each parameter at offset 8 + (pi * 8)
+            for pi, p in enumerate(params):
+                offset = 8 + pi * 8
+                slot = self.new_temp()
+                self.emit(f'  {slot} = getelementptr i8, ptr {msg_ptr}, i64 {offset}')
+                self.emit(f'  store i64 %{p["name"]}, ptr {slot}')
+
+            # Return message pointer as i64
+            result = self.new_temp()
+            self.emit(f'  {result} = ptrtoint ptr {msg_ptr} to i64')
+            self.emit(f'  ret i64 {result}')
+            self.emit('}')
+            self.emit('')
+
     def generate_specialist(self, specialist_def):
         """Generate code for a specialist definition.
         Specialist is like actor but with model config and infer() available.
@@ -6316,6 +6359,13 @@ class CodeGen:
                     result_temp = self.new_temp()
                     self.emit(f'  {result_temp} = ptrtoint ptr {ptr_temp} to i64')
                     return result_temp
+            # Check if this is a nullary message constructor (e.g., Get for actor messages)
+            # Nullary messages are used with ask(actor, Get) - they need to be called as functions
+            if hasattr(self, 'message_constructors') and name in self.message_constructors:
+                # Generate a function call to the message constructor
+                temp = self.new_temp()
+                self.emit(f'  {temp} = call i64 @"{name}"()')
+                return temp
             if name in self.locals:
                 local = self.locals[name]
                 temp = self.new_temp()
